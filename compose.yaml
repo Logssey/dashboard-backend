@@ -1,0 +1,18 @@
+# 로컬 개발용 PostgreSQL (ADR-D004)
+# 실행: docker compose up -d   /   중지: docker compose down
+# 접속 정보는 같은 폴더의 .env 파일에서 읽는다 (.env는 GitHub에 올리지 않는다)
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      # 내 컴퓨터에서만 접속 가능하게 127.0.0.1에만 연다
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
+    volumes:
+      - dashboard-db:/var/lib/postgresql
+
+volumes:
+  dashboard-db:
