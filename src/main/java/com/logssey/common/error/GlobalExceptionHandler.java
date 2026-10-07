@@ -8,6 +8,7 @@ import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 /** 컨트롤러에서 난 오류를 { code, message } 모양으로 바꾼다. 스택 트레이스·내부 정보는 응답에 넣지 않는다 */
 @RestControllerAdvice
@@ -21,7 +22,8 @@ public class GlobalExceptionHandler {
                 .body(ApiErrorResponse.of(e.errorCode(), e.getMessage()));
     }
 
-    @ExceptionHandler({MethodArgumentNotValidException.class, HttpMessageNotReadableException.class})
+    @ExceptionHandler({MethodArgumentNotValidException.class, HttpMessageNotReadableException.class,
+            MethodArgumentTypeMismatchException.class})
     public ResponseEntity<ApiErrorResponse> handleInvalidInput(Exception e) {
         return ResponseEntity.status(ErrorCode.INVALID_INPUT.status())
                 .body(ApiErrorResponse.of(ErrorCode.INVALID_INPUT));
