@@ -39,6 +39,8 @@ public class CredentialRiskRepository {
                         SELECT c.credential_id, c.issuer, c.credential_type, c.external_id, c.display_name,
                                c.owner, c.owner_team, c.environment, c.asset_id,
                                c.issued_at, c.expiry_policy, c.expires_at, c.last_used_at, c.status,
+                               c.source, c.masked_value, c.storage_location,
+                               (c.fingerprint IS NOT NULL) AS secret_exposed,
                                a.environment AS asset_environment
                         FROM credentials c
                         LEFT JOIN assets a ON a.asset_id = c.asset_id
@@ -140,7 +142,11 @@ public class CredentialRiskRepository {
                 rs.getString("owner_team"),
                 rs.getString("environment"),
                 nullableAssetId,
-                rs.getString("asset_environment"));
+                rs.getString("asset_environment"),
+                rs.getString("source"),
+                rs.getString("masked_value"),
+                rs.getString("storage_location"),
+                rs.getBoolean("secret_exposed"));
     }
 
     private static Instant instant(ResultSet rs, String column) throws SQLException {

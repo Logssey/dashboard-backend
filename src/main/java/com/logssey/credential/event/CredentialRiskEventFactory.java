@@ -44,7 +44,7 @@ public final class CredentialRiskEventFactory {
                 stored.ownerTeam() != null && !stored.ownerTeam().isBlank() ? stored.ownerTeam() : UNASSIGNED_TEAM,
                 now,
                 DOMAIN,
-                evidence(credential, finding.type(), now, environmentAssumed),
+                evidence(stored, finding.type(), now, environmentAssumed),
                 recommendation(finding.type()));
     }
 
@@ -52,6 +52,8 @@ public final class CredentialRiskEventFactory {
     public static String title(String issuer, RiskType type) {
         String subject = issuerLabel(issuer) + " " + ("AWS".equals(issuer) ? "키" : "토큰");
         return switch (type) {
+            case LEAKED_SECRET -> subject + " 원문 노출";
+            case LEAKED_IDENTIFIER -> subject + " ID 노출";
             case NO_EXPIRY -> "만료일 없이 발급된 " + subject;
             case UNUSED -> TokenRiskEvaluator.UNUSED_THRESHOLD.toDays() + "일 이상 사용하지 않은 " + subject;
             case EXPIRING_SOON -> "만료가 임박한 " + subject;
@@ -69,12 +71,28 @@ public final class CredentialRiskEventFactory {
         return DEFAULT_ENVIRONMENT;
     }
 
-    private static String evidence(CollectedCredential credential, RiskType type, Instant now,
+    private static String evidence(StoredCredential stored, RiskType type, Instant now,
                                    boolean environmentAssumed) {
+        CollectedCredential credential = stored.credential();
         List<String> lines = new ArrayList<>();
         String name = credential.displayName() != null ? credential.displayName() : "이름 없음";
-        lines.add("토큰: " + name + " (" + credential.externalId() + ")");
+        if (type == RiskType.LEAKED_SECRET || type == RiskType.LEAKED_IDENTIFIER) {
+            lines.add("발견 위치: " + (stored.storageLocation() != null ? stored.storageLocation() : "미확인"));
+            lines.add("노출 값: " + (stored.maskedValue() != null ? stored.maskedValue() : "미확인"));
+        } else {
+            lines.add("토큰: " + name + " (" + credential.externalId() + ")");
+        }
         switch (type) {
+            case LEAKED_SECRET -> {
+                lines.add("AWS".equals(credential.issuer())
+                        ? "Secret Access Key: 함께 노출됨 (원문은 저장하지 않음)"
+                        : "토큰 원문: 노출됨 (원문은 저장하지 않음)");
+                lines.add("판단 기준: 페이지에 키 원문이 적혀 있음");
+            }
+            case LEAKED_IDENTIFIER -> {
+                lines.add("Secret Access Key: 발견되지 않음");
+                lines.add("판단 기준: 페이지에 Access Key ID가 적혀 있음 (혼자서는 접속 불가)");
+            }
             case NO_EXPIRY -> {
                 lines.add("만료 방식: 만료 없음");
                 lines.add("판단 기준: 만료일 없이 발급된 키");
@@ -110,6 +128,8 @@ public final class CredentialRiskEventFactory {
 
     private static String recommendation(RiskType type) {
         return switch (type) {
+            case LEAKED_SECRET -> "키를 즉시 폐기(비활성화)하고 새로 발급한 뒤, 페이지에서 원문을 지웁니다. 페이지 기록(이전 버전)에도 남아 있을 수 있으니 함께 확인합니다.";
+            case LEAKED_IDENTIFIER -> "같은 키의 Secret이 다른 곳에 노출되지 않았는지 확인하고, 페이지에서 Access Key ID를 지웁니다.";
             case NO_EXPIRY -> "토큰 용도를 확인한 뒤 만료일을 지정해 다시 발급하고, 기존 토큰을 폐기합니다.";
             case UNUSED -> "사용처가 남아 있는지 확인하고, 없으면 토큰을 폐기합니다.";
             case EXPIRING_SOON -> "연동이 멈추기 전에 새 토큰을 발급해 교체합니다.";
