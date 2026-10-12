@@ -50,7 +50,7 @@ public class LocalSampleDataLoader implements ApplicationRunner {
         populator.setSqlScriptEncoding("UTF-8");
         DatabasePopulatorUtils.execute(populator, dataSource);
 
-        log.info("Local sample data reloaded: 8 assets, 8 detection events (detected_at = last 7 days from now).");
+        log.info("Local sample data reloaded: 8 assets, 5 credentials, 11 detection events (detected_at = last 7 days from now).");
     }
 
     static boolean isLocalDatabase(String url) {

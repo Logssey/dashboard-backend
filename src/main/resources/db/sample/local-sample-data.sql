@@ -1,9 +1,10 @@
 -- 로컬(local 프로필) 전용 샘플 데이터. 운영 환경에서는 실행되지 않는다.
 -- LocalSampleDataLoader가 서버를 켤 때마다 이 파일을 실행한다.
 -- 매번 기존 샘플을 지우고, 발생 시각을 "켠 시점 기준 최근 7일"로 다시 계산해 넣는다.
--- 주의: 로컬 DB의 탐지 이벤트와 자산을 전부 지운 뒤 다시 넣는다.
+-- 주의: 로컬 DB의 탐지 이벤트, 키, 자산을 전부 지운 뒤 다시 넣는다.
 
 DELETE FROM detection_events;
+DELETE FROM credentials;
 DELETE FROM assets;
 
 -- 자산 (확인된 실제 Re:Used 리소스 이름으로 맞춤. 확인 안 된 것은 템플릿 이름 유지)
@@ -68,3 +69,50 @@ VALUES
      'VULNERABILITIES',
      E'이미지: logssey/reused-api:demo\n패키지: 가상 예시\n업데이트: 검토 필요',
      '수정 버전의 호환성을 검증한 뒤 새 이미지를 빌드하고 배포합니다.');
+
+
+-- 키 샘플 5개 (Notion PAT. Notion Admin API 응답 형식을 본뜬 가상 데이터)
+-- 키 원문은 넣지 않는다 (ADR-D009). Notion은 이번 단계에서 assets에 넣지 않으므로 asset_id는 비운다.
+-- 시각은 now() 기준이라 서버를 켤 때마다 아래 판단 결과가 그대로 유지된다.
+INSERT INTO credentials
+    (issuer, credential_type, classification, display_name, external_id, owner, owner_team, purpose,
+     status, source, issued_at, expiry_policy, expires_at, last_used_at, last_collected_at)
+VALUES
+    -- 정상: 탐지 없음
+    ('NOTION', 'NOTION_PAT', 'SECRET', 'deploy-bot',    'sample-pat-0001', 'Team Member A', 'Platform', '배포 결과 기록',
+     'ACTIVE',  'API', now() - interval '120 days', 'FIXED', now() + interval '90 days', now() - interval '1 day',   now()),
+    -- 만료 임박(5일 뒤): LOW
+    ('NOTION', 'NOTION_PAT', 'SECRET', 'notion-sync',   'sample-pat-0002', 'Team Member B', 'Backend',  '회의록 동기화',
+     'ACTIVE',  'API', now() - interval '360 days', 'FIXED', now() + interval '5 days',  now() - interval '1 day',   now()),
+    -- 60일 미사용: MEDIUM
+    ('NOTION', 'NOTION_PAT', 'SECRET', 'old-script',    'sample-pat-0003', 'Team Member A', 'Platform', '일회성 데이터 이전',
+     'ACTIVE',  'API', now() - interval '200 days', 'FIXED', now() + interval '90 days', now() - interval '60 days', now()),
+    -- 만료일 없음: HIGH
+    ('NOTION', 'NOTION_PAT', 'SECRET', 'legacy-export', 'sample-pat-0004', 'Team Member C', 'AppSec',   '문서 내보내기',
+     'ACTIVE',  'API', now() - interval '30 days',  'NEVER', NULL,                       now() - interval '1 day',   now()),
+    -- 폐기됨: 탐지 없음
+    ('NOTION', 'NOTION_PAT', 'SECRET', 'revoked-tool',  'sample-pat-0005', 'Team Member B', 'Backend',  '테스트 연동',
+     'REVOKED', 'API', now() - interval '150 days', 'FIXED', now() + interval '30 days', now() - interval '40 days', now());
+
+-- 키 관련 탐지 3건 (위 키 샘플을 기준값으로 판단한 결과. Mock 테스트 시나리오 1장)
+-- 키의 환경을 모르므로 운영(PROD)으로 본다. 자산 연결은 비운다.
+INSERT INTO detection_events
+    (asset_id, credential_id, display_id, severity, title, environment, owner_team, detected_at, domain, evidence, recommendation)
+VALUES
+    (NULL, (SELECT credential_id FROM credentials WHERE issuer = 'NOTION' AND external_id = 'sample-pat-0004'),
+     'SEC-002', 'HIGH', '만료일 없이 발급된 Notion 토큰', 'PROD', 'AppSec', now() - interval '2 days',
+     'SECRETS',
+     E'토큰: legacy-export (sample-pat-0004)\n만료 방식: 만료 없음\n환경: 미확인이라 운영으로 간주\n수집 소스: 샘플 데이터 (Notion Admin API 형식)',
+     '토큰 용도를 확인한 뒤 만료일을 지정해 다시 발급하고, 기존 토큰을 폐기합니다.'),
+
+    (NULL, (SELECT credential_id FROM credentials WHERE issuer = 'NOTION' AND external_id = 'sample-pat-0003'),
+     'SEC-003', 'MEDIUM', '45일 이상 사용하지 않은 Notion 토큰', 'PROD', 'Platform', now() - interval '1 day',
+     'SECRETS',
+     E'토큰: old-script (sample-pat-0003)\n마지막 사용: 60일 전\n환경: 미확인이라 운영으로 간주\n수집 소스: 샘플 데이터 (Notion Admin API 형식)',
+     '사용처가 남아 있는지 확인하고, 없으면 토큰을 폐기합니다.'),
+
+    (NULL, (SELECT credential_id FROM credentials WHERE issuer = 'NOTION' AND external_id = 'sample-pat-0002'),
+     'SEC-004', 'LOW', '만료가 임박한 Notion 토큰', 'PROD', 'Backend', now(),
+     'SECRETS',
+     E'토큰: notion-sync (sample-pat-0002)\n만료까지: 5일\n환경: 미확인이라 운영으로 간주\n수집 소스: 샘플 데이터 (Notion Admin API 형식)',
+     '연동이 멈추기 전에 새 토큰을 발급해 교체합니다.');
