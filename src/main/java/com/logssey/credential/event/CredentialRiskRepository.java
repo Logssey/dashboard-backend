@@ -48,6 +48,28 @@ public class CredentialRiskRepository {
                 .list();
     }
 
+    /** 키에 연결된 탐지 이벤트 한 건 (키 목록의 "위험" 칸) */
+    public record LinkedEvent(long eventId, long credentialId, String displayId, String severity, String title,
+                              String reviewStatus) {
+    }
+
+    public List<LinkedEvent> findLinkedEvents() {
+        return jdbcClient.sql("""
+                        SELECT event_id, credential_id, display_id, severity, title, review_status
+                        FROM detection_events
+                        WHERE credential_id IS NOT NULL
+                        ORDER BY event_id
+                        """)
+                .query((rs, rowNum) -> new LinkedEvent(
+                        rs.getLong("event_id"),
+                        rs.getLong("credential_id"),
+                        rs.getString("display_id"),
+                        rs.getString("severity"),
+                        rs.getString("title"),
+                        rs.getString("review_status")))
+                .list();
+    }
+
     public Set<EventKey> findExistingEventKeys() {
         return new HashSet<>(jdbcClient.sql("""
                         SELECT credential_id, title FROM detection_events WHERE credential_id IS NOT NULL
