@@ -2,6 +2,8 @@ package com.logssey.local;
 
 import javax.sql.DataSource;
 
+import com.logssey.credential.event.CredentialRiskEventService;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -20,6 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
  * - local 프로필에서만 만들어진다. 운영(프로필 없음)에서는 이 클래스가 아예 동작하지 않는다.
  * - 서버가 켜질 때마다(Flyway가 테이블을 만든 뒤) 기존 샘플을 지우고 다시 넣는다.
  * - 발생 시각은 SQL 안의 now() 기준이라, 켤 때마다 "최근 7일"로 다시 계산된다.
+ * - 샘플을 넣은 뒤 키 위험 판단을 돌려, 키 관련 탐지 이벤트는 코드가 자동으로 만든다 (사람이 적지 않음).
  * - 안전장치: DB 주소가 내 컴퓨터(localhost, 127.0.0.1)가 아니면 실행하지 않고 서버를 멈춘다.
  */
 @Component
@@ -31,11 +34,14 @@ public class LocalSampleDataLoader implements ApplicationRunner {
 
     private final DataSource dataSource;
     private final String datasourceUrl;
+    private final CredentialRiskEventService credentialRiskEventService;
 
     public LocalSampleDataLoader(DataSource dataSource,
-                                 @Value("${spring.datasource.url}") String datasourceUrl) {
+                                 @Value("${spring.datasource.url}") String datasourceUrl,
+                                 CredentialRiskEventService credentialRiskEventService) {
         this.dataSource = dataSource;
         this.datasourceUrl = datasourceUrl;
+        this.credentialRiskEventService = credentialRiskEventService;
     }
 
     @Override
@@ -50,7 +56,10 @@ public class LocalSampleDataLoader implements ApplicationRunner {
         populator.setSqlScriptEncoding("UTF-8");
         DatabasePopulatorUtils.execute(populator, dataSource);
 
-        log.info("Local sample data reloaded: 8 assets, 5 credentials, 11 detection events (detected_at = last 7 days from now).");
+        int riskEvents = credentialRiskEventService.createRiskEvents();
+
+        log.info("Local sample data reloaded: 8 assets, 5 credentials, 8 sample detection events"
+                + " (detected_at = last 7 days from now), {} credential risk events (detected_at = now).", riskEvents);
     }
 
     static boolean isLocalDatabase(String url) {
