@@ -353,6 +353,13 @@ class SecretJobExecutionServiceTest {
         return job.orElseThrow();
     }
 
+    @Test
+    void providerSpecificProcessorDoesNotClaimAnotherProvidersJob() {
+        scheduledJob(1);
+        assertThat(service.claimNextJob("AWS")).isEmpty();
+        assertThat(service.claimNextJob("GITHUB")).isPresent();
+    }
+
     private long scheduledJob(int scopeCount) {
         var connectionId = jdbc.queryForObject("""
                 INSERT INTO secret_connections (provider, display_name, auth_ref, status, scope_version, next_due_at)

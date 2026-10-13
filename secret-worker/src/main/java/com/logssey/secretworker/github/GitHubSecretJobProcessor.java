@@ -16,17 +16,17 @@ import com.logssey.secretworker.SecretJobFailureCode;
 import com.logssey.secretworker.SecretJobProcessor;
 import com.logssey.secretworker.detection.SecretFindingRepository;
 import com.logssey.secretworker.detector.DetectionFailure;
-import com.logssey.secretworker.detector.GitleaksDetector;
+import com.logssey.secretworker.detector.SecretContentDetector;
 
 /** Processes only approved GitHub scopes; bytes remain in the collector's synchronous callback. */
 public final class GitHubSecretJobProcessor implements SecretJobProcessor {
     private final JdbcTemplate jdbc;
     private final GitHubCollector collector;
-    private final GitleaksDetector detector;
+    private final SecretContentDetector detector;
     private final SecretFindingRepository findings;
 
     GitHubSecretJobProcessor(JdbcTemplate jdbc, GitHubCollector collector,
-                             GitleaksDetector detector, SecretFindingRepository findings) {
+                             SecretContentDetector detector, SecretFindingRepository findings) {
         this.jdbc = jdbc;
         this.collector = collector;
         this.detector = detector;
@@ -106,7 +106,7 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
                 """, utcNow(), scope.id()));
         AtomicLong toolRunId = new AtomicLong();
         withLease(job, execution, () -> toolRunId.set(findings.beginGitleaksRun(scope.id(),
-                GitleaksDetector.VERSION, detector.configHash(), Instant.now())));
+                detector.engineVersion(), detector.configHash(), Instant.now())));
         AtomicReference<String> consumerFailure = new AtomicReference<>();
         GitHubCollector.Result result = collector.collect(approved, GitHubCollectionLimits.DEFAULT,
                 (source, bytes) -> {

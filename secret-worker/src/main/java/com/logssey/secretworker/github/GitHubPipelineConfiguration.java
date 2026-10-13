@@ -13,6 +13,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import com.logssey.secretworker.detection.SecretFindingNormalizer;
 import com.logssey.secretworker.detection.SecretFindingRepository;
 import com.logssey.secretworker.detector.GitleaksDetector;
+import com.logssey.secretworker.detector.SecretContentDetector;
 
 @Configuration
 @ConditionalOnProperty(name = "logssey.secret.github.enabled", havingValue = "true")
@@ -44,7 +45,7 @@ class GitHubPipelineConfiguration {
 
     @Bean
     GitHubSecretJobProcessor gitHubSecretJobProcessor(JdbcTemplate jdbc, GitHubCollector collector,
-            GitleaksDetector detector, SecretFindingRepository findings) {
+            SecretContentDetector detector, SecretFindingRepository findings) {
         return new GitHubSecretJobProcessor(jdbc, collector, detector, findings);
     }
 }

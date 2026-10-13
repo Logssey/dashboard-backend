@@ -28,7 +28,7 @@ import static com.logssey.secretworker.detector.DetectionFailure.Code;
  * Runs pinned Gitleaks against one collected object through stdin. Only rule and
  * position metadata leaves this class; the detector report is never logged or saved.
  */
-public final class GitleaksDetector {
+public final class GitleaksDetector implements SecretContentDetector {
 
     public static final String VERSION = "8.30.1";
     public static final int MAX_INPUT_BYTES = 1024 * 1024;
@@ -105,6 +105,11 @@ public final class GitleaksDetector {
 
     public String configHash() {
         return configHash;
+    }
+
+    @Override
+    public String engineVersion() {
+        return VERSION;
     }
 
     static List<GitleaksFinding> parseReport(byte[] report) {
