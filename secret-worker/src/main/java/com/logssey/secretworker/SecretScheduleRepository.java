@@ -24,7 +24,7 @@ public class SecretScheduleRepository {
         return jdbc.query("""
                 SELECT c.connection_id, c.scope_version, c.next_due_at
                 FROM secret_connections c
-                WHERE c.status = 'ACTIVE' AND c.next_due_at <= ?
+                WHERE c.status = 'ACTIVE' AND c.provider = 'GITHUB' AND c.next_due_at <= ?
                   AND EXISTS (
                     SELECT 1 FROM secret_connection_scopes s
                     WHERE s.connection_id = c.connection_id AND s.enabled

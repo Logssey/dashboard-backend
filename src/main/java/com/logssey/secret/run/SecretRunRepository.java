@@ -40,10 +40,11 @@ class SecretRunRepository {
 
     Optional<Connection> lockConnection(long connectionId) {
         return jdbc.query("""
-                SELECT connection_id, status, scope_version FROM secret_connections
+                SELECT connection_id, provider, status, scope_version FROM secret_connections
                 WHERE connection_id = ? FOR UPDATE
                 """, (rs, row) -> new Connection(rs.getLong("connection_id"),
-                rs.getString("status"), rs.getLong("scope_version")), connectionId)
+                rs.getString("provider"), rs.getString("status"),
+                rs.getLong("scope_version")), connectionId)
                 .stream().findFirst();
     }
 
@@ -132,7 +133,7 @@ class SecretRunRepository {
     record Actor(long id, String role) {
     }
 
-    record Connection(long id, String status, long scopeVersion) {
+    record Connection(long id, String provider, String status, long scopeVersion) {
     }
 
     record JobRun(long runId, long connectionId, Long requestedBy, String idempotencyKey,

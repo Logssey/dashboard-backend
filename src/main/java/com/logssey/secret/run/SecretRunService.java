@@ -51,13 +51,18 @@ public class SecretRunService {
                                 || !Objects.equals(run.requestedBy(), actor.id())) {
                             throw new ApiException(ErrorCode.CONFLICT);
                         }
+                        var replayConnection = repository.lockConnection(run.connectionId())
+                                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+                        if (!"GITHUB".equals(replayConnection.provider())) {
+                            throw new ApiException(ErrorCode.CONFLICT);
+                        }
                         return accepted(run);
                     }
                 }
 
                 var connection = repository.lockConnection(request.connectionId())
                         .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
-                if (!"ACTIVE".equals(connection.status())) {
+                if (!"ACTIVE".equals(connection.status()) || !"GITHUB".equals(connection.provider())) {
                     throw new ApiException(ErrorCode.CONFLICT);
                 }
                 var active = repository.activeRun(connection.id());
