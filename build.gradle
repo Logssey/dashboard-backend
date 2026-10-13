@@ -32,6 +32,7 @@ dependencies {
 	testImplementation 'org.springframework.boot:spring-boot-starter-security-test'
 	testImplementation 'org.springframework.boot:spring-boot-starter-validation-test'
 	testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'
+	testImplementation 'org.testcontainers:testcontainers-postgresql'
 	// Notion Admin API Mock 서버 (ADR-D010). standalone은 내부 라이브러리를 숨겨 Spring Boot와 버전 충돌이 없다
 	testImplementation 'org.wiremock:wiremock-standalone:3.13.1'
 	testCompileOnly 'org.projectlombok:lombok'
