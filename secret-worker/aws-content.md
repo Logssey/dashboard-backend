@@ -14,6 +14,6 @@ AWS 값 읽기는 메타데이터 수집과 별도 경로다. 이 어댑터는 �
 
 본문은 최대 256 KiB 기본값, 1 MiB 절대 상한이고, UTF-8 텍스트만 받아들인다. NUL 및 제어 바이트, 바이너리 SecretString, 초과 크기는 탐지기에 넘기지 않는다. 승인된 한 건은 동기 callback에서 Gitleaks stdin으로만 전달하고 callback 종료 직후 소유 `byte[]`를 0으로 덮는다. SDK의 `SecretString`과 SSM `value`는 Java 불변 `String`으로 이미 생성되므로 완전한 메모리 소거는 보장하지 못한다. 이를 파일, DB, 애플리케이션 로그, GitHub에 기록하거나 전송해서는 안 된다. SDK HTTP wire logging도 켜지 않아야 한다.
 
-Secret ARN, SSM 이름, S3 object key도 민감한 메타데이터다. `approved_ref`가 들어가는 로컬 DB와 백업의 접근 권한을 제한한다. 탐지 결과의 `sourceRef`는 원문 자원명이나 무키 SHA-256 해시가 아닌 `aws-content-scope:<run_scope_id>` 같은 내부 ID 기반 별칭을 사용한다. Collector의 `Source`와 `Result`에는 자원명이나 값이 없고, 제공자 예외 메시지와 cause를 폐기하고 안전한 코드만 반환한다. UI가 위치를 조회해야 한다면 인가된 별도 경로에서 원본 승인 scope를 해석한다.
+Secret ARN, SSM 이름, S3 object key도 민감한 메타데이터다. `approved_ref`가 들어가는 로컬 DB와 백업의 접근 권한을 제한한다. 탐지 결과의 `sourceRef`는 원문 자원명이나 무키 SHA-256 해시가 아닌 `aws-content-scope:<scope_id>` 같은 내부 ID 기반 별칭을 사용한다. `scope_id`는 반복 실행 중에도 안정적이라 동일 위치가 중복 생성되지 않고, 승인 범위 교체 시 새 위치로 취급된다. Collector의 `Source`와 `Result`에는 자원명이나 값이 없고, 제공자 예외 메시지와 cause를 폐기하고 안전한 코드만 반환한다. UI가 위치를 조회해야 한다면 인가된 별도 경로에서 원본 승인 scope를 해석한다.
 
 이 커밋은 수집기와 SDK fake 테스트만 추가한다. 작업 실행기, 설정, DB/API 연결과 실제 값 접근은 별도로 통합한다. 테스트는 가짜 응답만 사용하며 AWS 값 API를 호출하지 않는다.
