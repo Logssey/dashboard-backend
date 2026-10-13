@@ -1,5 +1,6 @@
 package com.logssey.secretworker.aws;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -14,15 +15,34 @@ import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 import com.logssey.secretworker.SecretJobExecutionService;
+import com.logssey.secretworker.SecretJobFailure;
+import com.logssey.secretworker.SecretJobFailureCode;
 import com.logssey.secretworker.SecretJobProperties;
 import com.logssey.secretworker.SecretJobTestSupport;
 import com.logssey.secretworker.aws.metadata.AwsMetadataCollector;
 import com.logssey.secretworker.aws.metadata.AwsMetadataPageClient;
+import com.logssey.secretworker.aws.content.AwsContentCollector;
+import com.logssey.secretworker.aws.content.AwsContentPipeline;
+import com.logssey.secretworker.aws.content.AwsContentReader;
+import com.logssey.secretworker.aws.content.AwsContentScope;
+import com.logssey.secretworker.detection.SecretFindingNormalizer;
+import com.logssey.secretworker.detection.SecretFindingRepository;
+import com.logssey.secretworker.detector.GitleaksFinding;
+import com.logssey.secretworker.detector.GitleaksScanResult;
+import com.logssey.secretworker.detector.SecretContentDetector;
+import com.logssey.secretworker.validation.AwsValidationResult;
+import com.logssey.secretworker.validation.SecretValidationAttemptRepository;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.spy;
 
 class AwsSecretJobProcessorTest {
     private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:18.6");
@@ -253,6 +273,229 @@ class AwsSecretJobProcessorTest {
         assertThat(jdbc.queryForObject("SELECT result_status FROM secret_scan_runs", String.class))
                 .isEqualTo("PARTIAL");
         assertThat(pages.secretCalls).isEqualTo(2);
+    }
+
+    @Test
+    void exactValueScopeIsDisabledByDefaultAndMakesNoValueCall() {
+        long connection = connection();
+        scope(connection, "IAM_ACCESS_KEY_METADATA", "aws://" + ACCOUNT + "/global/iam/access-keys");
+        contentScope(connection, "AWS_SECRETS_MANAGER_VALUE", exactSecretRef(ACCOUNT), 1);
+        var gateway = new FakeGateway();
+        var reader = new FakeContentReader();
+        // The default constructor has no content pipeline: even a configured reader is unreachable.
+        execute(run(connection, 0), gateway);
+
+        assertThat(reader.calls).isZero();
+        assertThat(jdbc.queryForMap("""
+                SELECT collection_status, failure_code FROM secret_run_scopes rs
+                JOIN secret_connection_scopes s USING (scope_id)
+                WHERE s.content_type = 'AWS_SECRETS_MANAGER_VALUE'
+                """))
+                .containsEntry("collection_status", "SKIPPED")
+                .containsEntry("failure_code", "AWS_CONTENT_READ_DISABLED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_tool_runs", Long.class)).isZero();
+    }
+
+    @Test
+    void accountMismatchCannotReachExactValueReader() {
+        long connection = connection();
+        scope(connection, "IAM_ACCESS_KEY_METADATA", "aws://" + ACCOUNT + "/global/iam/access-keys");
+        contentScope(connection, "AWS_SECRETS_MANAGER_VALUE", exactSecretRef("000000000000"), 1);
+        var reader = new FakeContentReader();
+        executeContent(run(connection, 0), new FakeGateway(), reader);
+
+        assertThat(reader.calls).isZero();
+        assertThat(jdbc.queryForMap("""
+                SELECT collection_status, failure_code FROM secret_run_scopes rs
+                JOIN secret_connection_scopes s USING (scope_id)
+                WHERE s.content_type = 'AWS_SECRETS_MANAGER_VALUE'
+                """))
+                .containsEntry("collection_status", "FAILED")
+                .containsEntry("failure_code", "AWS_ACCOUNT_MISMATCH");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_tool_runs", Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT result_status FROM secret_scan_runs", String.class))
+                .isEqualTo("PARTIAL");
+    }
+
+    @Test
+    void exactValueIsDetectedNormalizedAndStoredWithoutRawMaterial() {
+        long connection = connection();
+        long scopeId = contentScope(connection, "AWS_SECRETS_MANAGER_VALUE", exactSecretRef(ACCOUNT), 1);
+        String id = "AKIA" + "ABCDEFGHIJKLMNOP";
+        String secret = "aB3/".repeat(10);
+        var reader = new FakeContentReader();
+        reader.bytes = ("AWS_ACCESS_KEY_ID=" + id + "\nAWS_SECRET_ACCESS_KEY=" + secret + "\n")
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] owned = reader.bytes;
+        long firstRun = run(connection, scopeId);
+        executeContent(firstRun, new FakeGateway(), reader);
+
+        assertThat(reader.calls).isEqualTo(1);
+        assertThat(owned).containsOnly((byte) 0);
+        assertThat(jdbc.queryForMap("""
+                SELECT result_status, collection_status, detection_status, validation_status
+                FROM secret_scan_runs WHERE run_id = ?
+                """, firstRun))
+                .containsEntry("result_status", "SUCCEEDED")
+                .containsEntry("collection_status", "SUCCEEDED")
+                .containsEntry("detection_status", "SUCCEEDED")
+                .containsEntry("validation_status", "SKIPPED");
+        assertThat(jdbc.queryForMap("SELECT component_state, issuer FROM secret_credential_sets"))
+                .containsEntry("component_state", "CONFIRMED")
+                .containsEntry("issuer", "AWS");
+        assertThat(jdbc.queryForMap("SELECT result, reason_code FROM secret_validation_attempts"))
+                .containsEntry("result", "UNCHECKED")
+                .containsEntry("reason_code", "DISABLED");
+        assertThat(jdbc.queryForObject("SELECT source_object_ref FROM secret_occurrences", String.class))
+                .isEqualTo("aws-content-scope:" + scopeId);
+
+        String persisted = String.join("\n", List.of(
+                jdbc.queryForList("SELECT to_jsonb(t)::text FROM secret_credential_sets t", String.class).toString(),
+                jdbc.queryForList("SELECT to_jsonb(t)::text FROM secret_occurrences t", String.class).toString(),
+                jdbc.queryForList("SELECT to_jsonb(t)::text FROM secret_findings t", String.class).toString(),
+                jdbc.queryForList("SELECT to_jsonb(t)::text FROM secret_tool_runs t", String.class).toString(),
+                jdbc.queryForList("SELECT to_jsonb(t)::text FROM secret_validation_attempts t", String.class).toString()));
+        assertThat(persisted).doesNotContain(id, secret, "fixture-secret");
+
+        reader.bytes = ("AWS_ACCESS_KEY_ID=" + id + "\nAWS_SECRET_ACCESS_KEY=" + secret + "\n")
+                .getBytes(StandardCharsets.UTF_8);
+        executeContent(run(connection, scopeId), new FakeGateway(), reader);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_credential_sets", Long.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_occurrences", Long.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_findings", Long.class)).isEqualTo(4);
+    }
+
+    @Test
+    void valueReadFailureDoesNotStopAnotherApprovedScope() {
+        long connection = connection();
+        scope(connection, "IAM_ACCESS_KEY_METADATA", "aws://" + ACCOUNT + "/global/iam/access-keys");
+        contentScope(connection, "AWS_SSM_PARAMETER_VALUE", "aws://" + ACCOUNT
+                + "/ap-northeast-2/ssm/parameter/arn%3Aaws%3Assm%3Aap-northeast-2%3A"
+                + ACCOUNT + "%3Aparameter%2Ffixture", 1);
+        var reader = new FakeContentReader();
+        reader.failure = AwsContentReader.FailureCode.ACCESS_DENIED;
+        executeContent(run(connection, 0), new FakeGateway(), reader);
+
+        assertThat(reader.calls).isEqualTo(1);
+        assertThat(jdbc.queryForMap("""
+                SELECT collection_status, failure_code FROM secret_run_scopes rs
+                JOIN secret_connection_scopes s USING (scope_id)
+                WHERE s.content_type = 'AWS_SSM_PARAMETER_VALUE'
+                """))
+                .containsEntry("collection_status", "FAILED")
+                .containsEntry("failure_code", "AWS_CONTENT_ACCESS_DENIED");
+        assertThat(jdbc.queryForMap("""
+                SELECT result_status, collection_status, detection_status FROM secret_scan_runs
+                """))
+                .containsEntry("result_status", "PARTIAL")
+                .containsEntry("collection_status", "PARTIAL")
+                .containsEntry("detection_status", "PARTIAL");
+    }
+
+    @Test
+    void lostLeaseDuringValueReadEscapesAsOwnershipFailure() {
+        long connection = connection();
+        contentScope(connection, "AWS_SECRETS_MANAGER_VALUE", exactSecretRef(ACCOUNT), 1);
+        var reader = new FakeContentReader();
+        reader.bytes = "local synthetic fixture".getBytes(StandardCharsets.UTF_8);
+        byte[] owned = reader.bytes;
+        long run = run(connection, 0);
+        reader.onRead = () -> jdbc.update("""
+                UPDATE secret_jobs SET lease_owner = 'stolen-by-test'
+                WHERE job_id = (SELECT job_id FROM secret_scan_runs WHERE run_id = ?)
+                """, run);
+
+        assertThatThrownBy(() -> executeContent(run, new FakeGateway(), reader))
+                .isInstanceOf(SecretJobFailure.class)
+                .satisfies(error -> assertThat(((SecretJobFailure) error).code())
+                        .isEqualTo(SecretJobFailureCode.LEASE_EXPIRED));
+        assertThat(reader.calls).isEqualTo(1);
+        assertThat(owned).containsOnly((byte) 0);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_credential_sets", Long.class)).isZero();
+    }
+
+    @Test
+    void expiredLeaseImmediatelyBeforeValueApiPreventsReaderCall() {
+        long connection = connection();
+        contentScope(connection, "AWS_SECRETS_MANAGER_VALUE", exactSecretRef(ACCOUNT), 1);
+        var reader = new FakeContentReader();
+        long run = run(connection, 0);
+        var controlledExecution = spy(execution);
+        doReturn(false).when(controlledExecution).renewLease(anyLong(), anyString());
+
+        assertThatThrownBy(() -> executeContent(run, new FakeGateway(), reader, controlledExecution))
+                .isInstanceOf(SecretJobFailure.class)
+                .satisfies(error -> assertThat(((SecretJobFailure) error).code())
+                        .isEqualTo(SecretJobFailureCode.LEASE_EXPIRED));
+        assertThat(reader.calls).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_tool_runs", Long.class)).isZero();
+    }
+
+    private static String exactSecretRef(String account) {
+        return "aws://" + account + "/ap-northeast-2/secrets-manager/secret/"
+                + "arn%3Aaws%3Asecretsmanager%3Aap-northeast-2%3A" + account
+                + "%3Asecret%3Afixture-secret";
+    }
+
+    private static long contentScope(long connection, String type, String ref, int ordinal) {
+        return jdbc.queryForObject("""
+                INSERT INTO secret_connection_scopes
+                    (connection_id, scope_key, revision, content_type,
+                     approved_ref, history_limit, enabled)
+                VALUES (?, ?, 1, ?, ?, 'CURRENT_VALUE_ONLY', true)
+                RETURNING scope_id
+                """, Long.class, connection, type + "-" + ordinal, type, ref);
+    }
+
+    private static void executeContent(long run, FakeGateway gateway, FakeContentReader reader) {
+        executeContent(run, gateway, reader, execution);
+    }
+
+    private static void executeContent(long run, FakeGateway gateway, FakeContentReader reader,
+                                       SecretJobExecutionService executionService) {
+        var datasource = jdbc.getDataSource();
+        var normalizer = new SecretFindingNormalizer(new byte[32], "test-v1");
+        var findings = new SecretFindingRepository(jdbc,
+                new TransactionTemplate(new DataSourceTransactionManager(datasource)), normalizer);
+        var attempts = new SecretValidationAttemptRepository(jdbc, executionService);
+        var content = new AwsContentPipeline(new AwsContentCollector(reader), new FakeDetector(),
+                normalizer, findings, key -> new AwsValidationResult(AwsValidationResult.Status.UNCHECKED,
+                        AwsValidationResult.Reason.DISABLED, Instant.now(), null,
+                        AwsValidationResult.METHOD, AwsValidationResult.VERSION), attempts);
+        var processor = new AwsSecretJobProcessor(jdbc, new AwsIamCollector(gateway),
+                new AwsMetadataCollector(new FakeMetadataPages()), gateway,
+                new AwsIamMetadataRepository(jdbc, new AwsMetadataIdentity(new byte[32], "test-v1")),
+                properties, "test", content);
+        var job = executionService.claimNextJob("AWS").orElseThrow();
+        assertThat(job.runId()).isEqualTo(run);
+        processor.process(job, executionService);
+        assertThat(executionService.complete(job.jobId(), job.leaseToken())).isTrue();
+    }
+
+    private static final class FakeContentReader implements AwsContentReader {
+        private int calls;
+        private byte[] bytes = new byte[0];
+        private FailureCode failure;
+        private Runnable onRead;
+        @Override public byte[] read(AwsContentScope scope, int maxBytes) {
+            calls++;
+            if (onRead != null) onRead.run();
+            if (failure != null) throw new ReadFailure(failure);
+            return bytes;
+        }
+    }
+
+    private static final class FakeDetector implements SecretContentDetector {
+        private static final String HASH = "a".repeat(64);
+        @Override public String engineVersion() { return "8.30.1"; }
+        @Override public String configHash() { return HASH; }
+        @Override public GitleaksScanResult scan(byte[] content) {
+            String text = new String(content, StandardCharsets.UTF_8);
+            if (!text.contains("AWS_ACCESS_KEY_ID=")) return new GitleaksScanResult(engineVersion(), HASH, List.of());
+            return new GitleaksScanResult(engineVersion(), HASH, List.of(
+                    new GitleaksFinding("aws-access-token", 1, 1, 19, 38),
+                    new GitleaksFinding("generic-api-key", 2, 2, 1, 60)));
+        }
     }
 
     private static void execute(long run, FakeGateway gateway) {

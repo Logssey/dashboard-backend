@@ -65,6 +65,9 @@ public class SecretScheduleRepository {
 
     private static String supportedAwsScope(String alias) {
         String region = "[a-z]{2}(-[a-z0-9]+){1,3}-[0-9]+";
+        // Kept in sync with the API's AwsScopeSql. The content processor performs
+        // the stricter ARN/account/region/object-key checks before any value read.
+        String exactSegment = "([^/?#%*]|%[0-9A-Fa-f]{2})+";
         return "(" + alias + ".history_limit IS NULL AND " + alias + ".content_type = 'IAM_ACCESS_KEY_METADATA'"
                 + " AND " + alias + ".approved_ref ~ '^aws://[0-9]{12}/global/iam/access-keys$'"
                 + " OR " + alias + ".history_limit = 'CURRENT_STATE_ONLY' AND ("
@@ -76,7 +79,18 @@ public class SecretScheduleRepository {
                 + ".approved_ref ~ '^aws://[0-9]{12}/" + region + "/ssm/parameters$')"
                 + " OR (" + alias + ".content_type = 'AWS_S3_BUCKET_METADATA' AND " + alias
                 + ".approved_ref ~ '^aws://[0-9]{12}/global/s3/buckets$')"
-                + "))";
+                + ") OR (" + alias + ".history_limit = 'CURRENT_VALUE_ONLY'"
+                + " AND char_length(" + alias + ".approved_ref) <= 500 AND ("
+                + "(" + alias + ".content_type = 'AWS_SECRETS_MANAGER_VALUE' AND " + alias
+                + ".approved_ref ~ '^aws://[0-9]{12}/" + region
+                + "/secrets-manager/secret/" + exactSegment + "$')"
+                + " OR (" + alias + ".content_type = 'AWS_SSM_PARAMETER_VALUE' AND " + alias
+                + ".approved_ref ~ '^aws://[0-9]{12}/" + region
+                + "/ssm/parameter/" + exactSegment + "$')"
+                + " OR (" + alias + ".content_type = 'AWS_S3_OBJECT_CONTENT' AND " + alias
+                + ".approved_ref ~ '^aws://[0-9]{12}/" + region
+                + "/s3/object/[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/" + exactSegment + "$')"
+                + ")))";
     }
 
     public void reserve(DueConnection connection, OffsetDateTime now, SecretSchedulerProperties properties) {

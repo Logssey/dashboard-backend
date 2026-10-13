@@ -1,12 +1,14 @@
 package com.logssey.secretworker.aws;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import com.logssey.secretworker.SecretJobProperties;
+import com.logssey.secretworker.aws.content.AwsContentPipeline;
 import com.logssey.secretworker.aws.metadata.AwsMetadataCollector;
 import com.logssey.secretworker.aws.metadata.AwsSdkMetadataPageClient;
 
@@ -58,8 +60,9 @@ class AwsCollectorConfiguration {
                                                 AwsIamGateway gateway,
                                                 AwsIamMetadataRepository metadata,
                                                 SecretJobProperties jobs,
+                                                ObjectProvider<AwsContentPipeline> content,
                                                 @Value("${logssey.secret.aws.collection.profile}") String profile) {
         return new AwsSecretJobProcessor(jdbc, collector, additional, gateway,
-                metadata, jobs, profile);
+                metadata, jobs, profile, content.getIfAvailable());
     }
 }

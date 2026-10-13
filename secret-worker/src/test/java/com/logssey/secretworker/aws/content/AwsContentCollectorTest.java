@@ -10,6 +10,9 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
 
+import com.logssey.secretworker.SecretJobFailure;
+import com.logssey.secretworker.SecretJobFailureCode;
+
 class AwsContentCollectorTest {
     private static final String ACCOUNT = "123456789012";
     private static final String REGION = "ap-northeast-2";
@@ -77,6 +80,17 @@ class AwsContentCollectorTest {
         assertEquals(AwsContentCollector.GapCode.CONSUMER_FAILED, result.gaps().getFirst());
         assertArrayEquals(new byte[value.length], value);
         assertFalse(result.toString().contains("synthetic"));
+    }
+
+    @Test void lostLeaseEscapesConsumerBoundaryAndStillZeroesValue() {
+        byte[] value = "local synthetic fixture".getBytes(StandardCharsets.UTF_8);
+        var collector = new AwsContentCollector((scope, max) -> value);
+        var error = assertThrows(SecretJobFailure.class, () -> collector.collect(secretScope(), true, 64,
+                (source, bytes) -> {
+                    throw new SecretJobFailure(SecretJobFailureCode.LEASE_EXPIRED, true);
+                }));
+        assertEquals(SecretJobFailureCode.LEASE_EXPIRED, error.code());
+        assertArrayEquals(new byte[value.length], value);
     }
 
     @Test void onlyExactValueScopesWithCurrentValueLimitAreAccepted() {

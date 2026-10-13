@@ -2,8 +2,11 @@ package com.logssey.secretworker.aws.content;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Objects;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.core.ResponseInputStream;
@@ -24,6 +27,7 @@ import static com.logssey.secretworker.aws.content.AwsContentReader.ReadFailure;
 
 /** Provider adapter. It never logs request, response, or provider exception text. */
 public final class AwsSdkContentReader implements AwsContentReader {
+    private static final Duration API_TIMEOUT = Duration.ofSeconds(30);
     interface ClientFactory {
         SecretsManagerClient secretsManager(String region);
         SsmClient ssm(String region);
@@ -34,18 +38,23 @@ public final class AwsSdkContentReader implements AwsContentReader {
 
     public AwsSdkContentReader(AwsCredentialsProvider credentials) {
         Objects.requireNonNull(credentials);
+        // Each value client is short-lived; closing it must not close the shared provider.
+        AwsCredentialsProvider borrowed = credentials::resolveCredentials;
         this.clients = new ClientFactory() {
             @Override public SecretsManagerClient secretsManager(String region) {
-                return SecretsManagerClient.builder().credentialsProvider(credentials)
-                        .region(Region.of(region)).build();
+                return SecretsManagerClient.builder().credentialsProvider(borrowed)
+                        .region(Region.of(region))
+                        .overrideConfiguration(config -> config.apiCallTimeout(API_TIMEOUT)).build();
             }
             @Override public SsmClient ssm(String region) {
-                return SsmClient.builder().credentialsProvider(credentials)
-                        .region(Region.of(region)).build();
+                return SsmClient.builder().credentialsProvider(borrowed)
+                        .region(Region.of(region))
+                        .overrideConfiguration(config -> config.apiCallTimeout(API_TIMEOUT)).build();
             }
             @Override public S3Client s3(String region) {
-                return S3Client.builder().credentialsProvider(credentials)
-                        .region(Region.of(region)).build();
+                return S3Client.builder().credentialsProvider(borrowed)
+                        .region(Region.of(region))
+                        .overrideConfiguration(config -> config.apiCallTimeout(API_TIMEOUT)).build();
             }
         };
     }
@@ -123,13 +132,22 @@ public final class AwsSdkContentReader implements AwsContentReader {
             if (head.versionId() != null && !head.versionId().isBlank()) {
                 request.versionId(head.versionId());
             }
-            try (ResponseInputStream<GetObjectResponse> stream = client.getObject(request.build())) {
-                content = stream.readNBytes(maxBytes + 1);
-                if (content.length > maxBytes) {
-                    throw new ReadFailure(FailureCode.TOO_LARGE);
-                }
-                if (content.length != head.contentLength()) {
-                    throw new ReadFailure(FailureCode.UNAVAILABLE);
+            try (ResponseInputStream<GetObjectResponse> stream = client.getObject(request.build());
+                 var watchdog = Executors.newSingleThreadScheduledExecutor(
+                         Thread.ofVirtual().name("aws-s3-value-watchdog").factory())) {
+                // Bound body consumption as well as the SDK request. abort() closes a stalled stream.
+                var timeout = watchdog.schedule(stream::abort, API_TIMEOUT.toMillis(),
+                        TimeUnit.MILLISECONDS);
+                try {
+                    content = stream.readNBytes(maxBytes + 1);
+                    if (content.length > maxBytes) {
+                        throw new ReadFailure(FailureCode.TOO_LARGE);
+                    }
+                    if (content.length != head.contentLength()) {
+                        throw new ReadFailure(FailureCode.UNAVAILABLE);
+                    }
+                } finally {
+                    timeout.cancel(false);
                 }
             }
         } catch (IOException | RuntimeException error) {
