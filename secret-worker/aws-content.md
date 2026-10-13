@@ -2,6 +2,8 @@
 
 AWS 값 읽기는 메타데이터 수집과 별도 경로다. 이 어댑터는 단일 승인 자원만 읽는다. `AwsContentCollector.collect(scope, valueReadEnabled, maxBytes, sink)`에서 `valueReadEnabled=false`면 SDK 호출이 0회이고, 운영 설정도 기본 비활성으로 연결해야 한다. 배치 실행 시 다른 scope가 실패해도 각 scope의 안전한 실패 코드와 건수를 별도로 기록하고 다음 scope를 처리한다.
 
+워커의 별도 설정은 `SECRET_AWS_CONTENT_READ_ENABLED=false`가 기본값이다. 이 값을 켜더라도 `SECRET_AWS_COLLECTION_ENABLED=true`, 정확한 승인 scope, 실행 프로필과 STS 계정 일치가 모두 확인되어야 본문 API를 호출하도록 작업 실행기에 연결한다. GitHub와 AWS 본문 수집은 같은 `SECRET_GITLEAKS_PATH`, `SECRET_FINGERPRINT_KEY_BASE64`, `SECRET_FINGERPRINT_KEY_VERSION`으로 탐지·정규화한다.
+
 | content_type | approved_ref 형식 | 실제 읽기 API |
 | --- | --- | --- |
 | `AWS_SECRETS_MANAGER_VALUE` | `aws://<account>/<region>/secrets-manager/secret/<URL-encoded exact secret ARN>` | `GetSecretValue`의 `AWSCURRENT` |

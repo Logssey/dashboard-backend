@@ -7,13 +7,9 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.support.TransactionTemplate;
-
 import com.logssey.secretworker.detection.SecretFindingNormalizer;
 import com.logssey.secretworker.detection.SecretFindingRepository;
 import com.logssey.secretworker.SecretJobProperties;
-import com.logssey.secretworker.detector.GitleaksDetector;
 import com.logssey.secretworker.detector.SecretContentDetector;
 import com.logssey.secretworker.validation.AwsValidationService;
 import com.logssey.secretworker.validation.SecretValidationAttemptRepository;
@@ -30,24 +26,6 @@ class GitHubPipelineConfiguration {
         GitHubAppCredentials credentials = new GitHubAppCredentials(appId, installationId,
                 Path.of(privateKeyPath));
         return new GitHubCollector(api, new GitHubAppTokenProvider(credentials, api));
-    }
-
-    @Bean
-    GitleaksDetector gitleaksDetector(@Value("${logssey.secret.github.gitleaks-path}") String executable) {
-        return new GitleaksDetector(Path.of(executable));
-    }
-
-    @Bean
-    SecretFindingNormalizer secretFindingNormalizer(
-            @Value("${logssey.secret.github.fingerprint-key}") String fingerprintKey,
-            @Value("${logssey.secret.github.fingerprint-key-version}") String keyVersion) {
-        return SecretFindingNormalizer.fromBase64(fingerprintKey, keyVersion);
-    }
-
-    @Bean
-    SecretFindingRepository secretFindingRepository(JdbcTemplate jdbc,
-            PlatformTransactionManager transactionManager, SecretFindingNormalizer normalizer) {
-        return new SecretFindingRepository(jdbc, new TransactionTemplate(transactionManager), normalizer);
     }
 
     @Bean
