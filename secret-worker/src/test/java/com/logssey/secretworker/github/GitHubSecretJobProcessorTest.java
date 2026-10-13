@@ -98,10 +98,10 @@ class GitHubSecretJobProcessorTest {
         };
         var findings = new SecretFindingRepository(jdbc, new TransactionTemplate(transactions),
                 new SecretFindingNormalizer(new byte[32], "test-v1"));
-        processor = new GitHubSecretJobProcessor(jdbc, collector, detector, findings);
-        execution = SecretJobTestSupport.execution(jdbc,
-                new SecretJobProperties(false, Duration.ofSeconds(30), Duration.ofMinutes(5), 10,
-                        Duration.ofSeconds(1), Duration.ofSeconds(8)), transactions);
+        var jobs = new SecretJobProperties(false, Duration.ofSeconds(30), Duration.ofMinutes(5), 10,
+                Duration.ofSeconds(1), Duration.ofSeconds(8));
+        processor = new GitHubSecretJobProcessor(jdbc, collector, detector, findings, jobs);
+        execution = SecretJobTestSupport.execution(jdbc, jobs, transactions);
     }
 
     @AfterEach
@@ -149,7 +149,7 @@ class GitHubSecretJobProcessorTest {
                     'github://Logssey/test-find-key/main/fixtures/', 'CURRENT_COMMIT_ONLY', true)
                 RETURNING scope_id
                 """, Long.class, connection);
-        OffsetDateTime now = Instant.now().atOffset(ZoneOffset.UTC);
+        OffsetDateTime now = Instant.now().minusSeconds(1).atOffset(ZoneOffset.UTC);
         long job = jdbc.queryForObject("""
                 INSERT INTO secret_jobs
                     (kind, connection_id, scheduled_at, available_at, attempt_no, max_attempts, status)

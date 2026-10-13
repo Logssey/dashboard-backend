@@ -1,6 +1,6 @@
 # Secret 작업 예약 워커
 
-현재 구현은 작업 예약과 DB 기반 실행 관리를 제공한다. GitHub API, 개인키, 탐지 도구를 호출하는 처리기는 아직 없으므로 파일 내용을 읽지 않는다. 실행기는 기본 비활성화다.
+현재 구현은 작업 예약, DB 기반 실행 관리와 승인된 GitHub 파일의 수집·탐지·정규화 저장을 제공한다. GitHub 처리기와 실행기는 기본 비활성화다.
 
 Java 21 / Spring Boot를 사용하는 별도 프로세스다. 대시보드 API에는 워커 의존성이나 스케줄러를 넣지 않았다. 기준은 Secret ADR-S002, ADR-S008과 `database-schema.md`다.
 
@@ -23,7 +23,20 @@ Java 21 / Spring Boot를 사용하는 별도 프로세스다. 대시보드 API�
 - 일시 실패와 만료된 리스는 지수 백오프 후 같은 실행 ID로 재시도한다. 최대 시도 횟수에 도달하면 작업과 실행을 `FAILED`로 종료한다. 지난 성공 단계와 범위는 보존하고 진행 중·부분 실패·실패 단계는 다시 대기시킨다.
 - 실패 코드는 `SecretJobFailureCode`에 정의된 값만 저장한다. 공급자 응답 본문, 예외 메시지와 원문은 DB 또는 로그에 기록하지 않는다. 처리기는 결과 저장의 멱등성도 보장해야 한다.
 
-현재 `SecretJobProcessor` 구현은 없다. 수집기와 탐지기를 연결하는 PR에서 이 계약을 구현하고 실행기를 활성화한다. API 프로세스는 실행 서비스를 호출하지 않는다.
+GitHub `SecretJobProcessor`는 `GITHUB` 연결의 승인된 현재 커밋만 처리한다. API 프로세스는 실행 서비스를 호출하지 않는다. 실행 프로세스에서 `SECRET_GITHUB_PIPELINE_ENABLED=true`와 `SECRET_JOB_EXECUTOR_ENABLED=true`를 함께 설정해야 수집을 시작한다. AWS 등 아직 수집기가 없는 연결의 작업은 이 처리기가 가져가지 않는다.
+
+## GitHub 수집·탐지 실행
+
+읽기 전용 GitHub App의 `SECRET_GITHUB_APP_ID`, `SECRET_GITHUB_INSTALLATION_ID`, `SECRET_GITHUB_PRIVATE_KEY_PATH`와 Gitleaks 8.30.1 실행 파일 경로 `SECRET_GITLEAKS_PATH`를 워커 환경에 지정한다. 정규화용 HMAC 키는 32바이트 이상을 base64로 인코딩해 `SECRET_FINGERPRINT_KEY_BASE64`에, 키 버전은 `SECRET_FINGERPRINT_KEY_VERSION`에 지정한다. 실제 값은 Git이나 DB에 넣지 않는다.
+
+처리기는 `github://owner/repository/branch/path/` 형식의 승인된 범위와 `CURRENT_COMMIT_ONLY`만 수집한다. 파일 크기·총 바이트·트리 깊이 제한을 넘기거나 원천 요청이 실패하면 해당 범위를 `PARTIAL` 또는 `FAILED`로 기록한다. 파일 바이트는 메모리에서 Gitleaks `stdin`으로 넘겨 즉시 정규화하고, DB에는 키의 HMAC과 마스킹 라벨, 발견 위치·규칙만 저장한다. AWS 유효성 검증은 별도 승인·설정이 필요한 다음 단계다.
+
+```powershell
+.\gradlew.bat :secret-worker:bootJar
+java -jar .\secret-worker\build\libs\secret-worker-0.0.1-SNAPSHOT.jar --logssey.secret.scheduler.enabled=false --logssey.secret.executor.enabled=true --logssey.secret.github.enabled=true
+```
+
+`Logssey/test-find-key`의 승인된 `fixtures/` 16개 파일을 실제 GitHub App으로 읽은 로컬 검증에서 작업은 `SUCCEEDED`로 종료됐고, 7개 완전 키·2개 불완전 후보·15개 발견 위치가 저장됐다. 합성 원문 28개 긴 토큰이 DB 덤프와 워커 로그에 없는 것도 확인했다.
 
 ## AWS 키 검증 어댑터
 

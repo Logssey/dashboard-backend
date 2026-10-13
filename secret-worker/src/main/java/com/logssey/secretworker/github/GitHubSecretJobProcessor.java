@@ -4,6 +4,9 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -14,6 +17,7 @@ import com.logssey.secretworker.SecretJobExecutionService;
 import com.logssey.secretworker.SecretJobFailure;
 import com.logssey.secretworker.SecretJobFailureCode;
 import com.logssey.secretworker.SecretJobProcessor;
+import com.logssey.secretworker.SecretJobProperties;
 import com.logssey.secretworker.detection.SecretFindingRepository;
 import com.logssey.secretworker.detector.DetectionFailure;
 import com.logssey.secretworker.detector.SecretContentDetector;
@@ -24,13 +28,16 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
     private final GitHubCollector collector;
     private final SecretContentDetector detector;
     private final SecretFindingRepository findings;
+    private final SecretJobProperties jobs;
 
     GitHubSecretJobProcessor(JdbcTemplate jdbc, GitHubCollector collector,
-                             SecretContentDetector detector, SecretFindingRepository findings) {
+                             SecretContentDetector detector, SecretFindingRepository findings,
+                             SecretJobProperties jobs) {
         this.jdbc = jdbc;
         this.collector = collector;
         this.detector = detector;
         this.findings = findings;
+        this.jobs = jobs;
     }
 
     @Override
@@ -40,6 +47,27 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
 
     @Override
     public void process(ClaimedSecretJob job, SecretJobExecutionService execution) {
+        var heartbeat = Executors.newSingleThreadScheduledExecutor(
+                Thread.ofVirtual().name("secret-job-lease-heartbeat").factory());
+        var leaseLost = new AtomicBoolean();
+        long intervalMillis = Math.max(1_000L, jobs.leaseDuration().toMillis() / 3);
+        var task = heartbeat.scheduleWithFixedDelay(() -> {
+            try {
+                if (!execution.renewLease(job.jobId(), job.leaseToken())) leaseLost.set(true);
+            } catch (RuntimeException error) {
+                leaseLost.set(true);
+            }
+        }, intervalMillis, intervalMillis, TimeUnit.MILLISECONDS);
+        try {
+            processScopes(job, execution, leaseLost);
+        } finally {
+            task.cancel(true);
+            heartbeat.shutdownNow();
+        }
+    }
+
+    private void processScopes(ClaimedSecretJob job, SecretJobExecutionService execution,
+                               AtomicBoolean leaseLost) {
         List<Scope> scopes = jdbc.query("""
                 SELECT rs.run_scope_id, s.approved_ref, s.history_limit, s.enabled,
                        c.scope_version, r.scope_version AS run_scope_version, c.status
@@ -70,6 +98,7 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
         int totalGaps = 0;
         String firstFailure = null;
         for (Scope scope : scopes) {
+            if (leaseLost.get()) throw new SecretJobFailure(SecretJobFailureCode.LEASE_EXPIRED, true);
             ScopeResult result = processScope(job, scope, execution);
             if (result.usable()) successfulScopes++;
             acceptedObjects += result.objectCount();

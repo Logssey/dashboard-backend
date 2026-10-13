@@ -12,6 +12,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import com.logssey.secretworker.detection.SecretFindingNormalizer;
 import com.logssey.secretworker.detection.SecretFindingRepository;
+import com.logssey.secretworker.SecretJobProperties;
 import com.logssey.secretworker.detector.GitleaksDetector;
 import com.logssey.secretworker.detector.SecretContentDetector;
 
@@ -45,7 +46,7 @@ class GitHubPipelineConfiguration {
 
     @Bean
     GitHubSecretJobProcessor gitHubSecretJobProcessor(JdbcTemplate jdbc, GitHubCollector collector,
-            SecretContentDetector detector, SecretFindingRepository findings) {
-        return new GitHubSecretJobProcessor(jdbc, collector, detector, findings);
+            SecretContentDetector detector, SecretFindingRepository findings, SecretJobProperties jobs) {
+        return new GitHubSecretJobProcessor(jdbc, collector, detector, findings, jobs);
     }
 }
