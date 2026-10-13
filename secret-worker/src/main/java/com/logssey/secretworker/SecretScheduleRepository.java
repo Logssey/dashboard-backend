@@ -32,7 +32,7 @@ public class SecretScheduleRepository {
 
     // Must be called within the transaction that inserts the job and advances next_due_at.
     public List<DueConnection> lockDueConnections(OffsetDateTime now, int limit) {
-        return jdbc.query("""
+        String query = """
                 SELECT c.connection_id, c.scope_version, c.next_due_at
                 FROM secret_connections c
                 WHERE c.status = 'ACTIVE'
@@ -42,19 +42,12 @@ public class SecretScheduleRepository {
                   AND EXISTS (
                     SELECT 1 FROM secret_connection_scopes s
                     WHERE s.connection_id = c.connection_id AND s.enabled
-                      AND (c.provider = 'GITHUB' OR (
-                          s.content_type = 'IAM_ACCESS_KEY_METADATA'
-                          AND s.approved_ref ~ '^aws://[0-9]{12}/global/iam/access-keys$'
-                          AND (s.history_limit IS NULL OR s.history_limit = 'CURRENT_STATE_ONLY')
-                      ))
+                      AND (c.provider = 'GITHUB' OR AWS_SCOPE_VALID)
                   )
                   AND (c.provider = 'GITHUB' OR NOT EXISTS (
                     SELECT 1 FROM secret_connection_scopes unsupported
                     WHERE unsupported.connection_id = c.connection_id AND unsupported.enabled
-                      AND NOT (unsupported.content_type = 'IAM_ACCESS_KEY_METADATA'
-                          AND unsupported.approved_ref ~ '^aws://[0-9]{12}/global/iam/access-keys$'
-                          AND (unsupported.history_limit IS NULL
-                               OR unsupported.history_limit = 'CURRENT_STATE_ONLY'))
+                      AND NOT AWS_UNSUPPORTED_SCOPE_VALID
                   ))
                   AND NOT EXISTS (
                     SELECT 1 FROM secret_jobs j
@@ -63,9 +56,27 @@ public class SecretScheduleRepository {
                   )
                 ORDER BY c.next_due_at, c.connection_id
                 LIMIT ? FOR UPDATE OF c SKIP LOCKED
-                """, (rs, row) -> new DueConnection(rs.getLong("connection_id"),
+                """.replace("AWS_SCOPE_VALID", supportedAwsScope("s"))
+                .replace("AWS_UNSUPPORTED_SCOPE_VALID", supportedAwsScope("unsupported"));
+        return jdbc.query(query, (rs, row) -> new DueConnection(rs.getLong("connection_id"),
                 rs.getLong("scope_version"), rs.getObject("next_due_at", OffsetDateTime.class)),
                 awsCollectionEnabled, now, limit);
+    }
+
+    private static String supportedAwsScope(String alias) {
+        String region = "[a-z]{2}(-[a-z0-9]+){1,3}-[0-9]+";
+        return "(" + alias + ".history_limit IS NULL AND " + alias + ".content_type = 'IAM_ACCESS_KEY_METADATA'"
+                + " AND " + alias + ".approved_ref ~ '^aws://[0-9]{12}/global/iam/access-keys$'"
+                + " OR " + alias + ".history_limit = 'CURRENT_STATE_ONLY' AND ("
+                + "(" + alias + ".content_type = 'IAM_ACCESS_KEY_METADATA' AND " + alias
+                + ".approved_ref ~ '^aws://[0-9]{12}/global/iam/access-keys$')"
+                + " OR (" + alias + ".content_type = 'AWS_SECRETS_MANAGER_METADATA' AND " + alias
+                + ".approved_ref ~ '^aws://[0-9]{12}/" + region + "/secrets-manager/all$')"
+                + " OR (" + alias + ".content_type = 'AWS_SSM_PARAMETER_METADATA' AND " + alias
+                + ".approved_ref ~ '^aws://[0-9]{12}/" + region + "/ssm/parameters$')"
+                + " OR (" + alias + ".content_type = 'AWS_S3_BUCKET_METADATA' AND " + alias
+                + ".approved_ref ~ '^aws://[0-9]{12}/global/s3/buckets$')"
+                + "))";
     }
 
     public void reserve(DueConnection connection, OffsetDateTime now, SecretSchedulerProperties properties) {

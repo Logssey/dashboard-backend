@@ -39,7 +39,10 @@ class SecretRunControllerTest {
         var service = mock(SecretRunService.class);
         when(service.status(42, "admin")).thenReturn(new SecretRunStatusResponse(
                 42, 7, "MANUAL", "PARTIAL", "PARTIAL", "SUCCEEDED", "SKIPPED",
-                2, 2, 1, 3, 1, 3, null, null, null, null, "SOURCE_UNAVAILABLE"));
+                2, 2, 1, 3, 1, 3, null, null, null, null, "SOURCE_UNAVAILABLE",
+                java.util.List.of(new SecretRunScopeResultResponse(8,
+                        "AWS_SECRETS_MANAGER_METADATA", "ap-northeast-2", "PARTIAL",
+                        3L, "AWS_ACCESS_DENIED"))));
         var mvc = MockMvcBuilders.standaloneSetup(new SecretRunController(service)).build();
 
         mvc.perform(get("/api/v1/secrets/runs/42")
@@ -48,7 +51,13 @@ class SecretRunControllerTest {
                 .andExpect(jsonPath("$.status").value("PARTIAL"))
                 .andExpect(jsonPath("$.incompleteScopeCount").value(1))
                 .andExpect(jsonPath("$.failureCode").value("SOURCE_UNAVAILABLE"))
+                .andExpect(jsonPath("$.scopeResults[0].contentType")
+                        .value("AWS_SECRETS_MANAGER_METADATA"))
+                .andExpect(jsonPath("$.scopeResults[0].region").value("ap-northeast-2"))
+                .andExpect(jsonPath("$.scopeResults[0].objectCount").value(3))
+                .andExpect(jsonPath("$.scopeResults[0].gapCode").value("AWS_ACCESS_DENIED"))
                 .andExpect(jsonPath("$.approvedRef").doesNotExist())
-                .andExpect(jsonPath("$.authRef").doesNotExist());
+                .andExpect(jsonPath("$.authRef").doesNotExist())
+                .andExpect(jsonPath("$.scopeResults[0].approvedRef").doesNotExist());
     }
 }

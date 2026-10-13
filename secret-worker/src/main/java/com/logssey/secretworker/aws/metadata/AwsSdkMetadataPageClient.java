@@ -25,14 +25,16 @@ public final class AwsSdkMetadataPageClient implements AwsMetadataPageClient {
 
     public AwsSdkMetadataPageClient(AwsCredentialsProvider credentials) {
         Objects.requireNonNull(credentials);
+        // Per-page SDK clients must not close the shared profile credentials provider.
+        AwsCredentialsProvider borrowed = credentials::resolveCredentials;
         this.secretsClient = region -> SecretsManagerClient.builder()
-                .region(Region.of(region)).credentialsProvider(credentials)
+                .region(Region.of(region)).credentialsProvider(borrowed)
                 .overrideConfiguration(config -> config.apiCallTimeout(CALL_TIMEOUT)).build();
         this.ssmClient = region -> SsmClient.builder()
-                .region(Region.of(region)).credentialsProvider(credentials)
+                .region(Region.of(region)).credentialsProvider(borrowed)
                 .overrideConfiguration(config -> config.apiCallTimeout(CALL_TIMEOUT)).build();
         this.s3Client = () -> S3Client.builder()
-                .region(Region.US_EAST_1).credentialsProvider(credentials)
+                .region(Region.US_EAST_1).credentialsProvider(borrowed)
                 .overrideConfiguration(config -> config.apiCallTimeout(CALL_TIMEOUT)).build();
     }
 

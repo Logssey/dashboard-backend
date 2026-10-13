@@ -7,6 +7,9 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.Objects;
 import java.util.Set;
+import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
@@ -23,6 +26,33 @@ public class SecretRunService {
             "SOURCE_ACCESS_DENIED", "SOURCE_RATE_LIMITED", "DETECTOR_TEMPORARY",
             "VALIDATOR_TEMPORARY", "VALIDATION_ATTEMPT_FAILED", "VALIDATION_INCONCLUSIVE",
             "AWS_ROOT_ACCESS_KEYS_PRESENT", "AWS_ROOT_KEY_COVERAGE_UNKNOWN");
+    private static final Set<String> PUBLIC_SCOPE_TYPES = Set.of(
+            "GITHUB_REPOSITORY_FILES", "IAM_ACCESS_KEY_METADATA",
+            "AWS_SECRETS_MANAGER_METADATA", "AWS_SSM_PARAMETER_METADATA",
+            "AWS_S3_BUCKET_METADATA");
+    private static final Set<String> PUBLIC_SCOPE_GAPS = Set.of(
+            "INVALID_APPROVED_SCOPE", "AWS_INVALID_APPROVED_SCOPE", "AWS_SERVICE_UNSUPPORTED",
+            "AWS_ACCOUNT_MISMATCH", "AWS_ACCESS_DENIED", "AWS_RATE_LIMITED",
+            "AWS_UNAVAILABLE", "AWS_SOURCE_UNAVAILABLE", "AWS_API_ERROR",
+            "AWS_INVALID_RESPONSE", "AWS_MALFORMED_RESPONSE", "AWS_PAGE_LIMIT",
+            "AWS_OBJECT_LIMIT", "AWS_PAGINATION_LOOP", "AWS_USER_LIMIT", "AWS_KEY_LIMIT",
+            "AWS_LAST_USED_UNAVAILABLE", "AWS_ROOT_ACCESS_KEYS_PRESENT",
+            "AWS_ROOT_KEY_COVERAGE_UNKNOWN", "GITHUB_PATH_NOT_FOUND",
+            "GITHUB_ACCESS_DENIED", "GITHUB_RATE_LIMITED", "GITHUB_SOURCE_UNAVAILABLE",
+            "GITHUB_API_ERROR", "GITHUB_MALFORMED_RESPONSE",
+            "GITHUB_TREE_TRUNCATED", "GITHUB_TREE_LIMIT", "GITHUB_FILE_LIMIT",
+            "GITHUB_FILE_TOO_LARGE", "GITHUB_TOTAL_BYTES_LIMIT",
+            "GITHUB_BINARY_FILE", "GITHUB_GIT_LFS_POINTER",
+            "GITHUB_UNSUPPORTED_OBJECT", "GITHUB_DEPTH_LIMIT", "GITHUB_CONSUMER_FAILED");
+    private static final String REGION = "[a-z]{2}(?:-[a-z0-9]+){1,3}-[0-9]+";
+    private static final Pattern SECRETS_REF = Pattern.compile(
+            "^aws://[0-9]{12}/(" + REGION + ")/secrets-manager/all$");
+    private static final Pattern PARAMETERS_REF = Pattern.compile(
+            "^aws://[0-9]{12}/(" + REGION + ")/ssm/parameters$");
+    private static final Pattern BUCKETS_REF = Pattern.compile(
+            "^aws://[0-9]{12}/global/s3/buckets$");
+    private static final Pattern IAM_REF = Pattern.compile(
+            "^aws://[0-9]{12}/global/iam/access-keys$");
 
     private final SecretRunRepository repository;
     private final TransactionTemplate transaction;
@@ -91,13 +121,16 @@ public class SecretRunService {
             throw new ApiException(ErrorCode.NOT_FOUND);
         }
         var run = repository.runStatus(runId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+        List<SecretRunScopeResultResponse> scopeResults = repository.runScopes(runId).stream()
+                .map(SecretRunService::scopeResult).toList();
         return new SecretRunStatusResponse(run.runId(), run.connectionId(), run.triggerType(),
                 displayStatus(run.jobStatus(), run.resultStatus()), run.collectionStatus(),
                 run.detectionStatus(), run.validationStatus(), run.scopeCount(),
                 run.completedScopeCount(), run.incompleteScopeCount(), run.objectCount(),
                 run.attemptNo(), run.maxAttempts(), run.requestedAt(), run.startedAt(),
                 run.finishedAt(), run.availableAt(), safeFailureCode(
-                        run.runFailureCode() == null ? run.jobFailureCode() : run.runFailureCode()));
+                        run.runFailureCode() == null ? run.jobFailureCode() : run.runFailureCode()),
+                scopeResults);
     }
 
     private SecretRunRepository.Actor requireAdmin(String loginId) {
@@ -131,7 +164,35 @@ public class SecretRunService {
         if (code == null) {
             return null;
         }
-        return PUBLIC_FAILURE_CODES.contains(code) ? code : "UNSPECIFIED_FAILURE";
+        return PUBLIC_FAILURE_CODES.contains(code) || PUBLIC_SCOPE_GAPS.contains(code)
+                ? code : "UNSPECIFIED_FAILURE";
+    }
+
+    private static SecretRunScopeResultResponse scopeResult(SecretRunRepository.RunScope scope) {
+        String type = PUBLIC_SCOPE_TYPES.contains(scope.contentType())
+                ? scope.contentType() : "UNSUPPORTED";
+        String region = region(type, scope.approvedRef());
+        String gap = scope.failureCode() == null ? scope.unsupportedReason() : scope.failureCode();
+        return new SecretRunScopeResultResponse(scope.runScopeId(), type, region,
+                scope.collectionStatus(), scope.objectCount(), safeFailureCode(gap));
+    }
+
+    private static String region(String type, String approvedRef) {
+        if (approvedRef == null) return null;
+        if ("IAM_ACCESS_KEY_METADATA".equals(type)) {
+            return IAM_REF.matcher(approvedRef).matches() ? "global" : null;
+        }
+        if ("AWS_S3_BUCKET_METADATA".equals(type)) {
+            return BUCKETS_REF.matcher(approvedRef).matches() ? "global" : null;
+        }
+        Pattern pattern = switch (type) {
+            case "AWS_SECRETS_MANAGER_METADATA" -> SECRETS_REF;
+            case "AWS_SSM_PARAMETER_METADATA" -> PARAMETERS_REF;
+            default -> null;
+        };
+        if (pattern == null) return null;
+        Matcher match = pattern.matcher(approvedRef);
+        return match.matches() ? match.group(1) : null;
     }
 
     private static boolean supportedProvider(String provider) {

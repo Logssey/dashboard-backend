@@ -222,6 +222,25 @@ class SecretInventoryServiceTest {
         assertThat(detail.toString()).doesNotContain("AKIAABCDEFGHIJKLMNOP", "123456789012:user/");
     }
 
+    @Test
+    void metadataOnlyAwsConnectionAppearsWithoutCreatingSecretFindings() {
+        long connection = connection("AWS", "ACTIVE", "AWS metadata");
+        long approved = scope(connection, "regional", true);
+        jdbc.update("""
+                UPDATE secret_connection_scopes
+                SET content_type = 'AWS_SSM_PARAMETER_METADATA',
+                    approved_ref = 'aws://123456789012/us-east-1/ssm/parameters',
+                    history_limit = 'CURRENT_STATE_ONLY'
+                WHERE scope_id = ?
+                """, approved);
+        assertThat(service.connections("admin").items()).singleElement()
+                .satisfies(item -> {
+                    assertThat(item.connectionId()).isEqualTo(connection);
+                    assertThat(item.approvedScopeCount()).isEqualTo(1);
+                });
+        assertThat(service.list(0, 20, "AWS", "ALL", "admin").items()).isEmpty();
+    }
+
     private long connection(String status, String name) {
         return connection("GITHUB", status, name);
     }

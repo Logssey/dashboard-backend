@@ -1,7 +1,9 @@
 package com.logssey.secretworker.aws;
 
 import java.util.List;
+import java.util.Objects;
 
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider;
 import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.regions.Region;
@@ -18,21 +20,37 @@ import software.amazon.awssdk.awscore.exception.AwsServiceException;
 public final class AwsSdkIamGateway implements AwsIamGateway {
     private final StsClient sts;
     private final IamClient iam;
-    private final ProfileCredentialsProvider credentials;
+    private final ProfileCredentialsProvider ownedCredentials;
 
     public AwsSdkIamGateway(String profile) {
+        this(ProfileCredentialsProvider.create(validProfile(profile)), true);
+    }
+
+    /** The caller owns a supplied provider, so IAM and other AWS clients may share it. */
+    public AwsSdkIamGateway(AwsCredentialsProvider credentials) {
+        this(credentials, false);
+    }
+
+    private AwsSdkIamGateway(AwsCredentialsProvider credentials, boolean ownsProvider) {
+        Objects.requireNonNull(credentials);
+        ownedCredentials = ownsProvider ? (ProfileCredentialsProvider) credentials : null;
+        // SDK clients close closeable providers; only the owner may close this shared profile.
+        AwsCredentialsProvider borrowed = credentials::resolveCredentials;
+        sts = StsClient.builder().credentialsProvider(borrowed).region(Region.US_EAST_1).build();
+        iam = IamClient.builder().credentialsProvider(borrowed).region(Region.AWS_GLOBAL).build();
+    }
+
+    private static String validProfile(String profile) {
         if (profile == null || !profile.matches("[A-Za-z0-9._-]{1,100}")) {
             throw new IllegalArgumentException("AWS_PROFILE_REQUIRED");
         }
-        credentials = ProfileCredentialsProvider.create(profile);
-        sts = StsClient.builder().credentialsProvider(credentials).region(Region.US_EAST_1).build();
-        iam = IamClient.builder().credentialsProvider(credentials).region(Region.AWS_GLOBAL).build();
+        return profile;
     }
 
     AwsSdkIamGateway(StsClient sts, IamClient iam) {
         this.sts = sts;
         this.iam = iam;
-        this.credentials = null;
+        this.ownedCredentials = null;
     }
 
     @Override
@@ -132,6 +150,6 @@ public final class AwsSdkIamGateway implements AwsIamGateway {
     public void close() {
         iam.close();
         sts.close();
-        if (credentials != null) credentials.close();
+        if (ownedCredentials != null) ownedCredentials.close();
     }
 }
