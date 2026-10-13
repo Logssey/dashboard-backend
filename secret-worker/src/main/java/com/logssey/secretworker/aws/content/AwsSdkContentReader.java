@@ -77,26 +77,37 @@ public final class AwsSdkContentReader implements AwsContentReader {
     }
 
     private byte[] readSecret(AwsContentScope scope, int maxBytes) {
+        byte[] content = null;
         try (var client = clients.secretsManager(scope.region())) {
             var response = client.getSecretValue(GetSecretValueRequest.builder()
                     .secretId(scope.resource()).versionStage("AWSCURRENT").build());
             if (response.secretString() == null) throw new ReadFailure(FailureCode.NON_TEXT);
-            return utf8Bounded(response.secretString(), maxBytes);
+            content = utf8Bounded(response.secretString(), maxBytes);
+        } catch (RuntimeException error) {
+            if (content != null) Arrays.fill(content, (byte) 0);
+            throw error;
         }
+        return content;
     }
 
     private byte[] readParameter(AwsContentScope scope, int maxBytes) {
+        byte[] content = null;
         try (var client = clients.ssm(scope.region())) {
             var response = client.getParameter(GetParameterRequest.builder()
                     .name(scope.resource()).withDecryption(true).build());
             if (response.parameter() == null || response.parameter().value() == null) {
                 throw new ReadFailure(FailureCode.UNAVAILABLE);
             }
-            return utf8Bounded(response.parameter().value(), maxBytes);
+            content = utf8Bounded(response.parameter().value(), maxBytes);
+        } catch (RuntimeException error) {
+            if (content != null) Arrays.fill(content, (byte) 0);
+            throw error;
         }
+        return content;
     }
 
     private byte[] readObject(AwsContentScope scope, int maxBytes) throws IOException {
+        byte[] content = null;
         try (var client = clients.s3(scope.region())) {
             var head = client.headObject(HeadObjectRequest.builder().bucket(scope.resource())
                     .key(scope.objectKey()).expectedBucketOwner(scope.accountId()).build());
@@ -113,18 +124,19 @@ public final class AwsSdkContentReader implements AwsContentReader {
                 request.versionId(head.versionId());
             }
             try (ResponseInputStream<GetObjectResponse> stream = client.getObject(request.build())) {
-                byte[] content = stream.readNBytes(maxBytes + 1);
+                content = stream.readNBytes(maxBytes + 1);
                 if (content.length > maxBytes) {
-                    Arrays.fill(content, (byte) 0);
                     throw new ReadFailure(FailureCode.TOO_LARGE);
                 }
                 if (content.length != head.contentLength()) {
-                    Arrays.fill(content, (byte) 0);
                     throw new ReadFailure(FailureCode.UNAVAILABLE);
                 }
-                return content;
             }
+        } catch (IOException | RuntimeException error) {
+            if (content != null) Arrays.fill(content, (byte) 0);
+            throw error;
         }
+        return content;
     }
 
     private static byte[] utf8Bounded(String value, int maxBytes) {
