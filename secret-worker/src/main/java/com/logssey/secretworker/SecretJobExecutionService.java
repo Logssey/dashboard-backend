@@ -120,7 +120,7 @@ public class SecretJobExecutionService {
 
     private boolean canComplete(SecretJobRepository.RunState run, SecretJobRepository.ScopeState scopes) {
         if (!"RUNNING".equals(run.result()) || scopes.total() == 0 || scopes.terminal() != scopes.total()
-                || scopes.usable() == 0 || scopes.uncounted() > 0) {
+                || scopes.usable() == 0 || scopes.uncompleted() > 0) {
             return false;
         }
         if (!("SUCCEEDED".equals(run.collection()) || "PARTIAL".equals(run.collection()))

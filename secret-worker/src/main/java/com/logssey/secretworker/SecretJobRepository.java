@@ -96,11 +96,12 @@ class SecretJobRepository {
                        COUNT(*) FILTER (WHERE collection_status IN ('PARTIAL', 'FAILED', 'SKIPPED')) AS incomplete,
                        COUNT(*) FILTER (WHERE collection_status = 'SUCCEEDED'
                                             OR (collection_status = 'PARTIAL' AND object_count > 0)) AS usable,
-                       COUNT(*) FILTER (WHERE collection_status = 'SUCCEEDED' AND object_count IS NULL) AS uncounted,
+                       COUNT(*) FILTER (WHERE collection_status = 'SUCCEEDED'
+                                            AND (object_count IS NULL OR finished_at IS NULL)) AS uncompleted,
                        COALESCE(SUM(object_count), 0) AS object_total
                 FROM secret_run_scopes WHERE run_id = ?
                 """, (rs, row) -> new ScopeState(rs.getLong("total"), rs.getLong("terminal"),
-                rs.getLong("incomplete"), rs.getLong("usable"), rs.getLong("uncounted"),
+                rs.getLong("incomplete"), rs.getLong("usable"), rs.getLong("uncompleted"),
                 rs.getLong("object_total")), runId);
     }
 
@@ -114,7 +115,7 @@ class SecretJobRepository {
                 UPDATE secret_scan_runs SET result_status = ?, failure_code = NULL, finished_at = ?
                 WHERE run_id = ?
                 """, resultStatus, now, row.runId());
-        updateLastCollectionSuccess(row, now);
+        updateLastCollectionSuccess(row);
     }
 
     void retry(JobRow row, OffsetDateTime now, OffsetDateTime availableAt, String code) {
@@ -142,7 +143,7 @@ class SecretJobRepository {
                 WHERE run_id = ? AND collection_status IN ('RUNNING', 'PARTIAL', 'FAILED')
                 """, row.runId());
         // A completed collection remains evidence of success even when a later stage needs a retry.
-        updateLastCollectionSuccess(row, now);
+        updateLastCollectionSuccess(row);
     }
 
     void failPermanently(JobRow row, OffsetDateTime now, String code) {
@@ -171,21 +172,26 @@ class SecretJobRepository {
                     finished_at = CASE WHEN collection_status IN ('RUNNING', 'PENDING') THEN ? ELSE finished_at END
                 WHERE run_id = ?
                 """, code, now, row.runId());
-        updateLastCollectionSuccess(row, now);
+        updateLastCollectionSuccess(row);
     }
 
-    private void updateLastCollectionSuccess(JobRow row, OffsetDateTime now) {
+    private void updateLastCollectionSuccess(JobRow row) {
         jdbc.update("""
-                UPDATE secret_connections c SET last_collection_success_at = ?
-                FROM secret_scan_runs r
-                WHERE c.connection_id = ? AND r.run_id = ? AND r.collection_status = 'SUCCEEDED'
-                  AND EXISTS (SELECT 1 FROM secret_run_scopes s WHERE s.run_id = r.run_id)
-                  AND NOT EXISTS (
-                      SELECT 1 FROM secret_run_scopes s
-                      WHERE s.run_id = r.run_id AND (s.collection_status <> 'SUCCEEDED' OR s.object_count IS NULL)
-                  )
-                  AND (c.last_collection_success_at IS NULL OR c.last_collection_success_at < ?)
-                """, now, row.connectionId(), row.runId(), now);
+                UPDATE secret_connections c SET last_collection_success_at = completed.completed_at
+                FROM (
+                    SELECT r.connection_id, MAX(s.finished_at) AS completed_at
+                    FROM secret_scan_runs r
+                    JOIN secret_run_scopes s ON s.run_id = r.run_id
+                    WHERE r.run_id = ? AND r.collection_status = 'SUCCEEDED'
+                    GROUP BY r.connection_id
+                    HAVING COUNT(*) > 0
+                       AND COUNT(*) FILTER (WHERE s.collection_status <> 'SUCCEEDED'
+                                               OR s.object_count IS NULL OR s.finished_at IS NULL) = 0
+                ) completed
+                WHERE c.connection_id = ? AND c.connection_id = completed.connection_id
+                  AND (c.last_collection_success_at IS NULL
+                       OR c.last_collection_success_at < completed.completed_at)
+                """, row.runId(), row.connectionId());
     }
 
     private JobRow jobRow(java.sql.ResultSet rs) throws java.sql.SQLException {
@@ -206,6 +212,6 @@ class SecretJobRepository {
     }
 
     record ScopeState(long total, long terminal, long incomplete, long usable,
-                      long uncounted, long objectTotal) {
+                      long uncompleted, long objectTotal) {
     }
 }

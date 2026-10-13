@@ -2,6 +2,8 @@ package com.logssey.secretworker;
 
 import java.time.Duration;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CyclicBarrier;
@@ -168,7 +170,8 @@ class SecretJobExecutionServiceTest {
                 .isEqualTo("SUCCEEDED");
         assertThat(jdbc.queryForObject("SELECT status FROM secret_jobs", String.class)).isEqualTo("SUCCEEDED");
         assertThat(jdbc.queryForObject("SELECT last_collection_success_at FROM secret_connections",
-                OffsetDateTime.class)).isNotNull();
+                OffsetDateTime.class)).isEqualTo(jdbc.queryForObject(
+                "SELECT finished_at FROM secret_run_scopes", OffsetDateTime.class));
     }
 
     @Test
@@ -184,7 +187,16 @@ class SecretJobExecutionServiceTest {
         jdbc.update("UPDATE secret_run_scopes SET object_count = 1 WHERE run_id = ?", claim.runId());
         assertThat(service.complete(claim.jobId(), claim.leaseToken())).isFalse();
         jdbc.update("UPDATE secret_scan_runs SET detection_status = 'SUCCEEDED' WHERE run_id = ?", claim.runId());
-        assertThat(service.complete(claim.jobId(), claim.leaseToken())).isTrue();
+        assertThat(service.complete(claim.jobId(), claim.leaseToken())).isFalse();
+        assertThat(service.fail(claim.jobId(), claim.leaseToken(),
+                SecretJobFailureCode.DETECTOR_TEMPORARY, true)).isTrue();
+        assertThat(jdbc.queryForObject("SELECT last_collection_success_at FROM secret_connections",
+                OffsetDateTime.class)).isNull();
+        jdbc.update("UPDATE secret_jobs SET available_at = clock_timestamp() - INTERVAL '1 second'");
+        var retry = onlyClaim();
+        assertThat(retry.runId()).isEqualTo(claim.runId());
+        jdbc.update("UPDATE secret_run_scopes SET finished_at = clock_timestamp() WHERE run_id = ?", retry.runId());
+        assertThat(service.complete(retry.jobId(), retry.leaseToken())).isTrue();
     }
 
     @Test
@@ -198,7 +210,8 @@ class SecretJobExecutionServiceTest {
                     object_count = CASE WHEN scope_id = (SELECT MIN(scope_id) FROM secret_run_scopes)
                                         THEN 0 ELSE NULL END,
                     failure_code = CASE WHEN scope_id = (SELECT MIN(scope_id) FROM secret_run_scopes)
-                                        THEN NULL ELSE 'ACCESS_DENIED' END
+                                        THEN NULL ELSE 'ACCESS_DENIED' END,
+                    finished_at = clock_timestamp()
                 WHERE run_id = ?
                 """, claim.runId());
         jdbc.update("""
@@ -220,8 +233,12 @@ class SecretJobExecutionServiceTest {
     void successfulCollectionSurvivesDetectionRetryWithoutForgingWholeRunSuccess() {
         long jobId = scheduledJob(1);
         var first = onlyClaim();
-        jdbc.update("UPDATE secret_run_scopes SET collection_status = 'SUCCEEDED', object_count = 0 WHERE run_id = ?",
-                first.runId());
+        var collectionCompletedAt = OffsetDateTime.now(ZoneOffset.UTC).minusMinutes(20)
+                .truncatedTo(ChronoUnit.MICROS);
+        jdbc.update("""
+                UPDATE secret_run_scopes SET collection_status = 'SUCCEEDED', object_count = 0,
+                                             finished_at = ? WHERE run_id = ?
+                """, collectionCompletedAt, first.runId());
         jdbc.update("UPDATE secret_scan_runs SET collection_status = 'SUCCEEDED', detection_status = 'RUNNING' WHERE run_id = ?",
                 first.runId());
         assertThat(service.fail(jobId, first.leaseToken(), SecretJobFailureCode.DETECTOR_TEMPORARY, true)).isTrue();
@@ -229,7 +246,7 @@ class SecretJobExecutionServiceTest {
                 .containsEntry("collection_status", "SUCCEEDED").containsEntry("detection_status", "PENDING")
                 .containsEntry("result_status", "PENDING");
         assertThat(jdbc.queryForObject("SELECT last_collection_success_at FROM secret_connections",
-                OffsetDateTime.class)).isNotNull();
+                OffsetDateTime.class)).isEqualTo(collectionCompletedAt);
         jdbc.update("UPDATE secret_jobs SET available_at = clock_timestamp() - INTERVAL '1 second' WHERE job_id = ?", jobId);
         var second = onlyClaim();
         assertThat(second.runId()).isEqualTo(first.runId());
@@ -237,6 +254,34 @@ class SecretJobExecutionServiceTest {
         jdbc.update("UPDATE secret_scan_runs SET detection_status = 'SUCCEEDED', validation_status = 'SKIPPED' WHERE run_id = ?",
                 second.runId());
         assertThat(service.complete(jobId, second.leaseToken())).isTrue();
+        assertThat(jdbc.queryForObject("SELECT last_collection_success_at FROM secret_connections",
+                OffsetDateTime.class)).isEqualTo(collectionCompletedAt);
+    }
+
+    @Test
+    void permanentLaterStageFailureKeepsLatestActualCollectionCompletionTime() {
+        scheduledJob(2);
+        var claim = onlyClaim();
+        var firstScopeFinishedAt = OffsetDateTime.now(ZoneOffset.UTC).minusMinutes(30)
+                .truncatedTo(ChronoUnit.MICROS);
+        var lastScopeFinishedAt = firstScopeFinishedAt.plusMinutes(3);
+        jdbc.update("""
+                UPDATE secret_run_scopes
+                SET collection_status = 'SUCCEEDED', object_count = 0,
+                    finished_at = CASE WHEN scope_id = (SELECT MIN(scope_id) FROM secret_run_scopes)
+                                       THEN ? ELSE ? END
+                WHERE run_id = ?
+                """, firstScopeFinishedAt, lastScopeFinishedAt, claim.runId());
+        jdbc.update("""
+                UPDATE secret_scan_runs SET collection_status = 'SUCCEEDED', detection_status = 'RUNNING'
+                WHERE run_id = ?
+                """, claim.runId());
+        assertThat(service.fail(claim.jobId(), claim.leaseToken(),
+                SecretJobFailureCode.DETECTOR_TEMPORARY, false)).isTrue();
+        assertThat(jdbc.queryForObject("SELECT result_status FROM secret_scan_runs", String.class))
+                .isEqualTo("FAILED");
+        assertThat(jdbc.queryForObject("SELECT last_collection_success_at FROM secret_connections",
+                OffsetDateTime.class)).isEqualTo(lastScopeFinishedAt);
     }
 
     @Test
