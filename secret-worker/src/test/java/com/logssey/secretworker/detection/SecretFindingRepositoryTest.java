@@ -142,6 +142,23 @@ class SecretFindingRepositoryTest {
     }
 
     @Test
+    void rejectsInspectionForAnotherSourceBeforeWritingAnything() {
+        long connectionId = jdbc.queryForObject("SELECT connection_id FROM secret_connections", Long.class);
+        var scan = new GitleaksScanResult("8.30.1", CONFIG_HASH,
+                List.of(new GitleaksFinding("aws-access-token", 1, 1, 19, 38)));
+        byte[] content = ("AWS_ACCESS_KEY_ID=" + "AKIAABCDEFGHIJKLMNOP" + "\n")
+                .getBytes(StandardCharsets.UTF_8);
+        var inspection = new SecretFindingNormalizer(new byte[32], "test-v1")
+                .inspect(connectionId, "repo/other.txt", content, scan.findings());
+        long toolRunId = repository.beginGitleaksRun(runScopeId, "8.30.1", CONFIG_HASH, Instant.now());
+        assertThatThrownBy(() -> repository.recordInspection(toolRunId, "repo/file.txt", "sha-1",
+                inspection, scan, Instant.now()))
+                .isInstanceOf(IllegalArgumentException.class).hasMessage("INSPECTION_SCOPE_MISMATCH");
+        assertThat(count("secret_credential_sets")).isZero();
+        assertThat(count("secret_findings")).isZero();
+    }
+
+    @Test
     void retryDropsEarlierToolFindingsAndMarksTheirOnlyOccurrenceUnknown() {
         String id = "AKIA" + "ABCDEFGHIJKLMNOP";
         byte[] content = ("AWS_ACCESS_KEY_ID=" + id + "\n").getBytes(StandardCharsets.UTF_8);

@@ -20,6 +20,7 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 
 import com.logssey.secretworker.detector.GitleaksFinding;
+import com.logssey.secretworker.validation.AwsKeyMaterial;
 
 /**
  * Interprets detector positions against the in-memory source object. Neither raw
@@ -69,6 +70,12 @@ public final class SecretFindingNormalizer {
 
     public List<Credential> normalize(long connectionId, String sourceObjectRef, byte[] utf8Content,
                                       List<GitleaksFinding> findings) {
+        return inspect(connectionId, sourceObjectRef, utf8Content, findings).credentials();
+    }
+
+    /** One parse gives persistence metadata and temporary AWS material for the validator. */
+    public Inspection inspect(long connectionId, String sourceObjectRef, byte[] utf8Content,
+                              List<GitleaksFinding> findings) {
         if (connectionId <= 0 || sourceObjectRef == null || sourceObjectRef.isBlank()
                 || sourceObjectRef.length() > 500 || utf8Content == null || findings == null) {
             throw new IllegalArgumentException("INVALID_NORMALIZATION_INPUT");
@@ -107,6 +114,7 @@ public final class SecretFindingNormalizer {
         }
 
         List<Credential> result = new ArrayList<>();
+        List<AwsCandidate> awsCandidates = new ArrayList<>();
         Set<Component> pairedSecrets = new HashSet<>();
         for (Component id : ids) {
             List<Component> eligibleSecrets = secrets.stream()
@@ -133,13 +141,18 @@ public final class SecretFindingNormalizer {
             List<Component> components = new ArrayList<>(List.of(id));
             if (secret != null) components.add(secret);
             if (session != null) components.add(session);
-            result.add(credential(connectionId, sourceObjectRef, "AWS", type, complete, location,
-                    mask("AWS", id.value(), 4), components));
+            Credential normalized = credential(connectionId, sourceObjectRef, "AWS", type, complete, location,
+                    mask("AWS", id.value(), 4), components);
+            result.add(normalized);
+            awsCandidates.add(new AwsCandidate(normalized, new AwsKeyMaterial(id.value(),
+                    secret == null ? null : secret.value(), session == null ? null : session.value())));
         }
         for (Component secret : secrets) {
             if (!pairedSecrets.contains(secret)) {
-                result.add(credential(connectionId, sourceObjectRef, "AWS", "AWS_ACCESS_KEY_PAIR", false,
-                        location(secret.line(), secret.line()), "AWS secret ••••", List.of(secret)));
+                Credential normalized = credential(connectionId, sourceObjectRef, "AWS", "AWS_ACCESS_KEY_PAIR", false,
+                        location(secret.line(), secret.line()), "AWS secret ••••", List.of(secret));
+                result.add(normalized);
+                awsCandidates.add(new AwsCandidate(normalized, new AwsKeyMaterial(null, secret.value(), null)));
             }
         }
         for (Component token : tokens) {
@@ -153,7 +166,8 @@ public final class SecretFindingNormalizer {
             result.add(credential(connectionId, sourceObjectRef, issuer, type, true,
                     location(token.line(), token.line()), mask(issuer, token.value(), 4), List.of(token)));
         }
-        return List.copyOf(result);
+        return new Inspection(connectionId, sourceObjectRef, List.copyOf(findings),
+                List.copyOf(result), List.copyOf(awsCandidates));
     }
 
     private Credential credential(long connectionId, String source, String issuer, String type,
@@ -280,5 +294,33 @@ public final class SecretFindingNormalizer {
             return "Credential[issuer=" + issuer + ", credentialType=" + credentialType
                     + ", componentState=" + componentState + ", locationKey=" + locationKey + "]";
         }
+    }
+
+    public record Inspection(long connectionId, String sourceObjectRef, List<GitleaksFinding> detectorFindings,
+                             List<Credential> credentials, List<AwsCandidate> awsCandidates) {
+        public Inspection {
+            detectorFindings = List.copyOf(detectorFindings);
+            credentials = List.copyOf(credentials);
+            awsCandidates = List.copyOf(awsCandidates);
+        }
+        @Override public String toString() {
+            return "Inspection[credentialCount=" + credentials.size()
+                    + ", awsCandidateCount=" + awsCandidates.size() + "]";
+        }
+    }
+
+    /** Keep only within the collector callback; never serialize, persist, or log this object. */
+    public static final class AwsCandidate {
+        private final Credential credential;
+        private final AwsKeyMaterial material;
+
+        private AwsCandidate(Credential credential, AwsKeyMaterial material) {
+            this.credential = credential;
+            this.material = material;
+        }
+
+        public Credential credential() { return credential; }
+        public AwsKeyMaterial material() { return material; }
+        @Override public String toString() { return "AwsCandidate[REDACTED]"; }
     }
 }
