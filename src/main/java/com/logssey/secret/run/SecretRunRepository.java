@@ -4,6 +4,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
 import java.util.Optional;
+import java.util.List;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -59,7 +60,7 @@ class SecretRunRepository {
     }
 
     boolean hasSupportedScope(Connection connection) {
-        Boolean supported = jdbc.queryForObject("""
+        String query = """
                 SELECT (? = 'GITHUB' OR EXISTS (
                     SELECT 1 FROM secret_connections c
                     WHERE c.connection_id = ?
@@ -67,17 +68,15 @@ class SecretRunRepository {
                 )) AND EXISTS (
                     SELECT 1 FROM secret_connection_scopes s
                     WHERE s.connection_id = ? AND s.enabled
-                      AND (? = 'GITHUB' OR (s.content_type = 'IAM_ACCESS_KEY_METADATA'
-                          AND s.approved_ref ~ '^aws://[0-9]{12}/global/iam/access-keys$'
-                          AND (s.history_limit IS NULL OR s.history_limit = 'CURRENT_STATE_ONLY')))
+                      AND (? = 'GITHUB' OR AWS_SCOPE_VALID)
                 ) AND (? = 'GITHUB' OR NOT EXISTS (
                     SELECT 1 FROM secret_connection_scopes s
                     WHERE s.connection_id = ? AND s.enabled
-                      AND NOT (s.content_type = 'IAM_ACCESS_KEY_METADATA'
-                          AND s.approved_ref ~ '^aws://[0-9]{12}/global/iam/access-keys$'
-                          AND (s.history_limit IS NULL OR s.history_limit = 'CURRENT_STATE_ONLY'))
+                      AND NOT AWS_SCOPE_VALID
                 ))
-                """, Boolean.class, connection.provider(), connection.id(), connection.id(),
+                """.replace("AWS_SCOPE_VALID", AwsScopeSql.predicate("s"));
+        Boolean supported = jdbc.queryForObject(query, Boolean.class,
+                connection.provider(), connection.id(), connection.id(),
                 connection.provider(), connection.provider(), connection.id());
         return Boolean.TRUE.equals(supported);
     }
@@ -147,6 +146,21 @@ class SecretRunRepository {
                 .stream().findFirst();
     }
 
+    List<RunScope> runScopes(long runId) {
+        return jdbc.query("""
+                SELECT rs.run_scope_id, s.content_type, s.approved_ref,
+                       rs.collection_status, rs.object_count, rs.failure_code,
+                       rs.unsupported_reason
+                FROM secret_run_scopes rs
+                JOIN secret_connection_scopes s ON s.scope_id = rs.scope_id
+                WHERE rs.run_id = ?
+                ORDER BY rs.run_scope_id
+                """, (rs, row) -> new RunScope(rs.getLong("run_scope_id"),
+                rs.getString("content_type"), rs.getString("approved_ref"),
+                rs.getString("collection_status"), rs.getObject("object_count", Long.class),
+                rs.getString("failure_code"), rs.getString("unsupported_reason")), runId);
+    }
+
     private static JobRun jobRun(ResultSet rs) throws SQLException {
         Long requestedBy = rs.getObject("requested_by_user_id", Long.class);
         return new JobRun(rs.getLong("run_id"), rs.getLong("connection_id"), requestedBy,
@@ -170,6 +184,14 @@ class SecretRunRepository {
                      long incompleteScopeCount, long objectCount, int attemptNo, int maxAttempts,
                      OffsetDateTime requestedAt, OffsetDateTime startedAt, OffsetDateTime finishedAt,
                      OffsetDateTime availableAt, String runFailureCode, String jobFailureCode) {
+    }
+
+    record RunScope(long runScopeId, String contentType, String approvedRef,
+                    String collectionStatus, Long objectCount, String failureCode,
+                    String unsupportedReason) {
+        @Override public String toString() {
+            return "RunScope[runScopeId=" + runScopeId + ", collectionStatus=" + collectionStatus + "]";
+        }
     }
 
     static class NoApprovedScopeException extends RuntimeException {

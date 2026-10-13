@@ -210,6 +210,82 @@ class SecretRunServiceTest {
     }
 
     @Test
+    void acceptsMixedAwsMetadataAndReturnsSafePerScopeCoverage() {
+        long connection = connection("AWS", "ACTIVE", null);
+        jdbc.update("""
+                INSERT INTO secret_connection_scopes
+                    (connection_id, scope_key, revision, content_type, approved_ref,
+                     history_limit, enabled)
+                VALUES (?, 'iam', 1, 'IAM_ACCESS_KEY_METADATA',
+                        'aws://123456789012/global/iam/access-keys', 'CURRENT_STATE_ONLY', true),
+                       (?, 'secrets', 1, 'AWS_SECRETS_MANAGER_METADATA',
+                        'aws://123456789012/ap-northeast-2/secrets-manager/all', 'CURRENT_STATE_ONLY', true),
+                       (?, 'parameters', 1, 'AWS_SSM_PARAMETER_METADATA',
+                        'aws://123456789012/us-east-1/ssm/parameters', 'CURRENT_STATE_ONLY', true),
+                       (?, 'buckets', 1, 'AWS_S3_BUCKET_METADATA',
+                        'aws://123456789012/global/s3/buckets', 'CURRENT_STATE_ONLY', true)
+                """, connection, connection, connection, connection);
+        var accepted = service.register(new SecretRunRequest(connection, null), "admin");
+        assertThat(service.status(accepted.runId(), "admin").scopeCount()).isEqualTo(4);
+        jdbc.update("""
+                UPDATE secret_run_scopes rs SET collection_status = 'SUCCEEDED', object_count = 2,
+                    finished_at = CURRENT_TIMESTAMP
+                FROM secret_connection_scopes s
+                WHERE rs.scope_id = s.scope_id AND rs.run_id = ?
+                  AND s.content_type = 'AWS_SECRETS_MANAGER_METADATA'
+                """, accepted.runId());
+        jdbc.update("""
+                UPDATE secret_run_scopes rs SET collection_status = 'PARTIAL', object_count = 1,
+                    failure_code = 'AWS_ACCESS_DENIED', finished_at = CURRENT_TIMESTAMP
+                FROM secret_connection_scopes s
+                WHERE rs.scope_id = s.scope_id AND rs.run_id = ?
+                  AND s.content_type = 'AWS_SSM_PARAMETER_METADATA'
+                """, accepted.runId());
+        var status = service.status(accepted.runId(), "admin");
+        assertThat(status.scopeResults()).hasSize(4);
+        assertThat(status.scopeResults()).filteredOn(item ->
+                "AWS_SECRETS_MANAGER_METADATA".equals(item.contentType()))
+                .singleElement().satisfies(item -> {
+                    assertThat(item.region()).isEqualTo("ap-northeast-2");
+                    assertThat(item.objectCount()).isEqualTo(2L);
+                    assertThat(item.collectionStatus()).isEqualTo("SUCCEEDED");
+                });
+        assertThat(status.scopeResults()).filteredOn(item ->
+                "AWS_SSM_PARAMETER_METADATA".equals(item.contentType()))
+                .singleElement().satisfies(item -> {
+                    assertThat(item.region()).isEqualTo("us-east-1");
+                    assertThat(item.gapCode()).isEqualTo("AWS_ACCESS_DENIED");
+                });
+        assertThat(status.toString()).doesNotContain("123456789012", "approvedRef", "authRef");
+
+        jdbc.update("UPDATE secret_run_scopes SET failure_code = 'unsafe-provider-value' WHERE run_id = ?",
+                accepted.runId());
+        assertThat(service.status(accepted.runId(), "admin").scopeResults())
+                .allSatisfy(item -> assertThat(item.gapCode()).isEqualTo("UNSPECIFIED_FAILURE"));
+    }
+
+    @Test
+    void rejectsMetadataValuePathOrInvalidHistoryBeforeJobCreation() {
+        long connection = connection("AWS", "ACTIVE", null);
+        jdbc.update("""
+                INSERT INTO secret_connection_scopes
+                    (connection_id, scope_key, revision, content_type, approved_ref,
+                     history_limit, enabled)
+                VALUES (?, 'secrets', 1, 'AWS_SECRETS_MANAGER_METADATA',
+                        'aws://123456789012/ap-northeast-2/secrets-manager/value',
+                        'CURRENT_STATE_ONLY', true)
+                """, connection);
+        assertConflict(() -> service.register(new SecretRunRequest(connection, null), "admin"));
+        jdbc.update("""
+                UPDATE secret_connection_scopes SET approved_ref =
+                    'aws://123456789012/ap-northeast-2/secrets-manager/all',
+                    history_limit = 'ALL_HISTORY' WHERE connection_id = ?
+                """, connection);
+        assertConflict(() -> service.register(new SecretRunRequest(connection, null), "admin"));
+        assertThat(count("secret_jobs")).isZero();
+    }
+
+    @Test
     void requiresCurrentDatabaseAdminForRegistrationAndStatus() {
         long connection = connection("ACTIVE", null);
         scope(connection, "fixtures/", true);

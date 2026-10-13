@@ -13,6 +13,8 @@ import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.iam.IamClient;
@@ -55,6 +57,22 @@ class AwsSdkIamGatewayTest {
         }
         assertThat(actions).containsExactly("GetCallerIdentity", "GetAccountSummary", "ListUsers",
                 "ListAccessKeys", "GetAccessKeyLastUsed");
+    }
+
+    @Test
+    void suppliedCredentialsRemainOwnedByTheCaller() {
+        class TrackedCredentials implements AwsCredentialsProvider, AutoCloseable {
+            boolean closed;
+            @Override public AwsCredentials resolveCredentials() {
+                return AwsBasicCredentials.create("TESTACCESSKEY", "TESTSECRETKEY");
+            }
+            @Override public void close() { closed = true; }
+        }
+        var credentials = new TrackedCredentials();
+        try (var gateway = new AwsSdkIamGateway(credentials)) {
+            assertThat(credentials.closed).isFalse();
+        }
+        assertThat(credentials.closed).isFalse();
     }
 
     private void respond(HttpExchange exchange) throws IOException {

@@ -10,6 +10,8 @@ import java.util.Set;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import com.logssey.secret.run.AwsScopeSql;
+
 @Repository
 class SecretInventoryRepository {
     private static final Set<String> PUBLIC_VALIDATION_REASONS = Set.of(
@@ -102,7 +104,7 @@ class SecretInventoryRepository {
     }
 
     List<SecretConnectionResponse> connections() {
-        return jdbc.query("""
+        String query = """
                 SELECT c.connection_id, c.provider, c.display_name, c.status,
                        COUNT(s.scope_id) AS approved_scope_count
                 FROM secret_connections c
@@ -111,16 +113,11 @@ class SecretInventoryRepository {
                 GROUP BY c.connection_id, c.provider, c.display_name, c.status
                 HAVING c.provider = 'GITHUB'
                     OR (c.auth_ref ~ '^aws-profile:[A-Za-z0-9._-]{1,100}$'
-                        AND COUNT(*) FILTER (WHERE s.content_type = 'IAM_ACCESS_KEY_METADATA'
-                            AND s.approved_ref ~ '^aws://[0-9]{12}/global/iam/access-keys$'
-                            AND (s.history_limit IS NULL
-                                 OR s.history_limit = 'CURRENT_STATE_ONLY')) > 0
-                        AND COUNT(*) FILTER (WHERE NOT (s.content_type = 'IAM_ACCESS_KEY_METADATA'
-                            AND s.approved_ref ~ '^aws://[0-9]{12}/global/iam/access-keys$'
-                            AND (s.history_limit IS NULL
-                                 OR s.history_limit = 'CURRENT_STATE_ONLY'))) = 0)
+                        AND COUNT(*) FILTER (WHERE AWS_SCOPE_VALID) > 0
+                        AND COUNT(*) FILTER (WHERE NOT AWS_SCOPE_VALID) = 0)
                 ORDER BY c.display_name, c.connection_id
-                """, (rs, row) -> new SecretConnectionResponse(
+                """.replace("AWS_SCOPE_VALID", AwsScopeSql.predicate("s"));
+        return jdbc.query(query, (rs, row) -> new SecretConnectionResponse(
                 rs.getLong("connection_id"), rs.getString("provider"),
                 rs.getString("display_name"), rs.getString("status"),
                 rs.getLong("approved_scope_count")));

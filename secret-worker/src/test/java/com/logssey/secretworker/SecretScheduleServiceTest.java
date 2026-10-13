@@ -122,6 +122,26 @@ class SecretScheduleServiceTest {
     }
 
     @Test
+    void regionalMetadataScopesStayUnscheduledWhenAwsCollectionIsDisabled() {
+        long aws = connection("AWS", "ACTIVE", pastDue(), true);
+        jdbc.update("UPDATE secret_connections SET auth_ref = 'aws-profile:test' WHERE connection_id = ?", aws);
+        jdbc.update("""
+                UPDATE secret_connection_scopes
+                SET content_type = 'AWS_SECRETS_MANAGER_METADATA',
+                    approved_ref = 'aws://123456789012/ap-northeast-2/secrets-manager/all',
+                    history_limit = 'CURRENT_STATE_ONLY'
+                WHERE connection_id = ?
+                """, aws);
+        assertThat(service.reserveDueJobs()).isZero();
+        assertThat(count("secret_jobs")).isZero();
+
+        var optedIn = new SecretScheduleService(new SecretScheduleRepository(jdbc, true),
+                properties(true, 100), transactions);
+        assertThat(optedIn.reserveDueJobs()).isEqualTo(1);
+        assertThat(count("secret_run_scopes")).isEqualTo(1);
+    }
+
+    @Test
     void repeatedPollAndNewServiceInstanceKeepOneReservationAndPersistedNextDue() {
         long id = connection("ACTIVE", pastDue(), true);
         assertThat(service.reserveDueJobs()).isEqualTo(1);

@@ -19,6 +19,8 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 import com.logssey.secretworker.SecretJobExecutionService;
 import com.logssey.secretworker.SecretJobProperties;
 import com.logssey.secretworker.SecretJobTestSupport;
+import com.logssey.secretworker.aws.metadata.AwsMetadataCollector;
+import com.logssey.secretworker.aws.metadata.AwsMetadataPageClient;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -142,6 +144,7 @@ class AwsSecretJobProcessorTest {
         long run = run(connection, scope);
         var gateway = new FakeGateway();
         var processor = new AwsSecretJobProcessor(jdbc, new AwsIamCollector(gateway),
+                new AwsMetadataCollector(new FakeMetadataPages()), gateway,
                 new AwsIamMetadataRepository(jdbc, new AwsMetadataIdentity(new byte[32], "test-v1")),
                 properties, "test");
         var job = execution.claimNextJob("AWS").orElseThrow();
@@ -153,8 +156,112 @@ class AwsSecretJobProcessorTest {
                 .isZero();
     }
 
+    @Test
+    void mixedIamAndRegionalMetadataScopesUseOneJobAndStoreOnlyCounts() {
+        long connection = connection();
+        scope(connection, "IAM_ACCESS_KEY_METADATA", "aws://" + ACCOUNT + "/global/iam/access-keys");
+        scope(connection, "AWS_SECRETS_MANAGER_METADATA",
+                "aws://" + ACCOUNT + "/ap-northeast-2/secrets-manager/all");
+        scope(connection, "AWS_SSM_PARAMETER_METADATA",
+                "aws://" + ACCOUNT + "/us-east-1/ssm/parameters");
+        scope(connection, "AWS_S3_BUCKET_METADATA", "aws://" + ACCOUNT + "/global/s3/buckets");
+        var gateway = new FakeGateway();
+        var pages = new FakeMetadataPages();
+        pages.secretCount = 2;
+        pages.parameterCount = 3;
+        pages.bucketCount = 4;
+        execute(run(connection, 0), gateway, pages);
+
+        assertThat(jdbc.queryForObject("SELECT result_status FROM secret_scan_runs", String.class))
+                .isEqualTo("SUCCEEDED");
+        assertThat(jdbc.queryForList("""
+                SELECT s.content_type, rs.object_count, rs.collection_status
+                FROM secret_run_scopes rs JOIN secret_connection_scopes s USING (scope_id)
+                ORDER BY rs.run_scope_id
+                """))
+                .extracting(row -> row.get("object_count"))
+                .containsExactlyInAnyOrder(1L, 2L, 3L, 4L);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_credential_sets", Long.class))
+                .isEqualTo(1);
+        assertThat(pages.secretCalls).isEqualTo(1);
+        assertThat(pages.parameterCalls).isEqualTo(1);
+        assertThat(pages.bucketCalls).isEqualTo(1);
+        assertThat(gateway.accountCalls).isEqualTo(2); // IAM check and one cached metadata check.
+    }
+
+    @Test
+    void mismatchedMetadataAccountNeverListsThatService() {
+        long connection = connection();
+        scope(connection, "IAM_ACCESS_KEY_METADATA", "aws://" + ACCOUNT + "/global/iam/access-keys");
+        scope(connection, "AWS_SECRETS_MANAGER_METADATA",
+                "aws://000000000000/us-east-1/secrets-manager/all");
+        var pages = new FakeMetadataPages();
+        execute(run(connection, 0), new FakeGateway(), pages);
+
+        assertThat(pages.secretCalls).isZero();
+        assertThat(jdbc.queryForMap("""
+                SELECT rs.collection_status, rs.failure_code
+                FROM secret_run_scopes rs JOIN secret_connection_scopes s USING (scope_id)
+                WHERE s.content_type = 'AWS_SECRETS_MANAGER_METADATA'
+                """))
+                .containsEntry("collection_status", "FAILED")
+                .containsEntry("failure_code", "AWS_ACCOUNT_MISMATCH");
+        assertThat(jdbc.queryForObject("SELECT result_status FROM secret_scan_runs", String.class))
+                .isEqualTo("PARTIAL");
+    }
+
+    @Test
+    void metadataSecondPageFailureKeepsFirstPageCountAndPartialCoverage() {
+        long connection = connection();
+        scope(connection, "IAM_ACCESS_KEY_METADATA", "aws://" + ACCOUNT + "/global/iam/access-keys");
+        scope(connection, "AWS_SECRETS_MANAGER_METADATA",
+                "aws://" + ACCOUNT + "/us-east-1/secrets-manager/all");
+        var pages = new FakeMetadataPages();
+        pages.failAfterSecretFirstPage = true;
+        execute(run(connection, 0), new FakeGateway(), pages);
+
+        assertThat(jdbc.queryForMap("""
+                SELECT rs.collection_status, rs.object_count, rs.failure_code
+                FROM secret_run_scopes rs JOIN secret_connection_scopes s USING (scope_id)
+                WHERE s.content_type = 'AWS_SECRETS_MANAGER_METADATA'
+                """))
+                .containsEntry("collection_status", "PARTIAL")
+                .containsEntry("object_count", 2L)
+                .containsEntry("failure_code", "AWS_ACCESS_DENIED");
+        assertThat(jdbc.queryForObject("SELECT result_status FROM secret_scan_runs", String.class))
+                .isEqualTo("PARTIAL");
+        assertThat(pages.secretCalls).isEqualTo(2);
+    }
+
+    @Test
+    void emptyMetadataFirstPageThenDeniedNextPageStaysPartial() {
+        long connection = connection();
+        scope(connection, "AWS_SECRETS_MANAGER_METADATA",
+                "aws://" + ACCOUNT + "/us-east-1/secrets-manager/all");
+        var pages = new FakeMetadataPages();
+        pages.failAfterSecretFirstPage = true;
+        pages.secretFirstPageCount = 0;
+        execute(run(connection, 0), new FakeGateway(), pages);
+
+        assertThat(jdbc.queryForMap("""
+                SELECT collection_status, object_count, failure_code
+                FROM secret_run_scopes
+                """))
+                .containsEntry("collection_status", "PARTIAL")
+                .containsEntry("object_count", 0L)
+                .containsEntry("failure_code", "AWS_ACCESS_DENIED");
+        assertThat(jdbc.queryForObject("SELECT result_status FROM secret_scan_runs", String.class))
+                .isEqualTo("PARTIAL");
+        assertThat(pages.secretCalls).isEqualTo(2);
+    }
+
     private static void execute(long run, FakeGateway gateway) {
+        execute(run, gateway, new FakeMetadataPages());
+    }
+
+    private static void execute(long run, FakeGateway gateway, FakeMetadataPages pages) {
         var processor = new AwsSecretJobProcessor(jdbc, new AwsIamCollector(gateway),
+                new AwsMetadataCollector(pages), gateway,
                 new AwsIamMetadataRepository(jdbc, new AwsMetadataIdentity(new byte[32], "test-v1")),
                 properties, "test");
         var job = execution.claimNextJob("AWS").orElseThrow();
@@ -227,5 +334,35 @@ class AwsSecretJobProcessorTest {
                     "Amazon S3", "ap-northeast-1");
         }
         @Override public int rootAccessKeyCount() { return rootKeys; }
+    }
+
+    private static final class FakeMetadataPages implements AwsMetadataPageClient {
+        int secretCount;
+        int parameterCount;
+        int bucketCount;
+        int secretCalls;
+        int parameterCalls;
+        int bucketCalls;
+        boolean failAfterSecretFirstPage;
+        int secretFirstPageCount = 2;
+
+        @Override public Page listSecrets(String region, String nextToken) {
+            secretCalls++;
+            if (failAfterSecretFirstPage) {
+                if (nextToken != null) throw new Failure(AwsMetadataCollector.GapCode.ACCESS_DENIED);
+                return new Page(secretFirstPageCount, "next");
+            }
+            return new Page(secretCount, null);
+        }
+
+        @Override public Page describeParameters(String region, String nextToken) {
+            parameterCalls++;
+            return new Page(parameterCount, null);
+        }
+
+        @Override public Page listBuckets(String nextToken) {
+            bucketCalls++;
+            return new Page(bucketCount, null);
+        }
     }
 }

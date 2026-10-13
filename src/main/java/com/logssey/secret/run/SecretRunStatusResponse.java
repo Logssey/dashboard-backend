@@ -1,6 +1,7 @@
 package com.logssey.secret.run;
 
 import java.time.OffsetDateTime;
+import java.util.List;
 
 public record SecretRunStatusResponse(
         long runId,
@@ -20,5 +21,6 @@ public record SecretRunStatusResponse(
         OffsetDateTime startedAt,
         OffsetDateTime finishedAt,
         OffsetDateTime availableAt,
-        String failureCode) {
+        String failureCode,
+        List<SecretRunScopeResultResponse> scopeResults) {
 }

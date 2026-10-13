@@ -16,20 +16,27 @@ import com.logssey.secretworker.SecretJobFailure;
 import com.logssey.secretworker.SecretJobFailureCode;
 import com.logssey.secretworker.SecretJobProcessor;
 import com.logssey.secretworker.SecretJobProperties;
+import com.logssey.secretworker.aws.metadata.AwsMetadataApprovedScope;
+import com.logssey.secretworker.aws.metadata.AwsMetadataCollector;
 
-/** IAM metadata inventory only. It never treats a listed ID as a recovered secret. */
+/** Runs approved AWS metadata scopes without treating storage metadata as recovered secrets. */
 public final class AwsSecretJobProcessor implements SecretJobProcessor {
     private final JdbcTemplate jdbc;
     private final AwsIamCollector collector;
+    private final AwsMetadataCollector additional;
+    private final AwsIamGateway accountGateway;
     private final AwsIamMetadataRepository metadata;
     private final SecretJobProperties jobs;
     private final String expectedAuthRef;
 
     public AwsSecretJobProcessor(JdbcTemplate jdbc, AwsIamCollector collector,
+                                 AwsMetadataCollector additional, AwsIamGateway accountGateway,
                                  AwsIamMetadataRepository metadata, SecretJobProperties jobs,
                                  String profile) {
         this.jdbc = jdbc;
         this.collector = collector;
+        this.additional = additional;
+        this.accountGateway = accountGateway;
         this.metadata = metadata;
         this.jobs = jobs;
         if (profile == null || !profile.matches("[A-Za-z0-9._-]{1,100}")) {
@@ -95,9 +102,10 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
         int succeeded = 0;
         String firstGap = null;
         boolean allSucceeded = true;
+        AccountCheck account = new AccountCheck();
         for (Scope scope : scopes) {
             if (leaseLost.get()) throw new SecretJobFailure(SecretJobFailureCode.LEASE_EXPIRED, true);
-            ScopeResult result = processScope(job, scope, execution);
+            ScopeResult result = processScope(job, scope, execution, account);
             if (result.usable()) succeeded++;
             if (!result.complete()) allSucceeded = false;
             if (firstGap == null) firstGap = result.gap();
@@ -115,7 +123,10 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
     }
 
     private ScopeResult processScope(ClaimedSecretJob job, Scope scope,
-                                     SecretJobExecutionService execution) {
+                                     SecretJobExecutionService execution, AccountCheck account) {
+        if (AwsMetadataApprovedScope.supports(scope.contentType())) {
+            return processAdditionalScope(job, scope, execution, account);
+        }
         if (!"IAM_ACCESS_KEY_METADATA".equals(scope.contentType())) {
             finishScope(job, execution, scope.runScopeId(), "SKIPPED", 0,
                     "AWS_SERVICE_UNSUPPORTED", "AWS_SERVICE_UNSUPPORTED");
@@ -158,6 +169,63 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
                 result.status() == AwsIamCollector.Status.SUCCEEDED, gap);
     }
 
+    private ScopeResult processAdditionalScope(ClaimedSecretJob job, Scope scope,
+                                               SecretJobExecutionService execution,
+                                               AccountCheck account) {
+        AwsMetadataApprovedScope approved;
+        try {
+            approved = AwsMetadataApprovedScope.parse(scope.contentType(), scope.approvedRef(),
+                    scope.historyLimit());
+        } catch (IllegalArgumentException error) {
+            finishScope(job, execution, scope.runScopeId(), "FAILED", 0,
+                    "AWS_INVALID_APPROVED_SCOPE", null);
+            return new ScopeResult(false, false, "AWS_INVALID_APPROVED_SCOPE");
+        }
+        String accountGap = account.check(approved.accountId());
+        if (accountGap != null) {
+            finishScope(job, execution, scope.runScopeId(), "FAILED", 0, accountGap, null);
+            return new ScopeResult(false, false, accountGap);
+        }
+        withLease(job, execution, () -> jdbc.update("""
+                UPDATE secret_run_scopes SET collection_status = 'RUNNING',
+                    started_at = COALESCE(started_at, ?), finished_at = NULL,
+                    object_count = NULL, failure_code = NULL, unsupported_reason = NULL
+                WHERE run_scope_id = ?
+                """, now(), scope.runScopeId()));
+        AwsMetadataCollector.Result result = additional.collect(approved.service(), approved.region());
+        String gap = result.gaps().isEmpty() ? null : "AWS_" + result.gaps().getFirst().name();
+        finishScope(job, execution, scope.runScopeId(), result.status().name(),
+                result.objectCount(), gap, null);
+        return new ScopeResult(result.status() == AwsMetadataCollector.Status.SUCCEEDED
+                || result.status() == AwsMetadataCollector.Status.PARTIAL,
+                result.status() == AwsMetadataCollector.Status.SUCCEEDED, gap);
+    }
+
+    private final class AccountCheck {
+        private boolean checked;
+        private String profileAccountId;
+        private String failure;
+
+        String check(String expected) {
+            if (!checked) {
+                checked = true;
+                try {
+                    profileAccountId = accountGateway.accountId();
+                } catch (AwsIamSourceException error) {
+                    failure = switch (error.code()) {
+                        case ACCESS_DENIED -> "AWS_ACCESS_DENIED";
+                        case RATE_LIMITED -> "AWS_RATE_LIMITED";
+                        case UNAVAILABLE, INVALID_RESPONSE -> "AWS_SOURCE_UNAVAILABLE";
+                    };
+                } catch (RuntimeException error) {
+                    failure = "AWS_SOURCE_UNAVAILABLE";
+                }
+            }
+            if (failure != null) return failure;
+            return expected.equals(profileAccountId) ? null : "AWS_ACCOUNT_MISMATCH";
+        }
+    }
+
     private void finishScope(ClaimedSecretJob job, SecretJobExecutionService execution,
                              long runScopeId, String status, int count,
                              String failure, String unsupported) {
@@ -179,12 +247,15 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
 
     private static SecretJobFailureCode retryCode(String gap) {
         if ("AWS_RATE_LIMITED".equals(gap)) return SecretJobFailureCode.SOURCE_RATE_LIMITED;
-        if ("AWS_UNAVAILABLE".equals(gap)) return SecretJobFailureCode.SOURCE_UNAVAILABLE;
+        if ("AWS_UNAVAILABLE".equals(gap) || "AWS_SOURCE_UNAVAILABLE".equals(gap)) {
+            return SecretJobFailureCode.SOURCE_UNAVAILABLE;
+        }
         return SecretJobFailureCode.SOURCE_ACCESS_DENIED;
     }
 
     private static boolean retryable(String gap) {
-        return "AWS_RATE_LIMITED".equals(gap) || "AWS_UNAVAILABLE".equals(gap);
+        return "AWS_RATE_LIMITED".equals(gap) || "AWS_UNAVAILABLE".equals(gap)
+                || "AWS_SOURCE_UNAVAILABLE".equals(gap);
     }
 
     private record Scope(long runScopeId, long scopeId, String contentType,
