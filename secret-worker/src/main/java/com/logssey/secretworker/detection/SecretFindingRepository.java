@@ -96,7 +96,24 @@ public final class SecretFindingRepository {
         }
         try {
             return transactions.execute(status -> persistObject(toolRunId, sourceObjectRef, objectVersion,
-                    utf8Content, scan, now));
+                    utf8Content, null, scan, now));
+        } catch (DataAccessException error) {
+            throw new IllegalStateException("SECRET_PERSISTENCE_FAILED");
+        }
+    }
+
+    /** Reuses a single in-memory inspection for persistence and validation handoff. */
+    public ObjectResult recordInspection(long toolRunId, String sourceObjectRef, String objectVersion,
+                                         SecretFindingNormalizer.Inspection inspection,
+                                         GitleaksScanResult scan, Instant now) {
+        if (toolRunId <= 0 || sourceObjectRef == null || sourceObjectRef.isBlank()
+                || sourceObjectRef.length() > 500 || objectVersion != null && objectVersion.length() > 200
+                || inspection == null || scan == null || now == null) {
+            throw new IllegalArgumentException("INVALID_DETECTION_OBJECT");
+        }
+        try {
+            return transactions.execute(status -> persistObject(toolRunId, sourceObjectRef, objectVersion,
+                    null, inspection, scan, now));
         } catch (DataAccessException error) {
             throw new IllegalStateException("SECRET_PERSISTENCE_FAILED");
         }
@@ -120,7 +137,8 @@ public final class SecretFindingRepository {
     }
 
     private ObjectResult persistObject(long toolRunId, String sourceObjectRef, String objectVersion,
-                                       byte[] content, GitleaksScanResult scan, Instant now) {
+                                       byte[] content, SecretFindingNormalizer.Inspection supplied,
+                                       GitleaksScanResult scan, Instant now) {
         ToolContext context = jdbc.query("""
                 SELECT sr.run_id, sr.connection_id, rs.scope_id, tr.engine_version, tr.config_hash, tr.status
                 FROM secret_tool_runs tr
@@ -137,8 +155,14 @@ public final class SecretFindingRepository {
                 || !context.configHash().equals(scan.configHash())) {
             throw new IllegalArgumentException("TOOL_RUN_RESULT_MISMATCH");
         }
-        List<SecretFindingNormalizer.Credential> normalized = normalizer.normalize(context.connectionId(),
-                sourceObjectRef, content, scan.findings());
+        SecretFindingNormalizer.Inspection inspection = supplied == null
+                ? normalizer.inspect(context.connectionId(), sourceObjectRef, content, scan.findings()) : supplied;
+        if (inspection.connectionId() != context.connectionId()
+                || !inspection.sourceObjectRef().equals(sourceObjectRef)
+                || !inspection.detectorFindings().equals(scan.findings())) {
+            throw new IllegalArgumentException("INSPECTION_SCOPE_MISMATCH");
+        }
+        List<SecretFindingNormalizer.Credential> normalized = inspection.credentials();
         int storedFindings = 0;
         for (SecretFindingNormalizer.Credential credential : normalized) {
             long credentialSetId = upsertCredential(credential, now);
