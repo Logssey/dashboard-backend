@@ -25,6 +25,12 @@ Java 21 / Spring Boot를 사용하는 별도 프로세스다. 대시보드 API�
 
 현재 `SecretJobProcessor` 구현은 없다. 수집기와 탐지기를 연결하는 PR에서 이 계약을 구현하고 실행기를 활성화한다. API 프로세스는 실행 서비스를 호출하지 않는다.
 
+## AWS 키 검증 어댑터
+
+`AwsCredentialValidator`는 메모리의 완전한 AWS access key ID·secret access key 쌍만 AWS STS `GetCallerIdentity`로 확인한다. `ASIA` 임시 키에는 session token도 필요하다. 호출은 발견한 키로 직접 서명하며 워커의 AWS 프로필이나 기본 자격 증명을 사용하지 않는다. STS 대상은 `us-east-1`의 공식 HTTPS 엔드포인트로 고정했다. 리소스 권한·실제 사용 여부는 이 결과로 판단하지 않는다.
+
+`SECRET_AWS_VALIDATION_ENABLED`는 기본 `false`다. 비활성 또는 불완전한 쌍은 `UNCHECKED`로, 명확한 키 ID 부재·세션 만료는 `INVALID`로, 서명 불일치·권한 오류·호출 제한·네트워크 오류는 `UNKNOWN`으로 반환한다. 결과에는 안전한 사유 코드, 검사 시각, 방법과 버전만 담는다. 원문 자격 증명, 공급자 오류 본문과 예외 메시지는 결과나 로그에 넣지 않는다. 현재 작업 처리기에 연결되지 않았으므로 이 어댑터만 추가해도 검증 호출은 시작되지 않는다.
+
 `V3__create_secret_scheduler_tables.sql`에 연결, 승인 범위, 작업, 검사 실행, 실행 범위 테이블 5개를 추가했다. API와 워커는 같은 원본 Flyway 마이그레이션을 패키징한다. 공유된 V1·V2는 변경하지 않았다.
 
 이번 단계의 작업 종류는 `FULL_SCAN`뿐이다. 공급자 호출, 수동 재검증과 조회 API는 다음 단계에서 구현한다. 향후 `REVALIDATE`는 자격 증명 테이블과 FK를 추가하는 새 마이그레이션으로 확장한다.
