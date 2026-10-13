@@ -7,7 +7,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication
 @EnableScheduling
-@EnableConfigurationProperties(SecretSchedulerProperties.class)
+@EnableConfigurationProperties({SecretSchedulerProperties.class, SecretJobProperties.class})
 public class SecretWorkerApplication {
 
     public static void main(String[] args) {
