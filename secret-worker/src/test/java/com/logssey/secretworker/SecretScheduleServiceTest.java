@@ -88,9 +88,12 @@ class SecretScheduleServiceTest {
         long disabledScope = connection("ACTIVE", pastDue(), true);
         jdbc.update("UPDATE secret_connection_scopes SET enabled = false WHERE connection_id = ?", disabledScope);
         connection("ACTIVE", pastDue(), false);
+        var unsupportedDue = pastDue();
+        long unsupported = connection("AWS", "ACTIVE", unsupportedDue, true);
 
         assertThat(service.reserveDueJobs()).isZero();
         assertThat(count("secret_jobs")).isZero();
+        assertThat(nextDue(unsupported)).isEqualTo(unsupportedDue);
     }
 
     @Test
@@ -271,10 +274,14 @@ class SecretScheduleServiceTest {
     }
 
     private long connection(String status, OffsetDateTime due, boolean addScope) {
+        return connection("GITHUB", status, due, addScope);
+    }
+
+    private long connection(String provider, String status, OffsetDateTime due, boolean addScope) {
         long id = jdbc.queryForObject("""
                 INSERT INTO secret_connections (provider, display_name, auth_ref, status, scope_version, next_due_at)
-                VALUES ('GITHUB', 'Synthetic schedule', 'test-only-reference', ?, 1, ?) RETURNING connection_id
-                """, Long.class, status, due);
+                VALUES (?, 'Synthetic schedule', 'test-only-reference', ?, 1, ?) RETURNING connection_id
+                """, Long.class, provider, status, due);
         if (addScope) {
             jdbc.update("""
                     INSERT INTO secret_connection_scopes

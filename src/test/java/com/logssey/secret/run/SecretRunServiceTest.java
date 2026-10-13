@@ -134,15 +134,30 @@ class SecretRunServiceTest {
     }
 
     @Test
+    void idempotencyReplayDoesNotReturnAnOldJobAfterProviderBecomesUnsupported() {
+        long connection = connection("ACTIVE", null);
+        scope(connection, "fixtures/", true);
+        var request = new SecretRunRequest(connection, "previous-github-run");
+        service.register(request, "admin");
+        jdbc.update("UPDATE secret_connections SET provider = 'AWS' WHERE connection_id = ?", connection);
+
+        assertConflict(() -> service.register(request, "admin"));
+        assertThat(count("secret_jobs")).isEqualTo(1);
+    }
+
+    @Test
     void rejectsUnknownInactiveAndUnapprovedConnectionsWithoutPartialWrites() {
         long paused = connection("PAUSED", null);
         scope(paused, "paused/", true);
         long noScopes = connection("ACTIVE", null);
         scope(noScopes, "disabled/", false);
+        long unsupported = connection("AWS", "ACTIVE", null);
+        scope(unsupported, "fixtures/", true);
 
         assertCode(ErrorCode.NOT_FOUND, () -> service.register(new SecretRunRequest(999L, null), "admin"));
         assertConflict(() -> service.register(new SecretRunRequest(paused, null), "admin"));
         assertConflict(() -> service.register(new SecretRunRequest(noScopes, null), "admin"));
+        assertConflict(() -> service.register(new SecretRunRequest(unsupported, null), "admin"));
         assertThat(count("secret_jobs")).isZero();
         assertThat(count("secret_scan_runs")).isZero();
         assertThat(count("secret_run_scopes")).isZero();
@@ -278,12 +293,16 @@ class SecretRunServiceTest {
     }
 
     private long connection(String status, OffsetDateTime nextDue) {
+        return connection("GITHUB", status, nextDue);
+    }
+
+    private long connection(String provider, String status, OffsetDateTime nextDue) {
         return jdbc.queryForObject("""
                 INSERT INTO secret_connections
                     (provider, display_name, auth_ref, status, scope_version, next_due_at)
-                VALUES ('GITHUB', 'Test connection', 'test-only-ref', ?, 1, ?)
+                VALUES (?, 'Test connection', 'test-only-ref', ?, 1, ?)
                 RETURNING connection_id
-                """, Long.class, status, nextDue);
+                """, Long.class, provider, status, nextDue);
     }
 
     private long scope(long connectionId, String key, boolean enabled) {
