@@ -21,7 +21,7 @@ public class SecretRunService {
     private static final Set<String> PUBLIC_FAILURE_CODES = Set.of(
             "LEASE_EXPIRED", "PROCESSOR_FAILURE", "INCOMPLETE_RUN", "SOURCE_UNAVAILABLE",
             "SOURCE_ACCESS_DENIED", "SOURCE_RATE_LIMITED", "DETECTOR_TEMPORARY",
-            "VALIDATOR_TEMPORARY");
+            "VALIDATOR_TEMPORARY", "VALIDATION_ATTEMPT_FAILED", "VALIDATION_INCONCLUSIVE");
 
     private final SecretRunRepository repository;
     private final TransactionTemplate transaction;

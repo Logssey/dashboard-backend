@@ -113,9 +113,11 @@ class SecretJobRepository {
                 WHERE job_id = ?
                 """, now, row.jobId());
         jdbc.update("""
-                UPDATE secret_scan_runs SET result_status = ?, failure_code = NULL, finished_at = ?
+                UPDATE secret_scan_runs SET result_status = ?,
+                    failure_code = CASE WHEN ? = 'SUCCEEDED' THEN NULL ELSE failure_code END,
+                    finished_at = ?
                 WHERE run_id = ?
-                """, resultStatus, now, row.runId());
+                """, resultStatus, resultStatus, now, row.runId());
         updateLastCollectionSuccess(row);
     }
 

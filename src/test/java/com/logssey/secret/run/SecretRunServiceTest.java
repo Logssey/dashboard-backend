@@ -233,6 +233,11 @@ class SecretRunServiceTest {
         assertThat(result.attemptNo()).isEqualTo(1);
         assertThat(result.startedAt()).isNotNull();
 
+        jdbc.update("UPDATE secret_scan_runs SET failure_code = 'VALIDATION_INCONCLUSIVE' WHERE run_id = ?",
+                accepted.runId());
+        assertThat(service.status(accepted.runId(), "admin").failureCode())
+                .isEqualTo("VALIDATION_INCONCLUSIVE");
+
         jdbc.update("""
                 UPDATE secret_jobs SET status = 'FAILED', last_error_code = 'SOURCE_ACCESS_DENIED'
                 WHERE connection_id = ?

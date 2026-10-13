@@ -1,6 +1,6 @@
 # Secret 작업 예약 워커
 
-현재 구현은 작업 예약, DB 기반 실행 관리와 승인된 GitHub 파일의 수집·탐지·정규화 저장을 제공한다. GitHub 처리기와 실행기는 기본 비활성화다.
+현재 구현은 작업 예약, DB 기반 실행 관리와 승인된 GitHub 파일의 수집·탐지·정규화 저장, AWS 키 검증 결과 기록을 제공한다. GitHub 처리기와 실행기, 외부 AWS 검증은 기본 비활성화다.
 
 Java 21 / Spring Boot를 사용하는 별도 프로세스다. 대시보드 API에는 워커 의존성이나 스케줄러를 넣지 않았다. 기준은 Secret ADR-S002, ADR-S008과 `database-schema.md`다.
 
@@ -29,7 +29,7 @@ GitHub `SecretJobProcessor`는 `GITHUB` 연결의 승인된 현재 커밋만 처
 
 읽기 전용 GitHub App의 `SECRET_GITHUB_APP_ID`, `SECRET_GITHUB_INSTALLATION_ID`, `SECRET_GITHUB_PRIVATE_KEY_PATH`와 Gitleaks 8.30.1 실행 파일 경로 `SECRET_GITLEAKS_PATH`를 워커 환경에 지정한다. 정규화용 HMAC 키는 32바이트 이상을 base64로 인코딩해 `SECRET_FINGERPRINT_KEY_BASE64`에, 키 버전은 `SECRET_FINGERPRINT_KEY_VERSION`에 지정한다. 실제 값은 Git이나 DB에 넣지 않는다.
 
-처리기는 `github://owner/repository/branch/path/` 형식의 승인된 범위와 `CURRENT_COMMIT_ONLY`만 수집한다. 파일 크기·총 바이트·트리 깊이 제한을 넘기거나 원천 요청이 실패하면 해당 범위를 `PARTIAL` 또는 `FAILED`로 기록한다. 파일 바이트는 메모리에서 Gitleaks `stdin`으로 넘겨 즉시 정규화하고, DB에는 키의 HMAC과 마스킹 라벨, 발견 위치·규칙만 저장한다. AWS 유효성 검증은 별도 승인·설정이 필요한 다음 단계다.
+처리기는 `github://owner/repository/branch/path/` 형식의 승인된 범위와 `CURRENT_COMMIT_ONLY`만 수집한다. 파일 크기·총 바이트·트리 깊이 제한을 넘기거나 원천 요청이 실패하면 해당 범위를 `PARTIAL` 또는 `FAILED`로 기록한다. 파일 바이트는 메모리에서 Gitleaks `stdin`으로 넘겨 즉시 정규화하고, DB에는 키의 HMAC과 마스킹 라벨, 발견 위치·규칙만 저장한다. 같은 실행에서 동일한 완전 AWS 키는 한 번만 검증하고, 파일별 발견 위치는 모두 보존한다. 검증 호출은 DB 트랜잭션 밖에서 수행한다.
 
 ```powershell
 .\gradlew.bat :secret-worker:bootJar
@@ -42,11 +42,11 @@ java -jar .\secret-worker\build\libs\secret-worker-0.0.1-SNAPSHOT.jar --logssey.
 
 `AwsCredentialValidator`는 메모리의 완전한 AWS access key ID·secret access key 쌍만 AWS STS `GetCallerIdentity`로 확인한다. `ASIA` 임시 키에는 session token도 필요하다. 호출은 발견한 키로 직접 서명하며 워커의 AWS 프로필이나 기본 자격 증명을 사용하지 않는다. STS 대상은 `us-east-1`의 공식 HTTPS 엔드포인트로 고정했다. 리소스 권한·실제 사용 여부는 이 결과로 판단하지 않는다.
 
-`SECRET_AWS_VALIDATION_ENABLED`는 기본 `false`다. 비활성 또는 불완전한 쌍은 `UNCHECKED`로, 명확한 키 ID 부재·세션 만료는 `INVALID`로, 서명 불일치·권한 오류·호출 제한·네트워크 오류는 `UNKNOWN`으로 반환한다. 결과에는 안전한 사유 코드, 검사 시각, 방법과 버전만 담는다. 원문 자격 증명, 공급자 오류 본문과 예외 메시지는 결과나 로그에 넣지 않는다. 현재 작업 처리기에 연결되지 않았으므로 이 어댑터만 추가해도 검증 호출은 시작되지 않는다.
+`SECRET_AWS_VALIDATION_ENABLED`는 기본 `false`다. 비활성 또는 불완전한 쌍은 `UNCHECKED`로, 명확한 키 ID 부재·세션 만료는 `INVALID`로, 서명 불일치·권한 오류·호출 제한·네트워크 오류는 `UNKNOWN`으로 반환한다. 결과에는 안전한 사유 코드, 검사 시각, 방법과 버전만 담는다. 원문 자격 증명, 공급자 오류 본문과 예외 메시지는 결과나 로그에 넣지 않는다. `SECRET_AWS_VALIDATION_ENABLED=true`로 명시적으로 켠 경우에만 GitHub 처리기가 발견한 완전한 AWS 키를 STS에 전달한다. 합성 실험 저장소 `Logssey/test-find-key`는 설정과 관계없이 STS 호출을 차단하고 `UNCHECKED/SYNTHETIC_FIXTURE`로 기록한다. 기본 비활성일 때는 `UNCHECKED/DISABLED`로 기록한다. 검증이 불확실하거나 저장에 실패하면 실행의 검증 단계를 `PARTIAL`로 표시하며 발견 위치는 유지한다.
 
-`V3__create_secret_scheduler_tables.sql`에 연결, 승인 범위, 작업, 검사 실행, 실행 범위 테이블 5개를 추가했다. API와 워커는 같은 원본 Flyway 마이그레이션을 패키징한다. 공유된 V1·V2는 변경하지 않았다.
+`V3__create_secret_scheduler_tables.sql`은 연결·작업·실행을, V4는 탐지 키·발견 위치·도구 실행을, V5는 안전한 검증 시도 이력을 저장한다. API와 워커는 같은 Flyway 마이그레이션을 패키징한다. 공유된 V1·V2는 변경하지 않았다.
 
-이번 단계의 작업 종류는 `FULL_SCAN`뿐이다. 공급자 호출, 수동 재검증과 조회 API는 다음 단계에서 구현한다. 향후 `REVALIDATE`는 자격 증명 테이블과 FK를 추가하는 새 마이그레이션으로 확장한다.
+현재 작업 종류는 `FULL_SCAN`뿐이다. API는 `POST /api/v1/secrets/runs`로 수동 스캔 작업을 등록하고 `GET /api/v1/secrets/runs/{runId}`로 실행 상태를 조회한다. 키 목록 조회와 별도 `REVALIDATE` 작업은 아직 구현되지 않았다.
 
 ## 실행
 

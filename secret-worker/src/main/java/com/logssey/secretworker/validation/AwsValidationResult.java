@@ -13,6 +13,7 @@ public record AwsValidationResult(Status status, Reason reason, Instant evaluate
         SIGNATURE_AMBIGUOUS,
         EXPIRED_SESSION,
         DISABLED,
+        SYNTHETIC_FIXTURE,
         INCOMPLETE_PAIR,
         MISSING_SESSION_TOKEN,
         ACCESS_AMBIGUOUS,
