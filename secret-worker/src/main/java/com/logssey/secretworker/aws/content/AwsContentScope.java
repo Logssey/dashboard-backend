@@ -31,6 +31,8 @@ public final class AwsContentScope {
     public static AwsContentScope fromApprovedRef(String contentType, String approvedRef,
                                                    String historyLimit) {
         if (!"CURRENT_VALUE_ONLY".equals(historyLimit)) throw invalid();
+        // V3 secret_connection_scopes.approved_ref is VARCHAR(500).
+        if (approvedRef == null || approvedRef.length() > 500) throw invalid();
         Kind kind = switch (contentType == null ? "" : contentType) {
             case "AWS_SECRETS_MANAGER_VALUE" -> Kind.SECRETS_MANAGER;
             case "AWS_SSM_PARAMETER_VALUE" -> Kind.SSM_PARAMETER;

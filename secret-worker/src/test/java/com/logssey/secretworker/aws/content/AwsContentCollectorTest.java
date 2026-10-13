@@ -106,6 +106,9 @@ class AwsContentCollectorTest {
                 "CURRENT_VALUE_ONLY").objectKey());
         assertThrows(IllegalArgumentException.class, () -> AwsContentScope.fromApprovedRef(
                 "AWS_S3_OBJECT_CONTENT", object.replace("%2F", "/"), "CURRENT_VALUE_ONLY"));
+        assertThrows(IllegalArgumentException.class, () -> AwsContentScope.fromApprovedRef(
+                "AWS_S3_OBJECT_CONTENT", "aws://" + ACCOUNT + "/" + REGION
+                        + "/s3/object/fixture-bucket/" + "x".repeat(480), "CURRENT_VALUE_ONLY"));
     }
 
     private static AwsContentScope secretScope() {
