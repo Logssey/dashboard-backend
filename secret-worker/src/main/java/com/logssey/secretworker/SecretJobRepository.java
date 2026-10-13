@@ -21,7 +21,7 @@ class SecretJobRepository {
         return jdbc.queryForObject("SELECT clock_timestamp()", OffsetDateTime.class);
     }
 
-    List<JobRow> lockAvailable(OffsetDateTime now, int limit) {
+    List<JobRow> lockAvailable(OffsetDateTime now, int limit, String provider) {
         return jdbc.query("""
                 SELECT j.job_id, r.run_id, j.connection_id, j.attempt_no, j.max_attempts,
                        j.status, j.lease_owner, j.lease_until
@@ -29,9 +29,10 @@ class SecretJobRepository {
                 JOIN secret_connections c ON c.connection_id = j.connection_id
                 JOIN secret_scan_runs r ON r.job_id = j.job_id
                 WHERE j.status = 'PENDING' AND j.available_at <= ? AND c.status = 'ACTIVE'
+                  AND c.provider = COALESCE(?, c.provider)
                 ORDER BY j.available_at, j.job_id
                 LIMIT ? FOR UPDATE OF j SKIP LOCKED
-                """, (rs, row) -> jobRow(rs), now, limit);
+                """, (rs, row) -> jobRow(rs), now, provider, limit);
     }
 
     List<JobRow> lockExpired(OffsetDateTime now, int limit) {

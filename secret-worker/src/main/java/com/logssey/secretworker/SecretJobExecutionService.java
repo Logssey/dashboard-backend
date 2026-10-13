@@ -24,9 +24,13 @@ public class SecretJobExecutionService {
     }
 
     public Optional<ClaimedSecretJob> claimNextJob() {
+        return claimNextJob(null);
+    }
+
+    public Optional<ClaimedSecretJob> claimNextJob(String provider) {
         return Objects.requireNonNull(transaction.execute(status -> {
             OffsetDateTime now = repository.databaseNow();
-            var available = repository.lockAvailable(now, 1);
+            var available = repository.lockAvailable(now, 1, provider);
             if (available.isEmpty()) {
                 return Optional.<ClaimedSecretJob>empty();
             }
