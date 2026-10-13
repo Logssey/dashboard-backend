@@ -35,7 +35,7 @@ public class SecretJobPoller {
             execution.recoverExpiredJobs();
             // Claim immediately before processing so a queued local job does not lose its lease.
             for (int i = 0; i < properties.batchSize(); i++) {
-                var job = execution.claimNextJob();
+                var job = execution.claimNextJob(processor.provider());
                 if (job.isEmpty()) {
                     break;
                 }

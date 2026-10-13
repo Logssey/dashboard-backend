@@ -103,6 +103,10 @@ public final class GitleaksDetector {
         }
     }
 
+    public String configHash() {
+        return configHash;
+    }
+
     static List<GitleaksFinding> parseReport(byte[] report) {
         try {
             JsonNode root = JSON.readTree(report);
