@@ -31,7 +31,7 @@ class SecretInventoryControllerTest {
                 List.of(new SecretOccurrenceResponse(1, 7, "repo/a.txt", "L1", "UNKNOWN",
                                 "UNKNOWN", "UNKNOWN", "PRESENT", NOW, NOW),
                         new SecretOccurrenceResponse(2, 7, "repo/b.java", "L9", "UNKNOWN",
-                                "UNKNOWN", "UNKNOWN", "PRESENT", NOW, NOW))));
+                                "UNKNOWN", "UNKNOWN", "PRESENT", NOW, NOW)), null));
         var mvc = MockMvcBuilders.standaloneSetup(new SecretInventoryController(service)).build();
         var admin = new UsernamePasswordAuthenticationToken("admin", "n/a");
 
@@ -51,6 +51,28 @@ class SecretInventoryControllerTest {
                 .andExpect(jsonPath("$.occurrences[0].environment").value("UNKNOWN"))
                 .andExpect(jsonPath("$.externalKeyRef").doesNotExist())
                 .andExpect(jsonPath("$.authRef").doesNotExist());
+    }
+
+    @Test
+    void exposesIamMetadataOnlyWithoutInternalKeyReference() throws Exception {
+        var service = mock(SecretInventoryService.class);
+        when(service.detail(7, "admin")).thenReturn(new SecretDetailResponse(
+                7, "AWS", "AWS_IAM_ACCESS_KEY", "METADATA_ONLY",
+                "AWS IAM access key ····CDEF", "UNASSESSED", "UNCHECKED",
+                null, null, null, 1, NOW, NOW, "UNKNOWN", null, "UNKNOWN",
+                List.of(), new AwsIamMetadataResponse("ACTIVE", NOW, NOW,
+                "Amazon S3", "ap-northeast-1", NOW)));
+        var mvc = MockMvcBuilders.standaloneSetup(new SecretInventoryController(service)).build();
+        var admin = new UsernamePasswordAuthenticationToken("admin", "n/a");
+        mvc.perform(get("/api/v1/secrets/7").principal(admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.componentState").value("METADATA_ONLY"))
+                .andExpect(jsonPath("$.validationStatus").value("UNCHECKED"))
+                .andExpect(jsonPath("$.severity").value("UNASSESSED"))
+                .andExpect(jsonPath("$.iamMetadata.keyStatus").value("ACTIVE"))
+                .andExpect(jsonPath("$.iamMetadata.lastUsedService").value("Amazon S3"))
+                .andExpect(jsonPath("$.externalKeyRef").doesNotExist())
+                .andExpect(jsonPath("$.accessKeyId").doesNotExist());
     }
 
     @Test

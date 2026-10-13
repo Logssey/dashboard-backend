@@ -36,3 +36,10 @@ out/
 ### VS Code ###
 .vscode/
 .env
+# Local collector credentials and artifacts must never enter a PR.
+/.aws/
+**/local-secrets/
+*.pem
+*.p12
+*.pfx
+*.jks

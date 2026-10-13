@@ -95,15 +95,21 @@ class SecretJobRepository {
                 SELECT COUNT(*) AS total,
                        COUNT(*) FILTER (WHERE collection_status IN ('SUCCEEDED', 'PARTIAL', 'FAILED', 'SKIPPED')) AS terminal,
                        COUNT(*) FILTER (WHERE collection_status IN ('PARTIAL', 'FAILED', 'SKIPPED')) AS incomplete,
-                       COUNT(*) FILTER (WHERE collection_status = 'SUCCEEDED'
-                                            OR (collection_status = 'PARTIAL' AND object_count > 0)) AS usable,
+                       COUNT(*) FILTER (WHERE rs.collection_status = 'SUCCEEDED'
+                                            OR (rs.collection_status = 'PARTIAL'
+                                                AND (rs.object_count > 0
+                                                     OR (RIGHT(s.content_type, 9) = '_METADATA'
+                                                         AND rs.object_count IS NOT NULL)))) AS usable,
                        COUNT(*) FILTER (WHERE collection_status = 'SUCCEEDED'
                                             AND (object_count IS NULL OR finished_at IS NULL)) AS uncompleted,
-                       COALESCE(SUM(object_count), 0) AS object_total
-                FROM secret_run_scopes WHERE run_id = ?
+                       COALESCE(SUM(CASE WHEN RIGHT(s.content_type, 9) = '_METADATA'
+                           THEN 0 ELSE rs.object_count END), 0) AS detector_object_total
+                FROM secret_run_scopes rs
+                JOIN secret_connection_scopes s ON s.scope_id = rs.scope_id
+                WHERE rs.run_id = ?
                 """, (rs, row) -> new ScopeState(rs.getLong("total"), rs.getLong("terminal"),
                 rs.getLong("incomplete"), rs.getLong("usable"), rs.getLong("uncompleted"),
-                rs.getLong("object_total")), runId);
+                rs.getLong("detector_object_total")), runId);
     }
 
     void finish(JobRow row, OffsetDateTime now, String resultStatus) {

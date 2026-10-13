@@ -67,6 +67,11 @@ class SecretInventoryRepository {
                        latest.result AS validation_result, latest.reason_code AS validation_reason,
                        latest.completed_at AS validated_at,
                        latest.provider_checked_at AS validation_checked_at,
+                       iam.key_status AS iam_key_status, iam.issued_at AS iam_issued_at,
+                       iam.last_used_at AS iam_last_used_at,
+                       iam.last_used_service AS iam_last_used_service,
+                       iam.last_used_region AS iam_last_used_region,
+                       iam.observed_at AS iam_observed_at,
                        (SELECT COUNT(*) FROM secret_occurrences o
                         WHERE o.credential_set_id = c.credential_set_id) AS occurrence_count
                 FROM secret_credential_sets c
@@ -76,6 +81,13 @@ class SecretInventoryRepository {
                     WHERE v.credential_set_id = c.credential_set_id
                     ORDER BY v.completed_at DESC, v.attempt_id DESC LIMIT 1
                 ) latest ON TRUE
+                LEFT JOIN LATERAL (
+                    SELECT m.key_status, m.issued_at, m.last_used_at,
+                           m.last_used_service, m.last_used_region, m.observed_at
+                    FROM secret_aws_access_key_observations m
+                    WHERE m.credential_set_id = c.credential_set_id
+                    ORDER BY m.observed_at DESC, m.run_id DESC LIMIT 1
+                ) iam ON TRUE
                 WHERE c.credential_set_id = ?
                 """, (rs, row) -> new SecretDetailResponse(
                 rs.getLong("credential_set_id"), rs.getString("issuer"),
@@ -86,7 +98,7 @@ class SecretInventoryRepository {
                 rs.getLong("occurrence_count"), time(rs, "first_seen_at"),
                 time(rs, "last_seen_at"), rs.getString("expiry_policy"),
                 time(rs, "expires_at"), rs.getString("lifecycle_status"),
-                occurrences(id)), id).stream().findFirst();
+                occurrences(id), iamMetadata(rs)), id).stream().findFirst();
     }
 
     List<SecretConnectionResponse> connections() {
@@ -95,8 +107,18 @@ class SecretInventoryRepository {
                        COUNT(s.scope_id) AS approved_scope_count
                 FROM secret_connections c
                 JOIN secret_connection_scopes s ON s.connection_id = c.connection_id AND s.enabled
-                WHERE c.status = 'ACTIVE' AND c.provider = 'GITHUB'
+                WHERE c.status = 'ACTIVE' AND c.provider IN ('GITHUB', 'AWS')
                 GROUP BY c.connection_id, c.provider, c.display_name, c.status
+                HAVING c.provider = 'GITHUB'
+                    OR (c.auth_ref ~ '^aws-profile:[A-Za-z0-9._-]{1,100}$'
+                        AND COUNT(*) FILTER (WHERE s.content_type = 'IAM_ACCESS_KEY_METADATA'
+                            AND s.approved_ref ~ '^aws://[0-9]{12}/global/iam/access-keys$'
+                            AND (s.history_limit IS NULL
+                                 OR s.history_limit = 'CURRENT_STATE_ONLY')) > 0
+                        AND COUNT(*) FILTER (WHERE NOT (s.content_type = 'IAM_ACCESS_KEY_METADATA'
+                            AND s.approved_ref ~ '^aws://[0-9]{12}/global/iam/access-keys$'
+                            AND (s.history_limit IS NULL
+                                 OR s.history_limit = 'CURRENT_STATE_ONLY'))) = 0)
                 ORDER BY c.display_name, c.connection_id
                 """, (rs, row) -> new SecretConnectionResponse(
                 rs.getLong("connection_id"), rs.getString("provider"),
@@ -132,6 +154,14 @@ class SecretInventoryRepository {
     private static String validationStatus(ResultSet rs) throws SQLException {
         String result = rs.getString("validation_result");
         return result == null ? "UNCHECKED" : result;
+    }
+
+    private static AwsIamMetadataResponse iamMetadata(ResultSet rs) throws SQLException {
+        if (rs.getString("iam_key_status") == null) return null;
+        return new AwsIamMetadataResponse(rs.getString("iam_key_status"),
+                time(rs, "iam_issued_at"), time(rs, "iam_last_used_at"),
+                rs.getString("iam_last_used_service"), rs.getString("iam_last_used_region"),
+                time(rs, "iam_observed_at"));
     }
 
     private static String safeReason(String reason) {

@@ -97,6 +97,31 @@ class SecretScheduleServiceTest {
     }
 
     @Test
+    void awsMetadataNeedsCollectorOptInAndAnExactApprovedIamScope() {
+        long aws = connection("AWS", "ACTIVE", pastDue(), true);
+        jdbc.update("UPDATE secret_connections SET auth_ref = 'aws-profile:test' WHERE connection_id = ?", aws);
+        jdbc.update("""
+                UPDATE secret_connection_scopes
+                SET content_type = 'IAM_ACCESS_KEY_METADATA',
+                    approved_ref = 'aws://123456789012/global/iam/access-keys',
+                    history_limit = 'CURRENT_STATE_ONLY'
+                WHERE connection_id = ?
+                """, aws);
+        assertThat(service.reserveDueJobs()).isZero();
+        assertThat(count("secret_jobs")).isZero();
+
+        var optedIn = new SecretScheduleService(new SecretScheduleRepository(jdbc, true),
+                properties(true, 100), transactions);
+        jdbc.update("UPDATE secret_connection_scopes SET approved_ref = 'aws://123456789012/global/iam/users' WHERE connection_id = ?", aws);
+        assertThat(optedIn.reserveDueJobs()).isZero();
+        jdbc.update("UPDATE secret_connection_scopes SET approved_ref = 'aws://123456789012/global/iam/access-keys', history_limit = 'ALL_HISTORY' WHERE connection_id = ?", aws);
+        assertThat(optedIn.reserveDueJobs()).isZero();
+        jdbc.update("UPDATE secret_connection_scopes SET history_limit = 'CURRENT_STATE_ONLY' WHERE connection_id = ?", aws);
+        assertThat(optedIn.reserveDueJobs()).isEqualTo(1);
+        assertThat(count("secret_jobs")).isEqualTo(1);
+    }
+
+    @Test
     void repeatedPollAndNewServiceInstanceKeepOneReservationAndPersistedNextDue() {
         long id = connection("ACTIVE", pastDue(), true);
         assertThat(service.reserveDueJobs()).isEqualTo(1);

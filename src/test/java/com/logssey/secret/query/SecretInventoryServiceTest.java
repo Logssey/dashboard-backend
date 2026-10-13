@@ -177,6 +177,51 @@ class SecretInventoryServiceTest {
         assertCode(ErrorCode.FORBIDDEN, () -> nonAdmin.connections("viewer"));
     }
 
+    @Test
+    void showsIamListingAsUnevaluatedMetadataAndLatestUseObservation() {
+        long connection = connection("AWS", "ACTIVE", "AWS inventory");
+        long approved = scope(connection, "iam", true);
+        jdbc.update("""
+                UPDATE secret_connection_scopes SET content_type = 'IAM_ACCESS_KEY_METADATA',
+                    approved_ref = 'aws://123456789012/global/iam/access-keys'
+                WHERE scope_id = ?
+                """, approved);
+        assertThat(service.connections("admin").items()).singleElement()
+                .satisfies(item -> assertThat(item.provider()).isEqualTo("AWS"));
+        long credential = jdbc.queryForObject("""
+                INSERT INTO secret_credential_sets
+                    (issuer, credential_type, component_state, issuer_connection_id,
+                     external_key_ref, masked_label, first_seen_at, last_seen_at)
+                VALUES ('AWS', 'AWS_IAM_ACCESS_KEY', 'METADATA_ONLY', ?,
+                        'hmac:test-v1:abc', 'AWS IAM access key ····CDEF',
+                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                RETURNING credential_set_id
+                """, Long.class, connection);
+        occurrence(credential, connection, approved, "aws://123456789012/global/iam/access-key/hmac:test-v1:abc",
+                "iam/access-key");
+        long[] run = run(connection);
+        jdbc.update("""
+                INSERT INTO secret_aws_access_key_observations
+                    (credential_set_id, run_id, key_status, issued_at,
+                     last_used_at, last_used_service, last_used_region, observed_at)
+                VALUES (?, ?, 'ACTIVE', CURRENT_TIMESTAMP - INTERVAL '30 days',
+                        CURRENT_TIMESTAMP - INTERVAL '1 day', 'Amazon S3',
+                        'ap-northeast-1', CURRENT_TIMESTAMP)
+                """, credential, run[1]);
+        var listed = service.list(0, 20, "AWS", "METADATA_ONLY", "admin").items();
+        assertThat(listed).singleElement().satisfies(item -> {
+            assertThat(item.componentState()).isEqualTo("METADATA_ONLY");
+            assertThat(item.validationStatus()).isEqualTo("UNCHECKED");
+            assertThat(item.severity()).isEqualTo("UNASSESSED");
+        });
+        var detail = service.detail(credential, "admin");
+        assertThat(detail.iamMetadata()).isNotNull();
+        assertThat(detail.iamMetadata().keyStatus()).isEqualTo("ACTIVE");
+        assertThat(detail.iamMetadata().lastUsedService()).isEqualTo("Amazon S3");
+        assertThat(detail.iamMetadata().lastUsedRegion()).isEqualTo("ap-northeast-1");
+        assertThat(detail.toString()).doesNotContain("AKIAABCDEFGHIJKLMNOP", "123456789012:user/");
+    }
+
     private long connection(String status, String name) {
         return connection("GITHUB", status, name);
     }
@@ -185,8 +230,9 @@ class SecretInventoryServiceTest {
         return jdbc.queryForObject("""
                 INSERT INTO secret_connections
                     (provider, display_name, auth_ref, status, scope_version)
-                VALUES (?, ?, 'auth-ref-test-only', ?, 1) RETURNING connection_id
-                """, Long.class, provider, name, status);
+                VALUES (?, ?, ?, ?, 1) RETURNING connection_id
+                """, Long.class, provider, name,
+                "AWS".equals(provider) ? "aws-profile:test" : "auth-ref-test-only", status);
     }
 
     private long scope(long connection, String key, boolean enabled) {
