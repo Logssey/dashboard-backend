@@ -10,10 +10,8 @@ import static com.github.tomakehurst.wiremock.client.WireMock.urlPathEqualTo;
 import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.wireMockConfig;
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -28,10 +26,6 @@ import com.github.tomakehurst.wiremock.stubbing.Scenario;
 import com.logssey.credential.CollectedCredential;
 import com.logssey.credential.CredentialStatus;
 import com.logssey.credential.ExpiryPolicy;
-import com.logssey.credential.risk.RiskType;
-import com.logssey.credential.risk.Severity;
-import com.logssey.credential.risk.TokenRiskEvaluator;
-import com.logssey.credential.risk.TokenRiskFinding;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -52,18 +46,13 @@ class NotionPatCollectorTest {
     private static final String PATH = "/admin/v1/spaces/" + SPACE_ID + "/personal_access_tokens";
 
     // 테스트용 현재 시각과 시각 값 (시나리오 문서 5장)
-    private static final Instant NOW = Instant.parse("2026-10-08T00:00:00Z");
     private static final long JAN_1 = 1767225600000L;
     private static final long IN_90_DAYS = 1799193600000L;
-    private static final long IN_8_DAYS = 1792108800000L;
-    private static final long IN_7_DAYS = 1792022400000L;
     private static final long IN_5_DAYS = 1791849600000L;
     private static final long YESTERDAY = 1791331200000L;
     private static final long DAYS_AGO_2 = 1791244800000L;
     private static final long DAYS_AGO_3 = 1791158400000L;
     private static final long DAYS_AGO_10 = 1790553600000L;
-    private static final long DAYS_AGO_44 = 1787616000000L;
-    private static final long DAYS_AGO_45 = 1787529600000L;
     private static final long DAYS_AGO_60 = 1786233600000L;
 
     /** retry-after 헤더가 없을 때 기다릴 시간 (이번 단계 기준 1초) */
@@ -82,8 +71,7 @@ class NotionPatCollectorTest {
     void setUp() {
         sleeper = new RecordingSleeper();
         NotionAdminSettings settings = NotionAdminSettings.withDefaults(notion.baseUrl() + "/admin", TOKEN);
-        collector = new NotionPatCollector(
-                settings, new TokenRiskEvaluator(Clock.fixed(NOW, ZoneOffset.UTC)), sleeper);
+        collector = new NotionPatCollector(settings, sleeper);
 
         logs = new ListAppender<>();
         logs.start();
@@ -102,7 +90,7 @@ class NotionPatCollectorTest {
     // ---------------------------------------------------------------- 토큰 상태
 
     @Test
-    @DisplayName("N-01 정상: 2개 수집, 탐지 없음, 헤더·시각 변환 확인")
+    @DisplayName("N-01 정상: 2개 수집, 헤더·시각 변환 확인")
     void normal() {
         stubOk(page(false, null,
                 pat("pat-0001", JAN_1, IN_90_DAYS, YESTERDAY, "active"),
@@ -112,7 +100,6 @@ class NotionPatCollectorTest {
 
         assertThat(result.success()).isTrue();
         assertThat(result.credentials()).hasSize(2);
-        assertThat(result.findings()).isEmpty();
 
         CollectedCredential first = result.credentials().get(0);
         assertThat(first.issuer()).isEqualTo("NOTION");
@@ -133,40 +120,29 @@ class NotionPatCollectorTest {
     }
 
     @Test
-    @DisplayName("N-02 만료 임박: 5일 뒤 만료 → LOW 1건")
-    void expiringSoon() {
+    @DisplayName("N-02 만료 시각 수집: 5일 뒤 만료 → 만료 방식 FIXED와 만료 시각만 기록 (등급 없음)")
+    void expiresAtCollected() {
         stubOk(page(false, null, pat("pat-0002", JAN_1, IN_5_DAYS, YESTERDAY, "active")));
 
         NotionCollectionResult result = collector.collect(SPACE_ID);
 
-        assertThat(result.findings()).containsExactly(finding("pat-0002", RiskType.EXPIRING_SOON, Severity.LOW));
+        CollectedCredential token = result.credentials().get(0);
+        assertThat(token.expiryPolicy()).isEqualTo(ExpiryPolicy.FIXED);
+        assertThat(token.expiresAt()).isEqualTo(Instant.parse("2026-10-13T00:00:00Z"));
     }
 
     @Test
-    @DisplayName("N-03 만료 임박 경계: 정확히 7일 뒤는 경고, 8일 뒤는 아님")
-    void expiringSoonBoundary() {
-        stubOk(page(false, null,
-                pat("pat-7d", JAN_1, IN_7_DAYS, YESTERDAY, "active"),
-                pat("pat-8d", JAN_1, IN_8_DAYS, YESTERDAY, "active")));
-
-        NotionCollectionResult result = collector.collect(SPACE_ID);
-
-        assertThat(result.findings()).containsExactly(finding("pat-7d", RiskType.EXPIRING_SOON, Severity.LOW));
-    }
-
-    @Test
-    @DisplayName("N-04 이미 만료: 상태 EXPIRED, LOW 1건")
+    @DisplayName("N-04 이미 만료: 상태 EXPIRED로 기록")
     void expired() {
         stubOk(page(false, null, pat("pat-0004", JAN_1, DAYS_AGO_3, DAYS_AGO_10, "expired")));
 
         NotionCollectionResult result = collector.collect(SPACE_ID);
 
         assertThat(result.credentials().get(0).status()).isEqualTo(CredentialStatus.EXPIRED);
-        assertThat(result.findings()).containsExactly(finding("pat-0004", RiskType.EXPIRED, Severity.LOW));
     }
 
     @Test
-    @DisplayName("N-05 폐기: 상태 REVOKED, 폐기 정보 수집, 탐지 없음")
+    @DisplayName("N-05 폐기: 상태 REVOKED, 폐기 정보 수집")
     void revoked() {
         stubOk(page(false, null, """
                 {
@@ -187,58 +163,44 @@ class NotionPatCollectorTest {
         assertThat(token.status()).isEqualTo(CredentialStatus.REVOKED);
         assertThat(token.revokedAt()).isEqualTo(Instant.parse("2026-10-06T00:00:00Z"));
         assertThat(token.revokedBy()).isEqualTo("user:user-0009");
-        assertThat(result.findings()).isEmpty();
     }
 
     @Test
-    @DisplayName("N-06 미사용: 60일 전 사용 → MEDIUM 1건")
-    void unused() {
+    @DisplayName("N-06 마지막 사용 시각 수집: 60일 전 사용 → 시각만 기록 (미사용 경고 없음)")
+    void lastUsedAtCollected() {
         stubOk(page(false, null, pat("pat-0006", JAN_1, IN_90_DAYS, DAYS_AGO_60, "active")));
 
         NotionCollectionResult result = collector.collect(SPACE_ID);
 
-        assertThat(result.findings()).containsExactly(finding("pat-0006", RiskType.UNUSED, Severity.MEDIUM));
+        assertThat(result.credentials().get(0).lastUsedAt()).isEqualTo(Instant.parse("2026-08-09T00:00:00Z"));
     }
 
     @Test
-    @DisplayName("N-07 미사용 경계: 정확히 45일 전은 미사용, 44일 전은 아님")
-    void unusedBoundary() {
-        stubOk(page(false, null,
-                pat("pat-45d", JAN_1, IN_90_DAYS, DAYS_AGO_45, "active"),
-                pat("pat-44d", JAN_1, IN_90_DAYS, DAYS_AGO_44, "active")));
-
-        NotionCollectionResult result = collector.collect(SPACE_ID);
-
-        assertThat(result.findings()).containsExactly(finding("pat-45d", RiskType.UNUSED, Severity.MEDIUM));
-    }
-
-    @Test
-    @DisplayName("N-08 한 번도 안 씀: 발급일 기준 45일. 올해 1월 발급은 미사용, 10일 전 발급은 아님")
+    @DisplayName("N-08 한 번도 안 씀: 마지막 사용 시각 없음으로 기록")
     void neverUsed() {
-        stubOk(page(false, null,
-                pat("pat-old", JAN_1, IN_90_DAYS, null, "active"),
-                pat("pat-new", DAYS_AGO_10, IN_90_DAYS, null, "active")));
+        stubOk(page(false, null, pat("pat-old", JAN_1, IN_90_DAYS, null, "active")));
 
         NotionCollectionResult result = collector.collect(SPACE_ID);
 
-        assertThat(result.findings()).containsExactly(finding("pat-old", RiskType.UNUSED, Severity.MEDIUM));
+        assertThat(result.credentials().get(0).lastUsedAt()).isNull();
     }
 
     @Test
-    @DisplayName("N-09 만료일 없음: 만료 방식 NEVER, HIGH 1건")
+    @DisplayName("N-09 만료일 없음: 만료 방식 NEVER, 만료 시각 없음")
     void noExpiry() {
         stubOk(page(false, null, pat("pat-0009", JAN_1, null, YESTERDAY, "active")));
 
         NotionCollectionResult result = collector.collect(SPACE_ID);
 
-        assertThat(result.credentials().get(0).expiryPolicy()).isEqualTo(ExpiryPolicy.NEVER);
-        assertThat(result.findings()).containsExactly(finding("pat-0009", RiskType.NO_EXPIRY, Severity.HIGH));
+        CollectedCredential token = result.credentials().get(0);
+        assertThat(token.expiryPolicy()).isEqualTo(ExpiryPolicy.NEVER);
+        assertThat(token.expiresAt()).isNull();
     }
 
     // ---------------------------------------------------------------- 응답 모양
 
     @Test
-    @DisplayName("N-10 필수 필드만: 오류 없이 수집. 만료일 없음 HIGH + 한 번도 안 씀 MEDIUM")
+    @DisplayName("N-10 필수 필드만: 오류 없이 수집. 만료 없음, 사용 기록 없음으로 기록")
     void requiredFieldsOnly() {
         stubOk(page(false, null, """
                 { "id": "pat-0010", "creator": { "id": "user-0003" }, "created_at": %d, "status": "active" }
@@ -251,9 +213,7 @@ class NotionPatCollectorTest {
         assertThat(token.displayName()).isNull();
         assertThat(token.lastUsedAt()).isNull();
         assertThat(token.owner()).isEqualTo("user-0003");
-        assertThat(result.findings()).containsExactlyInAnyOrder(
-                finding("pat-0010", RiskType.NO_EXPIRY, Severity.HIGH),
-                finding("pat-0010", RiskType.UNUSED, Severity.MEDIUM));
+        assertThat(token.expiryPolicy()).isEqualTo(ExpiryPolicy.NEVER);
     }
 
     @Test
@@ -427,10 +387,6 @@ class NotionPatCollectorTest {
             fields.add("\"last_used_at\": " + lastUsedAt);
         }
         return fields.stream().collect(Collectors.joining(", ", "{ ", " }"));
-    }
-
-    private static TokenRiskFinding finding(String externalId, RiskType type, Severity severity) {
-        return new TokenRiskFinding("NOTION", externalId, type, severity);
     }
 
     private static Logger collectorLogger() {

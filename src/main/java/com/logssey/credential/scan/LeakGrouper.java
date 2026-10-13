@@ -6,9 +6,10 @@ import java.util.List;
 /**
  * 한 페이지에서 찾은 문자열을 키 단위로 묶는다.
  *
- * - AWS: Access Key ID와 Secret Access Key를 나온 순서대로 짝짓는다. 짝이 있으면 비밀값이 보인 키(CRITICAL),
- *   ID만 있으면 식별자만 보인 키(HIGH), Secret만 있으면 ID 없이 비밀값이 보인 키(CRITICAL)
- * - Notion 토큰: 하나씩 비밀값이 보인 키
+ * - AWS: Access Key ID와 Secret Access Key를 나온 순서대로 짝짓는다. 짝이 있으면 구성요소가 완전한 키(CONFIRMED),
+ *   ID만 있거나 Secret만 있으면 불완전한 후보(CANDIDATE)
+ * - Notion 토큰: 하나씩 비밀값이 보인 키 (CONFIRMED)
+ * 등급은 매기지 않는다. 문자열만 찾은 단계라 미평가로 둔다 (Secret 심각도 정책 R99)
  */
 public final class LeakGrouper {
 

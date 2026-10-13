@@ -2,7 +2,6 @@ package com.logssey.local;
 
 import javax.sql.DataSource;
 
-import com.logssey.credential.event.CredentialRiskEventService;
 import com.logssey.credential.scan.NotionLeakScanService;
 import com.logssey.credential.scan.ScanResult;
 
@@ -22,10 +21,10 @@ import org.springframework.transaction.annotation.Transactional;
  * 로컬 개발용 샘플 데이터 적재기.
  *
  * - local 프로필에서만 만들어진다. 운영(프로필 없음)에서는 이 클래스가 아예 동작하지 않는다.
- * - 서버가 켜질 때마다(Flyway가 테이블을 만든 뒤) 기존 샘플을 지우고 다시 넣는다.
+ * - 서버가 켜질 때마다(Flyway가 테이블을 만든 뒤) 샘플 행만 지우고 다시 넣는다. 샘플이 아닌 행은 건드리지 않는다.
  * - 발생 시각은 SQL 안의 now() 기준이라, 켤 때마다 "최근 7일"로 다시 계산된다.
- * - 샘플을 넣은 뒤 키 위험 판단을 돌려, 키 관련 탐지 이벤트는 코드가 자동으로 만든다 (사람이 적지 않음).
- * - Notion 수집기 토큰이 .env에 있으면 그 전에 Notion 페이지를 스캔해 발견한 키도 함께 판단한다.
+ * - Notion 수집기 토큰이 .env에 있으면 Notion 페이지를 스캔해 발견한 키를 저장한다.
+ * - Secret 결과로 탐지 이벤트(detection_events)를 만들지 않는다 (Secret 기준 문서: 일반 탐지 이력과 분리).
  * - 안전장치: DB 주소가 내 컴퓨터(localhost, 127.0.0.1)가 아니면 실행하지 않고 서버를 멈춘다.
  */
 @Component
@@ -37,16 +36,13 @@ public class LocalSampleDataLoader implements ApplicationRunner {
 
     private final DataSource dataSource;
     private final String datasourceUrl;
-    private final CredentialRiskEventService credentialRiskEventService;
     private final NotionLeakScanService notionLeakScanService;
 
     public LocalSampleDataLoader(DataSource dataSource,
                                  @Value("${spring.datasource.url}") String datasourceUrl,
-                                 CredentialRiskEventService credentialRiskEventService,
                                  NotionLeakScanService notionLeakScanService) {
         this.dataSource = dataSource;
         this.datasourceUrl = datasourceUrl;
-        this.credentialRiskEventService = credentialRiskEventService;
         this.notionLeakScanService = notionLeakScanService;
     }
 
@@ -67,10 +63,8 @@ public class LocalSampleDataLoader implements ApplicationRunner {
         log.info("Notion leak scan on startup: status={}, pages={}, foundKeys={}",
                 scan.status(), scan.scannedPages(), scan.foundKeys());
 
-        int riskEvents = credentialRiskEventService.createRiskEvents();
-
-        log.info("Local sample data reloaded: 8 assets, 5 credentials, 8 sample detection events"
-                + " (detected_at = last 7 days from now), {} credential risk events (detected_at = now).", riskEvents);
+        log.info("Local sample data reloaded (sample rows only): 8 assets, 5 inventory credentials,"
+                + " 8 sample detection events (detected_at = last 7 days from now).");
     }
 
     static boolean isLocalDatabase(String url) {

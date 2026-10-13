@@ -14,8 +14,6 @@ import com.logssey.credential.notion.dto.NotionPat;
 import com.logssey.credential.notion.dto.NotionPatPage;
 import com.logssey.credential.notion.dto.NotionPerson;
 import com.logssey.credential.notion.dto.NotionRevoker;
-import com.logssey.credential.risk.TokenRiskEvaluator;
-import com.logssey.credential.risk.TokenRiskFinding;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,7 +29,9 @@ import org.springframework.web.client.RestClient.RequestHeadersSpec.ConvertibleC
  * - 429: retry-after만큼 기다렸다가 다시 요청. 횟수는 페이지(요청)마다 센다
  * - 401·403·그 밖의 오류: 다시 시도하지 않고 바로 실패
  * - expires_at이 없으면 "만료 없음"(NEVER)으로 본다 (테스트 시나리오 1.2)
- * - 연동 토큰은 로그에 남기지 않는다 (ADR-D009)
+ * - 연동 토큰은 로그에 남기지 않는다 (Secret ADR-S005)
+ * - 목록 정보(만료, 마지막 사용)는 위험 등급으로 바꾸지 않는다. Secret 기준 문서에서 Admin API 목록은
+ *   후속 읽기 전용 검토이며 등급·대응 건의 근거가 아니다
  *
  * 아직 Spring 빈으로 등록하지 않는다. 호출하는 곳(수집 일정, DB 저장)이 정해지면 연결한다.
  */
@@ -45,12 +45,10 @@ public class NotionPatCollector {
 
     private final RestClient restClient;
     private final NotionAdminSettings settings;
-    private final TokenRiskEvaluator riskEvaluator;
     private final Sleeper sleeper;
 
-    public NotionPatCollector(NotionAdminSettings settings, TokenRiskEvaluator riskEvaluator, Sleeper sleeper) {
+    public NotionPatCollector(NotionAdminSettings settings, Sleeper sleeper) {
         this.settings = Objects.requireNonNull(settings, "settings");
-        this.riskEvaluator = Objects.requireNonNull(riskEvaluator, "riskEvaluator");
         this.sleeper = Objects.requireNonNull(sleeper, "sleeper");
         this.restClient = RestClient.builder()
                 .baseUrl(settings.baseUrl())
@@ -82,11 +80,8 @@ public class NotionPatCollector {
             cursor = page.hasMore() ? page.nextCursor() : null;
         } while (cursor != null);
 
-        List<TokenRiskFinding> findings = credentials.stream()
-                .flatMap(credential -> riskEvaluator.evaluate(credential).stream())
-                .toList();
-        log.info("Notion PAT collection succeeded. tokens={}, findings={}", credentials.size(), findings.size());
-        return NotionCollectionResult.succeeded(credentials, findings);
+        log.info("Notion PAT collection succeeded. tokens={}", credentials.size());
+        return NotionCollectionResult.succeeded(credentials);
     }
 
     private PageOutcome fetchWithRetry(String spaceId, String cursor) {

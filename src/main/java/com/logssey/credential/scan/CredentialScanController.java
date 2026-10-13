@@ -17,6 +17,6 @@ public class CredentialScanController {
 
     @PostMapping("/scan")
     public ScanResult scan() {
-        return scanService.scanNow();
+        return scanService.collectLeaks();
     }
 }

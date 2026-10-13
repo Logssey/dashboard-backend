@@ -1,11 +1,30 @@
 -- 로컬(local 프로필) 전용 샘플 데이터. 운영 환경에서는 실행되지 않는다.
 -- LocalSampleDataLoader가 서버를 켤 때마다 이 파일을 실행한다.
--- 매번 기존 샘플을 지우고, 발생 시각을 "켠 시점 기준 최근 7일"로 다시 계산해 넣는다.
--- 주의: 로컬 DB의 탐지 이벤트, 키, 자산을 전부 지운 뒤 다시 넣는다.
+-- 매번 샘플 행만 지우고, 발생 시각을 "켠 시점 기준 최근 7일"로 다시 계산해 넣는다.
+-- 샘플이 아닌 행(스캔으로 발견한 키 등)은 지우지 않는다 (Secret 데이터베이스 스키마 문서 6장).
 
-DELETE FROM detection_events;
-DELETE FROM credentials;
-DELETE FROM assets;
+-- 샘플 탐지 이벤트 8건 + 예전 버전이 키 위험 판단으로 만들었던 이벤트(credential_id 연결)
+-- 예전 이벤트 정리는 Secret을 detection_events에 넣지 않기로 하면서 남은 로컬 데이터를 치우는 용도다
+DELETE FROM detection_events
+WHERE display_id IN ('CFG-001', 'SEC-001', 'IAM-001', 'RUN-001', 'CFG-002', 'IAM-002', 'RUN-002', 'VUL-001')
+   OR credential_id IS NOT NULL;
+
+-- 샘플 키 5개 (Notion Admin API 형식을 본뜬 가상 목록)
+DELETE FROM credentials
+WHERE source = 'API' AND external_id LIKE 'sample-pat-%';
+
+-- 샘플 자산 8개. 다른 이벤트가 아직 참조하면 지우지 않고 그대로 쓴다
+DELETE FROM assets a
+WHERE (a.provider, a.name, a.environment) IN (
+        ('AWS',        'logssey-prod-sg-rds',                    'PROD'),
+        ('GITHUB',     'service-backend/application.properties', 'PROD'),
+        ('KUBERNETES', 'api-service-account',                    'PROD'),
+        ('KUBERNETES', 'reused-api-7c4b',                        'PROD'),
+        ('AWS',        'reused-assets',                          'PROD'),
+        ('AWS',        'ci-legacy-user',                         'DEV'),
+        ('KUBERNETES', 'reused-chat',                            'DEV'),
+        ('AWS',        'logssey/reused-api:demo',                'PROD'))
+  AND NOT EXISTS (SELECT 1 FROM detection_events e WHERE e.asset_id = a.asset_id);
 
 -- 자산 (확인된 실제 Re:Used 리소스 이름으로 맞춤. 확인 안 된 것은 템플릿 이름 유지)
 INSERT INTO assets (name, provider, asset_type, environment) VALUES
@@ -16,7 +35,8 @@ INSERT INTO assets (name, provider, asset_type, environment) VALUES
     ('reused-assets',                          'AWS',        'S3 Bucket',       'PROD'),
     ('ci-legacy-user',                         'AWS',        'IAM User',        'DEV'),
     ('reused-chat',                            'KUBERNETES', 'Deployment',      'DEV'),
-    ('logssey/reused-api:demo',                'AWS',        'Container Image', 'PROD');
+    ('logssey/reused-api:demo',                'AWS',        'Container Image', 'PROD')
+ON CONFLICT (provider, name, environment) DO NOTHING;
 
 -- 탐지 이벤트 8건 (진호 님 UI 템플릿 예시. 실제 탐지 결과가 아님)
 INSERT INTO detection_events
@@ -72,27 +92,24 @@ VALUES
 
 
 -- 키 샘플 5개 (Notion PAT. Notion Admin API 응답 형식을 본뜬 가상 데이터)
--- 키 원문은 넣지 않는다 (ADR-D009). Notion은 이번 단계에서 assets에 넣지 않으므로 asset_id는 비운다.
--- 시각은 now() 기준이라 서버를 켤 때마다 판단 결과(정상·LOW·MEDIUM·HIGH·폐기)가 그대로 유지된다.
+-- 발급처 목록 정보일 뿐이라 위험 등급을 매기지 않는다. 만료·미사용은 목록에 보여주는 정보다.
+-- 키 원문은 넣지 않는다 (Secret ADR-S005). Notion은 assets에 넣지 않으므로 asset_id는 비운다.
 INSERT INTO credentials
     (issuer, credential_type, classification, display_name, external_id, owner, owner_team, purpose,
      status, source, issued_at, expiry_policy, expires_at, last_used_at, last_collected_at)
 VALUES
-    -- 정상: 탐지 없음
+    -- 평범한 활성 키
     ('NOTION', 'NOTION_PAT', 'SECRET', 'deploy-bot',    'sample-pat-0001', 'Team Member A', 'Platform', '배포 결과 기록',
      'ACTIVE',  'API', now() - interval '120 days', 'FIXED', now() + interval '90 days', now() - interval '1 day',   now()),
-    -- 만료 임박(5일 뒤): LOW
+    -- 5일 뒤 만료
     ('NOTION', 'NOTION_PAT', 'SECRET', 'notion-sync',   'sample-pat-0002', 'Team Member B', 'Backend',  '회의록 동기화',
      'ACTIVE',  'API', now() - interval '360 days', 'FIXED', now() + interval '5 days',  now() - interval '1 day',   now()),
-    -- 60일 미사용: MEDIUM
+    -- 60일 전 마지막 사용
     ('NOTION', 'NOTION_PAT', 'SECRET', 'old-script',    'sample-pat-0003', 'Team Member A', 'Platform', '일회성 데이터 이전',
      'ACTIVE',  'API', now() - interval '200 days', 'FIXED', now() + interval '90 days', now() - interval '60 days', now()),
-    -- 만료일 없음: HIGH
+    -- 만료일 없음
     ('NOTION', 'NOTION_PAT', 'SECRET', 'legacy-export', 'sample-pat-0004', 'Team Member C', 'AppSec',   '문서 내보내기',
      'ACTIVE',  'API', now() - interval '30 days',  'NEVER', NULL,                       now() - interval '1 day',   now()),
-    -- 폐기됨: 탐지 없음
+    -- 폐기됨
     ('NOTION', 'NOTION_PAT', 'SECRET', 'revoked-tool',  'sample-pat-0005', 'Team Member B', 'Backend',  '테스트 연동',
      'REVOKED', 'API', now() - interval '150 days', 'FIXED', now() + interval '30 days', now() - interval '40 days', now());
-
--- 키 관련 탐지 이벤트는 여기서 넣지 않는다.
--- 서버가 이 파일을 실행한 뒤 CredentialRiskEventService가 위 키를 판단해 자동으로 만든다.

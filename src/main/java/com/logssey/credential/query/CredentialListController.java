@@ -21,7 +21,7 @@ public class CredentialListController {
     @GetMapping
     public CredentialListResponse credentials(@RequestParam(defaultValue = "ALL") String issuer,
                                               @RequestParam(defaultValue = "ALL") String status,
-                                              @RequestParam(defaultValue = "false") boolean riskOnly) {
-        return credentialListService.getCredentials(issuer, status, riskOnly);
+                                              @RequestParam(defaultValue = "false") boolean foundOnly) {
+        return credentialListService.getCredentials(issuer, status, foundOnly);
     }
 }

@@ -11,7 +11,7 @@ import org.springframework.stereotype.Repository;
 /**
  * 페이지에서 발견한 키를 credentials에 저장한다 (source = SCAN).
  * 같은 키(같은 발급자 + 같은 식별자, 또는 같은 지문)가 이미 있으면 새로 만들지 않고 발견 위치·시각만 갱신한다.
- * 키 원문은 저장하지 않는다 (ADR-D009).
+ * 키 원문은 저장하지 않는다 (Secret ADR-S005). 환경은 비워 둔다 (UNKNOWN, PROD로 가정하지 않음).
  */
 @Repository
 public class LeakCredentialRepository {

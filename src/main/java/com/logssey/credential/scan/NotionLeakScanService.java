@@ -6,7 +6,6 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 
-import com.logssey.credential.event.CredentialRiskEventService;
 import com.logssey.credential.notion.Sleeper;
 import com.logssey.credential.scan.notion.NotionPage;
 import com.logssey.credential.scan.notion.NotionPageReader;
@@ -23,7 +22,9 @@ import org.springframework.stereotype.Service;
  * 1. 수집기에 공유된 페이지 목록을 받는다
  * 2. 페이지마다 Markdown 글을 받아 키 형식을 찾는다
  * 3. 찾은 키를 원문 없이 credentials에 저장한다 (source = SCAN)
- * 4. scanNow는 이어서 탐지 이벤트를 만든다 (CredentialRiskEventService)
+ *
+ * Secret 기준 문서에 맞춰 탐지 이벤트(detection_events)는 만들지 않는다. 등급도 매기지 않는다 (미평가).
+ * 읽지 못한 페이지는 "키 0개"로 치지 않고 따로 센다 (PARTIAL).
  *
  * 토큰이나 지문 비밀값이 .env에 없으면 아무것도 하지 않는다. 페이지 내용과 찾은 원문은 로그에 남기지 않는다.
  */
@@ -37,37 +38,23 @@ public class NotionLeakScanService {
     private final String baseUrl;
     private final String fingerprintSecret;
     private final LeakCredentialRepository leakRepository;
-    private final CredentialRiskEventService riskEventService;
     private final Clock clock = Clock.systemUTC();
 
     public NotionLeakScanService(@Value("${logssey.notion.collector.token:}") String token,
                                  @Value("${logssey.notion.collector.base-url:" + NotionPageReader.REAL_BASE_URL + "}") String baseUrl,
                                  @Value("${logssey.credential.fingerprint-secret:}") String fingerprintSecret,
-                                 LeakCredentialRepository leakRepository,
-                                 CredentialRiskEventService riskEventService) {
+                                 LeakCredentialRepository leakRepository) {
         this.token = token;
         this.baseUrl = baseUrl;
         this.fingerprintSecret = fingerprintSecret;
         this.leakRepository = leakRepository;
-        this.riskEventService = riskEventService;
     }
 
     public boolean isConfigured() {
         return !token.isBlank() && !fingerprintSecret.isBlank();
     }
 
-    /** "지금 스캔": 페이지를 읽어 키를 저장하고 탐지 이벤트까지 만든다 */
-    public synchronized ScanResult scanNow() {
-        ScanResult result = collectLeaks();
-        if (!"COMPLETED".equals(result.status())) {
-            return result;
-        }
-        int events = riskEventService.createRiskEvents();
-        return result.withNewEvents(events, "페이지 %d개를 검사해 키 %d개를 찾았어요. 새 탐지 %d건."
-                .formatted(result.scannedPages(), result.foundKeys(), events));
-    }
-
-    /** 페이지를 읽어 키를 저장만 한다. 탐지 이벤트는 만들지 않는다 (서버 시작 시 샘플 적재와 함께 쓰기 위해) */
+    /** "지금 스캔"과 서버 시작 시 스캔이 같이 쓴다. 페이지를 읽어 발견한 키를 저장한다 */
     public synchronized ScanResult collectLeaks() {
         Instant now = clock.instant();
         String scannedAt = now.truncatedTo(ChronoUnit.SECONDS).toString();
@@ -83,13 +70,15 @@ public class NotionLeakScanService {
             List<NotionPage> pages = reader.listSharedPages();
             List<LeakedCredential> leaks = new ArrayList<>();
             int scannedPages = 0;
+            int unreadablePages = 0;
             for (NotionPage page : pages) {
                 String markdown;
                 try {
                     markdown = reader.readMarkdown(page.id());
                 } catch (NotionReadException e) {
                     if (e.httpStatus() == 404) {
-                        // 공유가 끊겼거나 지워진 페이지. 건너뛴다
+                        // 공유가 끊겼거나 지워진 페이지. 읽지 못한 범위로 센다 (0개로 치지 않음)
+                        unreadablePages++;
                         continue;
                     }
                     throw e;
@@ -104,9 +93,14 @@ public class NotionLeakScanService {
                     newKeys++;
                 }
             }
-            log.info("Notion leak scan finished. pages={}, foundKeys={}, newKeys={}", scannedPages, leaks.size(), newKeys);
-            return new ScanResult("COMPLETED", scannedPages, leaks.size(), newKeys, 0,
-                    "페이지 %d개를 검사해 키 %d개를 찾았어요.".formatted(scannedPages, leaks.size()), scannedAt);
+            log.info("Notion leak scan finished. pages={}, unreadablePages={}, foundKeys={}, newKeys={}",
+                    scannedPages, unreadablePages, leaks.size(), newKeys);
+            String message = "페이지 %d개를 검사해 키 %d개를 찾았어요.".formatted(scannedPages, leaks.size());
+            if (unreadablePages > 0) {
+                return new ScanResult("PARTIAL", scannedPages, unreadablePages, leaks.size(), newKeys,
+                        message + " 읽지 못한 페이지 %d개는 검사하지 못했어요.".formatted(unreadablePages), scannedAt);
+            }
+            return new ScanResult("COMPLETED", scannedPages, 0, leaks.size(), newKeys, message, scannedAt);
         } catch (NotionReadException e) {
             log.warn("Notion leak scan failed. httpStatus={}, code={}", e.httpStatus(), e.code());
             return new ScanResult("FAILED", 0, 0, 0, 0, failureMessage(e), scannedAt);
