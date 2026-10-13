@@ -265,6 +265,97 @@ class SecretRunServiceTest {
     }
 
     @Test
+    void registersThreeExactAwsValueScopesAndExposesOnlyRegionAndSafeGap() {
+        long connection = connection("AWS", "ACTIVE", null);
+        jdbc.update("""
+                INSERT INTO secret_connection_scopes
+                    (connection_id, scope_key, revision, content_type, approved_ref,
+                     history_limit, enabled)
+                VALUES (?, 'secret-value', 1, 'AWS_SECRETS_MANAGER_VALUE',
+                        'aws://123456789012/ap-northeast-2/secrets-manager/secret/arn%3Aaws%3Asecretsmanager%3Aap-northeast-2%3A123456789012%3Asecret%3Afixture-A',
+                        'CURRENT_VALUE_ONLY', true),
+                       (?, 'parameter-value', 1, 'AWS_SSM_PARAMETER_VALUE',
+                        'aws://123456789012/us-east-1/ssm/parameter/arn%3Aaws%3Assm%3Aus-east-1%3A123456789012%3Aparameter%2Ffixture%2Fconfig',
+                        'CURRENT_VALUE_ONLY', true),
+                       (?, 'object-content', 1, 'AWS_S3_OBJECT_CONTENT',
+                        'aws://123456789012/eu-west-1/s3/object/fixture-bucket/config%2Fapp.yaml',
+                        'CURRENT_VALUE_ONLY', true)
+                """, connection, connection, connection);
+
+        var accepted = service.register(new SecretRunRequest(connection, null), "admin");
+        assertThat(accepted.status()).isEqualTo("PENDING");
+        assertThat(service.status(accepted.runId(), "admin").scopeCount()).isEqualTo(3);
+        jdbc.update("""
+                UPDATE secret_run_scopes rs SET collection_status = 'FAILED', object_count = 0,
+                    failure_code = 'AWS_CONTENT_READ_DISABLED', finished_at = CURRENT_TIMESTAMP
+                FROM secret_connection_scopes s
+                WHERE rs.scope_id = s.scope_id AND s.content_type = 'AWS_SECRETS_MANAGER_VALUE'
+                """);
+        var results = service.status(accepted.runId(), "admin").scopeResults();
+        assertThat(results).extracting(SecretRunScopeResultResponse::contentType)
+                .containsExactlyInAnyOrder("AWS_SECRETS_MANAGER_VALUE", "AWS_SSM_PARAMETER_VALUE",
+                        "AWS_S3_OBJECT_CONTENT");
+        assertThat(results).extracting(SecretRunScopeResultResponse::region)
+                .containsExactlyInAnyOrder("ap-northeast-2", "us-east-1", "eu-west-1");
+        assertThat(results).filteredOn(result ->
+                "AWS_SECRETS_MANAGER_VALUE".equals(result.contentType()))
+                .singleElement().extracting(SecretRunScopeResultResponse::gapCode)
+                .isEqualTo("AWS_CONTENT_READ_DISABLED");
+        assertThat(results.toString()).doesNotContain("123456789012", "fixture-A", "fixture-bucket",
+                "config%2Fapp.yaml", "approvedRef");
+    }
+
+    @Test
+    void rejectsBroadOrMalformedAwsValueScopeBeforeReservingJob() {
+        for (var invalid : java.util.List.<String[]>of(
+                new String[]{"AWS_SECRETS_MANAGER_VALUE",
+                        "aws://123456789012/ap-northeast-2/secrets-manager/all"},
+                new String[]{"AWS_SECRETS_MANAGER_VALUE",
+                        "aws://123456789012/ap-northeast-2/secrets-manager/secret/fixture/another"},
+                new String[]{"AWS_SECRETS_MANAGER_VALUE",
+                        "aws://123456789012/ap-northeast-2/secrets-manager/secret/fixture?all=true"},
+                new String[]{"AWS_SECRETS_MANAGER_VALUE",
+                        "aws://123456789012/ap-northeast-2/secrets-manager/secret/%ZZ"},
+                new String[]{"AWS_SSM_PARAMETER_VALUE",
+                        "aws://123456789012/ap-northeast-2/ssm/parameters"},
+                new String[]{"AWS_S3_OBJECT_CONTENT",
+                        "aws://123456789012/ap-northeast-2/s3/object/fixture-bucket/"})) {
+            long connection = connection("AWS", "ACTIVE", null);
+            jdbc.update("""
+                    INSERT INTO secret_connection_scopes
+                        (connection_id, scope_key, revision, content_type, approved_ref,
+                         history_limit, enabled)
+                    VALUES (?, 'value', 1, ?, ?, 'CURRENT_VALUE_ONLY', true)
+                    """, connection, invalid[0], invalid[1]);
+            assertConflict(() -> service.register(new SecretRunRequest(connection, null), "admin"));
+        }
+        long wrongHistory = connection("AWS", "ACTIVE", null);
+        jdbc.update("""
+                INSERT INTO secret_connection_scopes
+                    (connection_id, scope_key, revision, content_type, approved_ref,
+                     history_limit, enabled)
+                VALUES (?, 'value', 1, 'AWS_S3_OBJECT_CONTENT',
+                        'aws://123456789012/eu-west-1/s3/object/fixture-bucket/config%2Fapp.yaml',
+                        'CURRENT_STATE_ONLY', true)
+                """, wrongHistory);
+        assertConflict(() -> service.register(new SecretRunRequest(wrongHistory, null), "admin"));
+        assertThat(count("secret_jobs")).isZero();
+    }
+
+    @Test
+    void approvedReferenceDatabaseColumnRejectsOverFiveHundredCharacters() {
+        long connection = connection("AWS", "ACTIVE", null);
+        assertThatThrownBy(() -> jdbc.update("""
+                INSERT INTO secret_connection_scopes
+                    (connection_id, scope_key, revision, content_type, approved_ref,
+                     history_limit, enabled)
+                VALUES (?, 'oversized', 1, 'AWS_S3_OBJECT_CONTENT', ?, 'CURRENT_VALUE_ONLY', true)
+                """, connection, "x".repeat(501)))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThat(count("secret_jobs")).isZero();
+    }
+
+    @Test
     void rejectsMetadataValuePathOrInvalidHistoryBeforeJobCreation() {
         long connection = connection("AWS", "ACTIVE", null);
         jdbc.update("""

@@ -142,6 +142,55 @@ class SecretScheduleServiceTest {
     }
 
     @Test
+    void exactAwsValueScopesNeedOnlyAwsCollectionSchedulingOptIn() {
+        long aws = connection("AWS", "ACTIVE", pastDue(), false);
+        jdbc.update("UPDATE secret_connections SET auth_ref = 'aws-profile:test' WHERE connection_id = ?", aws);
+        jdbc.update("""
+                INSERT INTO secret_connection_scopes
+                    (connection_id, scope_key, revision, content_type, approved_ref,
+                     history_limit, enabled)
+                VALUES (?, 'secret-value', 1, 'AWS_SECRETS_MANAGER_VALUE',
+                        'aws://123456789012/ap-northeast-2/secrets-manager/secret/arn%3Aaws%3Asecretsmanager%3Aap-northeast-2%3A123456789012%3Asecret%3Afixture-A',
+                        'CURRENT_VALUE_ONLY', true),
+                       (?, 'parameter-value', 1, 'AWS_SSM_PARAMETER_VALUE',
+                        'aws://123456789012/us-east-1/ssm/parameter/arn%3Aaws%3Assm%3Aus-east-1%3A123456789012%3Aparameter%2Ffixture',
+                        'CURRENT_VALUE_ONLY', true),
+                       (?, 'object-value', 1, 'AWS_S3_OBJECT_CONTENT',
+                        'aws://123456789012/eu-west-1/s3/object/fixture-bucket/config%2Fapp.yaml',
+                        'CURRENT_VALUE_ONLY', true)
+                """, aws, aws, aws);
+
+        assertThat(service.reserveDueJobs()).isZero();
+        var optedIn = new SecretScheduleService(new SecretScheduleRepository(jdbc, true),
+                properties(true, 100), transactions);
+        assertThat(optedIn.reserveDueJobs()).isEqualTo(1);
+        assertThat(count("secret_run_scopes")).isEqualTo(3);
+        assertThat(jdbc.queryForObject("SELECT collection_status FROM secret_scan_runs", String.class))
+                .isEqualTo("PENDING");
+    }
+
+    @Test
+    void broadAwsValueScopeBlocksTheWholeScheduledConnection() {
+        long aws = connection("AWS", "ACTIVE", pastDue(), false);
+        jdbc.update("UPDATE secret_connections SET auth_ref = 'aws-profile:test' WHERE connection_id = ?", aws);
+        jdbc.update("""
+                INSERT INTO secret_connection_scopes
+                    (connection_id, scope_key, revision, content_type, approved_ref,
+                     history_limit, enabled)
+                VALUES (?, 'secret-value', 1, 'AWS_SECRETS_MANAGER_VALUE',
+                        'aws://123456789012/ap-northeast-2/secrets-manager/secret/arn%3Aaws%3Asecretsmanager%3Aap-northeast-2%3A123456789012%3Asecret%3Afixture-A',
+                        'CURRENT_VALUE_ONLY', true),
+                       (?, 'broad-value', 1, 'AWS_SECRETS_MANAGER_VALUE',
+                        'aws://123456789012/ap-northeast-2/secrets-manager/all',
+                        'CURRENT_VALUE_ONLY', true)
+                """, aws, aws);
+        var optedIn = new SecretScheduleService(new SecretScheduleRepository(jdbc, true),
+                properties(true, 100), transactions);
+        assertThat(optedIn.reserveDueJobs()).isZero();
+        assertThat(count("secret_jobs")).isZero();
+    }
+
+    @Test
     void repeatedPollAndNewServiceInstanceKeepOneReservationAndPersistedNextDue() {
         long id = connection("ACTIVE", pastDue(), true);
         assertThat(service.reserveDueJobs()).isEqualTo(1);

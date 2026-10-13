@@ -29,7 +29,8 @@ public class SecretRunService {
     private static final Set<String> PUBLIC_SCOPE_TYPES = Set.of(
             "GITHUB_REPOSITORY_FILES", "IAM_ACCESS_KEY_METADATA",
             "AWS_SECRETS_MANAGER_METADATA", "AWS_SSM_PARAMETER_METADATA",
-            "AWS_S3_BUCKET_METADATA");
+            "AWS_S3_BUCKET_METADATA", "AWS_SECRETS_MANAGER_VALUE",
+            "AWS_SSM_PARAMETER_VALUE", "AWS_S3_OBJECT_CONTENT");
     private static final Set<String> PUBLIC_SCOPE_GAPS = Set.of(
             "INVALID_APPROVED_SCOPE", "AWS_INVALID_APPROVED_SCOPE", "AWS_SERVICE_UNSUPPORTED",
             "AWS_ACCOUNT_MISMATCH", "AWS_ACCESS_DENIED", "AWS_RATE_LIMITED",
@@ -37,7 +38,12 @@ public class SecretRunService {
             "AWS_INVALID_RESPONSE", "AWS_MALFORMED_RESPONSE", "AWS_PAGE_LIMIT",
             "AWS_OBJECT_LIMIT", "AWS_PAGINATION_LOOP", "AWS_USER_LIMIT", "AWS_KEY_LIMIT",
             "AWS_LAST_USED_UNAVAILABLE", "AWS_ROOT_ACCESS_KEYS_PRESENT",
-            "AWS_ROOT_KEY_COVERAGE_UNKNOWN", "GITHUB_PATH_NOT_FOUND",
+            "AWS_ROOT_KEY_COVERAGE_UNKNOWN", "AWS_CONTENT_READ_DISABLED",
+            "AWS_CONTENT_ACCESS_DENIED", "AWS_CONTENT_NOT_FOUND",
+            "AWS_CONTENT_RATE_LIMITED", "AWS_CONTENT_SOURCE_UNAVAILABLE",
+            "AWS_CONTENT_OBJECT_TOO_LARGE", "AWS_CONTENT_NON_TEXT",
+            "AWS_CONTENT_CONSUMER_FAILED", "AWS_CONTENT_PROCESSING_FAILED",
+            "GITHUB_PATH_NOT_FOUND",
             "GITHUB_ACCESS_DENIED", "GITHUB_RATE_LIMITED", "GITHUB_SOURCE_UNAVAILABLE",
             "GITHUB_API_ERROR", "GITHUB_MALFORMED_RESPONSE",
             "GITHUB_TREE_TRUNCATED", "GITHUB_TREE_LIMIT", "GITHUB_FILE_LIMIT",
@@ -53,6 +59,14 @@ public class SecretRunService {
             "^aws://[0-9]{12}/global/s3/buckets$");
     private static final Pattern IAM_REF = Pattern.compile(
             "^aws://[0-9]{12}/global/iam/access-keys$");
+    private static final String EXACT_SEGMENT = "([^/?#%]|%[0-9A-Fa-f]{2})+";
+    private static final Pattern SECRET_VALUE_REF = Pattern.compile(
+            "^aws://[0-9]{12}/(" + REGION + ")/secrets-manager/secret/" + EXACT_SEGMENT + "$");
+    private static final Pattern PARAMETER_VALUE_REF = Pattern.compile(
+            "^aws://[0-9]{12}/(" + REGION + ")/ssm/parameter/" + EXACT_SEGMENT + "$");
+    private static final Pattern OBJECT_CONTENT_REF = Pattern.compile(
+            "^aws://[0-9]{12}/(" + REGION + ")/s3/object/"
+                    + "[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/" + EXACT_SEGMENT + "$");
 
     private final SecretRunRepository repository;
     private final TransactionTemplate transaction;
@@ -188,6 +202,9 @@ public class SecretRunService {
         Pattern pattern = switch (type) {
             case "AWS_SECRETS_MANAGER_METADATA" -> SECRETS_REF;
             case "AWS_SSM_PARAMETER_METADATA" -> PARAMETERS_REF;
+            case "AWS_SECRETS_MANAGER_VALUE" -> SECRET_VALUE_REF;
+            case "AWS_SSM_PARAMETER_VALUE" -> PARAMETER_VALUE_REF;
+            case "AWS_S3_OBJECT_CONTENT" -> OBJECT_CONTENT_REF;
             default -> null;
         };
         if (pattern == null) return null;
