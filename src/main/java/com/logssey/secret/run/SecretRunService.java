@@ -21,7 +21,8 @@ public class SecretRunService {
     private static final Set<String> PUBLIC_FAILURE_CODES = Set.of(
             "LEASE_EXPIRED", "PROCESSOR_FAILURE", "INCOMPLETE_RUN", "SOURCE_UNAVAILABLE",
             "SOURCE_ACCESS_DENIED", "SOURCE_RATE_LIMITED", "DETECTOR_TEMPORARY",
-            "VALIDATOR_TEMPORARY", "VALIDATION_ATTEMPT_FAILED", "VALIDATION_INCONCLUSIVE");
+            "VALIDATOR_TEMPORARY", "VALIDATION_ATTEMPT_FAILED", "VALIDATION_INCONCLUSIVE",
+            "AWS_ROOT_ACCESS_KEYS_PRESENT", "AWS_ROOT_KEY_COVERAGE_UNKNOWN");
 
     private final SecretRunRepository repository;
     private final TransactionTemplate transaction;
@@ -53,7 +54,8 @@ public class SecretRunService {
                         }
                         var replayConnection = repository.lockConnection(run.connectionId())
                                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
-                        if (!"GITHUB".equals(replayConnection.provider())) {
+                        if (!supportedProvider(replayConnection.provider())
+                                || !repository.hasSupportedScope(replayConnection)) {
                             throw new ApiException(ErrorCode.CONFLICT);
                         }
                         return accepted(run);
@@ -62,7 +64,10 @@ public class SecretRunService {
 
                 var connection = repository.lockConnection(request.connectionId())
                         .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
-                if (!"ACTIVE".equals(connection.status()) || !"GITHUB".equals(connection.provider())) {
+                if (!"ACTIVE".equals(connection.status()) || !supportedProvider(connection.provider())) {
+                    throw new ApiException(ErrorCode.CONFLICT);
+                }
+                if (!repository.hasSupportedScope(connection)) {
                     throw new ApiException(ErrorCode.CONFLICT);
                 }
                 var active = repository.activeRun(connection.id());
@@ -127,6 +132,10 @@ public class SecretRunService {
             return null;
         }
         return PUBLIC_FAILURE_CODES.contains(code) ? code : "UNSPECIFIED_FAILURE";
+    }
+
+    private static boolean supportedProvider(String provider) {
+        return "GITHUB".equals(provider) || "AWS".equals(provider);
     }
 
     private static String hashIdempotencyKey(long actorId, String key) {

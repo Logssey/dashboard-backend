@@ -3,6 +3,8 @@ package com.logssey.secretworker;
 import java.time.OffsetDateTime;
 import java.util.List;
 
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
@@ -10,9 +12,18 @@ import org.springframework.stereotype.Repository;
 public class SecretScheduleRepository {
 
     private final JdbcTemplate jdbc;
+    private final boolean awsCollectionEnabled;
+
+    @Autowired
+    public SecretScheduleRepository(JdbcTemplate jdbc,
+                                    @Value("${logssey.secret.aws.collection.enabled:false}")
+                                    boolean awsCollectionEnabled) {
+        this.jdbc = jdbc;
+        this.awsCollectionEnabled = awsCollectionEnabled;
+    }
 
     public SecretScheduleRepository(JdbcTemplate jdbc) {
-        this.jdbc = jdbc;
+        this(jdbc, false);
     }
 
     public OffsetDateTime databaseNow() {
@@ -24,11 +35,27 @@ public class SecretScheduleRepository {
         return jdbc.query("""
                 SELECT c.connection_id, c.scope_version, c.next_due_at
                 FROM secret_connections c
-                WHERE c.status = 'ACTIVE' AND c.provider = 'GITHUB' AND c.next_due_at <= ?
+                WHERE c.status = 'ACTIVE'
+                  AND (c.provider = 'GITHUB' OR (? AND c.provider = 'AWS'
+                       AND c.auth_ref ~ '^aws-profile:[A-Za-z0-9._-]{1,100}$'))
+                  AND c.next_due_at <= ?
                   AND EXISTS (
                     SELECT 1 FROM secret_connection_scopes s
                     WHERE s.connection_id = c.connection_id AND s.enabled
+                      AND (c.provider = 'GITHUB' OR (
+                          s.content_type = 'IAM_ACCESS_KEY_METADATA'
+                          AND s.approved_ref ~ '^aws://[0-9]{12}/global/iam/access-keys$'
+                          AND (s.history_limit IS NULL OR s.history_limit = 'CURRENT_STATE_ONLY')
+                      ))
                   )
+                  AND (c.provider = 'GITHUB' OR NOT EXISTS (
+                    SELECT 1 FROM secret_connection_scopes unsupported
+                    WHERE unsupported.connection_id = c.connection_id AND unsupported.enabled
+                      AND NOT (unsupported.content_type = 'IAM_ACCESS_KEY_METADATA'
+                          AND unsupported.approved_ref ~ '^aws://[0-9]{12}/global/iam/access-keys$'
+                          AND (unsupported.history_limit IS NULL
+                               OR unsupported.history_limit = 'CURRENT_STATE_ONLY'))
+                  ))
                   AND NOT EXISTS (
                     SELECT 1 FROM secret_jobs j
                     WHERE j.connection_id = c.connection_id AND j.kind = 'FULL_SCAN'
@@ -37,7 +64,8 @@ public class SecretScheduleRepository {
                 ORDER BY c.next_due_at, c.connection_id
                 LIMIT ? FOR UPDATE OF c SKIP LOCKED
                 """, (rs, row) -> new DueConnection(rs.getLong("connection_id"),
-                rs.getLong("scope_version"), rs.getObject("next_due_at", OffsetDateTime.class)), now, limit);
+                rs.getLong("scope_version"), rs.getObject("next_due_at", OffsetDateTime.class)),
+                awsCollectionEnabled, now, limit);
     }
 
     public void reserve(DueConnection connection, OffsetDateTime now, SecretSchedulerProperties properties) {

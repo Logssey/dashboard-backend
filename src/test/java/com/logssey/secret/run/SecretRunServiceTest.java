@@ -164,6 +164,52 @@ class SecretRunServiceTest {
     }
 
     @Test
+    void registersAwsOnlyWhenEveryEnabledScopeIsSupportedIamMetadata() {
+        long iamOnly = connection("AWS", "ACTIVE", null);
+        jdbc.update("""
+                INSERT INTO secret_connection_scopes
+                    (connection_id, scope_key, revision, content_type, approved_ref,
+                     history_limit, enabled)
+                VALUES (?, 'iam-keys', 1, 'IAM_ACCESS_KEY_METADATA',
+                        'aws://123456789012/global/iam/access-keys', 'CURRENT_STATE_ONLY', true)
+                """, iamOnly);
+        var accepted = service.register(new SecretRunRequest(iamOnly, null), "admin");
+        assertThat(accepted.status()).isEqualTo("PENDING");
+        assertThat(service.status(accepted.runId(), "admin").scopeCount()).isEqualTo(1);
+
+        long mixed = connection("AWS", "ACTIVE", null);
+        jdbc.update("""
+                INSERT INTO secret_connection_scopes
+                    (connection_id, scope_key, revision, content_type, approved_ref,
+                     history_limit, enabled)
+                VALUES (?, 'iam-keys', 1, 'IAM_ACCESS_KEY_METADATA',
+                        'aws://123456789012/global/iam/access-keys', 'CURRENT_STATE_ONLY', true),
+                       (?, 'other', 1, 'AWS_SECRET_VALUE', 'aws://123456789012/other',
+                        'CURRENT_VALUE_ONLY', true)
+                """, mixed, mixed);
+        assertConflict(() -> service.register(new SecretRunRequest(mixed, null), "admin"));
+        long wrongRef = connection("AWS", "ACTIVE", null);
+        jdbc.update("""
+                INSERT INTO secret_connection_scopes
+                    (connection_id, scope_key, revision, content_type, approved_ref,
+                     history_limit, enabled)
+                VALUES (?, 'iam-keys', 1, 'IAM_ACCESS_KEY_METADATA',
+                        'aws://123456789012/global/iam/users', 'CURRENT_STATE_ONLY', true)
+                """, wrongRef);
+        assertConflict(() -> service.register(new SecretRunRequest(wrongRef, null), "admin"));
+        long wrongHistory = connection("AWS", "ACTIVE", null);
+        jdbc.update("""
+                INSERT INTO secret_connection_scopes
+                    (connection_id, scope_key, revision, content_type, approved_ref,
+                     history_limit, enabled)
+                VALUES (?, 'iam-keys', 1, 'IAM_ACCESS_KEY_METADATA',
+                        'aws://123456789012/global/iam/access-keys', 'ALL_HISTORY', true)
+                """, wrongHistory);
+        assertConflict(() -> service.register(new SecretRunRequest(wrongHistory, null), "admin"));
+        assertThat(count("secret_jobs")).isEqualTo(1);
+    }
+
+    @Test
     void requiresCurrentDatabaseAdminForRegistrationAndStatus() {
         long connection = connection("ACTIVE", null);
         scope(connection, "fixtures/", true);
@@ -305,9 +351,11 @@ class SecretRunServiceTest {
         return jdbc.queryForObject("""
                 INSERT INTO secret_connections
                     (provider, display_name, auth_ref, status, scope_version, next_due_at)
-                VALUES (?, 'Test connection', 'test-only-ref', ?, 1, ?)
+                VALUES (?, 'Test connection', ?, ?, 1, ?)
                 RETURNING connection_id
-                """, Long.class, provider, status, nextDue);
+                """, Long.class, provider,
+                "AWS".equals(provider) ? "aws-profile:test" : "test-only-ref",
+                status, nextDue);
     }
 
     private long scope(long connectionId, String key, boolean enabled) {

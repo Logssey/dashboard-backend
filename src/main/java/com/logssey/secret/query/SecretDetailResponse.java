@@ -20,5 +20,6 @@ public record SecretDetailResponse(
         String expiryPolicy,
         OffsetDateTime expiresAt,
         String lifecycleStatus,
-        List<SecretOccurrenceResponse> occurrences) {
+        List<SecretOccurrenceResponse> occurrences,
+        AwsIamMetadataResponse iamMetadata) {
 }

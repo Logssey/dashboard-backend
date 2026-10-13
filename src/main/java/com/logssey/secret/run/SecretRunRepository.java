@@ -58,6 +58,30 @@ class SecretRunRepository {
                 """, (rs, row) -> jobRun(rs), connectionId).stream().findFirst();
     }
 
+    boolean hasSupportedScope(Connection connection) {
+        Boolean supported = jdbc.queryForObject("""
+                SELECT (? = 'GITHUB' OR EXISTS (
+                    SELECT 1 FROM secret_connections c
+                    WHERE c.connection_id = ?
+                      AND c.auth_ref ~ '^aws-profile:[A-Za-z0-9._-]{1,100}$'
+                )) AND EXISTS (
+                    SELECT 1 FROM secret_connection_scopes s
+                    WHERE s.connection_id = ? AND s.enabled
+                      AND (? = 'GITHUB' OR (s.content_type = 'IAM_ACCESS_KEY_METADATA'
+                          AND s.approved_ref ~ '^aws://[0-9]{12}/global/iam/access-keys$'
+                          AND (s.history_limit IS NULL OR s.history_limit = 'CURRENT_STATE_ONLY')))
+                ) AND (? = 'GITHUB' OR NOT EXISTS (
+                    SELECT 1 FROM secret_connection_scopes s
+                    WHERE s.connection_id = ? AND s.enabled
+                      AND NOT (s.content_type = 'IAM_ACCESS_KEY_METADATA'
+                          AND s.approved_ref ~ '^aws://[0-9]{12}/global/iam/access-keys$'
+                          AND (s.history_limit IS NULL OR s.history_limit = 'CURRENT_STATE_ONLY'))
+                ))
+                """, Boolean.class, connection.provider(), connection.id(), connection.id(),
+                connection.provider(), connection.provider(), connection.id());
+        return Boolean.TRUE.equals(supported);
+    }
+
     OffsetDateTime databaseNow() {
         return jdbc.queryForObject("SELECT clock_timestamp()", OffsetDateTime.class);
     }

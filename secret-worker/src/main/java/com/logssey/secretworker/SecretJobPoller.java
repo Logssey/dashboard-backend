@@ -26,20 +26,20 @@ public class SecretJobPoller {
 
     @Scheduled(fixedDelayString = "${logssey.secret.executor.poll-delay}")
     public void poll() {
-        // Enabling the property alone must not consume jobs before a collector is integrated.
-        SecretJobProcessor processor = processorProvider.getIfAvailable();
-        if (processor == null) {
+        // Each opt-in provider claims only its own jobs. No collector means no claims.
+        var processors = processorProvider.orderedStream().toList();
+        if (processors.isEmpty()) {
             return;
         }
         try {
             execution.recoverExpiredJobs();
-            // Claim immediately before processing so a queued local job does not lose its lease.
-            for (int i = 0; i < properties.batchSize(); i++) {
-                var job = execution.claimNextJob(processor.provider());
-                if (job.isEmpty()) {
-                    break;
+            for (SecretJobProcessor processor : processors) {
+                // Claim immediately before processing so a queued job does not lose its lease.
+                for (int i = 0; i < properties.batchSize(); i++) {
+                    var job = execution.claimNextJob(processor.provider());
+                    if (job.isEmpty()) break;
+                    processOne(processor, job.get());
                 }
-                processOne(processor, job.get());
             }
         } catch (RuntimeException error) {
             log.error("Secret job polling failed ({}); retry on next poll", error.getClass().getSimpleName());
