@@ -13,6 +13,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.Base64;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -26,6 +27,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 import com.logssey.secretworker.SecretJobExecutionService;
@@ -37,6 +39,9 @@ import com.logssey.secretworker.detection.SecretFindingRepository;
 import com.logssey.secretworker.detector.GitleaksFinding;
 import com.logssey.secretworker.detector.GitleaksScanResult;
 import com.logssey.secretworker.detector.SecretContentDetector;
+import com.logssey.secretworker.validation.AwsValidationResult;
+import com.logssey.secretworker.validation.AwsValidationService;
+import com.logssey.secretworker.validation.SecretValidationAttemptRepository;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -48,6 +53,7 @@ class GitHubSecretJobProcessorTest {
     private static final String ROOT = "c".repeat(40);
     private static final String FIXTURES = "d".repeat(40);
     private static final String BLOB = "e".repeat(40);
+    private static final String SECOND_BLOB = "f".repeat(40);
     private static final byte[] CONTENT = ("AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\n"
             + "AWS_SECRET_ACCESS_KEY=" + "aB3/".repeat(10) + "\n").getBytes(StandardCharsets.UTF_8);
     private static JdbcTemplate jdbc;
@@ -56,6 +62,16 @@ class GitHubSecretJobProcessorTest {
     private HttpServer server;
     private SecretJobExecutionService execution;
     private GitHubSecretJobProcessor processor;
+    private GitHubCollector collector;
+    private SecretContentDetector detector;
+    private SecretFindingRepository findings;
+    private SecretFindingNormalizer normalizer;
+    private SecretValidationAttemptRepository attempts;
+    private SecretJobProperties jobs;
+    private String repository = "test-find-key";
+    private boolean secondScope;
+    private boolean secondFile;
+    private boolean missingSecondBlob;
     private boolean missingPath;
 
     @BeforeAll
@@ -85,8 +101,8 @@ class GitHubSecretJobProcessorTest {
                 HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build());
         var token = new GitHubAppTokenProvider(123, 456, key.generateKeyPair().getPrivate(), api,
                 Clock.fixed(Instant.parse("2026-10-14T00:00:00Z"), ZoneOffset.UTC));
-        var collector = new GitHubCollector(api, token);
-        var detector = new SecretContentDetector() {
+        collector = new GitHubCollector(api, token);
+        detector = new SecretContentDetector() {
             @Override public String engineVersion() { return "8.30.1"; }
             @Override public String configHash() { return CONFIG_HASH; }
             @Override public GitleaksScanResult scan(byte[] content) {
@@ -96,12 +112,13 @@ class GitHubSecretJobProcessorTest {
                         new GitleaksFinding("generic-api-key", 2, 2, 1, 60)));
             }
         };
-        var findings = new SecretFindingRepository(jdbc, new TransactionTemplate(transactions),
-                new SecretFindingNormalizer(new byte[32], "test-v1"));
-        var jobs = new SecretJobProperties(false, Duration.ofSeconds(30), Duration.ofMinutes(5), 10,
+        normalizer = new SecretFindingNormalizer(new byte[32], "test-v1");
+        findings = new SecretFindingRepository(jdbc, new TransactionTemplate(transactions), normalizer);
+        jobs = new SecretJobProperties(false, Duration.ofSeconds(30), Duration.ofMinutes(5), 10,
                 Duration.ofSeconds(1), Duration.ofSeconds(8));
-        processor = new GitHubSecretJobProcessor(jdbc, collector, detector, findings, jobs);
         execution = SecretJobTestSupport.execution(jdbc, jobs, transactions);
+        attempts = new SecretValidationAttemptRepository(jdbc, execution);
+        processor = processorWith(material -> { throw new AssertionError("Synthetic fixture reached validator"); });
     }
 
     @AfterEach
@@ -121,8 +138,142 @@ class GitHubSecretJobProcessorTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_credential_sets", Long.class)).isEqualTo(1L);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_occurrences", Long.class)).isEqualTo(1L);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_findings", Long.class)).isEqualTo(2L);
+        assertThat(jdbc.queryForObject("SELECT validation_status FROM secret_scan_runs", String.class))
+                .isEqualTo("SKIPPED");
+        assertThat(jdbc.queryForObject("SELECT result FROM secret_validation_attempts", String.class))
+                .isEqualTo("UNCHECKED");
+        assertThat(jdbc.queryForObject("SELECT reason_code FROM secret_validation_attempts", String.class))
+                .isEqualTo("SYNTHETIC_FIXTURE");
         String stored = jdbc.queryForObject("SELECT masked_label FROM secret_credential_sets", String.class);
         assertThat(stored).doesNotContain("aB3/").doesNotContain("ABCDEFGHIJKLMNOP");
+    }
+
+    @Test
+    void onePairInTwoFilesHasTwoOccurrencesButOnlyOneValidationOutsideTransaction() {
+        repository = "candidate-app";
+        secondFile = true;
+        AtomicInteger calls = new AtomicInteger();
+        processor = processorWith(key -> {
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            calls.incrementAndGet();
+            Instant now = Instant.now();
+            return new AwsValidationResult(AwsValidationResult.Status.VALID,
+                    AwsValidationResult.Reason.AUTHENTICATED, now, now,
+                    AwsValidationResult.METHOD, AwsValidationResult.VERSION);
+        });
+        insertRun();
+
+        var job = execution.claimNextJob("GITHUB").orElseThrow();
+        processor.process(job, execution);
+        assertThat(execution.complete(job.jobId(), job.leaseToken())).isTrue();
+
+        assertThat(calls).hasValue(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_credential_sets", Long.class)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_occurrences", Long.class)).isEqualTo(2L);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_validation_attempts", Long.class)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject("SELECT object_count FROM secret_run_scopes", Long.class)).isEqualTo(2L);
+        assertThat(jdbc.queryForObject("SELECT validation_status FROM secret_scan_runs", String.class))
+                .isEqualTo("SUCCEEDED");
+    }
+
+    @Test
+    void disabledAwsValidationPersistsUncheckedWithoutContactingSts() {
+        repository = "candidate-app";
+        processor = processorWith(new com.logssey.secretworker.validation.AwsCredentialValidator(false));
+        insertRun();
+
+        var job = execution.claimNextJob("GITHUB").orElseThrow();
+        processor.process(job, execution);
+        assertThat(execution.complete(job.jobId(), job.leaseToken())).isTrue();
+
+        assertThat(jdbc.queryForObject("SELECT result FROM secret_validation_attempts", String.class))
+                .isEqualTo("UNCHECKED");
+        assertThat(jdbc.queryForObject("SELECT reason_code FROM secret_validation_attempts", String.class))
+                .isEqualTo("DISABLED");
+        assertThat(jdbc.queryForObject("SELECT validation_status FROM secret_scan_runs", String.class))
+                .isEqualTo("SKIPPED");
+    }
+
+    @Test
+    void sourceGapKeepsEarlierFindingAndValidationWithoutMarkingOccurrenceMissing() {
+        repository = "candidate-app";
+        secondFile = true;
+        missingSecondBlob = true;
+        processor = processorWith(key -> {
+            Instant now = Instant.now();
+            return new AwsValidationResult(AwsValidationResult.Status.VALID,
+                    AwsValidationResult.Reason.AUTHENTICATED, now, now,
+                    AwsValidationResult.METHOD, AwsValidationResult.VERSION);
+        });
+        insertRun();
+
+        var job = execution.claimNextJob("GITHUB").orElseThrow();
+        processor.process(job, execution);
+        assertThat(execution.complete(job.jobId(), job.leaseToken())).isTrue();
+
+        assertThat(jdbc.queryForObject("SELECT collection_status FROM secret_scan_runs", String.class))
+                .isEqualTo("PARTIAL");
+        assertThat(jdbc.queryForObject("SELECT detection_status FROM secret_scan_runs", String.class))
+                .isEqualTo("PARTIAL");
+        assertThat(jdbc.queryForObject("SELECT validation_status FROM secret_scan_runs", String.class))
+                .isEqualTo("SUCCEEDED");
+        assertThat(jdbc.queryForObject("SELECT result_status FROM secret_scan_runs", String.class))
+                .isEqualTo("PARTIAL");
+        assertThat(jdbc.queryForObject("SELECT presence_status FROM secret_occurrences", String.class))
+                .isEqualTo("PRESENT");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_validation_attempts", Long.class)).isEqualTo(1L);
+    }
+
+    @Test
+    void fixtureExemptionDoesNotSuppressValidationInAnotherApprovedRepository() {
+        secondScope = true;
+        AtomicInteger calls = new AtomicInteger();
+        processor = processorWith(key -> {
+            calls.incrementAndGet();
+            Instant now = Instant.now();
+            return new AwsValidationResult(AwsValidationResult.Status.VALID,
+                    AwsValidationResult.Reason.AUTHENTICATED, now, now,
+                    AwsValidationResult.METHOD, AwsValidationResult.VERSION);
+        });
+        insertRun();
+
+        var job = execution.claimNextJob("GITHUB").orElseThrow();
+        processor.process(job, execution);
+        assertThat(execution.complete(job.jobId(), job.leaseToken())).isTrue();
+
+        assertThat(calls).hasValue(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_occurrences", Long.class)).isEqualTo(2L);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_validation_attempts", Long.class))
+                .isEqualTo(2L);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_validation_attempts WHERE result = 'VALID'",
+                Long.class)).isEqualTo(1L);
+    }
+
+    @Test
+    void validationFailureLeavesDetectionEvidenceAndMarksRunPartialWithoutProviderMessage() {
+        repository = "candidate-app";
+        processor = processorWith(key -> { throw new IllegalStateException("raw " + new String(CONTENT)); });
+        insertRun();
+
+        var job = execution.claimNextJob("GITHUB").orElseThrow();
+        processor.process(job, execution);
+        assertThat(execution.complete(job.jobId(), job.leaseToken())).isTrue();
+
+        assertThat(jdbc.queryForObject("SELECT collection_status FROM secret_scan_runs", String.class))
+                .isEqualTo("SUCCEEDED");
+        assertThat(jdbc.queryForObject("SELECT validation_status FROM secret_scan_runs", String.class))
+                .isEqualTo("PARTIAL");
+        assertThat(jdbc.queryForObject("SELECT result_status FROM secret_scan_runs", String.class))
+                .isEqualTo("PARTIAL");
+        assertThat(jdbc.queryForObject("SELECT failure_code FROM secret_scan_runs", String.class))
+                .isEqualTo("VALIDATION_ATTEMPT_FAILED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_occurrences", Long.class)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_validation_attempts", Long.class)).isZero();
+    }
+
+    private GitHubSecretJobProcessor processorWith(AwsValidationService validator) {
+        return new GitHubSecretJobProcessor(jdbc, collector, detector, findings,
+                normalizer, validator, attempts, jobs);
     }
 
     @Test
@@ -146,9 +297,9 @@ class GitHubSecretJobProcessorTest {
                 INSERT INTO secret_connection_scopes
                     (connection_id, scope_key, revision, content_type, approved_ref, history_limit, enabled)
                 VALUES (?, 'fixtures', 1, 'GITHUB_REPOSITORY_FILES',
-                    'github://Logssey/test-find-key/main/fixtures/', 'CURRENT_COMMIT_ONLY', true)
+                    ?, 'CURRENT_COMMIT_ONLY', true)
                 RETURNING scope_id
-                """, Long.class, connection);
+                """, Long.class, connection, "github://Logssey/" + repository + "/main/fixtures/");
         OffsetDateTime now = Instant.now().minusSeconds(1).atOffset(ZoneOffset.UTC);
         long job = jdbc.queryForObject("""
                 INSERT INTO secret_jobs
@@ -164,15 +315,31 @@ class GitHubSecretJobProcessorTest {
                 """, Long.class, job, connection, now, now);
         jdbc.update("INSERT INTO secret_run_scopes (run_id, scope_id, collection_status) VALUES (?, ?, 'PENDING')",
                 run, scope);
+        if (secondScope) {
+            long otherScope = jdbc.queryForObject("""
+                    INSERT INTO secret_connection_scopes
+                        (connection_id, scope_key, revision, content_type, approved_ref, history_limit, enabled)
+                    VALUES (?, 'candidate-app', 1, 'GITHUB_REPOSITORY_FILES',
+                        'github://Logssey/candidate-app/main/fixtures/', 'CURRENT_COMMIT_ONLY', true)
+                    RETURNING scope_id
+                    """, Long.class, connection);
+            jdbc.update("INSERT INTO secret_run_scopes (run_id, scope_id, collection_status) VALUES (?, ?, 'PENDING')",
+                    run, otherScope);
+        }
     }
 
     private void respond(HttpExchange exchange) throws IOException {
         String path = exchange.getRequestURI().getPath();
-        String prefix = "/repos/Logssey/test-find-key/git/";
+        String requestedRepository = secondScope && path.startsWith("/repos/Logssey/candidate-app/git/")
+                ? "candidate-app" : repository;
+        String prefix = "/repos/Logssey/" + requestedRepository + "/git/";
         String body;
         if (path.equals("/app/installations/456/access_tokens")) {
+            String request = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            String tokenRepository = secondScope && request.contains("candidate-app")
+                    ? "candidate-app" : repository;
             body = "{\"token\":\"test-token\",\"permissions\":{\"contents\":\"read\"},"
-                    + "\"repositories\":[{\"full_name\":\"Logssey/test-find-key\"}]}";
+                    + "\"repositories\":[{\"full_name\":\"Logssey/" + tokenRepository + "\"}]}";
         } else if (path.equals(prefix + "ref/heads/main")) {
             body = "{\"object\":{\"type\":\"commit\",\"sha\":\"" + COMMIT + "\"}}";
         } else if (path.equals(prefix + "commits/" + COMMIT)) {
@@ -183,9 +350,17 @@ class GitHubSecretJobProcessorTest {
         } else if (path.equals(prefix + "trees/" + FIXTURES)) {
             body = "{\"sha\":\"" + FIXTURES + "\",\"tree\":[{\"path\":\"sample.txt\","
                     + "\"type\":\"blob\",\"mode\":\"100644\",\"sha\":\"" + BLOB
-                    + "\",\"size\":" + CONTENT.length + "}]}";
-        } else if (path.equals(prefix + "blobs/" + BLOB)) {
-            body = "{\"sha\":\"" + BLOB + "\",\"encoding\":\"base64\",\"size\":" + CONTENT.length
+                    + "\",\"size\":" + CONTENT.length + "}"
+                    + (secondFile ? ", {\"path\":\"sample2.txt\",\"type\":\"blob\",\"mode\":\"100644\","
+                        + "\"sha\":\"" + SECOND_BLOB + "\",\"size\":" + CONTENT.length + "}" : "") + "]}";
+        } else if (missingSecondBlob && path.equals(prefix + "blobs/" + SECOND_BLOB)) {
+            exchange.sendResponseHeaders(404, -1);
+            exchange.close();
+            return;
+        } else if (path.equals(prefix + "blobs/" + BLOB)
+                || secondFile && path.equals(prefix + "blobs/" + SECOND_BLOB)) {
+            String sha = path.endsWith(SECOND_BLOB) ? SECOND_BLOB : BLOB;
+            body = "{\"sha\":\"" + sha + "\",\"encoding\":\"base64\",\"size\":" + CONTENT.length
                     + ",\"content\":\"" + Base64.getEncoder().encodeToString(CONTENT) + "\"}";
         } else {
             exchange.sendResponseHeaders(404, -1);

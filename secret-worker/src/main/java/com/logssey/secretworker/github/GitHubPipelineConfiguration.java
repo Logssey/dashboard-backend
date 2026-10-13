@@ -15,6 +15,8 @@ import com.logssey.secretworker.detection.SecretFindingRepository;
 import com.logssey.secretworker.SecretJobProperties;
 import com.logssey.secretworker.detector.GitleaksDetector;
 import com.logssey.secretworker.detector.SecretContentDetector;
+import com.logssey.secretworker.validation.AwsValidationService;
+import com.logssey.secretworker.validation.SecretValidationAttemptRepository;
 
 @Configuration
 @ConditionalOnProperty(name = "logssey.secret.github.enabled", havingValue = "true")
@@ -36,17 +38,24 @@ class GitHubPipelineConfiguration {
     }
 
     @Bean
-    SecretFindingRepository secretFindingRepository(
-            JdbcTemplate jdbc, PlatformTransactionManager transactionManager,
+    SecretFindingNormalizer secretFindingNormalizer(
             @Value("${logssey.secret.github.fingerprint-key}") String fingerprintKey,
             @Value("${logssey.secret.github.fingerprint-key-version}") String keyVersion) {
-        return new SecretFindingRepository(jdbc, new TransactionTemplate(transactionManager),
-                SecretFindingNormalizer.fromBase64(fingerprintKey, keyVersion));
+        return SecretFindingNormalizer.fromBase64(fingerprintKey, keyVersion);
+    }
+
+    @Bean
+    SecretFindingRepository secretFindingRepository(JdbcTemplate jdbc,
+            PlatformTransactionManager transactionManager, SecretFindingNormalizer normalizer) {
+        return new SecretFindingRepository(jdbc, new TransactionTemplate(transactionManager), normalizer);
     }
 
     @Bean
     GitHubSecretJobProcessor gitHubSecretJobProcessor(JdbcTemplate jdbc, GitHubCollector collector,
-            SecretContentDetector detector, SecretFindingRepository findings, SecretJobProperties jobs) {
-        return new GitHubSecretJobProcessor(jdbc, collector, detector, findings, jobs);
+            SecretContentDetector detector, SecretFindingRepository findings,
+            SecretFindingNormalizer normalizer, AwsValidationService validator,
+            SecretValidationAttemptRepository attempts, SecretJobProperties jobs) {
+        return new GitHubSecretJobProcessor(jdbc, collector, detector, findings,
+                normalizer, validator, attempts, jobs);
     }
 }

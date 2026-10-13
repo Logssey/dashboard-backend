@@ -13,7 +13,7 @@ import software.amazon.awssdk.services.sts.model.StsException;
 
 /** A single in-memory attempt. Scheduling, deduplication, and persistence belong to the worker. */
 @Component
-public final class AwsCredentialValidator {
+public final class AwsCredentialValidator implements AwsValidationService {
     @FunctionalInterface
     interface StsCaller {
         void getCallerIdentity(AwsKeyMaterial key);
@@ -34,6 +34,7 @@ public final class AwsCredentialValidator {
         this.sts = Objects.requireNonNull(sts);
     }
 
+    @Override
     public AwsValidationResult validate(AwsKeyMaterial key) {
         Instant evaluatedAt = clock.instant();
         if (!enabled) {

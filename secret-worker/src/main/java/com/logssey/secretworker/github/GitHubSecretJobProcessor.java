@@ -3,7 +3,10 @@ package com.logssey.secretworker.github;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -19,8 +22,12 @@ import com.logssey.secretworker.SecretJobFailureCode;
 import com.logssey.secretworker.SecretJobProcessor;
 import com.logssey.secretworker.SecretJobProperties;
 import com.logssey.secretworker.detection.SecretFindingRepository;
+import com.logssey.secretworker.detection.SecretFindingNormalizer;
 import com.logssey.secretworker.detector.DetectionFailure;
 import com.logssey.secretworker.detector.SecretContentDetector;
+import com.logssey.secretworker.validation.AwsValidationResult;
+import com.logssey.secretworker.validation.AwsValidationService;
+import com.logssey.secretworker.validation.SecretValidationAttemptRepository;
 
 /** Processes only approved GitHub scopes; bytes remain in the collector's synchronous callback. */
 public final class GitHubSecretJobProcessor implements SecretJobProcessor {
@@ -28,15 +35,22 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
     private final GitHubCollector collector;
     private final SecretContentDetector detector;
     private final SecretFindingRepository findings;
+    private final SecretFindingNormalizer normalizer;
+    private final AwsValidationService validator;
+    private final SecretValidationAttemptRepository attempts;
     private final SecretJobProperties jobs;
 
     GitHubSecretJobProcessor(JdbcTemplate jdbc, GitHubCollector collector,
                              SecretContentDetector detector, SecretFindingRepository findings,
-                             SecretJobProperties jobs) {
+                             SecretFindingNormalizer normalizer, AwsValidationService validator,
+                             SecretValidationAttemptRepository attempts, SecretJobProperties jobs) {
         this.jdbc = jdbc;
         this.collector = collector;
         this.detector = detector;
         this.findings = findings;
+        this.normalizer = normalizer;
+        this.validator = validator;
+        this.attempts = attempts;
         this.jobs = jobs;
     }
 
@@ -89,17 +103,18 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
         }
         withLease(job, execution, () -> jdbc.update("""
                 UPDATE secret_scan_runs SET collection_status = 'RUNNING',
-                    detection_status = 'RUNNING', validation_status = 'SKIPPED'
+                    detection_status = 'RUNNING', validation_status = 'RUNNING'
                 WHERE run_id = ?
                 """, job.runId()));
 
+        ValidationProgress validation = new ValidationProgress();
         int successfulScopes = 0;
         int acceptedObjects = 0;
         int totalGaps = 0;
         String firstFailure = null;
         for (Scope scope : scopes) {
             if (leaseLost.get()) throw new SecretJobFailure(SecretJobFailureCode.LEASE_EXPIRED, true);
-            ScopeResult result = processScope(job, scope, execution);
+            ScopeResult result = processScope(job, scope, execution, validation);
             if (result.usable()) successfulScopes++;
             acceptedObjects += result.objectCount();
             totalGaps += result.gapCount();
@@ -109,18 +124,22 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
         String collectionStatus = successfulScopes == 0 ? "FAILED" : allSucceeded ? "SUCCEEDED" : "PARTIAL";
         String detectionStatus = acceptedObjects == 0 ? allSucceeded ? "SKIPPED" : "FAILED"
                 : totalGaps == 0 ? "SUCCEEDED" : "PARTIAL";
-        String failureCode = allSucceeded ? null : firstFailure == null ? "COLLECTION_PARTIAL" : firstFailure;
+        String validationStatus = validation.status();
+        String failureCode = !allSucceeded
+                ? firstFailure == null ? "COLLECTION_PARTIAL" : firstFailure
+                : "PARTIAL".equals(validationStatus) ? validation.failureCode() : null;
         withLease(job, execution, () -> jdbc.update("""
-                UPDATE secret_scan_runs SET collection_status = ?, detection_status = ?, failure_code = ?
+                UPDATE secret_scan_runs SET collection_status = ?, detection_status = ?,
+                    validation_status = ?, failure_code = ?
                 WHERE run_id = ?
-                """, collectionStatus, detectionStatus, failureCode, job.runId()));
+                """, collectionStatus, detectionStatus, validationStatus, failureCode, job.runId()));
         if (successfulScopes == 0) {
             throw new SecretJobFailure(retryCode(firstFailure), retryable(firstFailure));
         }
     }
 
     private ScopeResult processScope(ClaimedSecretJob job, Scope scope,
-                                     SecretJobExecutionService execution) {
+                                     SecretJobExecutionService execution, ValidationProgress validation) {
         GitHubApprovedScope approved;
         try {
             approved = GitHubApprovedScope.fromApprovedRef(scope.approvedRef(), scope.historyLimit());
@@ -128,6 +147,10 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
             finishScope(job, scope.id(), "FAILED", 0, "INVALID_APPROVED_SCOPE", execution);
             return new ScopeResult(false, 0, 1, "INVALID_APPROVED_SCOPE");
         }
+        // This public experiment repository contains deliberately synthetic credentials.
+        // Never send them to STS even if live validation was enabled accidentally.
+        boolean syntheticFixture = "Logssey".equalsIgnoreCase(approved.owner())
+                && "test-find-key".equalsIgnoreCase(approved.repository());
         withLease(job, execution, () -> jdbc.update("""
                 UPDATE secret_run_scopes SET collection_status = 'RUNNING', started_at = COALESCE(started_at, ?),
                     finished_at = NULL, object_count = NULL, failure_code = NULL
@@ -145,9 +168,28 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
                     }
                     try {
                         var scan = detector.scan(bytes);
-                        withLease(job, execution, () -> findings.recordObject(toolRunId.get(),
-                                source.owner() + "/" + source.repository() + "/" + source.path(),
-                                source.blobSha(), bytes, scan, Instant.now()));
+                        String sourceRef = source.owner() + "/" + source.repository() + "/" + source.path();
+                        var inspection = normalizer.inspect(job.connectionId(), sourceRef, bytes, scan.findings());
+                        withLease(job, execution, () -> findings.recordInspection(toolRunId.get(),
+                                sourceRef, source.blobSha(), inspection, scan, Instant.now()));
+                        for (var candidate : inspection.awsCandidates()) {
+                            if (!validation.firstEncounter(candidate.credential(), syntheticFixture)) continue;
+                            try {
+                                // Validation happens after the short persistence transaction has returned.
+                                AwsValidationResult validationResult = syntheticFixture ? syntheticFixtureResult()
+                                        : validator.validate(candidate.material());
+                                if (!attempts.recordIfLeased(job.jobId(), job.leaseToken(), job.runId(),
+                                        candidate.credential(), validationResult)) {
+                                    throw new SecretJobFailure(SecretJobFailureCode.LEASE_EXPIRED, true);
+                                }
+                                validation.record(validationResult);
+                            } catch (SecretJobFailure error) {
+                                throw error;
+                            } catch (RuntimeException error) {
+                                // Provider and DB exception messages can contain credential material.
+                                validation.failed();
+                            }
+                        }
                     } catch (DetectionFailure error) {
                         consumerFailure.set("DETECTOR_" + error.code().name());
                         throw error;
@@ -184,6 +226,54 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
 
     private static OffsetDateTime utcNow() {
         return Instant.now().atOffset(ZoneOffset.UTC);
+    }
+
+    private static AwsValidationResult syntheticFixtureResult() {
+        return new AwsValidationResult(AwsValidationResult.Status.UNCHECKED,
+                AwsValidationResult.Reason.SYNTHETIC_FIXTURE, Instant.now(), null,
+                AwsValidationResult.METHOD, AwsValidationResult.VERSION);
+    }
+
+    private static final class ValidationProgress {
+        private final Set<String> encountered = new HashSet<>();
+        private final Set<String> fixtureRecorded = new HashSet<>();
+        private int checked;
+        private int inconclusive;
+        private int failed;
+
+        boolean firstEncounter(SecretFindingNormalizer.Credential credential, boolean syntheticFixture) {
+            byte[] digest = "CONFIRMED".equals(credential.componentState())
+                    ? credential.fingerprint() : credential.candidateLocator();
+            String identity = credential.issuer() + ":" + credential.credentialType() + ":"
+                    + credential.componentState() + ":" + credential.fingerprintKeyVersion() + ":"
+                    + HexFormat.of().formatHex(digest);
+            // An exemption in the fixture repository must not suppress validation if the
+            // same credential is also discovered in a different approved repository.
+            if (syntheticFixture) return !encountered.contains(identity) && fixtureRecorded.add(identity);
+            return encountered.add(identity);
+        }
+
+        void record(AwsValidationResult result) {
+            if (result.status() == AwsValidationResult.Status.UNCHECKED) {
+                if (result.reason() != AwsValidationResult.Reason.DISABLED
+                        && result.reason() != AwsValidationResult.Reason.SYNTHETIC_FIXTURE) inconclusive++;
+            } else if (result.status() == AwsValidationResult.Status.UNKNOWN) {
+                inconclusive++;
+            } else {
+                checked++;
+            }
+        }
+
+        void failed() { failed++; }
+
+        String status() {
+            if (failed > 0 || inconclusive > 0) return "PARTIAL";
+            return checked > 0 ? "SUCCEEDED" : "SKIPPED";
+        }
+
+        String failureCode() {
+            return failed > 0 ? "VALIDATION_ATTEMPT_FAILED" : "VALIDATION_INCONCLUSIVE";
+        }
     }
 
     private static SecretJobFailureCode retryCode(String code) {

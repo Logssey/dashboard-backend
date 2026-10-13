@@ -105,6 +105,7 @@ public class SecretValidationAttemptRepository {
                     AwsValidationResult.Reason.PROVIDER_UNAVAILABLE,
                     AwsValidationResult.Reason.CLIENT_FAILURE).contains(reason);
             case UNCHECKED -> List.of(AwsValidationResult.Reason.DISABLED,
+                    AwsValidationResult.Reason.SYNTHETIC_FIXTURE,
                     AwsValidationResult.Reason.INCOMPLETE_PAIR,
                     AwsValidationResult.Reason.MISSING_SESSION_TOKEN).contains(reason);
         };
