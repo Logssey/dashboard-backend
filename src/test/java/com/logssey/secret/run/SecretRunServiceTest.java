@@ -303,6 +303,15 @@ class SecretRunServiceTest {
                 .isEqualTo("AWS_CONTENT_READ_DISABLED");
         assertThat(results.toString()).doesNotContain("123456789012", "fixture-A", "fixture-bucket",
                 "config%2Fapp.yaml", "approvedRef");
+        jdbc.update("""
+                UPDATE secret_run_scopes rs SET failure_code = 'DETECTOR_TOOL_TIMEOUT'
+                FROM secret_connection_scopes s
+                WHERE rs.scope_id = s.scope_id AND s.content_type = 'AWS_SECRETS_MANAGER_VALUE'
+                """);
+        assertThat(service.status(accepted.runId(), "admin").scopeResults())
+                .filteredOn(result -> "AWS_SECRETS_MANAGER_VALUE".equals(result.contentType()))
+                .singleElement().extracting(SecretRunScopeResultResponse::gapCode)
+                .isEqualTo("DETECTOR_TOOL_TIMEOUT");
     }
 
     @Test
@@ -318,6 +327,8 @@ class SecretRunServiceTest {
                         "aws://123456789012/ap-northeast-2/secrets-manager/secret/%ZZ"},
                 new String[]{"AWS_SSM_PARAMETER_VALUE",
                         "aws://123456789012/ap-northeast-2/ssm/parameters"},
+                new String[]{"AWS_S3_OBJECT_CONTENT",
+                        "aws://123456789012/ap-northeast-2/s3/object/fixture-bucket/*"},
                 new String[]{"AWS_S3_OBJECT_CONTENT",
                         "aws://123456789012/ap-northeast-2/s3/object/fixture-bucket/"})) {
             long connection = connection("AWS", "ACTIVE", null);

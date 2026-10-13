@@ -67,7 +67,7 @@ public class SecretScheduleRepository {
         String region = "[a-z]{2}(-[a-z0-9]+){1,3}-[0-9]+";
         // Kept in sync with the API's AwsScopeSql. The content processor performs
         // the stricter ARN/account/region/object-key checks before any value read.
-        String exactSegment = "([^/?#%]|%[0-9A-Fa-f]{2})+";
+        String exactSegment = "([^/?#%*]|%[0-9A-Fa-f]{2})+";
         return "(" + alias + ".history_limit IS NULL AND " + alias + ".content_type = 'IAM_ACCESS_KEY_METADATA'"
                 + " AND " + alias + ".approved_ref ~ '^aws://[0-9]{12}/global/iam/access-keys$'"
                 + " OR " + alias + ".history_limit = 'CURRENT_STATE_ONLY' AND ("

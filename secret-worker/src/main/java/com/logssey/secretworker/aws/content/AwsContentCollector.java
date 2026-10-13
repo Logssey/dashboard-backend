@@ -8,6 +8,8 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 
+import com.logssey.secretworker.SecretJobFailure;
+
 /** An exact AWS value is read only after a separate runtime opt-in, then consumed in memory. */
 public final class AwsContentCollector {
     public static final int DEFAULT_MAX_BYTES = 256 * 1024;
@@ -58,6 +60,9 @@ public final class AwsContentCollector {
             if (!isText(content)) return failed(GapCode.NON_TEXT);
             try {
                 sink.accept(new Source(scope.kind(), content.length), content);
+            } catch (SecretJobFailure error) {
+                // A lost lease is a worker ownership failure, never an ordinary scope gap.
+                throw error;
             } catch (RuntimeException error) {
                 return failed(GapCode.CONSUMER_FAILED);
             }

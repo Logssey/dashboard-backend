@@ -28,6 +28,12 @@ public final class AwsContentScope {
         this.objectKey = objectKey;
     }
 
+    public static boolean supports(String contentType) {
+        return "AWS_SECRETS_MANAGER_VALUE".equals(contentType)
+                || "AWS_SSM_PARAMETER_VALUE".equals(contentType)
+                || "AWS_S3_OBJECT_CONTENT".equals(contentType);
+    }
+
     public static AwsContentScope fromApprovedRef(String contentType, String approvedRef,
                                                    String historyLimit) {
         if (!"CURRENT_VALUE_ONLY".equals(historyLimit)) throw invalid();

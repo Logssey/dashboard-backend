@@ -5,7 +5,7 @@ public final class AwsScopeSql {
     private static final String REGION = "[a-z]{2}(-[a-z0-9]+){1,3}-[0-9]+";
     // A percent-encoded resource occupies exactly one path segment. The worker also parses
     // the ARN or object key and checks the account/region before reading a value.
-    private static final String EXACT_SEGMENT = "([^/?#%]|%[0-9A-Fa-f]{2})+";
+    private static final String EXACT_SEGMENT = "([^/?#%*]|%[0-9A-Fa-f]{2})+";
 
     private AwsScopeSql() { }
 

@@ -43,6 +43,10 @@ public class SecretRunService {
             "AWS_CONTENT_RATE_LIMITED", "AWS_CONTENT_SOURCE_UNAVAILABLE",
             "AWS_CONTENT_OBJECT_TOO_LARGE", "AWS_CONTENT_NON_TEXT",
             "AWS_CONTENT_CONSUMER_FAILED", "AWS_CONTENT_PROCESSING_FAILED",
+            "DETECTOR_INPUT_TOO_LARGE", "DETECTOR_OUTPUT_TOO_LARGE",
+            "DETECTOR_TOOL_UNAVAILABLE", "DETECTOR_UNSUPPORTED_VERSION",
+            "DETECTOR_TOOL_TIMEOUT", "DETECTOR_TOOL_EXIT", "DETECTOR_INVALID_REPORT",
+            "DETECTOR_TOOL_IO_ERROR", "DETECTOR_INTERRUPTED", "RESULT_PERSISTENCE_FAILED",
             "GITHUB_PATH_NOT_FOUND",
             "GITHUB_ACCESS_DENIED", "GITHUB_RATE_LIMITED", "GITHUB_SOURCE_UNAVAILABLE",
             "GITHUB_API_ERROR", "GITHUB_MALFORMED_RESPONSE",
@@ -59,7 +63,7 @@ public class SecretRunService {
             "^aws://[0-9]{12}/global/s3/buckets$");
     private static final Pattern IAM_REF = Pattern.compile(
             "^aws://[0-9]{12}/global/iam/access-keys$");
-    private static final String EXACT_SEGMENT = "([^/?#%]|%[0-9A-Fa-f]{2})+";
+    private static final String EXACT_SEGMENT = "([^/?#%*]|%[0-9A-Fa-f]{2})+";
     private static final Pattern SECRET_VALUE_REF = Pattern.compile(
             "^aws://[0-9]{12}/(" + REGION + ")/secrets-manager/secret/" + EXACT_SEGMENT + "$");
     private static final Pattern PARAMETER_VALUE_REF = Pattern.compile(
