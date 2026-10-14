@@ -18,6 +18,32 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class SecretRunControllerTest {
 
     @Test
+    void listsPaginatedRunSummariesWithoutSourceOrCredentialReferences() throws Exception {
+        var service = mock(SecretRunService.class);
+        when(service.list(1, 10, "admin")).thenReturn(new SecretRunListResponse(
+                java.util.List.of(new SecretRunListItemResponse(42, 7, "AWS", "AWS collection",
+                        "MANUAL", "PARTIAL", "PARTIAL", "SUCCEEDED", "SKIPPED",
+                        2, 2, 1, 3, null, null, null, "AWS_ACCESS_DENIED")),
+                12, 1, 10));
+        var mvc = MockMvcBuilders.standaloneSetup(new SecretRunController(service)).build();
+
+        mvc.perform(get("/api/v1/secrets/runs?page=1&size=10")
+                        .principal(new UsernamePasswordAuthenticationToken("admin", "n/a")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.total").value(12))
+                .andExpect(jsonPath("$.page").value(1))
+                .andExpect(jsonPath("$.size").value(10))
+                .andExpect(jsonPath("$.items[0].runId").value(42))
+                .andExpect(jsonPath("$.items[0].status").value("PARTIAL"))
+                .andExpect(jsonPath("$.items[0].incompleteScopeCount").value(1))
+                .andExpect(jsonPath("$.items[0].collectedObjectCount").value(3))
+                .andExpect(jsonPath("$.items[0].failureCode").value("AWS_ACCESS_DENIED"))
+                .andExpect(jsonPath("$.items[0].approvedRef").doesNotExist())
+                .andExpect(jsonPath("$.items[0].authRef").doesNotExist())
+                .andExpect(jsonPath("$.items[0].scopeResults").doesNotExist());
+    }
+
+    @Test
     void acceptsAsyncRegistrationAndPublishesStatusLocation() throws Exception {
         var service = mock(SecretRunService.class);
         when(service.register(any(SecretRunRequest.class), eq("admin")))

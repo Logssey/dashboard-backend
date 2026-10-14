@@ -521,6 +521,91 @@ class SecretRunServiceTest {
         assertThat(count("secret_jobs")).isEqualTo(1);
     }
 
+    @Test
+    void listsNewestRunsWithPartialCoverageAndSafeFailureCodesEvenAfterConnectionIsPaused() {
+        long firstConnection = connection("ACTIVE", null);
+        scope(firstConnection, "one/", true);
+        scope(firstConnection, "two/", true);
+        jdbc.update("UPDATE secret_connections SET display_name = 'Repository A' WHERE connection_id = ?",
+                firstConnection);
+        var oldest = service.register(new SecretRunRequest(firstConnection, null), "admin");
+        jdbc.update("""
+                UPDATE secret_run_scopes SET collection_status = 'SUCCEEDED', object_count = 3
+                WHERE run_id = ? AND scope_id = (SELECT MIN(scope_id) FROM secret_run_scopes WHERE run_id = ?)
+                """, oldest.runId(), oldest.runId());
+        jdbc.update("""
+                UPDATE secret_run_scopes SET collection_status = 'FAILED', object_count = 0,
+                    failure_code = 'SOURCE_UNAVAILABLE'
+                WHERE run_id = ? AND scope_id = (SELECT MAX(scope_id) FROM secret_run_scopes WHERE run_id = ?)
+                """, oldest.runId(), oldest.runId());
+        jdbc.update("UPDATE secret_jobs SET status = 'SUCCEEDED', finished_at = CURRENT_TIMESTAMP WHERE connection_id = ?",
+                firstConnection);
+        jdbc.update("""
+                UPDATE secret_scan_runs SET result_status = 'PARTIAL', collection_status = 'PARTIAL',
+                    detection_status = 'SUCCEEDED', validation_status = 'SKIPPED',
+                    failure_code = 'SOURCE_UNAVAILABLE', finished_at = CURRENT_TIMESTAMP,
+                    requested_at = CURRENT_TIMESTAMP - INTERVAL '2 hours'
+                WHERE run_id = ?
+                """, oldest.runId());
+
+        long secondConnection = connection("ACTIVE", null);
+        scope(secondConnection, "three/", true);
+        jdbc.update("UPDATE secret_connections SET display_name = 'Repository B' WHERE connection_id = ?",
+                secondConnection);
+        var failed = service.register(new SecretRunRequest(secondConnection, null), "admin");
+        jdbc.update("UPDATE secret_jobs SET status = 'FAILED', finished_at = CURRENT_TIMESTAMP WHERE connection_id = ?",
+                secondConnection);
+        jdbc.update("""
+                UPDATE secret_scan_runs SET result_status = 'FAILED', collection_status = 'FAILED',
+                    failure_code = 'unsafe-provider-message', finished_at = CURRENT_TIMESTAMP,
+                    requested_at = CURRENT_TIMESTAMP - INTERVAL '1 hour'
+                WHERE run_id = ?
+                """, failed.runId());
+
+        var newest = service.register(new SecretRunRequest(firstConnection, null), "admin");
+        jdbc.update("UPDATE secret_connections SET status = 'PAUSED' WHERE connection_id = ?",
+                firstConnection);
+
+        var firstPage = service.list(0, 2, "admin");
+        assertThat(firstPage.total()).isEqualTo(3);
+        assertThat(firstPage.items()).extracting(SecretRunListItemResponse::runId)
+                .containsExactly(newest.runId(), failed.runId());
+        assertThat(firstPage.items().get(0).status()).isEqualTo("PENDING");
+        assertThat(firstPage.items().get(0).displayName()).isEqualTo("Repository A");
+        assertThat(firstPage.items().get(0).provider()).isEqualTo("GITHUB");
+        assertThat(firstPage.items().get(1).status()).isEqualTo("FAILED");
+        assertThat(firstPage.items().get(1).failureCode()).isEqualTo("UNSPECIFIED_FAILURE");
+
+        var secondPage = service.list(1, 2, "admin");
+        assertThat(secondPage.total()).isEqualTo(3);
+        assertThat(secondPage.items()).hasSize(1);
+        var partial = secondPage.items().get(0);
+        assertThat(partial.runId()).isEqualTo(oldest.runId());
+        assertThat(partial.status()).isEqualTo("PARTIAL");
+        assertThat(partial.triggerType()).isEqualTo("MANUAL");
+        assertThat(partial.scopeCount()).isEqualTo(2);
+        assertThat(partial.completedScopeCount()).isEqualTo(2);
+        assertThat(partial.incompleteScopeCount()).isEqualTo(1);
+        assertThat(partial.collectedObjectCount()).isEqualTo(3);
+        assertThat(partial.failureCode()).isEqualTo("SOURCE_UNAVAILABLE");
+        assertThat(partial.finishedAt()).isNotNull();
+        assertThat(partial.toString()).doesNotContain("test-only-ref", "Logssey/test-find-key");
+        assertThat(service.list(2, 2, "admin").items()).isEmpty();
+        assertThat(service.list(2, 2, "admin").total()).isEqualTo(3);
+    }
+
+    @Test
+    void runHistoryRequiresAdminAndBoundsPagination() {
+        assertThat(service.list(0, 20, "admin").items()).isEmpty();
+        assertThat(service.list(0, 20, "admin").total()).isZero();
+        assertCode(ErrorCode.INVALID_INPUT, () -> service.list(-1, 20, "admin"));
+        assertCode(ErrorCode.INVALID_INPUT, () -> service.list(0, 0, "admin"));
+        assertCode(ErrorCode.INVALID_INPUT, () -> service.list(0, 101, "admin"));
+        assertCode(ErrorCode.INVALID_INPUT, () -> service.list(1_000_001, 20, "admin"));
+        assertCode(ErrorCode.UNAUTHENTICATED, () -> service.list(0, 20, null));
+        assertCode(ErrorCode.UNAUTHENTICATED, () -> service.list(0, 20, "unknown-user"));
+    }
+
     private long connection(String status, OffsetDateTime nextDue) {
         return connection("GITHUB", status, nextDue);
     }
