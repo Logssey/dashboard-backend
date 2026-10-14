@@ -1,5 +1,7 @@
 package com.logssey.security;
 
+import com.logssey.runtime.security.RuntimeCollectorAuthenticationFilter;
+
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -17,6 +19,7 @@ import org.springframework.security.web.context.SecurityContextRepository;
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 import org.springframework.security.web.csrf.CsrfFilter;
 import org.springframework.security.web.csrf.CsrfTokenRequestAttributeHandler;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 /**
  * 로그인 방식 (ADR-D003)
@@ -27,15 +30,24 @@ import org.springframework.security.web.csrf.CsrfTokenRequestAttributeHandler;
 @Configuration
 public class SecurityConfig {
 
+    private final RuntimeCollectorAuthenticationFilter runtimeCollectorAuthenticationFilter;
+
+    public SecurityConfig(RuntimeCollectorAuthenticationFilter runtimeCollectorAuthenticationFilter) {
+        this.runtimeCollectorAuthenticationFilter = runtimeCollectorAuthenticationFilter;
+    }
+
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
                 .csrf(csrf -> csrf
                         .csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse())
-                        .csrfTokenRequestHandler(new CsrfTokenRequestAttributeHandler()))
+                        .csrfTokenRequestHandler(new CsrfTokenRequestAttributeHandler())
+                        .ignoringRequestMatchers("/internal/v1/runtime/**"))
                 .addFilterAfter(new CsrfCookieFilter(), CsrfFilter.class)
+                .addFilterBefore(runtimeCollectorAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/login", "/api/v1/auth/logout").permitAll()
+                        .requestMatchers("/internal/v1/runtime/**").permitAll()
                         .requestMatchers("/error").permitAll()
                         .anyRequest().authenticated())
                 .exceptionHandling(exceptions -> exceptions

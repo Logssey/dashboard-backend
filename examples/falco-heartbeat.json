@@ -1,0 +1,11 @@
+{
+  "clusterId": "logssey-prod",
+  "nodeName": "worker-a",
+  "sensorType": "FALCO",
+  "version": "0.45.0",
+  "driver": "modern_ebpf",
+  "ruleSetVersion": "runtime-rules-0.1.0",
+  "status": "HEALTHY",
+  "queueDepth": 0,
+  "error": null
+}

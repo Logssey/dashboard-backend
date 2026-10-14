@@ -63,8 +63,8 @@ public class LocalSampleDataLoader implements ApplicationRunner {
         log.info("Notion leak scan on startup: status={}, pages={}, foundKeys={}",
                 scan.status(), scan.scannedPages(), scan.foundKeys());
 
-        log.info("Local sample data reloaded (sample rows only): 8 assets, 5 inventory credentials,"
-                + " 8 sample detection events (detected_at = last 7 days from now).");
+        log.info("Local sample data reloaded (sample rows only): 9 assets, 5 inventory credentials,"
+                + " 8 sample detection events and 1 runtime finding.");
     }
 
     static boolean isLocalDatabase(String url) {
