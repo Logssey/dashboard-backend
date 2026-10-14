@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -34,5 +35,12 @@ public class SecretRunController {
     @GetMapping("/{runId}")
     public SecretRunStatusResponse status(@PathVariable long runId, Authentication authentication) {
         return service.status(runId, authentication == null ? null : authentication.getName());
+    }
+
+    @GetMapping
+    public SecretRunListResponse list(@RequestParam(defaultValue = "0") int page,
+                                      @RequestParam(defaultValue = "20") int size,
+                                      Authentication authentication) {
+        return service.list(page, size, authentication == null ? null : authentication.getName());
     }
 }

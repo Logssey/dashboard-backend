@@ -16,6 +16,7 @@ import com.logssey.common.error.ErrorCode;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
@@ -149,6 +150,27 @@ public class SecretRunService {
                 run.finishedAt(), run.availableAt(), safeFailureCode(
                         run.runFailureCode() == null ? run.jobFailureCode() : run.runFailureCode()),
                 scopeResults);
+    }
+
+    @Transactional(readOnly = true)
+    public SecretRunListResponse list(int page, int size, String loginId) {
+        requireAdmin(loginId);
+        if (page < 0 || page > 1_000_000 || size < 1 || size > 100) {
+            throw new ApiException(ErrorCode.INVALID_INPUT);
+        }
+        long total = repository.countRuns();
+        var items = repository.listRuns(size, (long) page * size).stream().map(entry -> {
+            var run = entry.status();
+            return new SecretRunListItemResponse(run.runId(), run.connectionId(),
+                    entry.provider(), entry.displayName(), run.triggerType(),
+                    displayStatus(run.jobStatus(), run.resultStatus()), run.collectionStatus(),
+                    run.detectionStatus(), run.validationStatus(), run.scopeCount(),
+                    run.completedScopeCount(), run.incompleteScopeCount(), run.objectCount(),
+                    run.requestedAt(), run.startedAt(), run.finishedAt(),
+                    safeFailureCode(run.runFailureCode() == null
+                            ? run.jobFailureCode() : run.runFailureCode()));
+        }).toList();
+        return new SecretRunListResponse(items, total, page, size);
     }
 
     private SecretRunRepository.Actor requireAdmin(String loginId) {

@@ -12,6 +12,28 @@ import org.springframework.stereotype.Repository;
 @Repository
 class SecretRunRepository {
 
+    private static final String RUN_STATUS_SELECT = """
+            SELECT r.run_id, r.connection_id, r.trigger_type, r.collection_status,
+                   r.detection_status, r.validation_status, r.result_status,
+                   r.requested_at, r.started_at, r.finished_at, r.failure_code,
+                   j.status AS job_status, j.attempt_no, j.max_attempts, j.available_at,
+                   j.last_error_code, c.provider, c.display_name,
+                   scope_totals.scope_count, scope_totals.completed_count,
+                   scope_totals.incomplete_count, scope_totals.object_count
+            FROM secret_scan_runs r
+            JOIN secret_jobs j ON j.job_id = r.job_id
+            JOIN secret_connections c ON c.connection_id = r.connection_id
+            CROSS JOIN LATERAL (
+                SELECT COUNT(*) AS scope_count,
+                       COUNT(*) FILTER (WHERE s.collection_status IN
+                           ('SUCCEEDED', 'PARTIAL', 'FAILED', 'SKIPPED')) AS completed_count,
+                       COUNT(*) FILTER (WHERE s.collection_status IN
+                           ('PARTIAL', 'FAILED', 'SKIPPED')) AS incomplete_count,
+                       COALESCE(SUM(s.object_count), 0) AS object_count
+                FROM secret_run_scopes s WHERE s.run_id = r.run_id
+            ) scope_totals
+            """;
+
     private final JdbcTemplate jdbc;
 
     SecretRunRepository(JdbcTemplate jdbc) {
@@ -112,26 +134,22 @@ class SecretRunRepository {
     }
 
     Optional<RunStatus> runStatus(long runId) {
-        return jdbc.query("""
-                SELECT r.run_id, r.connection_id, r.trigger_type, r.collection_status,
-                       r.detection_status, r.validation_status, r.result_status,
-                       r.requested_at, r.started_at, r.finished_at, r.failure_code,
-                       j.status AS job_status, j.attempt_no, j.max_attempts, j.available_at,
-                       j.last_error_code,
-                       scope_totals.scope_count, scope_totals.completed_count,
-                       scope_totals.incomplete_count, scope_totals.object_count
-                FROM secret_scan_runs r JOIN secret_jobs j ON j.job_id = r.job_id
-                CROSS JOIN LATERAL (
-                    SELECT COUNT(*) AS scope_count,
-                           COUNT(*) FILTER (WHERE s.collection_status IN
-                               ('SUCCEEDED', 'PARTIAL', 'FAILED', 'SKIPPED')) AS completed_count,
-                           COUNT(*) FILTER (WHERE s.collection_status IN
-                               ('PARTIAL', 'FAILED', 'SKIPPED')) AS incomplete_count,
-                           COALESCE(SUM(s.object_count), 0) AS object_count
-                    FROM secret_run_scopes s WHERE s.run_id = r.run_id
-                ) scope_totals
-                WHERE r.run_id = ?
-                """, (rs, row) -> new RunStatus(
+        return jdbc.query(RUN_STATUS_SELECT + "WHERE r.run_id = ?",
+                (rs, row) -> runStatus(rs), runId).stream().findFirst();
+    }
+
+    long countRuns() {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM secret_scan_runs", Long.class);
+    }
+
+    List<RunListEntry> listRuns(int size, long offset) {
+        return jdbc.query(RUN_STATUS_SELECT + "ORDER BY r.requested_at DESC, r.run_id DESC LIMIT ? OFFSET ?",
+                (rs, row) -> new RunListEntry(runStatus(rs), rs.getString("provider"),
+                        rs.getString("display_name")), size, offset);
+    }
+
+    private static RunStatus runStatus(ResultSet rs) throws SQLException {
+        return new RunStatus(
                 rs.getLong("run_id"), rs.getLong("connection_id"), rs.getString("trigger_type"),
                 rs.getString("job_status"), rs.getString("collection_status"),
                 rs.getString("detection_status"), rs.getString("validation_status"),
@@ -142,8 +160,7 @@ class SecretRunRepository {
                 rs.getObject("started_at", OffsetDateTime.class),
                 rs.getObject("finished_at", OffsetDateTime.class),
                 rs.getObject("available_at", OffsetDateTime.class),
-                rs.getString("failure_code"), rs.getString("last_error_code")), runId)
-                .stream().findFirst();
+                rs.getString("failure_code"), rs.getString("last_error_code"));
     }
 
     List<RunScope> runScopes(long runId) {
@@ -184,6 +201,9 @@ class SecretRunRepository {
                      long incompleteScopeCount, long objectCount, int attemptNo, int maxAttempts,
                      OffsetDateTime requestedAt, OffsetDateTime startedAt, OffsetDateTime finishedAt,
                      OffsetDateTime availableAt, String runFailureCode, String jobFailureCode) {
+    }
+
+    record RunListEntry(RunStatus status, String provider, String displayName) {
     }
 
     record RunScope(long runScopeId, String contentType, String approvedRef,
