@@ -187,6 +187,59 @@ class SecretFindingRepositoryTest {
                 .isEqualTo("UNKNOWN");
     }
 
+    @Test
+    void rescanPreservesManualExposureAssessmentAndImmutableEvidenceSnapshot() throws Exception {
+        String id = "AKIA" + "ABCDEFGHIJKLMNOP";
+        String secret = "aB3/".repeat(10);
+        byte[] content = ("AWS_ACCESS_KEY_ID=" + id + "\nAWS_SECRET_ACCESS_KEY=" + secret + "\n")
+                .getBytes(StandardCharsets.UTF_8);
+        var scan = new GitleaksScanResult("8.30.1", CONFIG_HASH, List.of(
+                new GitleaksFinding("aws-access-token", 1, 1, 19, 38),
+                new GitleaksFinding("generic-api-key", 2, 2, 1, 60)));
+        long toolRunId = repository.beginGitleaksRun(runScopeId, "8.30.1", CONFIG_HASH, Instant.now());
+        repository.recordObject(toolRunId, "repo/assessed.txt", "sha-1", content, scan, Instant.now());
+        long occurrenceId = jdbc.queryForObject(
+                "SELECT occurrence_id FROM secret_occurrences", Long.class);
+        long findingId = jdbc.queryForObject("""
+                SELECT finding_id FROM secret_findings WHERE occurrence_id = ?
+                ORDER BY finding_id LIMIT 1
+                """, Long.class, occurrenceId);
+        long runId = jdbc.queryForObject("SELECT run_id FROM secret_findings WHERE finding_id = ?",
+                Long.class, findingId);
+        long actorId = jdbc.queryForObject("""
+                INSERT INTO dashboard_users (login_id, password_hash, display_name, role)
+                VALUES ('reviewer', 'test-hash', 'Reviewer', 'ADMIN') RETURNING user_id
+                """, Long.class);
+        jdbc.update("""
+                UPDATE secret_occurrences
+                SET exposure_status = 'ABNORMAL', exposure_assessment_version = 1
+                WHERE occurrence_id = ?
+                """, occurrenceId);
+        jdbc.update("""
+                INSERT INTO secret_exposure_assessments
+                    (occurrence_id, finding_id, finding_rule_id, finding_run_id,
+                     from_status, decision, reason_code, scope_origin, actor_user_id, version)
+                VALUES (?, ?, 'aws-access-token', ?, 'UNKNOWN', 'ABNORMAL',
+                        'SIMULATED_EXPOSURE', 'TEST', ?, 1)
+                """, occurrenceId, findingId, runId, actorId);
+
+        repository.finishToolRun(toolRunId, "SUCCEEDED", null, Instant.now());
+        repository.beginGitleaksRun(runScopeId, "8.30.1", CONFIG_HASH, Instant.now());
+        repository.recordObject(toolRunId, "repo/assessed.txt", "sha-2", content, scan, Instant.now());
+        assertThat(jdbc.queryForObject(
+                "SELECT exposure_status FROM secret_occurrences WHERE occurrence_id = ?",
+                String.class, occurrenceId)).isEqualTo("ABNORMAL");
+        assertThat(jdbc.queryForObject(
+                "SELECT exposure_assessment_version FROM secret_occurrences WHERE occurrence_id = ?",
+                Long.class, occurrenceId)).isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM secret_exposure_assessments WHERE occurrence_id = ?",
+                Long.class, occurrenceId)).isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                "SELECT finding_id FROM secret_exposure_assessments WHERE occurrence_id = ?",
+                Long.class, occurrenceId)).isEqualTo(findingId);
+    }
+
     private static long count(String table) {
         return jdbc.queryForObject("SELECT count(*) FROM " + table, Long.class);
     }

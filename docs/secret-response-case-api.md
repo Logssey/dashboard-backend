@@ -1,19 +1,29 @@
-# Secret 대응 건 및 담당자 API (10/15 범위)
+# Secret triage and response API
 
-V7은 기존 Secret 인벤토리와 분리된 대응 건, 위치 연결, 담당자 변경 이력, 감사 이벤트, Secret 전용 역할을 만든다. 기존 발견을 대응 건으로 자동 승격하거나 과거 데이터를 소급 생성하지 않는다. 현재 수집기는 발견 위치의 `exposure_status`를 `UNKNOWN`으로 저장하고, 기존 승인 범위의 `response_origin`은 `UNCLASSIFIED`다. 따라서 별도의 근거 판정과 범위 분류가 이루어지기 전에는 실제 데이터에서 대응 건을 열 수 없다.
+Detection alone does not open a case. Existing scopes start at `UNCLASSIFIED`, existing occurrences remain `UNKNOWN`, and V8 does not backfill decisions or cases. A SECURITY user explicitly classifies an approved GitHub scope, assesses a confirmed occurrence with a finding and a separate exposure reason, then opens a case.
 
-## 경로
+All routes use the authenticated session. Mutations require CSRF protection. `dashboard_users.role=ADMIN` does not grant a Secret role. A current `secret_role_grants` SECURITY grant must cover the connection. In local development only, `SECRET_BOOTSTRAP_SECURITY_LOGIN_ID` may grant the configured existing account global SECURITY access; production grants need an approved provisioning process.
 
-| Method | 경로 | 계약 |
+## Triage workflow
+
+| Method | Path | Contract |
 |---|---|---|
-| GET | `/api/v1/secrets/cases?page=0&size=20&origin=PRODUCTION` | 현재 대응 건 목록 `{items,total,page,size}`. `origin`은 `PRODUCTION` 또는 `TEST`이며 기본값은 `PRODUCTION`이다. 두 범위는 섞이지 않는다. |
-| GET | `/api/v1/secrets/cases/{caseId}` | 마스킹된 키 식별자, 단계, 담당자, 버전, `caseOrigin`, 개설 위치 ID·사유, 담당자 변경 이력을 조회한다. 원문 키와 원천 콘텐츠는 반환하지 않는다. |
-| POST | `/api/v1/secrets/{secretId}/cases` | `{occurrenceId,reason:"ASSESSED_EXPOSURE"}`. 성공 시 201과 대응 건 상세를 반환한다. 클라이언트가 운영·시험 구분을 정하지 않는다. |
-| GET | `/api/v1/secrets/assignees?caseId={caseId}` | 해당 건의 모든 연결 범위를 담당할 수 있는 조치 담당자와 검증된 팀 목록을 반환한다. |
-| PATCH | `/api/v1/secrets/cases/{caseId}/assignment` | `{team,assigneeUserId,reason,expectedVersion}`. 변경 후 상세를 반환한다. |
+| GET | `/api/v1/secrets/triage-candidates?page=0&size=20` | `{items,total,page,size}`. Each item has `secretId,maskedLabel,issuer,credentialType,componentState,occurrenceCount`. Only occurrences in active approved GitHub scopes covered by the caller's SECURITY grant are counted. |
+| GET | `/api/v1/secrets/triage-candidates/{secretId}` | Masked credential fields and only authorized `occurrences`. Each occurrence has `id,connectionId,scopeId,sourceObjectRef,locationKey,environment,exposureStatus,presenceStatus,assessmentVersion,scopeOrigin,scopeOriginVersion`. |
+| GET | `/api/v1/secrets/scopes/{scopeId}/response-origin` | `scopeId,connectionId,scopeKey,responseOrigin,responseOriginVersion,classifiedByUserId,classifiedAt,allowedOrigins,history`. No `approved_ref` or credential value is returned. |
+| PATCH | `/api/v1/secrets/scopes/{scopeId}/response-origin` | `{origin,reasonCode,expectedVersion}`. Returns the complete scope response. Only a one-time `UNCLASSIFIED` to `TEST` or `PRODUCTION` decision is supported. |
+| GET | `/api/v1/secrets/occurrences/{occurrenceId}/triage` | `occurrenceId,secretId,connectionId,scopeId,componentState,exposureStatus,presenceStatus,assessmentVersion,scopeOrigin,scopeOriginVersion,openCaseId,findings,history`. Findings contain only `findingId,ruleId,detectedAt`; no detector context is returned. |
+| POST | `/api/v1/secrets/occurrences/{occurrenceId}/assessments` | `{decision,reasonCode,findingId,expectedVersion}`. Returns the complete triage response. The finding must belong to that exact occurrence. |
+| POST | `/api/v1/secrets/{secretId}/cases` | `{occurrenceId,reason:"ASSESSED_EXPOSURE",expectedAssessmentVersion,expectedScopeOriginVersion}`. Returns case detail with HTTP 201. |
 
-개설은 서버가 저장된 `CONFIRMED` 키와 `ABNORMAL`·`PRESENT` 발견 위치, 활성 GitHub 연결, 활성 승인 범위, 분류 완료된 `response_origin`을 함께 검사한다. 범위 분류는 `UNCLASSIFIED`, `PRODUCTION`, `TEST`이며 기본값은 `UNCLASSIFIED`다. 운영 목록은 시험 건을 포함하지 않고, 시험 건에는 `caseOrigin=TEST`가 명시된다. 같은 키에 시험·운영 노출이 각각 확인되면 현재 대응 건은 각 범위에 한 건씩 독립적으로 존재할 수 있다. IAM `METADATA_ONLY`, 불완전 후보, AWS 비밀 저장소의 정상 값 존재, 유효성 `UNKNOWN`·`UNCHECKED`만으로는 개설할 수 없다. 현재 범위를 분류하거나 노출을 판정하는 API는 아직 없으므로, 운영 승인 절차 없이 범위를 임의로 운영으로 분류하지 않는다.
+Scope classification reason codes are `APPROVED_TEST_FIXTURE` for TEST and `APPROVED_PRODUCTION_SOURCE` for PRODUCTION. The approved `github://Logssey/test-find-key/...` fixture scope can only be classified TEST; server-side validation also prevents a PRODUCTION case on that exact repository scope. No general GitHub scope becomes PRODUCTION automatically.
 
-담당자 변경 사유는 `INITIAL_ASSIGNMENT`, `OWNERSHIP_CHANGE`, `TEAM_TRANSFER`, `UNASSIGNED`, `OTHER` 중 하나다. 자유 입력 사유로 키 원문을 감사 테이블에 저장하지 않는다. 개인은 해당 건의 모든 연결 범위에 활성 `REMEDIATOR` 권한이 있어야 한다. 팀을 지정하면 활성 팀 소속도 확인한다. 팀만 지정할 때는 그 팀에 자격 있는 조치 담당자가 있어야 하고, 개인·팀을 모두 비우면 미지정으로 되돌린다. `expectedVersion`이 다르면 409이며 버전 증가, 담당자 변경 이력, 감사 이벤트는 하나의 트랜잭션에서 저장한다. 개설과 담당자 지정은 기존 세션·CSRF 검사를 거친다.
+Assessment decisions are `NORMAL` with `AUTHORIZED_LOCATION`, or `ABNORMAL` with `UNAPPROVED_SOURCE_LOCATION`. `SIMULATED_EXPOSURE` is an additional ABNORMAL reason allowed only in TEST scope. The `findingId` proves a detector saw the credential format at this occurrence; the reason code records the SECURITY user's independent exposure judgement. Uncertain evidence remains `UNKNOWN`. Assessment requires a CONFIRMED credential, PRESENT occurrence, active GitHub connection, enabled classified scope, current scope decision history, and the exact occurrence finding. CANDIDATE, METADATA_ONLY, missing locations, and unclassified scopes cannot be promoted through this API.
 
-`dashboard_users.role=ADMIN`은 Secret 권한이 아니다. 기존 계정에 명시적으로 권한을 부여할 때 개발 환경에서는 `SECRET_BOOTSTRAP_SECURITY_LOGIN_ID`, `SECRET_BOOTSTRAP_REMEDIATOR_LOGIN_ID`, 선택적인 `SECRET_BOOTSTRAP_REMEDIATOR_TEAM`을 설정할 수 있다. 최초 실행에서 별도 `secret_role_grants` 행이 기록되고, 이후 역할을 취소하면 재시작해도 자동 복구하지 않는다. 이 부트스트랩은 **개발 환경에서 승인된 기존 계정에만** 사용한다. 운영 환경의 역할 부여·연결별 범위와 범위 분류는 별도 승인·감사 절차로 관리해야 한다. 아무 설정이 없으면 대응 건 변경은 403으로 닫힌다.
+Scope decisions and occurrence assessments are append-only with actor, timestamp, previous/new state, reason, and version. A finding's identifier, rule, and scan run are snapshotted because detector retries can replace finding rows. An already opened current case blocks reassessment of its opening occurrence until disposition transitions are implemented. Mismatched expected versions return 409; classification, assessment, and case opening recheck their prerequisites under transaction locks. The current case is unique per credential and origin, keeping TEST and PRODUCTION results separate.
+
+## Response cases and assignment
+
+`GET /api/v1/secrets/cases?page=0&size=20&origin=PRODUCTION` returns `{items,total,page,size}` and defaults to PRODUCTION. Use `origin=TEST` explicitly for test cases. `GET /api/v1/secrets/cases/{caseId}` returns masked case detail, opening occurrence ID/reason, and assignment history. `GET /api/v1/secrets/assignees?caseId={caseId}` lists authorized REMEDIATOR users. `PATCH /api/v1/secrets/cases/{caseId}/assignment` accepts `{team,assigneeUserId,reason,expectedVersion}`; reason must be one of `INITIAL_ASSIGNMENT`, `OWNERSHIP_CHANGE`, `TEAM_TRANSFER`, `UNASSIGNED`, or `OTHER`. Team-only assignment is allowed if an eligible member belongs to that team; both null fields unassign. Assignment changes, versions, history, and case audit are written in one transaction. Stale versions return 409.
+
+No API accepts a raw credential or free-form evidence text. The responses do not include credential values, `approved_ref`, or raw detector context. The current implementation covers manually assessed GitHub file exposure; AWS secret stores and IAM metadata remain inventory observations rather than response cases. General role provisioning and automated scope approval are outside this MVP.

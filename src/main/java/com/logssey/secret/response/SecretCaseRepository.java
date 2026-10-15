@@ -82,7 +82,17 @@ class SecretCaseRepository {
         return jdbc.query("""
                 SELECT o.connection_id, c.component_state, o.exposure_status,
                        o.presence_status, conn.provider, conn.status AS connection_status,
-                       scope.enabled AS scope_enabled, scope.response_origin
+                       scope.enabled AS scope_enabled, scope.response_origin,
+                       o.exposure_assessment_version, scope.response_origin_version,
+                       EXISTS (SELECT 1 FROM secret_exposure_assessments a
+                               WHERE a.occurrence_id = o.occurrence_id
+                                 AND a.version = o.exposure_assessment_version
+                                 AND a.decision = 'ABNORMAL') AS assessed_abnormal,
+                       EXISTS (SELECT 1 FROM secret_scope_origin_decisions d
+                               WHERE d.scope_id = scope.scope_id
+                                 AND d.version = scope.response_origin_version
+                                 AND d.to_origin = scope.response_origin) AS classified_origin,
+                       scope.content_type, scope.history_limit, scope.approved_ref
                 FROM secret_occurrences o
                 JOIN secret_credential_sets c ON c.credential_set_id = o.credential_set_id
                 JOIN secret_connections conn ON conn.connection_id = o.connection_id
@@ -91,13 +101,21 @@ class SecretCaseRepository {
                 FOR UPDATE OF o, c, conn, scope
                 """, (rs, row) -> new OpeningEligibility(rs.getLong("connection_id"),
                 rs.getString("response_origin"),
+                rs.getLong("exposure_assessment_version"),
+                rs.getLong("response_origin_version"),
                 "CONFIRMED".equals(rs.getString("component_state"))
                         && "ABNORMAL".equals(rs.getString("exposure_status"))
                         && "PRESENT".equals(rs.getString("presence_status"))
                         && "GITHUB".equals(rs.getString("provider"))
                         && "ACTIVE".equals(rs.getString("connection_status"))
                         && rs.getBoolean("scope_enabled")
-                        && !"UNCLASSIFIED".equals(rs.getString("response_origin"))),
+                        && SecretGithubScopePolicy.approved(rs.getString("content_type"),
+                                rs.getString("history_limit"), rs.getString("approved_ref"))
+                        && !"UNCLASSIFIED".equals(rs.getString("response_origin"))
+                        && rs.getBoolean("assessed_abnormal")
+                        && rs.getBoolean("classified_origin")
+                        && !(SecretGithubScopePolicy.syntheticFixture(rs.getString("approved_ref"))
+                            && "PRODUCTION".equals(rs.getString("response_origin")))),
                 occurrenceId, secretId)
                 .stream().findFirst();
     }
@@ -278,7 +296,8 @@ class SecretCaseRepository {
         return rs.getObject(column, OffsetDateTime.class);
     }
 
-    record OpeningEligibility(long connectionId, String origin, boolean eligible) {
+    record OpeningEligibility(long connectionId, String origin, long assessmentVersion,
+                              long scopeOriginVersion, boolean eligible) {
     }
 
     record OpeningEvidence(long occurrenceId, String reason) {

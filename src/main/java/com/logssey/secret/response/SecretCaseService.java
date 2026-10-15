@@ -37,7 +37,9 @@ public class SecretCaseService {
     public SecretCaseDetail open(long secretId, SecretCaseOpenRequest request, String loginId) {
         long actorId = requireActor(loginId);
         if (secretId <= 0 || request == null || request.occurrenceId() == null
-                || request.occurrenceId() <= 0 || !"ASSESSED_EXPOSURE".equals(request.reason())) {
+                || request.occurrenceId() <= 0 || !"ASSESSED_EXPOSURE".equals(request.reason())
+                || request.expectedAssessmentVersion() == null || request.expectedAssessmentVersion() <= 0
+                || request.expectedScopeOriginVersion() == null || request.expectedScopeOriginVersion() <= 0) {
             throw new ApiException(ErrorCode.INVALID_INPUT);
         }
         var evidence = repository.openingEligibility(secretId, request.occurrenceId())
@@ -45,7 +47,10 @@ public class SecretCaseService {
         if (!repository.hasConnectionRole(actorId, evidence.connectionId(), "SECURITY")) {
             throw new ApiException(ErrorCode.FORBIDDEN);
         }
-        if (!evidence.eligible() || repository.currentCaseExistsForSecret(secretId, evidence.origin())) {
+        if (!evidence.eligible()
+                || evidence.assessmentVersion() != request.expectedAssessmentVersion()
+                || evidence.scopeOriginVersion() != request.expectedScopeOriginVersion()
+                || repository.currentCaseExistsForSecret(secretId, evidence.origin())) {
             throw new ApiException(ErrorCode.CONFLICT);
         }
         try {

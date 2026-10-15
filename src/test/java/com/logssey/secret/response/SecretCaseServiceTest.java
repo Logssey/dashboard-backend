@@ -65,7 +65,7 @@ class SecretCaseServiceTest {
         long secret = credential("CONFIRMED", "AWS ••••1234");
         long occurrence = occurrence(secret, connection, scope, "ABNORMAL");
         grant(securityUser, "SECURITY", connection);
-        var request = new SecretCaseOpenRequest(occurrence, "ASSESSED_EXPOSURE");
+        var request = openRequest(occurrence);
 
         assertCode(ErrorCode.CONFLICT, () -> service.open(secret, request, "security"));
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM secret_response_cases", Long.class)).isZero();
@@ -86,7 +86,7 @@ class SecretCaseServiceTest {
         grant(securityUser, "SECURITY", productionConnection);
         long productionOccurrence = occurrence(secret, productionConnection, productionScope, "ABNORMAL");
         var productionCase = service.open(secret,
-                new SecretCaseOpenRequest(productionOccurrence, "ASSESSED_EXPOSURE"), "security");
+                openRequest(productionOccurrence), "security");
         assertThat(productionCase.caseOrigin()).isEqualTo("PRODUCTION");
         assertThat(service.list(0, 20, "PRODUCTION", "security").total()).isEqualTo(1);
         assertThat(service.list(0, 20, "TEST", "security").total()).isEqualTo(1);
@@ -101,15 +101,15 @@ class SecretCaseServiceTest {
         long confirmed = credential("CONFIRMED", "AWS ••••1234");
         long unknown = occurrence(confirmed, github, githubScope, "UNKNOWN");
         assertCode(ErrorCode.CONFLICT, () -> service.open(confirmed,
-                new SecretCaseOpenRequest(unknown, "ASSESSED_EXPOSURE"), "security"));
+                openRequest(unknown), "security"));
         long metadata = credential("METADATA_ONLY", "AWS IAM ••••5678");
         long metadataOccurrence = occurrence(metadata, github, githubScope, "ABNORMAL");
         assertCode(ErrorCode.CONFLICT, () -> service.open(metadata,
-                new SecretCaseOpenRequest(metadataOccurrence, "ASSESSED_EXPOSURE"), "security"));
+                openRequest(metadataOccurrence), "security"));
         long candidate = credential("CANDIDATE", "AWS ••••9012");
         long candidateOccurrence = occurrence(candidate, github, githubScope, "ABNORMAL");
         assertCode(ErrorCode.CONFLICT, () -> service.open(candidate,
-                new SecretCaseOpenRequest(candidateOccurrence, "ASSESSED_EXPOSURE"), "security"));
+                openRequest(candidateOccurrence), "security"));
 
         long aws = connection("AWS");
         long awsScope = scope(aws);
@@ -118,7 +118,7 @@ class SecretCaseServiceTest {
         long stored = credential("CONFIRMED", "AWS ••••3456");
         long storedOccurrence = occurrence(stored, aws, awsScope, "ABNORMAL");
         assertCode(ErrorCode.CONFLICT, () -> service.open(stored,
-                new SecretCaseOpenRequest(storedOccurrence, "ASSESSED_EXPOSURE"), "security"));
+                openRequest(storedOccurrence), "security"));
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM secret_response_cases", Long.class)).isZero();
     }
 
@@ -284,8 +284,11 @@ class SecretCaseServiceTest {
     private long scope(long connectionId) {
         return jdbc.queryForObject("""
                 INSERT INTO secret_connection_scopes
-                    (connection_id, scope_key, revision, content_type, approved_ref, enabled)
-                VALUES (?, 'fixture', 1, 'GIT_TREE', 'test-scope', TRUE) RETURNING scope_id
+                    (connection_id, scope_key, revision, content_type, approved_ref,
+                     history_limit, enabled)
+                VALUES (?, 'fixture', 1, 'GITHUB_REPOSITORY_FILES',
+                        'github://Other/fixture/main/src/', 'CURRENT_COMMIT_ONLY', TRUE)
+                RETURNING scope_id
                 """, Long.class, connectionId);
     }
 
@@ -318,13 +321,20 @@ class SecretCaseServiceTest {
     }
 
     private long occurrence(long secretId, long connectionId, long scopeId, String exposure) {
-        return jdbc.queryForObject("""
+        long occurrenceId = jdbc.queryForObject("""
                 INSERT INTO secret_occurrences
                     (credential_set_id, connection_id, scope_id, source_object_ref, location_key,
                      environment, exposure_status, exposure_range, presence_status, first_seen_at, last_seen_at)
                 VALUES (?, ?, ?, 'repo/test.txt', 'L1', 'UNKNOWN', ?, 'UNKNOWN', 'PRESENT', now(), now())
                 RETURNING occurrence_id
                 """, Long.class, secretId, connectionId, scopeId, exposure);
+        String origin = jdbc.queryForObject(
+                "SELECT response_origin FROM secret_connection_scopes WHERE scope_id = ?",
+                String.class, scopeId);
+        if ("ABNORMAL".equals(exposure) && !"UNCLASSIFIED".equals(origin)) {
+            seedAssessment(occurrenceId, origin);
+        }
+        return occurrenceId;
     }
 
     private void grant(long userId, String role, Long connectionId) {
@@ -345,9 +355,40 @@ class SecretCaseServiceTest {
     private void classifyScope(long scopeId, String origin) {
         jdbc.update("""
                 UPDATE secret_connection_scopes
-                SET response_origin = ?, response_origin_set_by_user_id = ?, response_origin_set_at = now()
+                SET response_origin = ?, response_origin_version = 1,
+                    response_origin_set_by_user_id = ?, response_origin_set_at = now()
                 WHERE scope_id = ?
                 """, origin, securityUser, scopeId);
+        jdbc.update("""
+                INSERT INTO secret_scope_origin_decisions
+                    (scope_id, from_origin, to_origin, reason_code, actor_user_id, version)
+                VALUES (?, 'UNCLASSIFIED', ?, ?, ?, 1)
+                """, scopeId, origin, "TEST".equals(origin) ? "APPROVED_TEST_FIXTURE"
+                : "APPROVED_PRODUCTION_SOURCE", securityUser);
+        for (Long occurrenceId : jdbc.queryForList("""
+                SELECT occurrence_id FROM secret_occurrences
+                WHERE scope_id = ? AND exposure_status = 'ABNORMAL'
+                """, Long.class, scopeId)) {
+            seedAssessment(occurrenceId, origin);
+        }
+    }
+
+    private void seedAssessment(long occurrenceId, String origin) {
+        jdbc.update("""
+                UPDATE secret_occurrences SET exposure_assessment_version = 1 WHERE occurrence_id = ?
+                """, occurrenceId);
+        jdbc.update("""
+                INSERT INTO secret_exposure_assessments
+                    (occurrence_id, finding_id, finding_rule_id, finding_run_id,
+                     from_status, decision, reason_code, scope_origin, actor_user_id, version)
+                VALUES (?, ?, 'test-rule', 1, 'UNKNOWN', 'ABNORMAL', ?, ?, ?, 1)
+                """, occurrenceId, occurrenceId,
+                "TEST".equals(origin) ? "SIMULATED_EXPOSURE" : "UNAPPROVED_SOURCE_LOCATION",
+                origin, securityUser);
+    }
+
+    private static SecretCaseOpenRequest openRequest(long occurrenceId) {
+        return new SecretCaseOpenRequest(occurrenceId, "ASSESSED_EXPOSURE", 1L, 1L);
     }
 
     private static void assertCode(ErrorCode expected, Runnable action) {
