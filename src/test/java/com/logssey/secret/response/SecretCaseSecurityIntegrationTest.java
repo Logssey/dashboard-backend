@@ -79,8 +79,11 @@ class SecretCaseSecurityIntegrationTest {
         long scope = jdbc.queryForObject("""
                 INSERT INTO secret_connection_scopes
                     (connection_id, scope_key, revision, content_type, approved_ref, enabled,
-                     response_origin, response_origin_set_by_user_id, response_origin_set_at)
-                VALUES (?, 'fixture', 1, 'GIT_TREE', 'test-scope', TRUE, 'TEST', ?, now())
+                     history_limit, response_origin, response_origin_set_by_user_id,
+                     response_origin_set_at)
+                VALUES (?, 'fixture', 1, 'GITHUB_REPOSITORY_FILES',
+                        'github://Other/fixture/main/src/', TRUE, 'CURRENT_COMMIT_ONLY',
+                        'TEST', ?, now())
                 RETURNING scope_id
                 """, Long.class, connection, actorId);
         long secret = jdbc.queryForObject("""
@@ -143,6 +146,47 @@ class SecretCaseSecurityIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.version").value(1))
                 .andExpect(jsonPath("$.assigneeUserId").value(actorId));
+    }
+
+    @Test
+    void triageMutationsRequireSessionCsrfAndSecurityGrant() throws Exception {
+        long scopeId = jdbc.queryForObject("SELECT scope_id FROM secret_connection_scopes", Long.class);
+        long occurrenceId = jdbc.queryForObject("SELECT occurrence_id FROM secret_occurrences", Long.class);
+        MockMvc mvc = mvc();
+        mvc.perform(get("/api/v1/secrets/scopes/{scopeId}/response-origin", scopeId))
+                .andExpect(status().isUnauthorized());
+        var login = mvc.perform(post("/api/v1/auth/login").with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"loginId\":\"case-admin\",\"password\":\"case-pass\"}"))
+                .andExpect(status().isOk()).andReturn();
+        var session = (MockHttpSession) login.getRequest().getSession(false);
+        String classify = "{\"origin\":\"TEST\",\"reasonCode\":\"APPROVED_TEST_FIXTURE\",\"expectedVersion\":0}";
+        String assess = "{\"decision\":\"ABNORMAL\",\"reasonCode\":\"SIMULATED_EXPOSURE\",\"findingId\":1,\"expectedVersion\":0}";
+        mvc.perform(get("/api/v1/secrets/triage-candidates").session(session))
+                .andExpect(status().isForbidden());
+        mvc.perform(get("/api/v1/secrets/scopes/{scopeId}/response-origin", scopeId)
+                        .session(session))
+                .andExpect(status().isForbidden());
+        jdbc.update("""
+                INSERT INTO secret_role_grants
+                    (user_id, role, granted_by_user_id, grant_source)
+                VALUES (?, 'SECURITY', ?, 'MANUAL')
+                """, actorId, actorId);
+        mvc.perform(get("/api/v1/secrets/triage-candidates").session(session))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.total").value(1));
+        mvc.perform(get("/api/v1/secrets/occurrences/{occurrenceId}/triage", occurrenceId)
+                        .session(session))
+                .andExpect(status().isOk());
+        mvc.perform(patch("/api/v1/secrets/scopes/{scopeId}/response-origin", scopeId)
+                        .session(session).contentType(MediaType.APPLICATION_JSON).content(classify))
+                .andExpect(status().isForbidden());
+        mvc.perform(post("/api/v1/secrets/occurrences/{occurrenceId}/assessments", occurrenceId)
+                        .session(session).contentType(MediaType.APPLICATION_JSON).content(assess))
+                .andExpect(status().isForbidden());
+        mvc.perform(patch("/api/v1/secrets/scopes/{scopeId}/response-origin", scopeId)
+                        .session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON)
+                        .content(classify))
+                .andExpect(status().isConflict());
     }
 
     @Test
