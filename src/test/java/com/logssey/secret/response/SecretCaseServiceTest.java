@@ -3,6 +3,9 @@ package com.logssey.secret.response;
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
 
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -249,6 +252,152 @@ class SecretCaseServiceTest {
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 
+    @Test
+    void reviewChecklistAndExternalActionKeepIndependentEvidenceAndState() {
+        long caseId = caseFixture();
+        grant(securityUser, "SECURITY", null);
+        grant(remediatorUser, "REMEDIATOR", null);
+        service.assign(caseId,
+                new SecretAssignmentRequest(null, remediatorUser, "INITIAL_ASSIGNMENT", 0L),
+                "security");
+
+        var needsInfo = service.review(caseId,
+                new SecretCaseReviewRequest("NEEDS_MORE_INFO", "INSUFFICIENT_EVIDENCE", 1L),
+                "security");
+        assertThat(needsInfo.reviewStatus()).isEqualTo("UNREVIEWED");
+        assertThat(needsInfo.stage()).isEqualTo("OPEN");
+        assertCode(ErrorCode.CONFLICT, () -> service.start(caseId,
+                new SecretCaseStartRequest("RESPONSE_STARTED", 2L), "remediator"));
+
+        var confirmed = service.review(caseId,
+                new SecretCaseReviewRequest("CONFIRMED", "EVIDENCE_CONFIRMED", 2L),
+                "security");
+        assertThat(confirmed.reviewStatus()).isEqualTo("REVIEWED");
+        assertThat(confirmed.stage()).isEqualTo("OPEN");
+        assertThat(confirmed.reviews()).hasSize(2);
+        assertThat(confirmed.capabilities().canStart()).isFalse();
+        assertThat(service.detail(caseId, "remediator").capabilities().canStart()).isTrue();
+
+        var started = service.start(caseId,
+                new SecretCaseStartRequest("RESPONSE_STARTED", 3L), "remediator");
+        assertThat(started.stage()).isEqualTo("IN_PROGRESS");
+        assertThat(started.occurrences()).singleElement()
+                .extracting(SecretCaseOccurrence::responseStatus).isEqualTo("IN_PROGRESS");
+        long itemId = started.checklist().getFirst().itemId();
+        var checked = service.checklist(caseId, itemId,
+                new SecretChecklistRequest(true, "S2_V1", "TICKET:SEC-123", 4L),
+                "remediator");
+        assertThat(checked.stage()).isEqualTo("IN_PROGRESS");
+        assertThat(checked.checklist().getFirst().status()).isEqualTo("DONE");
+        assertThat(checked.checklist().getFirst().evidenceRef()).isEqualTo("TICKET:SEC-123");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM secret_checklist_history", Long.class))
+                .isEqualTo(1);
+
+        var action = service.action(caseId, new SecretActionRequest("ROTATED",
+                checked.openingOccurrenceId(), OffsetDateTime.now(ZoneOffset.UTC).minusMinutes(1),
+                "CHANGE:SEC-234", 5L), "remediator");
+        assertThat(action.stage()).isEqualTo("REVALIDATION_PENDING");
+        assertThat(action.occurrences()).singleElement()
+                .extracting(SecretCaseOccurrence::responseStatus)
+                .isEqualTo("REVALIDATION_PENDING");
+        assertThat(action.actions()).singleElement().satisfies(record -> {
+            assertThat(record.actionType()).isEqualTo("ROTATED");
+            assertThat(record.evidenceRef()).isEqualTo("CHANGE:SEC-234");
+            assertThat(record.recordedByUserId()).isEqualTo(remediatorUser);
+        });
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM secret_audit_events WHERE case_id = ?",
+                Long.class, caseId)).isEqualTo(6);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM secret_case_stage_history WHERE case_id = ?",
+                Long.class, caseId)).isEqualTo(2);
+        assertThat(action.stage()).isNotEqualTo("RESOLVED");
+    }
+
+    @Test
+    void mutationsRequireCaseWideRoleAssigneeVersionAndControlledInputs() {
+        long caseId = caseFixture();
+        grant(securityUser, "SECURITY", null);
+        grant(remediatorUser, "REMEDIATOR", null);
+        long itemId = jdbc.queryForObject(
+                "SELECT item_id FROM secret_checklist_items WHERE case_id = ? ORDER BY item_id LIMIT 1",
+                Long.class, caseId);
+        assertCode(ErrorCode.FORBIDDEN, () -> service.checklist(caseId, itemId,
+                new SecretChecklistRequest(true, "S2_V1", "TICKET:SEC-123", 0L),
+                "remediator"));
+        service.assign(caseId,
+                new SecretAssignmentRequest(null, remediatorUser, "INITIAL_ASSIGNMENT", 0L),
+                "security");
+        assertCode(ErrorCode.INVALID_INPUT, () -> service.review(caseId,
+                new SecretCaseReviewRequest("CONFIRMED", "free-form reason", 1L), "security"));
+        assertCode(ErrorCode.INVALID_INPUT, () -> service.checklist(caseId, itemId,
+                new SecretChecklistRequest(true, "S2_V1", "https://example.test/key", 1L),
+                "remediator"));
+        assertCode(ErrorCode.CONFLICT, () -> service.checklist(caseId, itemId,
+                new SecretChecklistRequest(true, "S2_V1", "TICKET:SEC-123", 0L),
+                "remediator"));
+        assertCode(ErrorCode.CONFLICT, () -> service.action(caseId, new SecretActionRequest(
+                "ROTATED", jdbc.queryForObject("SELECT opening_occurrence_id FROM secret_response_cases WHERE case_id = ?",
+                        Long.class, caseId), OffsetDateTime.now(ZoneOffset.UTC),
+                "TICKET:SEC-123", 1L), "remediator"));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM secret_checklist_history", Long.class))
+                .isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM secret_action_records", Long.class))
+                .isZero();
+    }
+
+    @Test
+    void separateLocationsNeedSeparateActionRecordsBeforeWholeCaseIsPending() {
+        long caseId = caseFixture();
+        long firstOccurrence = jdbc.queryForObject(
+                "SELECT opening_occurrence_id FROM secret_response_cases WHERE case_id = ?",
+                Long.class, caseId);
+        long secretId = jdbc.queryForObject(
+                "SELECT credential_set_id FROM secret_response_cases WHERE case_id = ?",
+                Long.class, caseId);
+        long connectionId = jdbc.queryForObject(
+                "SELECT connection_id FROM secret_occurrences WHERE occurrence_id = ?",
+                Long.class, firstOccurrence);
+        long scopeId = jdbc.queryForObject(
+                "SELECT scope_id FROM secret_occurrences WHERE occurrence_id = ?",
+                Long.class, firstOccurrence);
+        long secondOccurrence = jdbc.queryForObject("""
+                INSERT INTO secret_occurrences
+                    (credential_set_id, connection_id, scope_id, source_object_ref, location_key,
+                     environment, exposure_status, exposure_range, presence_status,
+                     first_seen_at, last_seen_at)
+                VALUES (?, ?, ?, 'repo/other.txt', 'L2', 'UNKNOWN', 'ABNORMAL', 'UNKNOWN',
+                        'PRESENT', now(), now()) RETURNING occurrence_id
+                """, Long.class, secretId, connectionId, scopeId);
+        jdbc.update("""
+                INSERT INTO secret_case_occurrences (case_id, occurrence_id, credential_set_id)
+                VALUES (?, ?, ?)
+                """, caseId, secondOccurrence, secretId);
+        grant(securityUser, "SECURITY", null);
+        grant(remediatorUser, "REMEDIATOR", null);
+        service.assign(caseId,
+                new SecretAssignmentRequest(null, remediatorUser, "INITIAL_ASSIGNMENT", 0L),
+                "security");
+        service.review(caseId,
+                new SecretCaseReviewRequest("CONFIRMED", "EVIDENCE_CONFIRMED", 1L),
+                "security");
+        var first = service.action(caseId,
+                new SecretActionRequest("REMOVED_FROM_SOURCE", firstOccurrence,
+                        OffsetDateTime.now(ZoneOffset.UTC), "TICKET:SEC-123", 2L),
+                "remediator");
+        assertThat(first.stage()).isEqualTo("IN_PROGRESS");
+        assertThat(first.occurrences()).extracting(SecretCaseOccurrence::responseStatus)
+                .containsExactly("REVALIDATION_PENDING", "OPEN");
+        assertCode(ErrorCode.CONFLICT, () -> service.action(caseId,
+                new SecretActionRequest("ROTATED", firstOccurrence,
+                        OffsetDateTime.now(ZoneOffset.UTC), "CHANGE:SEC-234", 3L),
+                "remediator"));
+        var second = service.action(caseId,
+                new SecretActionRequest("ROTATED", secondOccurrence,
+                        OffsetDateTime.now(ZoneOffset.UTC), "CHANGE:SEC-234", 3L),
+                "remediator");
+        assertThat(second.stage()).isEqualTo("REVALIDATION_PENDING");
+        assertThat(second.actions()).hasSize(2);
+    }
+
     private long caseFixture() {
         long connection = connection("GITHUB");
         long scope = scope(connection);
@@ -263,6 +412,13 @@ class SecretCaseServiceTest {
                 INSERT INTO secret_case_occurrences (case_id, occurrence_id, credential_set_id)
                 VALUES (?, ?, ?)
                 """, caseId, occurrence, secretId);
+        jdbc.update("""
+                INSERT INTO secret_checklist_items (case_id, guide_version, item_code)
+                VALUES (?, 'S2_V1', 'IDENTIFY_OWNER'),
+                       (?, 'S2_V1', 'ROTATE_OR_REVOKE'),
+                       (?, 'S2_V1', 'REMOVE_EXPOSURE'),
+                       (?, 'S2_V1', 'CHECK_ACCESS_LOGS')
+                """, caseId, caseId, caseId, caseId);
         return caseId;
     }
 
