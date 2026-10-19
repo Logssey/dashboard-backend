@@ -132,6 +132,13 @@ class SecretCaseRepository {
                 VALUES (?, ?, ?)
                 """, caseId, occurrenceId, secretId);
         jdbc.update("""
+                INSERT INTO secret_checklist_items (case_id, guide_version, item_code)
+                VALUES (?, 'S2_V1', 'IDENTIFY_OWNER'),
+                       (?, 'S2_V1', 'ROTATE_OR_REVOKE'),
+                       (?, 'S2_V1', 'REMOVE_EXPOSURE'),
+                       (?, 'S2_V1', 'CHECK_ACCESS_LOGS')
+                """, caseId, caseId, caseId, caseId);
+        jdbc.update("""
                 INSERT INTO secret_audit_events (case_id, event_type, actor_user_id, case_version)
                 VALUES (?, 'CASE_OPENED', ?, 0)
                 """, caseId, actorId);
@@ -275,6 +282,236 @@ class SecretCaseRepository {
                 INSERT INTO secret_audit_events (case_id, event_type, actor_user_id, case_version)
                 VALUES (?, 'ASSIGNMENT_CHANGED', ?, ?)
                 """, caseId, actorId, before.version() + 1);
+    }
+
+    String reviewStatus(long caseId) {
+        return jdbc.queryForObject("SELECT review_status FROM secret_response_cases WHERE case_id = ?",
+                String.class, caseId);
+    }
+
+    boolean assignedRemediator(long actorId, long caseId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT assigned_user_id = ? FROM secret_response_cases
+                WHERE case_id = ? AND is_current
+                """, Boolean.class, actorId, caseId))
+                && hasCaseRole(actorId, caseId, "REMEDIATOR");
+    }
+
+    int updateReview(long caseId, long version, String status) {
+        return jdbc.update("""
+                UPDATE secret_response_cases
+                SET review_status = ?, version = version + 1, updated_at = CURRENT_TIMESTAMP
+                WHERE case_id = ? AND is_current AND version = ?
+                  AND review_status = 'UNREVIEWED' AND action_status = 'OPEN'
+                """, status, caseId, version);
+    }
+
+    void recordReview(long caseId, String decision, String reasonCode,
+                      long actorId, long version) {
+        jdbc.update("""
+                INSERT INTO secret_case_reviews
+                    (case_id, decision, reason_code, reviewed_by_user_id, case_version)
+                VALUES (?, ?, ?, ?, ?)
+                """, caseId, decision, reasonCode, actorId, version);
+        audit(caseId, "REVIEW_RECORDED", actorId, version);
+    }
+
+    List<SecretCaseReview> reviews(long caseId) {
+        return jdbc.query("""
+                SELECT r.review_id, r.decision, r.reason_code, r.reviewed_by_user_id,
+                       u.display_name, r.reviewed_at, r.case_version
+                FROM secret_case_reviews r
+                JOIN dashboard_users u ON u.user_id = r.reviewed_by_user_id
+                WHERE r.case_id = ?
+                ORDER BY r.reviewed_at DESC, r.review_id DESC
+                """, (rs, row) -> new SecretCaseReview(rs.getLong("review_id"),
+                rs.getString("decision"), rs.getString("reason_code"),
+                rs.getLong("reviewed_by_user_id"), rs.getString("display_name"),
+                time(rs, "reviewed_at"), rs.getLong("case_version")), caseId);
+    }
+
+    List<SecretCaseOccurrence> occurrences(long caseId) {
+        return jdbc.query("""
+                SELECT occurrence_id, response_status FROM secret_case_occurrences
+                WHERE case_id = ? ORDER BY occurrence_id
+                """, (rs, row) -> new SecretCaseOccurrence(rs.getLong("occurrence_id"),
+                rs.getString("response_status")), caseId);
+    }
+
+    int updateStage(long caseId, long version, String fromStage, String toStage) {
+        return jdbc.update("""
+                UPDATE secret_response_cases
+                SET action_status = ?, version = version + 1, updated_at = CURRENT_TIMESTAMP
+                WHERE case_id = ? AND is_current AND version = ? AND action_status = ?
+                  AND review_status = 'REVIEWED'
+                """, toStage, caseId, version, fromStage);
+    }
+
+    void startLocations(long caseId) {
+        jdbc.update("""
+                UPDATE secret_case_occurrences SET response_status = 'IN_PROGRESS'
+                WHERE case_id = ? AND response_status = 'OPEN'
+                """, caseId);
+    }
+
+    void recordStage(long caseId, String from, String to, String reasonCode,
+                     long actorId, long version) {
+        jdbc.update("""
+                INSERT INTO secret_case_stage_history
+                    (case_id, from_status, to_status, reason_code, actor_user_id, case_version)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """, caseId, from, to, reasonCode, actorId, version);
+    }
+
+    List<SecretChecklistItem> checklist(long caseId) {
+        return jdbc.query("""
+                SELECT item_id, guide_version, item_code, status, evidence_ref,
+                       completed_at, completed_by_user_id, updated_at
+                FROM secret_checklist_items WHERE case_id = ?
+                ORDER BY CASE item_code
+                    WHEN 'IDENTIFY_OWNER' THEN 1
+                    WHEN 'ROTATE_OR_REVOKE' THEN 2
+                    WHEN 'REMOVE_EXPOSURE' THEN 3
+                    WHEN 'CHECK_ACCESS_LOGS' THEN 4 END
+                """, (rs, row) -> new SecretChecklistItem(rs.getLong("item_id"),
+                rs.getString("guide_version"), rs.getString("item_code"),
+                rs.getString("status"), rs.getString("evidence_ref"),
+                time(rs, "completed_at"), nullableLong(rs, "completed_by_user_id"),
+                time(rs, "updated_at")), caseId);
+    }
+
+    Optional<SecretChecklistItem> checklistItem(long caseId, long itemId) {
+        return checklist(caseId).stream().filter(item -> item.itemId() == itemId).findFirst();
+    }
+
+    int bumpVersion(long caseId, long version) {
+        return jdbc.update("""
+                UPDATE secret_response_cases
+                SET version = version + 1, updated_at = CURRENT_TIMESTAMP
+                WHERE case_id = ? AND is_current AND version = ?
+                  AND action_status <> 'RESOLVED'
+                """, caseId, version);
+    }
+
+    void updateChecklist(long itemId, boolean completed, String evidenceRef, long actorId) {
+        jdbc.update("""
+                UPDATE secret_checklist_items
+                SET status = ?, evidence_ref = ?,
+                    completed_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE NULL END,
+                    completed_by_user_id = CASE WHEN ? THEN ? ELSE NULL END,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE item_id = ?
+                """, completed ? "DONE" : "TODO", evidenceRef,
+                completed, completed, actorId, itemId);
+    }
+
+    void recordChecklist(long caseId, long itemId, String before, String after,
+                         String evidenceRef, long actorId, long version) {
+        jdbc.update("""
+                INSERT INTO secret_checklist_history
+                    (case_id, item_id, from_status, to_status, evidence_ref,
+                     changed_by_user_id, case_version)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, caseId, itemId, before, after, evidenceRef, actorId, version);
+        audit(caseId, "CHECKLIST_CHANGED", actorId, version);
+    }
+
+    List<SecretChecklistChange> checklistHistory(long caseId) {
+        return jdbc.query("""
+                SELECT item_id, from_status, to_status, evidence_ref,
+                       changed_by_user_id, changed_at, case_version
+                FROM secret_checklist_history WHERE case_id = ?
+                ORDER BY changed_at DESC, history_id DESC
+                """, (rs, row) -> new SecretChecklistChange(rs.getLong("item_id"),
+                rs.getString("from_status"), rs.getString("to_status"),
+                rs.getString("evidence_ref"), rs.getLong("changed_by_user_id"),
+                time(rs, "changed_at"), rs.getLong("case_version")), caseId);
+    }
+
+    boolean actionableOccurrence(long caseId, long occurrenceId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (
+                    SELECT 1 FROM secret_case_occurrences co
+                    WHERE co.case_id = ? AND co.occurrence_id = ?
+                      AND co.response_status IN ('OPEN', 'IN_PROGRESS')
+                )
+                """, Boolean.class, caseId, occurrenceId));
+    }
+
+    long lockVersion(long caseId) {
+        return jdbc.queryForObject("""
+                SELECT version FROM secret_response_cases
+                WHERE case_id = ? AND is_current FOR UPDATE
+                """, Long.class, caseId);
+    }
+
+    int actionLocation(long caseId, long occurrenceId) {
+        return jdbc.update("""
+                UPDATE secret_case_occurrences
+                SET response_status = 'REVALIDATION_PENDING'
+                WHERE case_id = ? AND occurrence_id = ?
+                  AND response_status IN ('OPEN', 'IN_PROGRESS')
+                """, caseId, occurrenceId);
+    }
+
+    boolean allLocationsPending(long caseId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM secret_case_occurrences WHERE case_id = ?)
+                   AND NOT EXISTS (
+                     SELECT 1 FROM secret_case_occurrences
+                     WHERE case_id = ? AND response_status <> 'REVALIDATION_PENDING'
+                   )
+                """, Boolean.class, caseId, caseId));
+    }
+
+    void recordAction(long caseId, long occurrenceId, String actionType,
+                      OffsetDateTime performedAt, String evidenceRef, long actorId, long version) {
+        jdbc.update("""
+                INSERT INTO secret_action_records
+                    (case_id, occurrence_id, action_type, performed_at, recorded_by_user_id,
+                     evidence_ref, case_version)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, caseId, occurrenceId, actionType, performedAt, actorId, evidenceRef, version);
+        audit(caseId, "ACTION_RECORDED", actorId, version);
+    }
+
+    List<SecretActionRecord> actions(long caseId) {
+        return jdbc.query("""
+                SELECT a.action_id, a.occurrence_id, a.action_type, a.performed_at,
+                       a.recorded_at, a.recorded_by_user_id, u.display_name,
+                       a.evidence_ref, a.case_version
+                FROM secret_action_records a
+                JOIN dashboard_users u ON u.user_id = a.recorded_by_user_id
+                WHERE a.case_id = ?
+                ORDER BY a.recorded_at DESC, a.action_id DESC
+                """, (rs, row) -> new SecretActionRecord(rs.getLong("action_id"),
+                rs.getLong("occurrence_id"), rs.getString("action_type"),
+                time(rs, "performed_at"), time(rs, "recorded_at"),
+                rs.getLong("recorded_by_user_id"), rs.getString("display_name"),
+                rs.getString("evidence_ref"), rs.getLong("case_version")), caseId);
+    }
+
+    List<SecretCaseStageChange> stageHistory(long caseId) {
+        return jdbc.query("""
+                SELECT from_status, to_status, reason_code, actor_user_id,
+                       changed_at, case_version
+                FROM secret_case_stage_history WHERE case_id = ?
+                ORDER BY changed_at DESC, stage_id DESC
+                """, (rs, row) -> new SecretCaseStageChange(rs.getString("from_status"),
+                rs.getString("to_status"), rs.getString("reason_code"),
+                rs.getLong("actor_user_id"), time(rs, "changed_at"),
+                rs.getLong("case_version")), caseId);
+    }
+
+    private void audit(long caseId, String eventType, long actorId, long version) {
+        jdbc.update("""
+                INSERT INTO secret_audit_events (case_id, event_type, actor_user_id, case_version)
+                VALUES (?, ?, ?, ?)
+                """, caseId, eventType, actorId, version);
+    }
+
+    void recordWorkflowAudit(long caseId, String eventType, long actorId, long version) {
+        audit(caseId, eventType, actorId, version);
     }
 
     private static SecretCaseSummary summary(ResultSet rs) throws SQLException {

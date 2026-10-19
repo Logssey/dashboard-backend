@@ -1,5 +1,8 @@
 package com.logssey.secret.response;
 
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -225,6 +228,106 @@ class SecretCaseSecurityIntegrationTest {
         } finally {
             jdbc.execute("DROP TRIGGER IF EXISTS test_reject_assignment_audit ON secret_audit_events");
             jdbc.execute("DROP FUNCTION IF EXISTS test_reject_assignment_audit()");
+        }
+    }
+
+    @Test
+    void reviewAndActionRequireCsrfAndReturnAuditedCaseDetail() throws Exception {
+        jdbc.update("""
+                INSERT INTO secret_role_grants
+                    (user_id, role, granted_by_user_id, grant_source)
+                VALUES (?, 'SECURITY', ?, 'MANUAL'), (?, 'REMEDIATOR', ?, 'MANUAL')
+                """, actorId, actorId, actorId, actorId);
+        service.assign(caseId,
+                new SecretAssignmentRequest(null, actorId, "INITIAL_ASSIGNMENT", 0L),
+                "case-admin");
+        MockMvc mvc = mvc();
+        var login = mvc.perform(post("/api/v1/auth/login").with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"loginId\":\"case-admin\",\"password\":\"case-pass\"}"))
+                .andExpect(status().isOk()).andReturn();
+        var session = (MockHttpSession) login.getRequest().getSession(false);
+        String review = "{\"decision\":\"CONFIRMED\",\"reasonCode\":\"EVIDENCE_CONFIRMED\",\"expectedVersion\":1}";
+        mvc.perform(post("/api/v1/secrets/cases/{caseId}/review", caseId)
+                        .session(session).contentType(MediaType.APPLICATION_JSON).content(review))
+                .andExpect(status().isForbidden());
+        mvc.perform(post("/api/v1/secrets/cases/{caseId}/review", caseId)
+                        .session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(review))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.reviewStatus").value("REVIEWED"))
+                .andExpect(jsonPath("$.version").value(2))
+                .andExpect(jsonPath("$.stage").value("OPEN"));
+        long occurrenceId = jdbc.queryForObject(
+                "SELECT opening_occurrence_id FROM secret_response_cases WHERE case_id = ?",
+                Long.class, caseId);
+        String action = "{\"actionType\":\"ROTATED\",\"occurrenceId\":" + occurrenceId
+                + ",\"performedAt\":\"" + OffsetDateTime.now(ZoneOffset.UTC)
+                + "\",\"evidenceRef\":\"TICKET:SEC-123\",\"expectedVersion\":2}";
+        mvc.perform(post("/api/v1/secrets/cases/{caseId}/actions", caseId)
+                        .session(session).contentType(MediaType.APPLICATION_JSON).content(action))
+                .andExpect(status().isForbidden());
+        mvc.perform(post("/api/v1/secrets/cases/{caseId}/actions", caseId)
+                        .session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(action))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.stage").value("REVALIDATION_PENDING"))
+                .andExpect(jsonPath("$.actions[0].evidenceRef").value("TICKET:SEC-123"));
+        mvc.perform(post("/api/v1/secrets/cases/{caseId}/actions", caseId)
+                        .session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(action))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void failedActionAuditRollsBackCaseLocationAndActionRecord() {
+        jdbc.update("""
+                INSERT INTO secret_role_grants
+                    (user_id, role, granted_by_user_id, grant_source)
+                VALUES (?, 'SECURITY', ?, 'MANUAL'), (?, 'REMEDIATOR', ?, 'MANUAL')
+                """, actorId, actorId, actorId, actorId);
+        service.assign(caseId,
+                new SecretAssignmentRequest(null, actorId, "INITIAL_ASSIGNMENT", 0L),
+                "case-admin");
+        service.review(caseId,
+                new SecretCaseReviewRequest("CONFIRMED", "EVIDENCE_CONFIRMED", 1L),
+                "case-admin");
+        jdbc.execute("""
+                CREATE OR REPLACE FUNCTION test_reject_action_audit() RETURNS trigger AS $$
+                BEGIN
+                    IF NEW.event_type = 'ACTION_RECORDED' THEN
+                        RAISE EXCEPTION 'injected audit failure';
+                    END IF;
+                    RETURN NEW;
+                END;
+                $$ LANGUAGE plpgsql
+                """);
+        jdbc.execute("""
+                CREATE TRIGGER test_reject_action_audit
+                BEFORE INSERT ON secret_audit_events
+                FOR EACH ROW EXECUTE FUNCTION test_reject_action_audit()
+                """);
+        try {
+            long occurrenceId = jdbc.queryForObject(
+                    "SELECT opening_occurrence_id FROM secret_response_cases WHERE case_id = ?",
+                    Long.class, caseId);
+            assertThatThrownBy(() -> service.action(caseId,
+                    new SecretActionRequest("ROTATED", occurrenceId,
+                            OffsetDateTime.now(ZoneOffset.UTC), "TICKET:SEC-123", 2L),
+                    "case-admin")).isInstanceOf(DataAccessException.class);
+            assertThat(jdbc.queryForObject(
+                    "SELECT version FROM secret_response_cases WHERE case_id = ?", Long.class, caseId))
+                    .isEqualTo(2);
+            assertThat(jdbc.queryForObject(
+                    "SELECT action_status FROM secret_response_cases WHERE case_id = ?",
+                    String.class, caseId)).isEqualTo("OPEN");
+            assertThat(jdbc.queryForObject(
+                    "SELECT response_status FROM secret_case_occurrences WHERE case_id = ?",
+                    String.class, caseId)).isEqualTo("OPEN");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM secret_action_records", Long.class))
+                    .isZero();
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM secret_case_stage_history", Long.class))
+                    .isZero();
+        } finally {
+            jdbc.execute("DROP TRIGGER IF EXISTS test_reject_action_audit ON secret_audit_events");
+            jdbc.execute("DROP FUNCTION IF EXISTS test_reject_action_audit()");
         }
     }
 
