@@ -133,6 +133,10 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
                     validation_status = ?, failure_code = ?
                 WHERE run_id = ?
                 """, collectionStatus, detectionStatus, validationStatus, failureCode, job.runId()));
+        withLease(job, execution, () -> jdbc.update("""
+                UPDATE secret_case_revalidations SET runtime_fingerprint_version = ?
+                WHERE job_id = ?
+                """, normalizer.keyVersion(), job.jobId()));
         if (successfulScopes == 0) {
             throw new SecretJobFailure(retryCode(firstFailure), retryable(firstFailure));
         }

@@ -10,6 +10,7 @@ import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
 
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -23,9 +24,17 @@ public class SecretCaseService {
     private static final Pattern EVIDENCE_REF = Pattern.compile(
             "^(TICKET|CHANGE):[A-Z]{2,10}-[1-9][0-9]{0,9}$");
     private final SecretCaseRepository repository;
+    private final SecretRevalidationRepository revalidations;
 
     SecretCaseService(SecretCaseRepository repository) {
+        this(repository, null);
+    }
+
+    @Autowired
+    SecretCaseService(SecretCaseRepository repository,
+                      SecretRevalidationRepository revalidations) {
         this.repository = repository;
+        this.revalidations = revalidations;
     }
 
     @Transactional(readOnly = true)
@@ -244,13 +253,33 @@ public class SecretCaseService {
         boolean remediator = repository.assignedRemediator(actorId, caseId);
         boolean reviewed = "REVIEWED".equals(reviewStatus);
         boolean open = "OPEN".equals(summary.stage());
+        boolean pending = "REVALIDATION_PENDING".equals(summary.stage());
+        Set<Long> requestable = remediator && reviewed && revalidations != null
+                ? Set.copyOf(revalidations.requestableOccurrenceIds(caseId)) : Set.of();
+        Set<Long> resumable = remediator && revalidations != null
+                ? Set.copyOf(revalidations.resumableOccurrenceIds(caseId)) : Set.of();
+        boolean canResolve = security && reviewed && pending && revalidations != null
+                && !revalidations.otherAbnormalPresent(caseId);
+        if (canResolve) {
+            var evidence = revalidations.resolutionEvidence(caseId);
+            canResolve = !evidence.isEmpty()
+                    && evidence.stream().allMatch(SecretRevalidationService::sufficient);
+        }
         var capabilities = new SecretCaseCapabilities(
                 security && !reviewed && open,
                 remediator && reviewed && open,
                 remediator && !"RESOLVED".equals(summary.stage()),
-                remediator && reviewed && (open || "IN_PROGRESS".equals(summary.stage())));
+                remediator && reviewed && (open || "IN_PROGRESS".equals(summary.stage())),
+                !requestable.isEmpty(),
+                canResolve,
+                !resumable.isEmpty());
+        var occurrences = repository.occurrences(caseId).stream()
+                .map(item -> new SecretCaseOccurrence(item.occurrenceId(),
+                        item.responseStatus(), requestable.contains(item.occurrenceId()),
+                        resumable.contains(item.occurrenceId())))
+                .toList();
         return SecretCaseDetail.from(summary, repository.openingEvidence(caseId),
-                repository.assignmentHistory(caseId), repository.occurrences(caseId),
+                repository.assignmentHistory(caseId), occurrences,
                 reviewStatus, repository.reviews(caseId),
                 repository.checklist(caseId), repository.checklistHistory(caseId),
                 repository.actions(caseId), repository.stageHistory(caseId), capabilities);

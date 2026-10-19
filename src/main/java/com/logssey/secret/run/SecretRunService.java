@@ -119,6 +119,9 @@ public class SecretRunService {
                 if (!repository.hasSupportedScope(connection)) {
                     throw new ApiException(ErrorCode.CONFLICT);
                 }
+                if (repository.hasActiveRevalidation(connection.id())) {
+                    throw new ApiException(ErrorCode.CONFLICT);
+                }
                 var active = repository.activeRun(connection.id());
                 if (active.isPresent()) {
                     if (key != null) {
