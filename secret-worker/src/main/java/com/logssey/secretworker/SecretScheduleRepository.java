@@ -51,7 +51,7 @@ public class SecretScheduleRepository {
                   ))
                   AND NOT EXISTS (
                     SELECT 1 FROM secret_jobs j
-                    WHERE j.connection_id = c.connection_id AND j.kind = 'FULL_SCAN'
+                    WHERE j.connection_id = c.connection_id
                       AND j.status IN ('PENDING', 'LEASED')
                   )
                 ORDER BY c.next_due_at, c.connection_id

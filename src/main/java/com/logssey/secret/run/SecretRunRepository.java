@@ -81,6 +81,14 @@ class SecretRunRepository {
                 """, (rs, row) -> jobRun(rs), connectionId).stream().findFirst();
     }
 
+    boolean hasActiveRevalidation(long connectionId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM secret_jobs
+                    WHERE connection_id = ? AND kind = 'REVALIDATE'
+                      AND status IN ('PENDING', 'LEASED'))
+                """, Boolean.class, connectionId));
+    }
+
     boolean hasSupportedScope(Connection connection) {
         String query = """
                 SELECT (? = 'GITHUB' OR EXISTS (

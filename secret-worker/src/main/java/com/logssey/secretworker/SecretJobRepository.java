@@ -124,6 +124,7 @@ class SecretJobRepository {
                     finished_at = ?
                 WHERE run_id = ?
                 """, resultStatus, resultStatus, now, row.runId());
+        finishRevalidation(row, now);
         updateLastCollectionSuccess(row);
     }
 
@@ -181,7 +182,62 @@ class SecretJobRepository {
                     finished_at = CASE WHEN collection_status IN ('RUNNING', 'PENDING') THEN ? ELSE finished_at END
                 WHERE run_id = ?
                 """, code, now, row.runId());
+        jdbc.update("""
+                UPDATE secret_case_revalidations
+                SET status = 'UNKNOWN', failure_code = ?, finished_at = ?
+                WHERE run_id = ? AND status = 'PENDING'
+                """, code, now, row.runId());
         updateLastCollectionSuccess(row);
+    }
+
+    private void finishRevalidation(JobRow row, OffsetDateTime now) {
+        jdbc.update("""
+                WITH outcome AS (
+                    SELECT v.revalidation_id,
+                           CASE WHEN r.collection_status = 'SUCCEEDED'
+                                  AND r.detection_status IN ('SUCCEEDED', 'SKIPPED')
+                                  AND rs.collection_status = 'SUCCEEDED'
+                                  AND tr.status = 'SUCCEEDED'
+                                  AND tr.config_hash = v.baseline_config_hash
+                                  AND tr.engine_version = v.baseline_engine_version
+                                  AND v.runtime_fingerprint_version = v.baseline_fingerprint_version
+                                  AND r.scope_version = conn.scope_version
+                                  AND v.requested_at > a.performed_at
+                                THEN CASE WHEN EXISTS (
+                                    SELECT 1 FROM secret_findings f
+                                    JOIN secret_occurrences found
+                                      ON found.occurrence_id = f.occurrence_id
+                                    JOIN secret_response_cases c ON c.case_id = v.case_id
+                                    WHERE f.run_id = v.run_id
+                                      AND found.scope_id = v.scope_id
+                                      AND found.credential_set_id = c.credential_set_id
+                                ) THEN 'PRESENT' ELSE 'MISSING' END
+                                ELSE 'UNKNOWN' END AS result
+                    FROM secret_case_revalidations v
+                    JOIN secret_scan_runs r ON r.run_id = v.run_id
+                    JOIN secret_connections conn ON conn.connection_id = v.connection_id
+                    JOIN secret_action_records a ON a.action_id = v.action_id
+                    LEFT JOIN secret_run_scopes rs
+                      ON rs.run_id = v.run_id AND rs.scope_id = v.scope_id
+                    LEFT JOIN secret_tool_runs tr
+                      ON tr.run_scope_id = rs.run_scope_id AND tr.engine = 'GITLEAKS'
+                    WHERE v.run_id = ? AND v.status = 'PENDING'
+                )
+                UPDATE secret_case_revalidations v
+                SET status = outcome.result,
+                    failure_code = CASE WHEN outcome.result = 'UNKNOWN'
+                        THEN 'REVALIDATION_INCOMPLETE' ELSE NULL END,
+                    finished_at = ?
+                FROM outcome WHERE v.revalidation_id = outcome.revalidation_id
+                """, row.runId(), now);
+        jdbc.update("""
+                UPDATE secret_occurrences o
+                SET presence_status = 'MISSING', last_complete_coverage_at = ?
+                FROM secret_case_revalidations v
+                WHERE v.run_id = ? AND v.status = 'MISSING'
+                  AND o.occurrence_id = v.occurrence_id
+                  AND (o.last_seen_run_id IS NULL OR o.last_seen_run_id <> v.run_id)
+                """, now, row.runId());
     }
 
     private void updateLastCollectionSuccess(JobRow row) {

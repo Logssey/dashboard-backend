@@ -38,6 +38,10 @@ public final class SecretFindingNormalizer {
     private final byte[] key;
     private final String keyVersion;
 
+    public String keyVersion() {
+        return keyVersion;
+    }
+
     public SecretFindingNormalizer(byte[] fingerprintKey, String keyVersion) {
         if (fingerprintKey == null || fingerprintKey.length < 32 || keyVersion == null
                 || !keyVersion.matches("[A-Za-z0-9_.-]{1,40}")) {
