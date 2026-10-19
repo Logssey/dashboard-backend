@@ -17,10 +17,10 @@ import org.neo4j.driver.Value;
 public class GraphEnricher {
 
     /** 경로가 지나는 관계. 방향은 모두 "도달·획득" 방향이다. */
-    static final String PATH_RELATIONSHIPS = "CAN_REACH|ORIGIN|EXPOSE|HAS_CREDS_OF|IS_INSTANCE|CAN_READ";
-    static final int MAX_HOPS = 6;
+    public static final String PATH_RELATIONSHIPS = "CAN_REACH|ORIGIN|EXPOSE|HAS_CREDS_OF|IS_INSTANCE|CAN_READ";
+    public static final int MAX_HOPS = 6;
     /** 노드 라벨 순서는 정해져 있지 않아, 경로 표시에 쓸 종류를 이 순서로 고른다. */
-    static final List<String> HOP_KINDS = List.of("AWSCloudFrontDistribution", "AWSLoadBalancerV2",
+    public static final List<String> HOP_KINDS = List.of("AWSCloudFrontDistribution", "AWSLoadBalancerV2",
             "AWSEC2Instance", "KubernetesNode", "KubernetesPod", "AWSRole", "AWSUser", "AWSGroup",
             "AWSSecretsManagerSecret", "AWSS3Bucket", "AWSRDSInstance");
 
@@ -133,18 +133,42 @@ public class GraphEnricher {
                           AND none(n IN nodes(p)[1..-1] WHERE n.logssey_tier IS NOT NULL)
                           AND size(nodes(p)) = size(reduce(seen = [], n IN nodes(p) |
                                                     CASE WHEN n IN seen THEN seen ELSE seen + n END))
-                        RETURN [n IN nodes(p) | {kind: CASE WHEN n:LogsseyInternet THEN 'Internet'
-                                                     ELSE head([k IN $kinds WHERE k IN labels(n)] + labels(n)) END,
-                                                 id: toString(coalesce(n.arn, n.id, n.name)),
-                                                 name: toString(coalesce(n.name, n.db_instance_identifier, n.id))}] AS hops,
+                        RETURN [n IN nodes(p) | {kind: %s, id: %s, name: %s}] AS hops,
                                t.logssey_data_asset_id AS asset, t.logssey_tier AS tier
-                        """.formatted(PATH_RELATIONSHIPS, MAX_HOPS), Map.of("kinds", HOP_KINDS));
+                        """.formatted(PATH_RELATIONSHIPS, MAX_HOPS, kind("n"), id("n"), name("n")),
+                        Map.of("kinds", HOP_KINDS));
                 List<FoundPath> paths = new ArrayList<>();
                 result.forEachRemaining(record -> paths.add(new FoundPath(
                         record.get("hops").asList(GraphEnricher::hop),
                         record.get("asset").asLong(), record.get("tier").asInt())));
                 return paths;
             });
+        }
+    }
+
+    /** 경로 표시용 노드 종류. $kinds 파라미터(HOP_KINDS)가 필요하다. */
+    public static String kind(String n) {
+        return "CASE WHEN %1$s:LogsseyInternet THEN 'Internet' ELSE head([k IN $kinds WHERE k IN labels(%1$s)] + labels(%1$s)) END"
+                .formatted(n);
+    }
+
+    /** 지문에 들어가는 노드 ID. 실행이 달라도 같은 노드면 같은 값이다. */
+    public static String id(String n) {
+        return "toString(coalesce(%1$s.arn, %1$s.id, %1$s.name))".formatted(n);
+    }
+
+    public static String name(String n) {
+        return "toString(coalesce(%1$s.name, %1$s.db_instance_identifier, %1$s.id))".formatted(n);
+    }
+
+    /** 시작 + 거쳐 가는 노드 + 대상. 같은 경로면 실행이 달라도 같은 값이다. */
+    public static String fingerprint(List<Hop> hops) {
+        String key = hops.stream().map(Hop::id).collect(java.util.stream.Collectors.joining("\n"));
+        try {
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(key.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
         }
     }
 

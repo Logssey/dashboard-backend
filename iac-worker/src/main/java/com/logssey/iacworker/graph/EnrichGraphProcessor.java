@@ -1,13 +1,8 @@
 package com.logssey.iacworker.graph;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 import com.logssey.iacworker.ClaimedIacJob;
 import com.logssey.iacworker.IacJobExecutionService;
@@ -66,7 +61,7 @@ public class EnrichGraphProcessor implements IacJobProcessor {
 
         Map<String, GraphEnricher.FoundPath> byFingerprint = new LinkedHashMap<>();
         for (var path : paths) {
-            byFingerprint.putIfAbsent(fingerprint(path), path);
+            byFingerprint.putIfAbsent(GraphEnricher.fingerprint(path.hops()), path);
         }
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("openPaths", byFingerprint.size());
@@ -89,17 +84,6 @@ public class EnrichGraphProcessor implements IacJobProcessor {
         });
         if (!written) {
             throw new IacJobFailure(IacJobFailureCode.LEASE_EXPIRED, true);
-        }
-    }
-
-    /** 시작 + 거쳐 가는 노드 + 대상. 같은 경로면 실행이 달라도 같은 값이다. */
-    static String fingerprint(GraphEnricher.FoundPath path) {
-        String key = path.hops().stream().map(GraphEnricher.Hop::id).collect(Collectors.joining("\n"));
-        try {
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
-                    .digest(key.getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException(e);
         }
     }
 }
