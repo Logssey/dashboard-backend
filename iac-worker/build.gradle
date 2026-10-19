@@ -24,6 +24,7 @@ dependencies {
     implementation 'org.flywaydb:flyway-database-postgresql'
     implementation 'org.neo4j.driver:neo4j-java-driver'
     implementation 'software.amazon.awssdk:cloudfront:2.55.12'
+    implementation 'software.amazon.awssdk:iam:2.55.12'
     implementation 'tools.jackson.core:jackson-databind'
     runtimeOnly 'org.postgresql:postgresql'
 
