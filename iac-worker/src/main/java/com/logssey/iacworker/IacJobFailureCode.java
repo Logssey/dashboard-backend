@@ -7,5 +7,6 @@ public enum IacJobFailureCode {
     PLAN_MISSING,
     PLAN_INVALID,
     GRAPH_UNAVAILABLE,
+    AWS_UNAVAILABLE,
     SIMULATOR_UNAVAILABLE
 }
