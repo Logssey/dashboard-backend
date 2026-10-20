@@ -16,17 +16,23 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 @RequestMapping("/api/v1/secrets")
 public class SecretCaseController {
     private final SecretCaseService service;
+    private final SecretLocationWorkflow workflow;
 
-    public SecretCaseController(SecretCaseService service) {
+    public SecretCaseController(SecretCaseService service, SecretLocationWorkflow workflow) {
         this.service = service;
+        this.workflow = workflow;
     }
 
     @GetMapping("/cases")
-    public SecretCaseListResponse list(@RequestParam(defaultValue = "0") int page,
+    public java.util.Map<String,Object> list(@RequestParam(defaultValue = "0") int page,
                                        @RequestParam(defaultValue = "20") int size,
                                        @RequestParam(defaultValue = "PRODUCTION") String origin,
+                                       @RequestParam(defaultValue = "currentCases") String scope,
+                                       @RequestParam(required = false) String stages,
+                                       @RequestParam(required = false) String assignmentStatus,
+                                       @RequestParam(required = false) String assignee,
                                        Authentication authentication) {
-        return service.list(page, size, origin, loginId(authentication));
+        return workflow.list(loginId(authentication),origin,scope,stages,assignmentStatus,assignee,page,size);
     }
 
     @PostMapping("/{secretId}/cases")
@@ -39,49 +45,70 @@ public class SecretCaseController {
     }
 
     @GetMapping("/cases/{caseId}")
-    public SecretCaseDetail detail(@PathVariable long caseId, Authentication authentication) {
-        return service.detail(caseId, loginId(authentication));
+    public java.util.Map<String,Object> detail(@PathVariable long caseId, Authentication authentication) {
+        return workflow.detail(caseId, loginId(authentication));
     }
 
     @GetMapping("/assignees")
-    public SecretAssigneeListResponse assignees(@RequestParam long caseId,
+    public java.util.Map<String,Object> assignees(@RequestParam long caseId,
+                                                 @RequestParam(required=false) Long occurrenceId,
                                                  Authentication authentication) {
-        return service.assignees(caseId, loginId(authentication));
+        return workflow.assignees(caseId, occurrenceId, loginId(authentication));
     }
 
     @PatchMapping("/cases/{caseId}/assignment")
-    public SecretCaseDetail assign(@PathVariable long caseId,
-                                   @RequestBody SecretAssignmentRequest request,
+    public java.util.Map<String,Object> assign(@PathVariable long caseId,
+                                   @RequestBody SecretLocationWorkflow.Coordinator request,
                                    Authentication authentication) {
-        return service.assign(caseId, request, loginId(authentication));
+        return workflow.coordinator(caseId, request, loginId(authentication));
     }
 
     @PostMapping("/cases/{caseId}/review")
     public SecretCaseDetail review(@PathVariable long caseId,
                                    @RequestBody SecretCaseReviewRequest request,
                                    Authentication authentication) {
-        return service.review(caseId, request, loginId(authentication));
+        workflow.rejectLegacy(caseId, loginId(authentication));
+        throw new IllegalStateException();
     }
 
     @PostMapping("/cases/{caseId}/start")
     public SecretCaseDetail start(@PathVariable long caseId,
                                   @RequestBody SecretCaseStartRequest request,
                                   Authentication authentication) {
-        return service.start(caseId, request, loginId(authentication));
+        workflow.rejectLegacy(caseId, loginId(authentication));
+        throw new IllegalStateException();
     }
 
     @PatchMapping("/cases/{caseId}/checklist/{itemId}")
-    public SecretCaseDetail checklist(@PathVariable long caseId, @PathVariable long itemId,
-                                      @RequestBody SecretChecklistRequest request,
+    public java.util.Map<String,Object> checklist(@PathVariable long caseId, @PathVariable long itemId,
+                                      @RequestBody SecretLocationWorkflow.Checklist request,
                                       Authentication authentication) {
-        return service.checklist(caseId, itemId, request, loginId(authentication));
+        return workflow.checklist(caseId, itemId, request, loginId(authentication));
     }
 
     @PostMapping("/cases/{caseId}/actions")
-    public SecretCaseDetail action(@PathVariable long caseId,
-                                   @RequestBody SecretActionRequest request,
+    public com.logssey.secret.command.SecretCommandResult action(@PathVariable long caseId,
+                                   @RequestBody SecretLocationWorkflow.Action request,
                                    Authentication authentication) {
-        return service.action(caseId, request, loginId(authentication));
+        return workflow.action(caseId, request, loginId(authentication));
+    }
+
+    @PatchMapping("/cases/{caseId}/occurrences/{occurrenceId}/assignment")
+    public java.util.Map<String,Object> assignLocation(@PathVariable long caseId,@PathVariable long occurrenceId,
+            @RequestBody SecretLocationWorkflow.Assignment request,Authentication authentication) {
+        return workflow.assign(caseId,occurrenceId,request,loginId(authentication));
+    }
+
+    @PostMapping("/cases/{caseId}/occurrences/{occurrenceId}/complete-actions")
+    public com.logssey.secret.command.SecretCommandResult complete(@PathVariable long caseId,@PathVariable long occurrenceId,
+            @RequestBody SecretLocationWorkflow.Completion request,Authentication authentication) {
+        return workflow.complete(caseId,occurrenceId,request,loginId(authentication));
+    }
+
+    @GetMapping("/cases/{caseId}/activities")
+    public java.util.Map<String,Object> activities(@PathVariable long caseId,@RequestParam(defaultValue="0") int page,
+            @RequestParam(defaultValue="20") int size,Authentication authentication) {
+        return workflow.activities(caseId,loginId(authentication),page,size);
     }
 
     private static String loginId(Authentication authentication) {

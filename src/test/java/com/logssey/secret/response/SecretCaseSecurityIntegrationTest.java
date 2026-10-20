@@ -177,7 +177,7 @@ class SecretCaseSecurityIntegrationTest {
                 .andExpect(jsonPath("$.total").value(1))
                 .andExpect(jsonPath("$.items[0].caseOrigin").value("TEST"));
         String body = "{\"team\":null,\"assigneeUserId\":" + actorId
-                + ",\"reason\":\"INITIAL_ASSIGNMENT\",\"expectedVersion\":0}";
+                + ",\"reasonCode\":\"INITIAL_ASSIGNMENT\",\"expectedVersion\":0}";
         mvc.perform(patch("/api/v1/secrets/cases/{caseId}/assignment", caseId)
                         .session(session).contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isForbidden());
@@ -269,7 +269,7 @@ class SecretCaseSecurityIntegrationTest {
     }
 
     @Test
-    void reviewAndActionRequireCsrfAndReturnAuditedCaseDetail() throws Exception {
+    void legacyReviewIsBlockedAndLocationActionRequiresCsrfWithoutSecondApproval() throws Exception {
         jdbc.update("""
                 INSERT INTO secret_role_grants
                     (user_id, role, granted_by_user_id, grant_source)
@@ -290,27 +290,29 @@ class SecretCaseSecurityIntegrationTest {
                 .andExpect(status().isForbidden());
         mvc.perform(post("/api/v1/secrets/cases/{caseId}/review", caseId)
                         .session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(review))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.reviewStatus").value("REVIEWED"))
-                .andExpect(jsonPath("$.version").value(2))
-                .andExpect(jsonPath("$.stage").value("OPEN"));
+                .andExpect(status().isConflict());
         long occurrenceId = jdbc.queryForObject(
                 "SELECT opening_occurrence_id FROM secret_response_cases WHERE case_id = ?",
                 Long.class, caseId);
+        String assignment="{\"team\":null,\"assigneeUserId\":"+actorId+",\"reasonCode\":\"INITIAL_ASSIGNMENT\",\"expectedCaseVersion\":1,\"expectedOccurrenceVersion\":0}";
+        mvc.perform(patch("/api/v1/secrets/cases/{caseId}/occurrences/{occurrenceId}/assignment",caseId,occurrenceId)
+                .session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(assignment))
+                .andExpect(status().isOk());
         String action = "{\"actionType\":\"ROTATED\",\"occurrenceId\":" + occurrenceId
                 + ",\"performedAt\":\"" + OffsetDateTime.now(ZoneOffset.UTC)
-                + "\",\"evidenceRef\":\"TICKET:SEC-123\",\"expectedVersion\":2}";
+                + "\",\"evidenceRef\":\"TICKET:SEC-123\",\"expectedCaseVersion\":2,\"expectedOccurrenceVersion\":1,\"idempotencyKey\":\"http-action\"}";
         mvc.perform(post("/api/v1/secrets/cases/{caseId}/actions", caseId)
                         .session(session).contentType(MediaType.APPLICATION_JSON).content(action))
                 .andExpect(status().isForbidden());
         mvc.perform(post("/api/v1/secrets/cases/{caseId}/actions", caseId)
                         .session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(action))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.stage").value("REVALIDATION_PENDING"))
-                .andExpect(jsonPath("$.actions[0].evidenceRef").value("TICKET:SEC-123"));
+                .andExpect(jsonPath("$.status").value("IN_PROGRESS"))
+                .andExpect(jsonPath("$.requiresSnapshotRefresh").value(true));
         mvc.perform(post("/api/v1/secrets/cases/{caseId}/actions", caseId)
                         .session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(action))
-                .andExpect(status().isConflict());
+                .andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_action_records",Long.class)).isEqualTo(1);
     }
 
     @Test

@@ -188,6 +188,8 @@ class SecretDecisionIntegrationTest {
     }
     @Test void integrityRepairUsesOriginalDecisionAndDoesNotCreateASecondAssessment() {
         var f=fixture("CONFIRMED","PRODUCTION");var first=service.decide("security",f.occurrence,request(f,"ABNORMAL","UNAPPROVED_SOURCE_LOCATION","open"));
+        // Reproduce an old unlinked decision before any location-owned work exists.
+        jdbc.update("DELETE FROM secret_checklist_items WHERE case_id=?",first.caseId());
         jdbc.update("DELETE FROM secret_case_occurrences WHERE case_id=?",first.caseId());
         var repaired=service.link("security",f.occurrence,new LinkRequest(first.decisionId(),1L,1L,1L,"repair"));
         assertThat(repaired.caseId()).isEqualTo(first.caseId());assertThat(count("secret_exposure_assessments")).isEqualTo(1);

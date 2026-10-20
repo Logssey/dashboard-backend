@@ -364,11 +364,7 @@ public class SecretDecisionService {
                 VALUES(?,?,?,?,'ASSESSED_EXPOSURE',?,'REVIEWED',?) RETURNING case_id
                 """,Long.class,row.get("credential_set_id"),previous,row.get("occurrence_id"),actor.userId(),row.get("response_origin"),decision);
             version=0;
-            jdbc.update("""
-                INSERT INTO secret_checklist_items(case_id,guide_version,item_code)
-                SELECT ?,'S2_V1',code FROM (VALUES('IDENTIFY_OWNER'),('ROTATE_OR_REVOKE'),('REMOVE_EXPOSURE'),('CHECK_ACCESS_LOGS')) codes(code)
-                ON CONFLICT DO NOTHING
-                """,caseId);
+            // The location link trigger creates its four scoped checklist items.
             jdbc.update("INSERT INTO secret_audit_events(case_id,event_type,actor_user_id,case_version) VALUES(?,'CASE_OPENED',?,0)",caseId,actor.userId());
         } else {caseId=number(existing,"case_id");version=number(existing,"version");}
         int added=jdbc.update("""
