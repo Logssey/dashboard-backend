@@ -89,6 +89,30 @@ class SecretWorkbenchIntegrationTest {
         snapshots.invalidateScope(scope);
         code(ErrorCode.CONFLICT,()->summary("operations",filters(),id));
     }
+    @Test void actionStagesAcceptSubsetsAndRejectIgnoredOrDuplicateStages(){
+        caseFixture(connection,scope);
+        var result=tx.execute(s->service.queue("security",filters(),"ACTION_REQUIRED","OPEN,REVALIDATION_PENDING",0,20,null));
+        assertThat(result.get("total")).isEqualTo(1);
+        for(String invalid:List.of("OPEN,OPEN","OPEN,","RESOLVED"))
+            code(ErrorCode.INVALID_INPUT,()->tx.execute(s->service.queue("security",filters(),"ACTION_REQUIRED",invalid,0,20,null)));
+        code(ErrorCode.INVALID_INPUT,()->tx.execute(s->service.queue("security",filters(),"NEEDS_DECISION","OPEN",0,20,null)));
+    }
+    @Test void crossOriginAlertsApplyTheOtherFiltersOnTheSameAuthorizedLocation(){
+        long other=connection(),otherScope=scope(other);grant(security,"SECURITY",other);caseFixture(other,otherScope);
+        jdbc.update("UPDATE secret_connection_scopes SET response_origin='TEST' WHERE scope_id=?",otherScope);
+        jdbc.update("UPDATE secret_response_cases SET case_origin='TEST'");
+        long c=jdbc.queryForObject("SELECT max(case_id) FROM secret_response_cases",Long.class);
+        long key=jdbc.queryForObject("SELECT credential_set_id FROM secret_response_cases WHERE case_id=?",Long.class,c);
+        long occurrence=jdbc.queryForObject("SELECT opening_occurrence_id FROM secret_response_cases WHERE case_id=?",Long.class,c);
+        long alert=jdbc.queryForObject("INSERT INTO secret_cross_environment_alerts(credential_set_id,status,test_case_id,first_observed_at,last_observed_at) VALUES(?,'SUSPECTED_REAL',?,now(),now()) RETURNING alert_id",Long.class,key,c);
+        jdbc.update("INSERT INTO secret_cross_environment_alert_locations(alert_id,occurrence_id,last_observed_at) VALUES(?,?,now())",alert,occurrence);
+        for(var f:List.of(new SecretWorkbenchService.Filters("PRODUCTION","ALL","ALL","ALL",connection,null),
+                new SecretWorkbenchService.Filters("PRODUCTION","AWS","ALL","ALL",other,null),
+                new SecretWorkbenchService.Filters("PRODUCTION","ALL","GITHUB","ALL",other,null),
+                new SecretWorkbenchService.Filters("PRODUCTION","ALL","ALL","PROD",other,null)))
+            assertThat(((Map<?,?>)summary("security",f,null).get("crossEnvironmentAlerts")).get("value")).isEqualTo(0L);
+        assertThat(((Map<?,?>)summary("security",new SecretWorkbenchService.Filters("PRODUCTION","GITHUB","AWS","UNKNOWN",other,null),null).get("crossEnvironmentAlerts")).get("value")).isEqualTo(1L);
+    }
     private Map<String,Object> summary(String login,SecretWorkbenchService.Filters f,String id){return tx.execute(s->service.summary(login,f,id));}
     @SuppressWarnings("unchecked") private Map<String,Object> metric(Map<String,Object> summary,String key){return ((List<Map<String,Object>>)summary.get("metrics")).stream().filter(m->m.get("key").equals(key)).findFirst().orElseThrow();}
     private SecretWorkbenchService.Filters filters(){return new SecretWorkbenchService.Filters("PRODUCTION","ALL","ALL","ALL",null,null);}

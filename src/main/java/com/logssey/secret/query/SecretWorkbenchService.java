@@ -75,14 +75,14 @@ public class SecretWorkbenchService {
     public Map<String,Object> queue(String login,Filters f,String bucket,String stages,int page,int size,String snapshotId) {
         if(page<0||page>1_000_000||size<1||size>100)throw new ApiException(ErrorCode.INVALID_INPUT);
         SecretInventoryFilters.require(bucket,"ACTION_REQUIRED","CURRENT_CASES","NEEDS_DECISION","NEEDS_CASE_LINK","NORMAL_INVENTORY","COVERAGE_GAPS","UNCLASSIFIED");
-        if(stages!=null&&!Set.of("OPEN,IN_PROGRESS","REVALIDATION_PENDING","OPEN","IN_PROGRESS","RESOLVED","RISK_ACCEPTED").contains(stages))throw new ApiException(ErrorCode.INVALID_INPUT);
+        Set<String> selectedStages=stageFilter(bucket,stages);
         var actor=access.requirePrincipal(login);access.requireAnyRole(actor);
         var required=switch(bucket){case "ACTION_REQUIRED","CURRENT_CASES"->Set.of(SecretRole.SECURITY,SecretRole.REMEDIATOR);case "COVERAGE_GAPS","UNCLASSIFIED"->Set.of(SecretRole.SECURITY,SecretRole.OPERATIONS);default->Set.of(SecretRole.SECURITY);};
         if(!access.hasAnyRole(actor,required))throw new ApiException(ErrorCode.FORBIDDEN);
         var h=header(login,actor,f,snapshotId);String type=switch(bucket){case "ACTION_REQUIRED","CURRENT_CASES"->"ResponseCase";case "NEEDS_DECISION"->"DecisionOccurrence";case "NEEDS_CASE_LINK"->"LinkOccurrence";case "NORMAL_INVENTORY"->"NormalCredentialSet";case "COVERAGE_GAPS"->"GapScope";default->"UnclassifiedScope";};
         var allowed=snapshots.page(h,type,0,Integer.MAX_VALUE).stream()
             .filter(r->!bucket.equals("ACTION_REQUIRED")||!Set.of("RESOLVED","RISK_ACCEPTED").contains(r.get("stage")))
-            .filter(r->!type.equals("ResponseCase")||stages==null||Arrays.asList(stages.split(",")).contains(r.get("stage"))).toList();
+            .filter(r->!type.equals("ResponseCase")||selectedStages.isEmpty()||selectedStages.contains(r.get("stage"))).toList();
         String unit=switch(type){case "ResponseCase"->"ResponseCase";case "NormalCredentialSet"->"CredentialSet";case "GapScope","UnclassifiedScope"->"Scope";default->"Occurrence";};
         var applied=new TreeMap<>(f.normalized());var ignored=new ArrayList<String>();
         if(!type.equals("ResponseCase")&&f.assignee()!=null){applied.remove("assignee");ignored.add("assignee");}
@@ -136,8 +136,17 @@ public class SecretWorkbenchService {
             // Alert source is TEST; it is intentionally independent of the selected production origin.
             for(var alert:jdbc.queryForList("SELECT alert_id,status,credential_set_id FROM secret_cross_environment_alerts WHERE closed_at IS NULL")) {
                 long id=((Number)alert.get("alert_id")).longValue();
-                var ids=jdbc.queryForList("SELECT l.occurrence_id,o.connection_id FROM secret_cross_environment_alert_locations l JOIN secret_occurrences o USING(occurrence_id) WHERE l.alert_id=?",id).stream()
+                var ids=jdbc.queryForList("""
+                    SELECT l.occurrence_id,o.connection_id,cn.provider AS source,k.issuer,o.environment
+                    FROM secret_cross_environment_alert_locations l JOIN secret_occurrences o USING(occurrence_id)
+                    JOIN secret_connections cn USING(connection_id) JOIN secret_credential_sets k USING(credential_set_id)
+                    WHERE l.alert_id=?
+                    """,id).stream()
                     .filter(l->access.hasConnectionRole(actor,((Number)l.get("connection_id")).longValue(),SecretRole.SECURITY))
+                    .filter(l->(f.connectionId()==null||((Number)l.get("connection_id")).longValue()==f.connectionId())
+                        &&(f.source().equals("ALL")||f.source().equals(l.get("source")))
+                        &&(f.provider().equals("ALL")||f.provider().equals(l.get("issuer")))
+                        &&(f.environment().equals("ALL")||f.environment().equals(l.get("environment"))))
                     .map(l->((Number)l.get("occurrence_id")).longValue()).toList();
                 if(!ids.isEmpty())subjects.add(new Subject("CrossEnvironmentAlert",id,((Number)alert.get("credential_set_id")).longValue(),
                     facts("alertId",id,"status",alert.get("status"),"nextActionCode","OPEN_ALERT"),ids));
@@ -163,6 +172,16 @@ public class SecretWorkbenchService {
         "caseId",r.caseId(),"maskedLabel",r.maskedLabel(),"componentState",r.componentState(),"source",r.source(),"environment",r.environment(),"origin",r.origin(),
         "presence",r.presence(),"exposure",r.exposure(),"validationStatus",r.validity()==null?"UNCHECKED":r.validity(),"severity","UNASSESSED", "safeLocationLabel","위치 #"+r.occurrenceId(),
         "whyHereCode",why,"nextActionCode",next),List.of(r.occurrenceId()));}
+    private static Set<String> stageFilter(String bucket,String stages) {
+        if(stages==null)return Set.of();
+        var allowed=switch(bucket){
+            case "CURRENT_CASES"->Set.of("OPEN","IN_PROGRESS","REVALIDATION_PENDING","RESOLVED","RISK_ACCEPTED");
+            case "ACTION_REQUIRED"->Set.of("OPEN","IN_PROGRESS","REVALIDATION_PENDING");
+            default->Set.<String>of();};
+        var values=List.of(stages.split(",",-1));var selected=new HashSet<>(values);
+        if(selected.isEmpty()||selected.size()!=values.size()||!allowed.containsAll(selected))throw new ApiException(ErrorCode.INVALID_INPUT);
+        return selected;
+    }
     private Set<Long> validOccurrences(List<Row> rows) {
         if(rows.isEmpty())return Set.of();
         return new HashSet<>(new NamedParameterJdbcTemplate(jdbc).queryForList("SELECT DISTINCT occurrence_id FROM secret_current_valid_findings WHERE occurrence_id IN (:ids)",Map.of("ids",rows.stream().map(Row::occurrenceId).toList()),Long.class));
