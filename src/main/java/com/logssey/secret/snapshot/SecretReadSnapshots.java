@@ -203,10 +203,13 @@ public class SecretReadSnapshots {
     public void invalidateScope(long scopeId) {
         jdbc.update("""
                 UPDATE secret_query_snapshots s SET expires_at=GREATEST(now(),s.created_at+interval '1 microsecond')
-                WHERE s.expires_at>now() AND EXISTS (
+                WHERE s.expires_at>now() AND (EXISTS (
                     SELECT 1 FROM secret_snapshot_location_memberships m JOIN secret_occurrences o ON o.occurrence_id=m.occurrence_id
-                    WHERE m.snapshot_id=s.snapshot_id AND o.scope_id=?)
-                """,scopeId);
+                    WHERE m.snapshot_id=s.snapshot_id AND o.scope_id=?) OR EXISTS (
+                    SELECT 1 FROM secret_snapshot_subjects subject
+                    WHERE subject.snapshot_id=s.snapshot_id AND subject.subject_type IN ('GapScope','UnclassifiedScope')
+                      AND subject.subject_id=?))
+                """,scopeId,scopeId);
     }
 
     public static Map<String, Object> facts(Object... pairs) {

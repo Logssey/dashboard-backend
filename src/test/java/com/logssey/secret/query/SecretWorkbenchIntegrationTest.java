@@ -80,6 +80,15 @@ class SecretWorkbenchIntegrationTest {
         jdbc.update("UPDATE secret_connection_scopes SET revision=revision+1 WHERE scope_id=?",scope);
         assertThat(snapshots.authorizationRevision(person)).isNotEqualTo(first);
     }
+    @Test void anEmptyVisibleScopeAliasInvalidatesItsFrozenQueueButNotHiddenScopes(){
+        var snapshots=new SecretReadSnapshots(jdbc,JsonMapper.builder().build());
+        var first=summary("operations",filters(),null);String id=first.get("snapshotId").toString();
+        assertThat(metric(first,"unclassifiedScopes").get("value")).isEqualTo(1L);
+        long hidden=scope(connection());snapshots.invalidateScope(hidden);
+        assertThat(summary("operations",filters(),id)).isEqualTo(first);
+        snapshots.invalidateScope(scope);
+        code(ErrorCode.CONFLICT,()->summary("operations",filters(),id));
+    }
     private Map<String,Object> summary(String login,SecretWorkbenchService.Filters f,String id){return tx.execute(s->service.summary(login,f,id));}
     @SuppressWarnings("unchecked") private Map<String,Object> metric(Map<String,Object> summary,String key){return ((List<Map<String,Object>>)summary.get("metrics")).stream().filter(m->m.get("key").equals(key)).findFirst().orElseThrow();}
     private SecretWorkbenchService.Filters filters(){return new SecretWorkbenchService.Filters("PRODUCTION","ALL","ALL","ALL",null,null);}
