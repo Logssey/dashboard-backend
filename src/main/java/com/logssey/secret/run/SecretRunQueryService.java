@@ -17,7 +17,7 @@ public class SecretRunQueryService {
     private final JdbcTemplate jdbc;private final SecretAccessService access;private final SecretReadSnapshots snapshots;
     private final SecretRunService runs;private final ObjectMapper json;
     public SecretRunQueryService(JdbcTemplate jdbc,SecretAccessService access,SecretReadSnapshots snapshots,SecretRunService runs,ObjectMapper json){this.jdbc=jdbc;this.access=access;this.snapshots=snapshots;this.runs=runs;this.json=json;}
-    @Transactional(readOnly=true)
+    @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> status(String login,long runId){
         var actor=access.requirePrincipal(login);var result=runs.status(runId,login);
         @SuppressWarnings("unchecked") Map<String,Object> safe=json.convertValue(result,Map.class);

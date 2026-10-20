@@ -156,10 +156,20 @@ class SecretFindingRepositoryTest {
         repository.recordObject(tool,"repo/promoted.txt","sha-before",("AWS_ACCESS_KEY_ID="+id+"\n").getBytes(StandardCharsets.UTF_8),idScan,Instant.now());
         long original=jdbc.queryForObject("SELECT credential_set_id FROM secret_credential_sets",Long.class);
         long firstRun=jdbc.queryForObject("SELECT first_seen_run_id FROM secret_credential_sets",Long.class);
-        repository.recordObject(tool,"repo/promoted.txt","sha-after",("AWS_ACCESS_KEY_ID="+id+"\nAWS_SECRET_ACCESS_KEY="+secret+"\n").getBytes(StandardCharsets.UTF_8),pairScan,Instant.now());
+        jdbc.update("UPDATE secret_jobs SET status='SUCCEEDED',finished_at=now()");
+        long connection=jdbc.queryForObject("SELECT connection_id FROM secret_scan_runs WHERE run_id=?",Long.class,firstRun);
+        long job=jdbc.queryForObject("INSERT INTO secret_jobs(kind,connection_id,scheduled_at,available_at,attempt_no,max_attempts,status) VALUES('FULL_SCAN',?,now()+interval '1 second',now(),0,3,'PENDING') RETURNING job_id",Long.class,connection);
+        long next=jdbc.queryForObject("""
+            INSERT INTO secret_scan_runs(job_id,connection_id,trigger_type,scope_version,scheduled_at,requested_at,collection_status,detection_status,validation_status,result_status)
+            VALUES(?,?,'MANUAL',1,now(),now(),'RUNNING','RUNNING','PENDING','RUNNING') RETURNING run_id
+            """,Long.class,job,connection);
+        long nextScope=jdbc.queryForObject("INSERT INTO secret_run_scopes(run_id,scope_id,collection_status) SELECT ?,scope_id,'RUNNING' FROM secret_run_scopes WHERE run_scope_id=? RETURNING run_scope_id",Long.class,next,runScopeId);
+        long nextTool=repository.beginGitleaksRun(nextScope,"8.30.1",CONFIG_HASH,Instant.now());
+        repository.recordObject(nextTool,"repo/promoted.txt","sha-after",("AWS_ACCESS_KEY_ID="+id+"\nAWS_SECRET_ACCESS_KEY="+secret+"\n").getBytes(StandardCharsets.UTF_8),pairScan,Instant.now());
         assertThat(count("secret_credential_sets")).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT credential_set_id FROM secret_credential_sets WHERE component_state='CONFIRMED'",Long.class)).isEqualTo(original);
         assertThat(jdbc.queryForObject("SELECT first_seen_run_id FROM secret_credential_sets",Long.class)).isEqualTo(firstRun);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_credential_sets WHERE first_seen_run_id=?",Long.class,next)).isZero();
     }
 
     @Test
