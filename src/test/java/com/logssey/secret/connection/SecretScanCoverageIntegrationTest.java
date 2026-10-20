@@ -123,7 +123,7 @@ class SecretScanCoverageIntegrationTest {
             INSERT INTO secret_response_cases(credential_set_id,opening_occurrence_id,opened_by_user_id,opening_reason,case_origin,assigned_user_id)
             VALUES(?,?,1,'ASSESSED_EXPOSURE','TEST',2) RETURNING case_id
             """,Long.class,key,occurrence);
-        jdbc.update("INSERT INTO secret_case_occurrences(case_id,occurrence_id,credential_set_id) VALUES(?,?,?)",response,occurrence,key);
+        jdbc.update("INSERT INTO secret_case_occurrences(case_id,occurrence_id,credential_set_id,assigned_user_id) VALUES(?,?,?,2)",response,occurrence,key);
         var cov=service.occurrenceCoverage("stranger",occurrence);assertThat(cov.get("scopeId")).isEqualTo(scope);
         assertThat(cov.get("lastSuccessfulScan")).isNotNull();assertThat(cov.toString()).doesNotContain("private-repo","secret-value","credential_set_id");
         assertThatThrownBy(()->service.connections("stranger","ALL","ALL",0,20)).isInstanceOf(ApiException.class);
