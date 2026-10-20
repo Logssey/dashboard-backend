@@ -106,7 +106,9 @@ public class SecretLocationService {
         if(visible.isEmpty()) throw new ApiException(ErrorCode.NOT_FOUND);
         String detailVersion=SecretReadSnapshots.digest(visible.stream().map(row -> row.occurrenceId()+":"+
             row.occurrenceVersion()+":"+row.scopeRevision()+":"+row.presence()+":"+row.lastSeenAt()+":"+
-            row.caseId()+":"+row.actionStatus()+":"+row.assignedUserId()+":"+row.validationAt()).collect(Collectors.joining("|")));
+            row.caseId()+":"+row.actionStatus()+":"+row.assignedUserId()+":"+row.validationAt()+":"+
+            row.storageBindingId()+":"+row.storagePolicyVersion()+":"+row.storagePolicyResult()+":"+
+            row.storagePolicyReason()+":"+row.requiresReassessment()).collect(Collectors.joining("|")));
         if(expectedDetailVersion!=null && !expectedDetailVersion.equals(detailVersion))
             throw new ApiException(ErrorCode.CONFLICT,"위치 정보가 변경되었어요. 다시 확인해 주세요.");
         var filtered=visible.stream().filter(row -> ("ALL".equals(filters.source())||row.source().equals(filters.source()))
@@ -155,6 +157,7 @@ public class SecretLocationService {
             "lastSeenAt",text(rows.stream().map(Row::lastSeenAt).max(Comparator.naturalOrder()).orElse(null)),
             "origin",first.origin(),"contentKind","METADATA_ONLY".equals(first.componentState())?"METADATA":"VALUE_FINDINGS",
             "workBucket",bucket,"whyHereCode",reason(representative),"nextActionCode",next(representative,actor),
+            "requiresReassessment",rows.stream().anyMatch(Row::requiresReassessment),
             "safeLocationLabel","위치 #"+representative.occurrenceId(),"currentCaseId",representative.caseId(),
             "casesByOrigin",cases.stream().map(id->facts("origin",first.origin(),"caseId",id)).toList(),
             "restrictedCoverage",!globalSecurity(actor));
@@ -173,26 +176,30 @@ public class SecretLocationService {
         return facts("occurrenceId",row.occurrenceId(),"connectionId",row.connectionId(),"scopeId",row.scopeId(),
             "source",row.source(),"environment",row.environment(),"origin",row.origin(),"scopeRevision",row.scopeRevision(),
             "safeLocationLabel","위치 #"+row.occurrenceId(),"presence",row.presence(),"exposure",row.exposure(),
-            "storagePolicy",facts("result",row.storagePolicyResult(),"reasonCode","POLICY_EVIDENCE_REQUIRED"),
+            "storagePolicy",facts("result",row.storagePolicyResult(),"reasonCode",row.storagePolicyReason(),
+                "bindingId",row.storageBindingId(),"policyId",row.storagePolicyId(),"version",row.storagePolicyVersion()),
+            "requiresReassessment",row.requiresReassessment(),
             "validity",facts("result",validity,"reasonCode",safeReason(row.validationReason()),"observedAt",text(row.validationAt())),
             "coverage",coverage,
             "fixtureStatus","TEST".equals(row.origin())?null:"NOT_APPLICABLE",
             "fixtureReasonCode","ATTESTATION_EVIDENCE_REQUIRED",
             "caseId",row.caseId(),"actionStatus",row.actionStatus(),"assignedUserId",row.assignedUserId(),
             "occurrenceVersion",row.occurrenceVersion(),"caseVersion",row.caseVersion(),"facts",visibleFacts,
-            "caseLinkStatus",row.caseId()!=null?"LINKED":("ABNORMAL".equals(row.exposure())?"NEEDS_CASE_LINK":
-                ("METADATA_ONLY".equals(row.componentState())?"NOT_REQUIRED":"NEEDS_DECISION")),
+            "caseLinkStatus",row.caseId()!=null?"LINKED":(row.requiresReassessment()?"NEEDS_DECISION":("ABNORMAL".equals(row.exposure())?"NEEDS_CASE_LINK":
+                ("METADATA_ONLY".equals(row.componentState())?"NOT_REQUIRED":"NEEDS_DECISION"))),
             "whyHereCode",reason(row),"nextActionCode",next(row,actor),
             "locationAbsenceCheck",facts("status","UNKNOWN","reasonCode","POST_ACTION_EVIDENCE_REQUIRED"),
             "credentialLifecycleCheck",facts("status","UNKNOWN","reasonCode","LIFECYCLE_EVIDENCE_REQUIRED"),
             "coverageCheck",facts("status",complete?"PASSED":"UNKNOWN","reasonCode",complete?"CURRENT_SCOPE_OBSERVED":"CURRENT_SCOPE_CHECK_REQUIRED"),
             "firstSeenAt",text(row.firstSeenAt()),"lastSeenAt",text(row.lastSeenAt()),
             "capabilities",facts("canReview",review&&"CONFIRMED".equals(row.componentState()),"canViewCase",row.caseId()!=null,
-                "canRecordAction",false,"canRequestRevalidation",false,"canViewCoverage",true,"canOpenSafeSource",false));
+                "canRecordAction",false,"canRequestRevalidation",false,"canViewCoverage",access.canReadConnectionFacts(actor,row.connectionId()),
+                "canOpenSafeSource",false));
     }
 
     private String next(Row row,SecretPrincipal actor) {
         if("METADATA_ONLY".equals(row.componentState())) return "VIEW_METADATA";
+        if(row.requiresReassessment() && access.hasConnectionRole(actor,row.connectionId(),SecretRole.SECURITY)) return "REVIEW_EVIDENCE";
         if(row.caseId()!=null) return "VIEW_CASE";
         if(access.hasConnectionRole(actor,row.connectionId(),SecretRole.SECURITY))
             return "ABNORMAL".equals(row.exposure())?"LINK_CASE":"REVIEW_EVIDENCE";
@@ -200,6 +207,7 @@ public class SecretLocationService {
     }
     private static String reason(Row row) {
         if("METADATA_ONLY".equals(row.componentState())) return "ACCESS_KEY_METADATA";
+        if(row.requiresReassessment()) return "POLICY_REVIEW_REQUIRED";
         if("CANDIDATE".equals(row.componentState())) return "INCOMPLETE_CREDENTIAL";
         if("ABNORMAL".equals(row.exposure())) return row.caseId()==null?"CASE_LINK_REQUIRED":"EXPOSURE_CONFIRMED";
         if("UNKNOWN".equals(row.presence())) return "COVERAGE_GAP";
@@ -207,8 +215,9 @@ public class SecretLocationService {
     }
     private static String bucket(Row row) {
         if("METADATA_ONLY".equals(row.componentState())) return "INVENTORY";
+        if(row.requiresReassessment()) return "NEEDS_DECISION";
         if("ABNORMAL".equals(row.exposure())) return row.caseId()==null?"NEEDS_CASE_LINK":"ACTION_REQUIRED";
-        if("NORMAL".equals(row.exposure())&&"ALLOWED".equals(row.storagePolicyResult())) return "NORMAL_INVENTORY";
+        if("NORMAL".equals(row.exposure())&&"ALLOWED".equals(row.storagePolicyResult())&&!row.requiresReassessment()) return "NORMAL_INVENTORY";
         return "NEEDS_DECISION";
     }
     private static boolean matchesWorkBucket(List<Row> rows,String filter) {
