@@ -128,6 +128,11 @@ class SecretJobRepository {
                     finished_at = ?
                 WHERE run_id = ?
                 """, resultStatus, resultStatus, now, row.runId());
+        if(Boolean.TRUE.equals(jdbc.queryForObject("SELECT to_regprocedure('secret_apply_storage_policy_defaults(bigint)') IS NOT NULL",Boolean.class))) {
+            jdbc.queryForObject("SELECT secret_apply_storage_policy_defaults(?)",Object.class,row.runId());
+        }
+        new com.logssey.secretworker.evidence.TrustedFixtureComparator(jdbc).compareRun(row.runId(),now);
+        jdbc.queryForObject("SELECT secret_reconcile_test_alerts(?)",Long.class,row.runId());
         finishRevalidation(row, now);
         updateLastCollectionSuccess(row);
     }

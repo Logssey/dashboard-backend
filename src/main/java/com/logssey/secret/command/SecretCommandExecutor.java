@@ -21,7 +21,14 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 public class SecretCommandExecutor {
     public enum Kind {
-        MANUAL_SCAN("RUN", "MANUAL_SCAN_REGISTERED");
+        MANUAL_SCAN("RUN", "MANUAL_SCAN_REGISTERED"),
+        INVESTIGATION_ASSIGN("INVESTIGATION", "INVESTIGATION_ASSIGNED"),
+        INVESTIGATION_EVIDENCE("INVESTIGATION", "INVESTIGATION_EVIDENCE_ADDED"),
+        INVESTIGATION_CLOSE("INVESTIGATION", "INVESTIGATION_CLOSED"),
+        FIXTURE_ATTEST("FIXTURE_ATTESTATION", "FIXTURE_ATTESTED"),
+        CROSS_ALERT_ASSIGN("CROSS_ALERT", "CROSS_ALERT_ASSIGNED"),
+        CROSS_ALERT_ACK("CROSS_ALERT", "CROSS_ALERT_ACKNOWLEDGED"),
+        CROSS_ALERT_CLOSE("CROSS_ALERT", "CROSS_ALERT_CLOSED");
 
         private final String targetType;
         private final String auditEvent;
