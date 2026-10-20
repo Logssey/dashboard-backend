@@ -49,6 +49,7 @@ class SecretStoragePolicyIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired SecretStoragePolicyService service;
     @Autowired WebApplicationContext context;
+    @Autowired com.logssey.secret.query.SecretLocationService locations;
     long creator,reviewer,operator,connection,scope,occurrence;
 
     @BeforeEach void fixture() {
@@ -179,6 +180,22 @@ class SecretStoragePolicyIntegrationTest {
         assertThat(service.evaluateOccurrence(occurrence,"policy-creator").policyResult()).isEqualTo("UNKNOWN");
     }
 
+    @Test void snapshotsExpireAtPolicyDeadlineAndPolicyChangesInvalidateVisibleLocations() {
+        var until=now().plusMinutes(5);
+        var draft=service.draft(new DraftRequest(null,null,"AUTHORIZED_STORAGE","TICKET:SEC-123",now().minusHours(1),until,draft("ALLOW").rules()),"policy-creator");
+        var active=service.approvePolicy(draft.policyId(),1,new VersionRequest(1L),"policy-reviewer"); bind(active);
+        var filters=new com.logssey.secret.query.SecretInventoryFilters("PRODUCTION","ALL","ALL","ALL","VALUE_FINDINGS","ALL","ALL","ALL","ALL");
+        var inventory=locations.inventory("policy-creator",filters,0,20,null);
+        assertThat(inventory.get("expiresAt")).isEqualTo(until);
+        String snapshot=inventory.get("snapshotId").toString();
+        long secret=jdbc.queryForObject("SELECT credential_set_id FROM secret_occurrences WHERE occurrence_id=?",Long.class,occurrence);
+        var detail=locations.locations("policy-creator",secret,filters,0,20,"ALL","ALL","ALL",null);
+        String version=(String)detail.get("detailVersion");
+        service.retire(active.policyId(),new RetireRequest(1L,"POLICY_WITHDRAWN","TICKET:SEC-123"),"policy-reviewer");
+        assertCode(ErrorCode.CONFLICT,()->locations.inventory("policy-creator",filters,0,20,snapshot));
+        assertCode(ErrorCode.CONFLICT,()->locations.locations("policy-creator",secret,filters,0,20,"ALL","ALL","ALL",version));
+    }
+
     @Test void auditFailureRollsBackClassificationBindingProposalAndImpactsTogether() {
         var policy=activate("ALLOW");
         var proposed=service.propose(scope,new ProposalRequest("PRODUCTION",policy.policyId(),1L,"SOURCE_CLASSIFICATION","TICKET:SEC-123",0L),"policy-operator");
@@ -286,6 +303,24 @@ class SecretStoragePolicyIntegrationTest {
         jdbc.update("UPDATE secret_connection_scopes SET content_type='IAM_ACCESS_KEY_METADATA' WHERE scope_id=?",scope);
         assertCode(ErrorCode.INVALID_INPUT,()->service.draft(draft("ALLOW"),"policy-creator"));
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM secret_storage_policies",Long.class)).isZero();
+    }
+
+    @Test void legacyClassificationIsPreservedWithoutInventingIndependentApproval() {
+        jdbc.update("UPDATE secret_connection_scopes SET response_origin='PRODUCTION',response_origin_version=1,response_origin_set_by_user_id=?,response_origin_set_at=now() WHERE scope_id=?",creator,scope);
+        jdbc.update("""
+                INSERT INTO secret_scope_origin_decisions(scope_id,from_origin,to_origin,reason_code,actor_user_id,version)
+                VALUES (?,'UNCLASSIFIED','PRODUCTION','APPROVED_PRODUCTION_SOURCE',?,1)
+                """,scope,creator);
+        var legacy=service.classification(scope,"policy-reviewer");
+        assertThat(legacy.origin()).isEqualTo("PRODUCTION");
+        assertThat(legacy.approvalStatus()).isEqualTo("LEGACY_REVIEW_REQUIRED");
+        assertThat(legacy.history()).singleElement().satisfies(decision->assertThat(decision.decision()).isEqualTo("LEGACY"));
+        assertThat(legacy.approvedByUserId()).isNull();
+        var proposed=service.propose(scope,new ProposalRequest("TEST",null,null,"POLICY_PENDING","TICKET:SEC-123",1L),"policy-operator");
+        var corrected=service.approveProposal(scope,proposed.pendingProposal().proposalId(),new ApproveProposalRequest(1L,1L),"policy-reviewer");
+        assertThat(corrected.originVersion()).isEqualTo(2);
+        assertThat(corrected.history()).hasSize(2);
+        assertThat(corrected.history().get(1).decision()).isEqualTo("LEGACY");
     }
 
     private String attemptApprove(long id) {

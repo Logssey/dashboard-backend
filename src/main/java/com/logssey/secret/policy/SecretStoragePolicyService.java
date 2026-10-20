@@ -2,7 +2,6 @@ package com.logssey.secret.policy;
 
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -17,7 +16,6 @@ import com.logssey.secret.command.SecretCommandExecutor;
 import com.logssey.secret.policy.SecretPolicyContracts.*;
 import com.logssey.secret.policy.SecretPolicyRepository.*;
 
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,15 +29,18 @@ public class SecretStoragePolicyService {
             "AWS_SECRETS_MANAGER_METADATA","AWS_SSM_PARAMETER_METADATA","AWS_S3_BUCKET_METADATA");
     private static final Pattern EVIDENCE=Pattern.compile("^((TICKET|CHANGE):[A-Z]{2,10}-[1-9][0-9]{0,9}|POLICY:SECRET-[1-9][0-9]{0,9})$");
     private static final Pattern GITHUB=Pattern.compile("^github://([A-Za-z0-9-]{1,39})/([A-Za-z0-9_.-]{1,100})/([^/?#]+)/(.+/)$");
-    private static final Pattern SENSITIVE_VALUE=Pattern.compile(".*(?:AKIA[A-Z0-9]{16}|ASIA[A-Z0-9]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}).*");
+    private static final Pattern SENSITIVE_VALUE=Pattern.compile(".*(?:AKIA[A-Z0-9]{16}|ASIA[A-Z0-9]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|(?:secret_|ntn_)[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AIza[A-Za-z0-9_-]{30,}).*");
     private final org.springframework.jdbc.core.JdbcTemplate jdbc;
     private final SecretPolicyRepository repository;
     private final SecretAccessService access;
+    private final com.logssey.secret.snapshot.SecretReadSnapshots snapshots;
 
-    SecretStoragePolicyService(SecretPolicyRepository repository,SecretAccessService access,org.springframework.jdbc.core.JdbcTemplate jdbc) {
+    SecretStoragePolicyService(SecretPolicyRepository repository,SecretAccessService access,org.springframework.jdbc.core.JdbcTemplate jdbc,
+                                com.logssey.secret.snapshot.SecretReadSnapshots snapshots) {
         this.jdbc=jdbc;
         this.repository=repository;
         this.access=access;
+        this.snapshots=snapshots;
     }
 
     @Transactional(readOnly=true)
@@ -272,6 +273,10 @@ public class SecretStoragePolicyService {
                 WHERE o.scope_id=?
                 """,decisionId,scope.origin(),proposal.origin(),scopeId);
         repository.audit("CLASSIFICATION_APPROVED","SCOPE",scopeId,next,actor.userId());
+        snapshots.invalidateScope(scopeId);
+        // The optional investigation module reconciles newly classified TEST findings in this transaction.
+        if (jdbc.queryForObject("SELECT to_regprocedure('secret_reconcile_test_alerts(bigint)')::text",String.class)!=null)
+            jdbc.query("SELECT secret_reconcile_test_alerts(NULL::bigint)",(rs,row)->rs.getObject(1));
         return classification(scope(scopeId,false),actor,true);
     }
 
@@ -336,12 +341,13 @@ public class SecretStoragePolicyService {
         var rules=repository.rules(policy.id(),policy.version());
         boolean security=!rules.isEmpty() && rules.stream().allMatch(r->access.hasConnectionRole(actor,r.connectionId(),SecretRole.SECURITY));
         boolean independent=policy.creator()!=actor.userId();
+        boolean hasDraft=Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM secret_storage_policies WHERE policy_id=? AND status='DRAFT')",Boolean.class,policy.id()));
         return new PolicySummary(policy.id(),policy.version(),policy.status(),policy.reason(),policy.evidence(),policy.creator(),
                 policy.approver(),policy.createdAt(),policy.validFrom(),policy.validUntil(),policy.approvedAt(),policy.retiredAt(),
                 policy.usable(repository.now()),rules.stream().filter(r->access.hasConnectionRole(actor,r.connectionId(),SecretRole.SECURITY)
                         || access.hasConnectionRole(actor,r.connectionId(),SecretRole.OPERATIONS)).map(Rule::safe).toList(),new PolicyCapabilities(
-                security && independent && "DRAFT".equals(policy.status()),security && independent && "ACTIVE".equals(policy.status()),
-                security),changed);
+                security && independent && "DRAFT".equals(policy.status()) && (policy.validUntil()==null || repository.now().isBefore(policy.validUntil())),
+                security && independent && "ACTIVE".equals(policy.status()),security && !hasDraft),changed);
     }
 
     private void validateRule(SecretPrincipal actor,Scope scope,RuleRequest rule) {
@@ -398,6 +404,8 @@ public class SecretStoragePolicyService {
                 WHERE o.exposure_status<>'UNKNOWN' AND EXISTS (SELECT 1 FROM secret_scope_policy_bindings b
                     WHERE b.scope_id=o.scope_id AND b.policy_id=? AND b.effective_until IS NULL)
                 """,id);
+        jdbc.query("SELECT scope_id FROM secret_scope_policy_bindings WHERE policy_id=? AND effective_until IS NULL",
+                (rs,row)->rs.getLong(1),id).forEach(snapshots::invalidateScope);
     }
     private long recordDecision(Scope scope,ProposalState proposal,String decision,String reason,long actor,long version) {
         return jdbc.queryForObject("""

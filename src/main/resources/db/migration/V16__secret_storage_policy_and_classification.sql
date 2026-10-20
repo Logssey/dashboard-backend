@@ -173,7 +173,8 @@ WITH scope_basis AS (
     ) rules ON true
 ), evaluated AS (
     SELECT matched.*,
-       CASE WHEN binding_id IS NULL THEN 'NO_ACTIVE_BINDING'
+       CASE WHEN content_type IN ('IAM_ACCESS_KEY_METADATA','AWS_SECRETS_MANAGER_METADATA','AWS_SSM_PARAMETER_METADATA','AWS_S3_BUCKET_METADATA') THEN 'METADATA_NOT_APPLICABLE'
+            WHEN binding_id IS NULL THEN 'NO_ACTIVE_BINDING'
             WHEN NOT enabled OR response_origin='UNCLASSIFIED' THEN 'SCOPE_NOT_APPROVED'
             WHEN bound_revision<>revision OR bound_origin_version<>response_origin_version OR bound_fingerprint<>fingerprint THEN 'SCOPE_CHANGED'
             WHEN status<>'ACTIVE' THEN 'POLICY_RETIRED'

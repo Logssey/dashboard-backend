@@ -31,11 +31,14 @@ public class SecretLocationRepository {
                        current_case.assigned_user_id, current_case.assigned_team,
                        latest.result AS validation_result, latest.reason_code AS validation_reason,
                        latest.completed_at AS validation_at, latest.provider_checked_at AS validation_checked_at,
-                       coalesce(to_jsonb(o)->>'storage_policy_result','UNKNOWN') AS storage_policy_result
+                       policy.policy_result AS storage_policy_result,policy.reason_code AS storage_policy_reason,
+                       policy.binding_id AS storage_binding_id,policy.policy_id AS storage_policy_id,
+                       policy.policy_version AS storage_policy_version,policy.requires_reassessment
                 FROM secret_occurrences o
                 JOIN secret_credential_sets c ON c.credential_set_id=o.credential_set_id
                 JOIN secret_connections conn ON conn.connection_id=o.connection_id
                 JOIN secret_connection_scopes s ON s.scope_id=o.scope_id AND s.connection_id=o.connection_id
+                JOIN secret_occurrence_policy_results policy ON policy.occurrence_id=o.occurrence_id
                 LEFT JOIN LATERAL (
                     SELECT outcome.scope_outcome,outcome.requested_at FROM secret_scope_outcomes outcome
                     WHERE outcome.scope_id=s.scope_id AND outcome.scope_revision=s.revision
@@ -89,7 +92,9 @@ public class SecretLocationRepository {
                 rs.getObject("case_version",Long.class),rs.getObject("assigned_user_id",Long.class),
                 rs.getString("validation_result"),rs.getString("validation_reason"),
                 rs.getObject("validation_at",OffsetDateTime.class),rs.getObject("validation_checked_at",OffsetDateTime.class),
-                rs.getString("storage_policy_result")));
+                rs.getString("storage_policy_result"),rs.getString("storage_policy_reason"),
+                rs.getObject("storage_binding_id",Long.class),rs.getObject("storage_policy_id",Long.class),
+                rs.getObject("storage_policy_version",Long.class),rs.getBoolean("requires_reassessment")));
     }
 
     private Map<String,Object> parameters(long userId,Long id,SecretInventoryFilters filters) {
@@ -118,5 +123,6 @@ public class SecretLocationRepository {
         String presence,OffsetDateTime firstSeenAt,OffsetDateTime lastSeenAt,OffsetDateTime lastCompleteCoverageAt,
         long occurrenceVersion,long scopeRevision,Long caseId,String actionStatus,Long caseVersion,Long assignedUserId,
         String validity,String validationReason,OffsetDateTime validationAt,OffsetDateTime validationCheckedAt,
-        String storagePolicyResult) {}
+        String storagePolicyResult,String storagePolicyReason,Long storageBindingId,Long storagePolicyId,
+        Long storagePolicyVersion,boolean requiresReassessment) {}
 }

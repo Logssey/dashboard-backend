@@ -60,8 +60,27 @@ public class SecretReadSnapshots {
                     ORDER BY created_at DESC, snapshot_id DESC OFFSET 4)
                 """, userId);
         UUID id = UUID.randomUUID();
-        OffsetDateTime asOf = OffsetDateTime.now(ZoneOffset.UTC);
+        OffsetDateTime asOf = jdbc.queryForObject("SELECT CURRENT_TIMESTAMP",OffsetDateTime.class);
         OffsetDateTime expires = asOf.plusMinutes(15);
+        // A snapshot must expire when a policy on one of its already-visible members changes validity.
+        // Do not use hidden occurrences or a global activity counter to choose this boundary.
+        var visibleIds=subjects.stream().flatMap(subject->subject.visibleOccurrenceIds().stream()).distinct().toList();
+        if(!visibleIds.isEmpty()) {
+            var deadline=new NamedParameterJdbcTemplate(jdbc).queryForObject("""
+                    SELECT MIN(deadline) FROM (
+                        SELECT p.valid_until AS deadline
+                        FROM secret_occurrences o JOIN secret_scope_policy_bindings b ON b.scope_id=o.scope_id AND b.effective_until IS NULL
+                        JOIN secret_storage_policies p ON p.policy_id=b.policy_id AND p.version=b.policy_version
+                        WHERE o.occurrence_id IN (:ids) AND p.status='ACTIVE' AND p.valid_until>now()
+                        UNION ALL
+                        SELECT p.valid_from AS deadline
+                        FROM secret_occurrences o JOIN secret_scope_policy_bindings b ON b.scope_id=o.scope_id AND b.effective_until IS NULL
+                        JOIN secret_storage_policies p ON p.policy_id=b.policy_id AND p.version=b.policy_version
+                        WHERE o.occurrence_id IN (:ids) AND p.status='ACTIVE' AND p.valid_from>now()
+                    ) boundaries
+                    """,Map.of("ids",visibleIds),OffsetDateTime.class);
+            if(deadline!=null && deadline.isBefore(expires)) expires=deadline;
+        }
         String canonical = canonicalFilters(filters);
         jdbc.update("""
                 INSERT INTO secret_query_snapshots(snapshot_id,scope,owner_user_id,case_origin,as_of,
