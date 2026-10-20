@@ -42,11 +42,15 @@ public class AnalysisEngine {
                          String roleId) {
     }
 
-    public record Result(List<Change> changes, String verdict, String highestSeverity,
+    /** ③ State 영향. 읽기 주체가 늘면 state.reader_increase (경고·HIGH, rule-spec). */
+    public record State(String ruleId, String severity, int readersBefore, int readersAfter, int secretsAdded) {
+    }
+
+    public record Result(List<Change> changes, State state, String verdict, String highestSeverity,
                          Map<String, Integer> resources) {
     }
 
-    public Result analyze(GraphSnapshot graph, JsonNode plan) {
+    public Result analyze(GraphSnapshot graph, JsonNode plan, Set<String> tfstateArns) {
         var changes = PlanChanges.read(plan, graph);
 
         Map<String, Map<String, Policy>> beforePolicies = new HashMap<>();
@@ -59,6 +63,10 @@ public class AnalysisEngine {
         var beforePaths = PathSearch.find(graph.nodes(), before);
         var afterPaths = PathSearch.find(graph.nodes(), after);
 
+        // 머지 전에 이미 닿던 데이터까지의 가장 짧은 길이
+        Map<String, Integer> shortestBefore = new HashMap<>();
+        beforePaths.values().forEach(p -> shortestBefore.merge(p.target().id(), p.edges().size(), Math::min));
+
         List<Change> result = new ArrayList<>();
         for (var entry : afterPaths.entrySet()) {
             if (beforePaths.containsKey(entry.getKey())) continue;
@@ -69,7 +77,12 @@ public class AnalysisEngine {
             String roleId = credentialRole(path);
             var evidence = MAPPER.createObjectNode();
             if (cause != null) evidence.put("causeAction", cause.action());
-            if (tier == 1) {
+            Integer shortest = shortestBefore.get(path.target().id());
+            if (shortest != null && path.edges().size() < shortest) {
+                // 이미 닿던 데이터까지 더 짧은 길이 생김: 새 노출이 아니라 단축 (rule-spec path.shortened)
+                result.add(new Change("SHORTENED", "path.shortened", tier, "MEDIUM", "WARN", entry.getKey(),
+                        path.hops(), cause, evidence, roleId));
+            } else if (tier == 1) {
                 // 1등급 차단은 시뮬레이터가 허용을 확인했을 때만. 아니면 경고·HIGH 로 낮춘다 (rule-spec)
                 String beforeDecision = decide(graph, beforePolicies, roleId, path.target());
                 String afterDecision = decide(graph, changes.rolePolicies(), roleId, path.target());
@@ -91,9 +104,53 @@ public class AnalysisEngine {
             result.add(new Change("REMOVED", "path.removed", path.target().tier(), null, "INFO", entry.getKey(),
                     path.hops(), cause, evidence, credentialRole(path)));
         }
+        List<String> order = List.of("ADDED", "SHORTENED", "REMOVED");
         result.sort((a, b) -> a.change().equals(b.change())
-                ? Integer.compare(a.tier(), b.tier()) : a.change().compareTo(b.change()));
-        return new Result(result, verdict(result), highest(result), changes.resources());
+                ? Integer.compare(a.tier(), b.tier()) : Integer.compare(order.indexOf(a.change()), order.indexOf(b.change())));
+
+        int readersBefore = readers(graph, before, tfstateArns);
+        int readersAfter = readers(graph, after, tfstateArns);
+        boolean increased = readersAfter > readersBefore;
+        var state = new State(increased ? "state.reader_increase" : null, increased ? "HIGH" : null,
+                readersBefore, readersAfter, secretsAdded(plan));
+
+        String verdict = verdict(result);
+        if (increased && (verdict.equals("PASS") || verdict.equals("INFO"))) verdict = "WARN";
+        String highest = highest(result);
+        if (increased && (highest == null || !highest.equals("CRITICAL"))) highest = "HIGH";
+        return new Result(result, state, verdict, highest, changes.resources());
+    }
+
+    /** tfstate 버킷을 읽을 수 있는 서로 다른 주체 수. */
+    private static int readers(GraphSnapshot graph, List<GraphSnapshot.Edge> edges, Set<String> tfstateArns) {
+        Set<String> readers = new java.util.HashSet<>();
+        for (var edge : edges) {
+            var target = graph.nodes().get(edge.to());
+            if (edge.type().equals("CAN_READ") && target != null && tfstateArns.contains(target.arn())) {
+                readers.add(edge.from());
+            }
+        }
+        return readers.size();
+    }
+
+    /** State 에 새로 들어가는 민감값이 있는 리소스 수 (생성·변경 뒤 sensitive 표시가 생기는 것). */
+    private static int secretsAdded(JsonNode plan) {
+        int count = 0;
+        for (JsonNode resource : plan.path("resource_changes")) {
+            var change = resource.path("change");
+            var actions = change.path("actions").toString();
+            if (!actions.contains("create") && !actions.contains("update")) continue;
+            if (hasTrue(change.path("after_sensitive")) && !hasTrue(change.path("before_sensitive"))) count++;
+        }
+        return count;
+    }
+
+    private static boolean hasTrue(JsonNode marker) {
+        if (marker.isBoolean()) return marker.asBoolean();
+        for (JsonNode child : marker) {
+            if (hasTrue(child)) return true;
+        }
+        return false;
     }
 
     /** 경로 관계. 바뀐 인스턴스의 자격 증명과 바뀐 역할의 등급 데이터 읽기 권한만 다시 계산한다. */

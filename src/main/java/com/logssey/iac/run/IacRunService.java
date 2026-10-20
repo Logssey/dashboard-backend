@@ -43,6 +43,10 @@ public class IacRunService {
     public IacRunCreatedResponse register(IacRunRequest request, String loginId) {
         return Objects.requireNonNull(transaction.execute(status -> {
             long actor = requireAdmin(loginId);
+            if (request.isPush() == (request.prNumber() != null)) {
+                // PR 은 번호가 있어야 하고, main 점검은 번호가 없어야 한다
+                throw new ApiException(ErrorCode.INVALID_INPUT);
+            }
             var repo = repository.enabledRepo(request.repo()).orElseThrow(() -> new ApiException(ErrorCode.FORBIDDEN));
             var findings = gateFindings(request);
             boolean blocked = "BLOCKED".equals(request.gate().status())
@@ -53,8 +57,9 @@ public class IacRunService {
             repository.lockPullRequest(repo.repoId(), request.prNumber());
             OffsetDateTime now = repository.databaseNow();
             String runStatus = blocked ? "GATE_FAILED" : "PLANNING";
-            long runId = repository.insertRun(repo.repoId(), request.prNumber(), request.headSha(), runStatus,
-                    blocked ? "BLOCK" : null, blocked ? highest : null, actor, blocked ? now : null);
+            long runId = repository.insertRun(repo.repoId(), request.prNumber(), request.headSha(),
+                    request.isPush() ? "PUSH" : "PR", runStatus, blocked ? "BLOCK" : null, blocked ? highest : null,
+                    actor, blocked ? now : null);
             repository.supersede(repo.repoId(), request.prNumber(), runId);
 
             for (var entry : findings.entrySet()) {
@@ -87,7 +92,7 @@ public class IacRunService {
             }
             repository.storePlan(runId, gzip, repository.databaseNow().plus(PLAN_TTL));
             repository.markAnalyzing(runId);
-            repository.enqueueAnalysis(runId, actor);
+            repository.enqueueAnalysis(runId, "PUSH".equals(run.trigger()), actor);
             repository.audit(actor, "RUN", runId, "PLAN_UPLOADED", "{\"sizeBytes\":" + gzip.length + "}");
             return new IacPlanAcceptedResponse(runId, "ANALYZING");
         }));
@@ -98,7 +103,7 @@ public class IacRunService {
         return repository.status(runId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
     }
 
-    /** 지문 → 발견 건. 지문은 규칙 + 대상 + 레포 + PR 번호 (설계 지문 규칙). */
+    /** 지문 → 발견 건. 지문은 규칙 + 대상 + 레포 + PR 번호, main 점검은 PR 번호 대신 MAIN (설계 지문 규칙). */
     private Map<String, GateFinding> gateFindings(IacRunRequest request) {
         Map<String, GateFinding> findings = new LinkedHashMap<>();
         for (var finding : request.gate().findings()) {
@@ -112,7 +117,7 @@ public class IacRunService {
             int colon = text.indexOf(": ");
             String address = colon < 0 ? null : text.substring(colon + 2);
             String fingerprint = sha256(rule.ruleId() + "\n" + Objects.toString(address, "") + "\n"
-                    + request.repo() + "\n" + request.prNumber());
+                    + request.repo() + "\n" + (request.isPush() ? "MAIN" : request.prNumber()));
             findings.putIfAbsent(fingerprint, new GateFinding(rule, address));
         }
         return findings;

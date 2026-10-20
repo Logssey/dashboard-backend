@@ -3,6 +3,7 @@ package com.logssey.iacworker.analysis;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.zip.GZIPInputStream;
@@ -53,7 +54,7 @@ public class AnalyzeRunProcessor implements IacJobProcessor {
 
         AnalysisEngine.Result result;
         try {
-            result = engine.analyze(loader.load(), plan);
+            result = engine.analyze(loader.load(), plan, repository.tfstateArns());
         } catch (Neo4jException e) {
             throw new IacJobFailure(IacJobFailureCode.GRAPH_UNAVAILABLE, true);
         } catch (SdkException e) {
@@ -61,21 +62,28 @@ public class AnalyzeRunProcessor implements IacJobProcessor {
         }
 
         long added = result.changes().stream().filter(c -> c.change().equals("ADDED")).count();
+        long shortened = result.changes().stream().filter(c -> c.change().equals("SHORTENED")).count();
         var removed = result.changes().stream().filter(c -> c.change().equals("REMOVED")).toList();
         Map<String, Object> stats = new LinkedHashMap<>();
         stats.put("resources", result.resources());
-        stats.put("paths", Map.of("added", added, "removed", removed.size(),
+        stats.put("paths", Map.of("added", added, "shortened", shortened, "removed", removed.size(),
                 // 같은 자격 증명(역할)으로 이어지는 경로들을 한 갈래로 센다 (화면의 "경로 −N")
                 "removedRoutes", removed.stream().map(AnalysisEngine.Change::roleId).filter(Objects::nonNull)
                         .distinct().count()));
+        stats.put("state", result.state());
         stats.put("verdict", result.verdict());
 
         boolean written = execution.persistIfLeased(job.jobId(), job.leaseToken(), () -> {
             repository.clearChanges(runId);
+            List<String> findings = new java.util.ArrayList<>();
             for (var change : result.changes()) {
                 repository.insertChange(runId, change, mapper.writeValueAsString(change.hops()),
                         mapper.writeValueAsString(change.evidence()));
+                if (!change.change().equals("REMOVED")) {
+                    findings.add(repository.upsertPathFinding(runId, change));
+                }
             }
+            repository.fixMissingPathFindings(runId, findings);
             repository.finishRun(runId, result.verdict(), result.highestSeverity(), repository.graphAsOf());
             String json = mapper.writeValueAsString(stats);
             repository.jobStats(job.jobId(), json);

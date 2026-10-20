@@ -30,24 +30,28 @@ public class IacJobRepository {
                 """, Long.class, actor, status, startedAt, statsJson, startedAt, finishedAt);
     }
 
-    /** 대기·진행 중인 보강 작업이 있으면 그것을, 없으면 새로 등록한 작업을 돌려준다. */
-    long enqueueEnrichGraphOnce(long actor) {
-        // 한 번에 하나만 기다리게 해 수집이 몰려도 보강이 쌓이지 않게 한다
-        jdbc.query("SELECT pg_advisory_xact_lock(hashtext('iac_enrich_graph'))", rs -> null);
-        return jdbc.query("""
-                SELECT job_id FROM iac_jobs WHERE kind = 'ENRICH_GRAPH' AND status IN ('PENDING', 'LEASED')
-                ORDER BY job_id LIMIT 1
-                """, (rs, row) -> rs.getLong("job_id")).stream().findFirst()
-                .orElseGet(() -> jdbc.queryForObject("""
-                        INSERT INTO iac_jobs (kind, trigger_type, requested_by_user_id)
-                        VALUES ('ENRICH_GRAPH', 'SCHEDULED', ?) RETURNING job_id
-                        """, Long.class, actor));
+    /** 같은 종류의 대기·진행 중인 작업이 있으면 그것을, 없으면 새로 등록한 작업을 돌려준다. */
+    long enqueueOnce(String kind, long actor) {
+        return enqueueOnce(kind, "SCHEDULED", actor);
     }
 
-    void audit(long actor, long jobId, String eventType, String status) {
+    long enqueueOnce(String kind, String trigger, long actor) {
+        // 한 번에 하나만 기다리게 해 수집이 몰려도 작업이 쌓이지 않게 한다
+        jdbc.query("SELECT pg_advisory_xact_lock(hashtext('iac_' || ?))", rs -> null, kind);
+        return jdbc.query("""
+                SELECT job_id FROM iac_jobs WHERE kind = ? AND status IN ('PENDING', 'LEASED')
+                ORDER BY job_id LIMIT 1
+                """, (rs, row) -> rs.getLong("job_id"), kind).stream().findFirst()
+                .orElseGet(() -> jdbc.queryForObject("""
+                        INSERT INTO iac_jobs (kind, trigger_type, requested_by_user_id)
+                        VALUES (?, ?, ?) RETURNING job_id
+                        """, Long.class, kind, trigger, actor));
+    }
+
+    void audit(long actor, long jobId, String eventType, String key, String value) {
         jdbc.update("""
                 INSERT INTO iac_audit_events (actor_kind, actor_user_id, entity_type, entity_id, event_type, after_safe)
-                VALUES ('USER', ?, 'JOB', ?, ?, jsonb_build_object('status', ?::text))
-                """, actor, jobId, eventType, status);
+                VALUES ('USER', ?, 'JOB', ?, ?, jsonb_build_object(?::text, ?::text))
+                """, actor, jobId, eventType, key, value);
     }
 }

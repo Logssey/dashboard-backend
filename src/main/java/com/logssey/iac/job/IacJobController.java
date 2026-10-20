@@ -20,6 +20,12 @@ public class IacJobController {
         this.service = service;
     }
 
+    @PostMapping("/{job}/trigger")
+    public ResponseEntity<JobTriggeredResponse> trigger(@org.springframework.web.bind.annotation.PathVariable String job,
+                                                        Authentication authentication) {
+        return ResponseEntity.accepted().body(service.trigger(job, authentication == null ? null : authentication.getName()));
+    }
+
     @PostMapping("/collect-graph/runs")
     public ResponseEntity<CollectGraphRunResponse> recordCollectGraph(@Valid @RequestBody CollectGraphRunRequest request,
                                                                       Authentication authentication) {

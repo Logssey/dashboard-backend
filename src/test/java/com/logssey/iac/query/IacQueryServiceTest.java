@@ -71,13 +71,19 @@ class IacQueryServiceTest {
         finding("fp-daily", "MEDIUM", null, daily);
         finding("fp-pr", "CRITICAL", run, null);
         job("COLLECT_GRAPH", "SUCCEEDED", "now() - interval '30 hours'");
+        jdbc.update("""
+                INSERT INTO iac_findings (rule_id, source, enforcement, severity, environment, resource_address, params,
+                                          fingerprint, last_job_id, first_seen_at, last_seen_at)
+                VALUES ('drift.high', 'DRIFT', 'WARN', 'HIGH', 'PROD', 'module.edge.aws_route53_record.grafana["A"]',
+                        '{"action":"update","attributes":["alias"]}', 'drift-dns', ?, now(), now())
+                """, daily);
 
         var summary = service.summary("admin");
 
         assertThat(summary.metrics().tier1OpenPaths()).isEqualTo(2);
         assertThat(summary.metrics().openPaths()).isEqualTo(3);
-        assertThat(summary.metrics().drifts()).isNull();
-        assertThat(summary.severityCounts()).containsEntry("CRITICAL", 2L).containsEntry("HIGH", 1L)
+        assertThat(summary.metrics().drifts()).isEqualTo(1);
+        assertThat(summary.severityCounts()).containsEntry("CRITICAL", 2L).containsEntry("HIGH", 2L)
                 .containsEntry("MEDIUM", 1L).containsEntry("LOW", 0L);
         assertThat(summary.lastFullCheckAt()).isNotNull();
         assertThat(summary.graphStale()).isTrue();
@@ -118,7 +124,9 @@ class IacQueryServiceTest {
                        (?, 'REMOVED', 'path.removed', 'old-path', 2, NULL, ?::jsonb, NULL, NULL)
                 """, latest, HOPS, latest, HOPS);
         jdbc.update("INSERT INTO iac_jobs (kind, trigger_type, run_id, status, stats) "
-                + "VALUES ('ANALYZE_RUN', 'PR', ?, 'SUCCEEDED', '{\"resources\":{\"add\":0,\"change\":0,\"delete\":1}}')", latest);
+                + "VALUES ('ANALYZE_RUN', 'PR', ?, 'SUCCEEDED', '{\"resources\":{\"add\":0,\"change\":0,\"delete\":1},"
+                + "\"state\":{\"ruleId\":\"state.reader_increase\",\"severity\":\"HIGH\",\"readersBefore\":5,"
+                + "\"readersAfter\":6,\"secretsAdded\":0}}')", latest);
 
         var pr = service.pullRequest(58, null, "admin");
         assertThat(pr.runId()).isEqualTo(latest);
@@ -128,6 +136,7 @@ class IacQueryServiceTest {
         assertThat(pr.paths().getFirst().cause().action()).isEqualTo("DELETE");
         assertThat(pr.paths().getFirst().evidence().has("causeAction")).isFalse();
         assertThat(pr.resources().get("delete").asInt()).isEqualTo(1);
+        assertThat(pr.state().get("readersAfter").asInt()).isEqualTo(6);
 
         // 같은 응답이 계약 모양으로 직렬화되는지
         var mvc = MockMvcBuilders.standaloneSetup(new IacQueryController(service))
@@ -139,9 +148,48 @@ class IacQueryServiceTest {
                 .andExpect(jsonPath("$.paths[0].hops[2].name").value("logssey-prod-s3-tfstate"))
                 .andExpect(jsonPath("$.paths[0].evidence.simulator.after").value("allowed"))
                 .andExpect(jsonPath("$.paths[0].cause.address").value("module.iam.aws_iam_role_policy.deny_tfstate"))
-                .andExpect(jsonPath("$.resources.delete").value(1));
+                .andExpect(jsonPath("$.resources.delete").value(1))
+                .andExpect(jsonPath("$.state.ruleId").value("state.reader_increase"))
+                .andExpect(jsonPath("$.state.readersBefore").value(5));
         mvc.perform(get("/api/v1/iac/prs/59").principal(new UsernamePasswordAuthenticationToken("admin", "n/a")))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void driftsListAttributeNamesOnly() {
+        long daily = job("CHECK_DRIFT", "SUCCEEDED", "now()");
+        jdbc.update("""
+                INSERT INTO iac_findings (rule_id, source, enforcement, severity, environment, resource_address, params,
+                                          fingerprint, last_job_id, status, first_seen_at, last_seen_at)
+                VALUES ('drift.medium', 'DRIFT', 'INFO', 'MEDIUM', 'PROD', 'module.rds.aws_db_instance.this',
+                        '{"action":"update","attributes":["allocated_storage"]}', 'drift-db', ?, 'OPEN', now(), now()),
+                       ('drift.high', 'DRIFT', 'WARN', 'HIGH', 'PROD', 'module.edge.aws_route53_record.grafana["A"]',
+                        '{"action":"update","attributes":["alias"]}', 'drift-dns', ?, 'OPEN', now(), now()),
+                       ('drift.low', 'DRIFT', 'INFO', 'LOW', 'PROD', 'module.s3.aws_s3_bucket.x',
+                        '{"action":"update","attributes":["tags"]}', 'drift-old', ?, 'FIXED', now(), now())
+                """, daily, daily, daily);
+        var open = service.drifts("OPEN", "admin");
+        assertThat(open).extracting(IacDriftResponse::ruleId).containsExactly("drift.high", "drift.medium");
+        assertThat(open.getFirst().attributes()).containsExactly("alias");
+        assertThat(service.drifts("FIXED", "admin")).hasSize(1);
+        assertThatThrownBy(() -> service.drifts("BOGUS", "admin"))
+                .satisfies(e -> assertThat(((ApiException) e).errorCode()).isEqualTo(ErrorCode.INVALID_INPUT));
+    }
+
+    @Test
+    void stateSummaryShowsTheLatestStateCheck() {
+        assertThat(service.stateSummary("admin").checkedAt()).isNull();
+        jdbc.update("""
+                INSERT INTO iac_jobs (kind, trigger_type, status, finished_at, stats) VALUES
+                    ('CHECK_STATE', 'SCHEDULED', 'SUCCEEDED', now() - interval '2 days', '{"readerCount": 5, "tfstate": []}'),
+                    ('CHECK_STATE', 'SCHEDULED', 'SUCCEEDED', now(),
+                     '{"readerCount": 6, "tfstate": [{"arn": "arn:aws:s3:::logssey-prod-s3-tfstate", "name": "logssey-prod-s3-tfstate",
+                       "readers": [{"kind": "AWSUser", "name": "jongmin"}]}]}')
+                """);
+        var state = service.stateSummary("admin");
+        assertThat(state.readerCount()).isEqualTo(6);
+        assertThat(state.tfstate().get(0).get("readers").get(0).get("name").asString()).isEqualTo("jongmin");
+        assertThat(state.sensitiveActual()).isNull();
     }
 
     @Test
@@ -153,6 +201,7 @@ class IacQueryServiceTest {
         assertThat(pr.gate().findings()).extracting(IacPullRequestResponse.GateFinding::address)
                 .containsExactly("data.external.x");
         assertThat(pr.resources()).isNull();
+        assertThat(pr.state()).isNull();
     }
 
     @Test

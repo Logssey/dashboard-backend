@@ -147,6 +147,26 @@ class IacRunServiceTest {
     }
 
     @Test
+    void mainBranchRunsQueueADriftCheckInsteadOfPathAnalysis() {
+        var push = service.register(new IacRunRequest(REPO, null, SHA_1, new IacRunRequest.Gate("PASSED", List.of()), "PUSH"), "admin");
+        service.uploadPlan(push.runId(), gzipResource("plan-scrubbed.json"), "admin");
+        assertThat(jdbc.queryForObject("SELECT trigger_type || '/' || coalesce(pr_number::text, '-') FROM iac_runs WHERE run_id = ?",
+                String.class, push.runId())).isEqualTo("PUSH/-");
+        assertThat(jdbc.queryForObject("SELECT kind FROM iac_jobs WHERE run_id = ?", String.class, push.runId()))
+                .isEqualTo("CHECK_DRIFT");
+
+        var next = service.register(new IacRunRequest(REPO, null, SHA_2, new IacRunRequest.Gate("PASSED", List.of()), "PUSH"), "admin");
+        assertThat(jdbc.queryForObject("SELECT status FROM iac_runs WHERE run_id = ?", String.class, push.runId()))
+                .as("다음 main 점검이 이전 점검을 대신함").isEqualTo("SUPERSEDED");
+        assertThat(next.status()).isEqualTo("PLANNING");
+
+        assertThatThrownBy(() -> service.register(new IacRunRequest(REPO, 3, SHA_1, new IacRunRequest.Gate("PASSED", List.of()), "PUSH"), "admin"))
+                .satisfies(e -> assertThat(((ApiException) e).errorCode()).isEqualTo(ErrorCode.INVALID_INPUT));
+        assertThatThrownBy(() -> service.register(new IacRunRequest(REPO, null, SHA_1, new IacRunRequest.Gate("PASSED", List.of())), "admin"))
+                .satisfies(e -> assertThat(((ApiException) e).errorCode()).isEqualTo(ErrorCode.INVALID_INPUT));
+    }
+
+    @Test
     void rejectsUnknownReposRulesAndCallers() {
         assertThatThrownBy(() -> service.register(new IacRunRequest("someone/else", 1, SHA_1,
                 new IacRunRequest.Gate("PASSED", List.of())), "admin"))

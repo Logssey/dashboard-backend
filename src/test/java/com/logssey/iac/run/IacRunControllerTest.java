@@ -8,6 +8,7 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
@@ -41,6 +42,23 @@ class IacRunControllerTest {
                 .andExpect(header().string("Location", "/api/v1/iac/runs/7"))
                 .andExpect(jsonPath("$.runId").value(7))
                 .andExpect(jsonPath("$.status").value("PLANNING"));
+    }
+
+    @Test
+    void readsTheTriggerAndDefaultsToPullRequest() throws Exception {
+        var captor = org.mockito.ArgumentCaptor.forClass(IacRunRequest.class);
+        when(service.register(captor.capture(), eq("admin"))).thenReturn(new IacRunCreatedResponse(8, "PLANNING"));
+        mvc.perform(post("/api/v1/iac/runs").principal(admin).contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"repo":"Logssey/infrastructure","headSha":"%s","trigger":"PUSH",
+                                 "gate":{"status":"PASSED","findings":[]}}
+                                """.formatted("b".repeat(40))))
+                .andExpect(status().isCreated());
+        mvc.perform(post("/api/v1/iac/runs").principal(admin).contentType(MediaType.APPLICATION_JSON)
+                        .content(BODY.formatted("a".repeat(40))))
+                .andExpect(status().isCreated());
+        assertThat(captor.getAllValues()).extracting(IacRunRequest::isPush).containsExactly(true, false);
+        assertThat(captor.getAllValues().getFirst().prNumber()).isNull();
     }
 
     @Test

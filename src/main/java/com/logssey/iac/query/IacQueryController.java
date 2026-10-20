@@ -31,6 +31,43 @@ public class IacQueryController {
         return service.paths(status, tier, cursor, limit, name(authentication));
     }
 
+    @GetMapping("/prs")
+    public java.util.List<IacPullRequestSummaryResponse> pullRequests(@RequestParam(required = false) String repo,
+                                                                      Authentication authentication) {
+        return service.pullRequests(repo, name(authentication));
+    }
+
+    @GetMapping("/paths/{pathId}")
+    public IacPathDetailResponse path(@PathVariable long pathId, Authentication authentication) {
+        return service.path(pathId, name(authentication));
+    }
+
+    @GetMapping("/remediations/suggested")
+    public java.util.List<IacRemediationResponse> remediations(Authentication authentication) {
+        return service.remediations(name(authentication));
+    }
+
+    @GetMapping("/gates")
+    public IacGatesResponse gates(@RequestParam(required = false) String repo, Authentication authentication) {
+        return service.gates(repo, name(authentication));
+    }
+
+    @GetMapping("/jobs")
+    public java.util.List<IacJobStatusResponse> jobs(Authentication authentication) {
+        return service.jobs(name(authentication));
+    }
+
+    @GetMapping("/drifts")
+    public java.util.List<IacDriftResponse> drifts(@RequestParam(defaultValue = "OPEN") String status,
+                                                   Authentication authentication) {
+        return service.drifts(status, name(authentication));
+    }
+
+    @GetMapping("/state/summary")
+    public IacStateSummaryResponse stateSummary(Authentication authentication) {
+        return service.stateSummary(name(authentication));
+    }
+
     @GetMapping("/prs/{number}")
     public IacPullRequestResponse pullRequest(@PathVariable int number, @RequestParam(required = false) String repo,
                                               Authentication authentication) {

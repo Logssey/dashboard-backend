@@ -35,28 +35,28 @@ public class IacRunRepository {
                 rs.getString("default_severity")), ruleId).stream().findFirst();
     }
 
-    /** 같은 PR 의 run 을 순서대로 등록하도록 PR 단위로 잠근다. */
-    void lockPullRequest(long repoId, int prNumber) {
-        jdbc.query("SELECT pg_advisory_xact_lock(?, ?)", rs -> null, (int) repoId, prNumber);
+    /** 같은 PR(또는 main 점검)의 run 을 순서대로 등록하도록 잠근다. main 점검은 PR 번호 0 으로 잠근다. */
+    void lockPullRequest(long repoId, Integer prNumber) {
+        jdbc.query("SELECT pg_advisory_xact_lock(?, ?)", rs -> null, (int) repoId, prNumber == null ? 0 : prNumber);
     }
 
-    long insertRun(long repoId, int prNumber, String headSha, String status, String verdict,
+    long insertRun(long repoId, Integer prNumber, String headSha, String trigger, String status, String verdict,
                    String highestSeverity, long requestedBy, OffsetDateTime finishedAt) {
         return jdbc.queryForObject("""
                 INSERT INTO iac_runs (repo_id, pr_number, head_sha, trigger_type, status, verdict,
                                       highest_severity, requested_by_user_id, finished_at)
-                VALUES (?, ?, ?, 'PR', ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING run_id
-                """, Long.class, repoId, prNumber, headSha, status, verdict, highestSeverity, requestedBy,
+                """, Long.class, repoId, prNumber, headSha, trigger, status, verdict, highestSeverity, requestedBy,
                 finishedAt);
     }
 
-    /** 같은 PR 의 이전 run 을 SUPERSEDED 로 바꾸고, 그 run 의 대기 작업과 남은 plan 을 정리한다. */
-    List<Long> supersede(long repoId, int prNumber, long newRunId) {
+    /** 같은 PR(또는 main 점검)의 이전 run 을 SUPERSEDED 로 바꾸고, 그 run 의 대기 작업과 남은 plan 을 정리한다. */
+    List<Long> supersede(long repoId, Integer prNumber, long newRunId) {
         List<Long> previous = jdbc.queryForList("""
                 UPDATE iac_runs SET status = 'SUPERSEDED', superseded_by_run_id = ?,
                                     finished_at = COALESCE(finished_at, now())
-                WHERE repo_id = ? AND pr_number = ? AND run_id <> ? AND status <> 'SUPERSEDED'
+                WHERE repo_id = ? AND pr_number IS NOT DISTINCT FROM ? AND run_id <> ? AND status <> 'SUPERSEDED'
                 RETURNING run_id
                 """, Long.class, newRunId, repoId, prNumber, newRunId);
         if (!previous.isEmpty()) {
@@ -81,8 +81,8 @@ public class IacRunRepository {
                 runId, now, now);
     }
 
-    /** 이 PR 의 이전 run 에서 열렸던 같은 출처의 발견 건 중 이번에 안 나온 것은 고쳐진 것으로 본다. */
-    int fixMissing(long repoId, int prNumber, String source, Collection<String> seenFingerprints) {
+    /** 이 PR(또는 main 점검)의 이전 run 에서 열렸던 같은 출처의 발견 건 중 이번에 안 나온 것은 고쳐진 것으로 본다. */
+    int fixMissing(long repoId, Integer prNumber, String source, Collection<String> seenFingerprints) {
         String notSeen = seenFingerprints.isEmpty() ? "" : " AND f.fingerprint NOT IN (" + placeholders(seenFingerprints) + ")";
         Object[] args = new Object[3 + seenFingerprints.size()];
         args[0] = source;
@@ -94,13 +94,14 @@ public class IacRunRepository {
                 UPDATE iac_findings f SET status = 'FIXED', version = f.version + 1
                 FROM iac_runs r
                 WHERE f.last_run_id = r.run_id AND f.status = 'OPEN' AND f.source = ?
-                  AND r.repo_id = ? AND r.pr_number = ?
+                  AND r.repo_id = ? AND r.pr_number IS NOT DISTINCT FROM ?
                 """ + notSeen, args);
     }
 
     Optional<RunRow> lockRun(long runId) {
-        return jdbc.query("SELECT run_id, status FROM iac_runs WHERE run_id = ? FOR UPDATE",
-                (rs, row) -> new RunRow(rs.getLong("run_id"), rs.getString("status")), runId).stream().findFirst();
+        return jdbc.query("SELECT run_id, status, trigger_type FROM iac_runs WHERE run_id = ? FOR UPDATE",
+                (rs, row) -> new RunRow(rs.getLong("run_id"), rs.getString("status"), rs.getString("trigger_type")),
+                runId).stream().findFirst();
     }
 
     void storePlan(long runId, byte[] gzip, OffsetDateTime expiresAt) {
@@ -116,11 +117,12 @@ public class IacRunRepository {
         jdbc.update("UPDATE iac_runs SET status = 'ANALYZING' WHERE run_id = ?", runId);
     }
 
-    void enqueueAnalysis(long runId, long requestedBy) {
+    /** PR run 은 ① 경로 분석(ANALYZE_RUN), main 점검 run 은 ③ 드리프트 점검(CHECK_DRIFT). */
+    void enqueueAnalysis(long runId, boolean push, long requestedBy) {
         jdbc.update("""
                 INSERT INTO iac_jobs (kind, trigger_type, run_id, requested_by_user_id)
-                VALUES ('ANALYZE_RUN', 'PR', ?, ?)
-                """, runId, requestedBy);
+                VALUES (?, ?, ?, ?)
+                """, push ? "CHECK_DRIFT" : "ANALYZE_RUN", push ? "SCHEDULED" : "PR", runId, requestedBy);
     }
 
     Optional<IacRunStatusResponse> status(long runId) {
@@ -157,6 +159,6 @@ public class IacRunRepository {
     record Rule(String ruleId, String enforcement, String severity) {
     }
 
-    record RunRow(long runId, String status) {
+    record RunRow(long runId, String status, String trigger) {
     }
 }

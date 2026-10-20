@@ -2,6 +2,8 @@ package com.logssey.iac.query;
 
 import java.time.Duration;
 import java.time.OffsetDateTime;
+import java.util.List;
+import java.util.Map;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
@@ -26,7 +28,8 @@ public class IacQueryService {
         var graphAsOf = repository.lastSucceeded("COLLECT_GRAPH").orElse(null);
         boolean stale = graphAsOf == null || graphAsOf.isBefore(OffsetDateTime.now().minus(GRAPH_STALE_AFTER));
         return new IacSummaryResponse(
-                new IacSummaryResponse.Metrics(repository.openPaths(1), repository.openPaths(null), null, null, null),
+                new IacSummaryResponse.Metrics(repository.openPaths(1), repository.openPaths(null),
+                        repository.openDrifts(), null, null),
                 repository.severityCounts(), repository.lastSucceeded("ENRICH_GRAPH").orElse(null), graphAsOf, stale);
     }
 
@@ -56,7 +59,137 @@ public class IacQueryService {
                 repository.gateFindings(run.runId()));
         return new IacPullRequestResponse(number, null, run.runId(), run.headSha(), run.status(), run.verdict(),
                 run.highestSeverity(), run.checkedAt(), gate, repository.pathChanges(run.runId()),
-                repository.analysisResources(run.runId()), null);
+                repository.analysisStats(run.runId(), "resources"), repository.analysisStats(run.runId(), "state"));
+    }
+
+    public List<IacDriftResponse> drifts(String status, String loginId) {
+        requireAdmin(loginId);
+        if (!List.of("OPEN", "FIXED", "ACCEPTED").contains(status)) {
+            throw new ApiException(ErrorCode.INVALID_INPUT);
+        }
+        return repository.drifts(status);
+    }
+
+    /** S-01 D. PR 별 최신 판정 (최근 run 순, 최대 50). */
+    public List<IacPullRequestSummaryResponse> pullRequests(String repo, String loginId) {
+        requireAdmin(loginId);
+        long repoId = singleRepo(repo);
+        return repository.latestPullRequestRuns(repoId, 50).stream().map(row -> {
+            var stats = row.stats();
+            var paths = stats == null ? null : stats.path("paths");
+            var state = stats == null ? null : stats.path("state");
+            return new IacPullRequestSummaryResponse(row.number(), row.runId(), row.headSha(), row.status(),
+                    row.verdict(), row.highestSeverity(), row.checkedAt(),
+                    paths == null ? 0 : paths.path("added").asInt(0), paths == null ? 0 : paths.path("removed").asInt(0),
+                    paths == null ? 0 : paths.path("removedRoutes").asInt(0),
+                    state != null && "state.reader_increase".equals(state.path("ruleId").asString(null)),
+                    repository.leadingRule(row.runId()).orElse(null));
+        }).toList();
+    }
+
+    public IacPathDetailResponse path(long pathId, String loginId) {
+        requireAdmin(loginId);
+        var path = repository.path(pathId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+        return new IacPathDetailResponse(path, cutPoints(path));
+    }
+
+    /** 경로에서 끊을 수 있는 관계와 그 조치 (API 계약 action 값). */
+    static List<IacPathDetailResponse.CutPoint> cutPoints(IacPathResponse path) {
+        List<IacPathDetailResponse.CutPoint> cuts = new java.util.ArrayList<>();
+        var hops = path.hops();
+        for (int i = 0; i + 1 < hops.size(); i++) {
+            String from = hops.get(i).path("kind").asString("");
+            String to = hops.get(i + 1).path("kind").asString("");
+            String action = null;
+            if (from.equals("AWSEC2Instance") && to.equals("AWSRole")) action = "IMDSV2_REQUIRED";
+            else if (from.equals("AWSRole") && to.equals("AWSSecretsManagerSecret")) action = "SECRETS_READ_SCOPE";
+            else if (from.equals("AWSRole") && i + 1 == hops.size() - 1 && "TFSTATE".equals(path.target().kind())) {
+                action = "TFSTATE_BUCKET_POLICY";
+            }
+            if (action != null) cuts.add(new IacPathDetailResponse.CutPoint(i, i + 1, action, action.toLowerCase()));
+        }
+        return cuts;
+    }
+
+    /** S-01 G. 열린 경로를 끊는 조치(①)와 State 읽기 주체를 줄이는 조치(③). */
+    public List<IacRemediationResponse> remediations(String loginId) {
+        requireAdmin(loginId);
+        Map<String, long[]> byAction = new java.util.LinkedHashMap<>();
+        for (var path : repository.openPaths()) {
+            cutPoints(path).stream().map(IacPathDetailResponse.CutPoint::action).distinct().forEach(action -> {
+                long[] counts = byAction.computeIfAbsent(action, a -> new long[2]);
+                counts[0]++;
+                if (path.tier() == 1) counts[1]++;
+            });
+        }
+        List<IacRemediationResponse> result = new java.util.ArrayList<>();
+        byAction.forEach((action, counts) -> result.add(
+                new IacRemediationResponse(action, "①", counts[0], counts[1], action.toLowerCase())));
+        boolean tfstateReaders = repository.latestJob("CHECK_STATE")
+                .map(job -> job.stats().path("readerCount").asLong(0) > 0).orElse(false);
+        if (tfstateReaders && !byAction.containsKey("TFSTATE_BUCKET_POLICY")) {
+            result.add(new IacRemediationResponse("TFSTATE_BUCKET_POLICY", "③", 0, 0, "tfstate_bucket_policy"));
+        }
+        result.sort((a, b) -> Long.compare(b.tier1PathsCut() * 1000 + b.pathsCut(), a.tier1PathsCut() * 1000 + a.pathsCut()));
+        return result;
+    }
+
+    /** policy/gate.sh 의 관문 순서와 규칙. */
+    private static final List<IacGatesResponse.Stage> STAGES = List.of(
+            new IacGatesResponse.Stage("0-1", "변경 감지", List.of("gate.backend_changed", "gate.workflow_changed", "gate.lock_changed"), 0, 0),
+            new IacGatesResponse.Stage("2", "정적 검사", List.of("gate.exec_data_source", "gate.provisioner", "gate.lambda_invocation",
+                    "gate.provider_not_allowed", "gate.provider_unpinned", "gate.module_unpinned", "gate.unscanned_file"), 0, 0),
+            new IacGatesResponse.Stage("2b", "원격 모듈 재검사", List.of("gate.module_content_changed"), 0, 0),
+            new IacGatesResponse.Stage("3", "init (lock 고정)", List.of("gate.lock_mismatch"), 0, 0),
+            new IacGatesResponse.Stage("4", "plan", List.of("gate.plan_failed"), 0, 0));
+
+    /** S-01 E. */
+    public IacGatesResponse gates(String repo, String loginId) {
+        requireAdmin(loginId);
+        long repoId = singleRepo(repo);
+        var main = repository.mainGateFindings(repoId);
+        var blocks = repository.recentPullRequestGateBlocks(repoId);
+        var stages = STAGES.stream().map(s -> new IacGatesResponse.Stage(s.stage(), s.name(), s.ruleIds(),
+                s.ruleIds().stream().mapToLong(r -> main.getOrDefault(r, 0L)).sum(),
+                s.ruleIds().stream().mapToLong(r -> blocks.getOrDefault(r, 0L)).sum())).toList();
+        return new IacGatesResponse(repository.latestMainRunAt(repoId).orElse(null), stages,
+                new IacGatesResponse.SupplyChain(main.getOrDefault("gate.provider_unpinned", 0L),
+                        main.getOrDefault("gate.module_unpinned", 0L), main.getOrDefault("gate.module_content_changed", 0L),
+                        main.getOrDefault("gate.lock_changed", 0L)));
+    }
+
+    /** S-01 H. 주기는 gitops CronJob·CI 워크플로가 정한다. */
+    public List<IacJobStatusResponse> jobs(String loginId) {
+        requireAdmin(loginId);
+        return List.of(
+                job("COLLECT_GRAPH", "매일 03:00 KST (CronJob)", "AWS·Kubernetes (Cartography, scanner-ro)"),
+                job("ENRICH_GRAPH", "수집 뒤", "자산 그래프"),
+                job("CHECK_STATE", "수집 뒤", "자산 그래프의 tfstate 읽기 권한"),
+                job("CHECK_DRIFT", "매일 main plan (CI)", "refresh plan 의 resource_drift"),
+                job("ANALYZE_RUN", "PR 마다", "PR plan (민감값 제거)"));
+    }
+
+    private IacJobStatusResponse job(String kind, String schedule, String input) {
+        var row = repository.jobStatus(kind);
+        return new IacJobStatusResponse(kind, schedule, input, row.finishedAt(), row.status(), row.lastErrorCode(),
+                row.pending());
+    }
+
+    private long singleRepo(String repo) {
+        var repos = repository.enabledRepoIds(repo);
+        if (repos.size() != 1) {
+            throw new ApiException(repos.isEmpty() ? ErrorCode.NOT_FOUND : ErrorCode.INVALID_INPUT);
+        }
+        return repos.getFirst();
+    }
+
+    /** S-01 F 의 State 부분. 버킷 정책·State 속 민감값은 아직 확인하지 않아 null. */
+    public IacStateSummaryResponse stateSummary(String loginId) {
+        requireAdmin(loginId);
+        return repository.latestJob("CHECK_STATE")
+                .map(job -> new IacStateSummaryResponse(job.finishedAt(), job.stats().path("readerCount").asLong(0),
+                        job.stats().path("tfstate"), null, null, null))
+                .orElseGet(() -> new IacStateSummaryResponse(null, 0, null, null, null, null));
     }
 
     private void requireAdmin(String loginId) {
