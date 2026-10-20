@@ -18,10 +18,14 @@ import org.springframework.web.bind.annotation.RestController;
 public class SecretRunController {
 
     private final SecretRunService service;
+    private final SecretRunQueryService queries;
 
-    public SecretRunController(SecretRunService service) {
+    @org.springframework.beans.factory.annotation.Autowired
+    public SecretRunController(SecretRunService service,SecretRunQueryService queries) {
         this.service = service;
+        this.queries=queries;
     }
+    SecretRunController(SecretRunService service){this(service,null);}
 
     @PostMapping
     public ResponseEntity<SecretRunAcceptedResponse> register(@Valid @RequestBody SecretRunRequest request,
@@ -38,9 +42,17 @@ public class SecretRunController {
     }
 
     @GetMapping
-    public SecretRunListResponse list(@RequestParam(defaultValue = "0") int page,
+    public java.util.Map<String,Object> list(@RequestParam(defaultValue = "0") int page,
                                       @RequestParam(defaultValue = "20") int size,
-                                      Authentication authentication) {
-        return service.list(page, size, authentication == null ? null : authentication.getName());
+                                      @RequestParam(defaultValue="ALL") String type,@RequestParam(defaultValue="ALL") String status,
+                                      @RequestParam(required=false) Long connectionId,@RequestParam(required=false) java.time.OffsetDateTime from,
+                                      @RequestParam(required=false) java.time.OffsetDateTime to,@RequestParam(required=false) String snapshotId,
+                                      @RequestParam java.util.Map<String,String> params,Authentication authentication) {
+        if(!java.util.Set.of("page","size","type","status","connectionId","from","to","snapshotId").containsAll(params.keySet()))throw new com.logssey.common.error.ApiException(com.logssey.common.error.ErrorCode.INVALID_INPUT);
+        return queries.list(authentication == null ? null : authentication.getName(),type,status,connectionId,from,to,page,size,snapshotId);
     }
+
+    @GetMapping("/{runId}/findings")
+    public java.util.Map<String,Object> findings(@PathVariable long runId,@RequestParam(defaultValue="0") int page,
+        @RequestParam(defaultValue="20") int size,Authentication a){return queries.findings(a==null?null:a.getName(),runId,page,size);}
 }

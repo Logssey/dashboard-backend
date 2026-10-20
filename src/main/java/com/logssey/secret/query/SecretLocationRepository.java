@@ -111,6 +111,13 @@ public class SecretLocationRepository {
         result.put("userId",userId); result.put("secretId",id); return result;
     }
 
+    public java.util.Set<Long> runOccurrenceIds(long userId,long runId) {
+        return new java.util.HashSet<>(jdbc.queryForList("""
+            SELECT DISTINCT o.occurrence_id FROM secret_findings f JOIN secret_occurrences o USING(occurrence_id)
+            WHERE f.run_id=:run AND
+            """+com.logssey.secret.access.SecretOccurrenceAccessSql.predicate("o",":userId"),Map.of("run",runId,"userId",userId),Long.class));
+    }
+
     public Map<String,Object> iamMetadata(long credentialSetId,List<Long> visibleScopeIds) {
         var rows=jdbc.query("""
                 SELECT m.key_status,m.issued_at,m.last_used_at,m.last_used_service,m.last_used_region,m.observed_at

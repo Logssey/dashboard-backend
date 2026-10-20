@@ -73,12 +73,12 @@ public class SecretWorkbenchService {
     @Transactional(isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> queue(String login,Filters f,String bucket,String stages,int page,int size,String snapshotId) {
         if(page<0||page>1_000_000||size<1||size>100)throw new ApiException(ErrorCode.INVALID_INPUT);
-        SecretInventoryFilters.require(bucket,"ACTION_REQUIRED","NEEDS_DECISION","NEEDS_CASE_LINK","NORMAL_INVENTORY","COVERAGE_GAPS","UNCLASSIFIED");
+        SecretInventoryFilters.require(bucket,"ACTION_REQUIRED","CURRENT_CASES","NEEDS_DECISION","NEEDS_CASE_LINK","NORMAL_INVENTORY","COVERAGE_GAPS","UNCLASSIFIED");
         if(stages!=null&&!Set.of("OPEN,IN_PROGRESS","REVALIDATION_PENDING","OPEN","IN_PROGRESS","RESOLVED").contains(stages))throw new ApiException(ErrorCode.INVALID_INPUT);
         var actor=access.requirePrincipal(login);access.requireAnyRole(actor);
-        var required=switch(bucket){case "ACTION_REQUIRED"->Set.of(SecretRole.SECURITY,SecretRole.REMEDIATOR);case "COVERAGE_GAPS","UNCLASSIFIED"->Set.of(SecretRole.SECURITY,SecretRole.OPERATIONS);default->Set.of(SecretRole.SECURITY);};
+        var required=switch(bucket){case "ACTION_REQUIRED","CURRENT_CASES"->Set.of(SecretRole.SECURITY,SecretRole.REMEDIATOR);case "COVERAGE_GAPS","UNCLASSIFIED"->Set.of(SecretRole.SECURITY,SecretRole.OPERATIONS);default->Set.of(SecretRole.SECURITY);};
         if(!access.hasAnyRole(actor,required))throw new ApiException(ErrorCode.FORBIDDEN);
-        var h=header(login,actor,f,snapshotId);String type=switch(bucket){case "ACTION_REQUIRED"->"ResponseCase";case "NEEDS_DECISION"->"DecisionOccurrence";case "NEEDS_CASE_LINK"->"LinkOccurrence";case "NORMAL_INVENTORY"->"NormalCredentialSet";case "COVERAGE_GAPS"->"GapScope";default->"UnclassifiedScope";};
+        var h=header(login,actor,f,snapshotId);String type=switch(bucket){case "ACTION_REQUIRED","CURRENT_CASES"->"ResponseCase";case "NEEDS_DECISION"->"DecisionOccurrence";case "NEEDS_CASE_LINK"->"LinkOccurrence";case "NORMAL_INVENTORY"->"NormalCredentialSet";case "COVERAGE_GAPS"->"GapScope";default->"UnclassifiedScope";};
         var allowed=snapshots.page(h,type,0,Integer.MAX_VALUE).stream().filter(r->!bucket.equals("ACTION_REQUIRED")||(!Set.of("RESOLVED","RISK_ACCEPTED").contains(r.get("stage"))&&(stages==null||Arrays.asList(stages.split(",")).contains(r.get("stage"))))).toList();
         String unit=switch(type){case "ResponseCase"->"ResponseCase";case "NormalCredentialSet"->"CredentialSet";case "GapScope","UnclassifiedScope"->"Scope";default->"Occurrence";};
         return facts("items",allowed.stream().skip((long)page*size).limit(size).toList(),"total",allowed.size(),"page",page,"size",size,

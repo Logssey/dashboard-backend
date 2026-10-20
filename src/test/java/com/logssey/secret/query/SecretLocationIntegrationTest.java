@@ -97,7 +97,7 @@ class SecretLocationIntegrationTest {
         for(int i=0;i<5;i++) inventory("security",filter("ALL"),null);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_query_snapshots WHERE owner_user_id=?",Long.class,security))
             .isEqualTo(5);
-        assertCode(ErrorCode.NOT_FOUND,()->inventory("security",filter("ALL"),first.get("snapshotId").toString()));
+        assertCode(ErrorCode.CONFLICT,()->inventory("security",filter("ALL"),first.get("snapshotId").toString()));
     }
     @Test void absentAndUnauthorizedKeysHaveTheSamePublicFailure() {
         long conn=connection(); grant(security,"SECURITY",conn);

@@ -1,6 +1,12 @@
 -- First insertion provenance is never inferred from historical timestamps.
 ALTER TABLE secret_credential_sets ADD COLUMN first_seen_run_id BIGINT REFERENCES secret_scan_runs(run_id);
 CREATE INDEX idx_secret_first_seen_run ON secret_credential_sets(first_seen_run_id) WHERE first_seen_run_id IS NOT NULL;
+ALTER TABLE secret_connection_scopes ADD COLUMN alias_version BIGINT NOT NULL DEFAULT 0;
+CREATE TABLE secret_snapshot_retirements (
+    snapshot_id UUID PRIMARY KEY,
+    owner_user_id BIGINT NOT NULL REFERENCES dashboard_users(user_id),
+    retired_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 CREATE TABLE secret_scope_alias_history (
     alias_change_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     scope_id BIGINT NOT NULL REFERENCES secret_connection_scopes(scope_id),

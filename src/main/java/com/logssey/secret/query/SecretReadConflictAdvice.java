@@ -10,8 +10,12 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 /** Concurrent snapshot creation safely retries without emitting SQL or replacing another user's snapshot. */
 @Order(Ordered.HIGHEST_PRECEDENCE)
-@RestControllerAdvice(assignableTypes={SecretInventoryController.class,SecretLocationController.class})
+@RestControllerAdvice(basePackages="com.logssey.secret")
 public class SecretReadConflictAdvice {
+    @ExceptionHandler(SecretReadConflict.class)
+    public ResponseEntity<Map<String,Object>> changed(SecretReadConflict e) {
+        return ResponseEntity.status(409).body(Map.of("code","CONFLICT","message",e.getMessage(),"details",Map.of("reasonCode",e.reason().name())));
+    }
     @ExceptionHandler(CannotSerializeTransactionException.class)
     public ResponseEntity<Map<String,Object>> retry(CannotSerializeTransactionException ignored) {
         return ResponseEntity.status(409).body(Map.of("code","CONFLICT","message","조회가 겹쳤어요. 다시 조회해 주세요.",

@@ -53,11 +53,16 @@ public class SecretReadSnapshots {
                 INSERT INTO secret_snapshot_owner_locks(user_id,epoch) VALUES (?,1)
                 ON CONFLICT(user_id) DO UPDATE SET epoch=secret_snapshot_owner_locks.epoch+1
                 """, userId);
-        jdbc.update("DELETE FROM secret_query_snapshots WHERE owner_user_id = ? AND expires_at <= now()", userId);
+        jdbc.update("DELETE FROM secret_snapshot_retirements WHERE owner_user_id=? AND retired_at < now()-interval '24 hours'",userId);
         jdbc.update("""
-                DELETE FROM secret_query_snapshots WHERE snapshot_id IN (
+            WITH retired AS(DELETE FROM secret_query_snapshots WHERE owner_user_id=? AND expires_at<=now() RETURNING snapshot_id,owner_user_id)
+            INSERT INTO secret_snapshot_retirements(snapshot_id,owner_user_id) SELECT snapshot_id,owner_user_id FROM retired ON CONFLICT DO NOTHING
+            """,userId);
+        jdbc.update("""
+                WITH retired AS(DELETE FROM secret_query_snapshots WHERE snapshot_id IN (
                     SELECT snapshot_id FROM secret_query_snapshots WHERE owner_user_id = ?
-                    ORDER BY created_at DESC, snapshot_id DESC OFFSET 4)
+                    ORDER BY created_at DESC, snapshot_id DESC OFFSET 4) RETURNING snapshot_id,owner_user_id)
+                INSERT INTO secret_snapshot_retirements(snapshot_id,owner_user_id) SELECT snapshot_id,owner_user_id FROM retired ON CONFLICT DO NOTHING
                 """, userId);
         UUID id = UUID.randomUUID();
         OffsetDateTime asOf = jdbc.queryForObject("SELECT CURRENT_TIMESTAMP",OffsetDateTime.class);
@@ -125,14 +130,18 @@ public class SecretReadSnapshots {
                     rs.getObject("as_of", OffsetDateTime.class), rs.getObject("expires_at", OffsetDateTime.class),
                     rs.getBoolean("restricted_coverage")), rs.getString("authorization_revision"),
                     rs.getString("filter_digest")), id, userId, scope);
-        if (rows.isEmpty()) throw new ApiException(ErrorCode.NOT_FOUND);
-        var stored = rows.getFirst();
-        if (!stored.header().expiresAt().isAfter(OffsetDateTime.now(ZoneOffset.UTC))
-                || !stored.authorizationRevision().equals(authorizationRevision)) {
-            throw new ApiException(ErrorCode.CONFLICT, "조회 기준이 만료되었어요. 새로고침해 주세요.");
+        if (rows.isEmpty()) {
+            if(Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM secret_snapshot_retirements WHERE snapshot_id=? AND owner_user_id=?)",Boolean.class,id,userId)))
+                throw new com.logssey.secret.query.SecretReadConflict(com.logssey.secret.query.SecretReadConflict.Reason.SNAPSHOT_EXPIRED);
+            throw new ApiException(ErrorCode.NOT_FOUND);
         }
+        var stored = rows.getFirst();
+        if (!stored.header().expiresAt().isAfter(OffsetDateTime.now(ZoneOffset.UTC)))
+            throw new com.logssey.secret.query.SecretReadConflict(com.logssey.secret.query.SecretReadConflict.Reason.SNAPSHOT_EXPIRED);
+        if(!stored.authorizationRevision().equals(authorizationRevision))
+            throw new com.logssey.secret.query.SecretReadConflict(com.logssey.secret.query.SecretReadConflict.Reason.SNAPSHOT_ACCESS_CHANGED);
         if (!stored.filterDigest().equals(digest(canonicalFilters(filters)))) {
-            throw new ApiException(ErrorCode.CONFLICT, "조회 조건이 달라졌어요. 새 기준으로 조회해 주세요.");
+            throw new com.logssey.secret.query.SecretReadConflict(com.logssey.secret.query.SecretReadConflict.Reason.SNAPSHOT_MISMATCH);
         }
         boolean lostLocation=Boolean.TRUE.equals(new NamedParameterJdbcTemplate(jdbc).queryForObject("""
                 SELECT EXISTS(SELECT 1 FROM secret_snapshot_location_memberships m
@@ -140,7 +149,7 @@ public class SecretReadSnapshots {
                 WHERE m.snapshot_id=:snapshotId AND NOT (LOCATION_ACCESS))
                 """.replace("LOCATION_ACCESS",SecretOccurrenceAccessSql.predicate("o",":userId")),
                 Map.of("snapshotId",id,"userId",userId),Boolean.class));
-        if(lostLocation) throw new ApiException(ErrorCode.CONFLICT,"열람 권한이 변경되었어요. 새로 조회해 주세요.");
+        if(lostLocation) throw new com.logssey.secret.query.SecretReadConflict(com.logssey.secret.query.SecretReadConflict.Reason.SNAPSHOT_ACCESS_CHANGED);
         return stored.header();
     }
 

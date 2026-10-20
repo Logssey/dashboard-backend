@@ -41,15 +41,23 @@ public class SecretLocationService {
 
     @Transactional(isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> inventory(String loginId,SecretInventoryFilters filters,int page,int size,String snapshotId) {
+        return inventory(loginId,filters,page,size,snapshotId,null);
+    }
+
+    @Transactional(isolation=Isolation.REPEATABLE_READ)
+    public Map<String,Object> inventory(String loginId,SecretInventoryFilters filters,int page,int size,String snapshotId,Long runId) {
         validatePage(page,size);
+        if(runId!=null&&runId<=0)throw new ApiException(ErrorCode.INVALID_INPUT);
         var actor=reader(loginId);
+        var normalized=new java.util.TreeMap<>(filters.normalized());if(runId!=null)normalized.put("runId",runId.toString());
         String revision=snapshots.authorizationRevision(actor.userId());
         boolean restricted=!globalSecurity(actor);
         SecretReadSnapshots.Header header;
         if(snapshotId!=null && !snapshotId.isBlank()) {
-            header=snapshots.require(snapshotId,actor.userId(),"INVENTORY",filters.normalized(),revision);
+            header=snapshots.require(snapshotId,actor.userId(),"INVENTORY",normalized,revision);
         } else {
-            var grouped=repository.visible(actor.userId(),null,filters).stream().collect(Collectors.groupingBy(
+            var runOccurrences=runId==null?null:repository.runOccurrenceIds(actor.userId(),runId);
+            var grouped=repository.visible(actor.userId(),null,filters).stream().filter(r->runOccurrences==null||runOccurrences.contains(r.occurrenceId())).collect(Collectors.groupingBy(
                 Row::secretId,LinkedHashMap::new,Collectors.toList()));
             var subjects=new ArrayList<SecretReadSnapshots.Subject>();
             for(var entry:grouped.entrySet()) {
@@ -65,10 +73,10 @@ public class SecretLocationService {
                 subjects.add(new SecretReadSnapshots.Subject("CredentialSet",entry.getKey(),entry.getKey(),item,
                     rows.stream().map(Row::occurrenceId).distinct().toList()));
             }
-            header=snapshots.create(actor.userId(),"INVENTORY",filters.normalized(),revision,restricted,subjects);
+            header=snapshots.create(actor.userId(),"INVENTORY",normalized,revision,restricted,subjects);
         }
         return facts("items",snapshots.page(header,"CredentialSet",page,size),"total",snapshots.count(header,"CredentialSet"),
-            "page",page,"size",size,"filters",filters.normalized(),"scope","inventory","unit","CredentialSet",
+            "page",page,"size",size,"filters",normalized,"scope","inventory","unit","CredentialSet",
             "asOf",header.asOf(),"snapshotId",header.snapshotId(),"expiresAt",header.expiresAt(),
             "restrictedCoverage",header.restrictedCoverage(),"partialCoverage",null,"coverageStatus","UNKNOWN");
     }
