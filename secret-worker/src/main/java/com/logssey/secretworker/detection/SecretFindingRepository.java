@@ -183,6 +183,24 @@ public final class SecretFindingRepository {
     }
 
     private long upsertCredential(SecretFindingNormalizer.Credential credential, long runId, Instant now) {
+        if("CONFIRMED".equals(credential.componentState())) {
+            jdbc.queryForObject("SELECT pg_advisory_xact_lock(?)",Object.class,ByteBuffer.wrap(credential.fingerprint()).getLong());
+            boolean existing=Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS(SELECT 1 FROM secret_credential_sets WHERE component_state='CONFIRMED' AND issuer=? AND credential_type=? AND fingerprint_key_version=? AND fingerprint=?)
+                """,Boolean.class,credential.issuer(),credential.credentialType(),credential.fingerprintKeyVersion(),credential.fingerprint()));
+            if(!existing&&!credential.promotionLocators().isEmpty()) {
+                var args=new java.util.ArrayList<Object>(List.of(credential.issuer(),credential.credentialType(),credential.fingerprintKeyVersion()));
+                args.addAll(credential.promotionLocators());
+                var matches=jdbc.queryForList("SELECT credential_set_id FROM secret_credential_sets WHERE component_state='CANDIDATE' AND issuer=? AND credential_type=? AND fingerprint_key_version=? AND candidate_locator IN ("
+                    +String.join(",",java.util.Collections.nCopies(credential.promotionLocators().size(),"?"))+") ORDER BY first_seen_at,credential_set_id LIMIT 1 FOR UPDATE",Long.class,args.toArray());
+                if(!matches.isEmpty()) {
+                    long id=matches.getFirst();
+                    jdbc.update("UPDATE secret_credential_sets SET component_state='CONFIRMED',fingerprint=?,candidate_locator=NULL,masked_label=?,last_seen_at=greatest(last_seen_at,?) WHERE credential_set_id=?",
+                        credential.fingerprint(),credential.maskedLabel(),utc(now),id);
+                    return id;
+                }
+            }
+        }
         String conflict = "CONFIRMED".equals(credential.componentState()) ? """
                 ON CONFLICT (issuer, credential_type, fingerprint_key_version, fingerprint)
                     WHERE component_state = 'CONFIRMED'

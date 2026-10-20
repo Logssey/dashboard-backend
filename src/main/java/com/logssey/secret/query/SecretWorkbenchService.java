@@ -57,6 +57,7 @@ public class SecretWorkbenchService {
         var counts=new LinkedHashMap<String,Long>();for(String stage:List.of("OPEN","IN_PROGRESS","REVALIDATION_PENDING","RESOLVED","RISK_ACCEPTED"))counts.put(stage,0L);
         allCases.forEach(c->counts.merge((String)c.get("stage"),1L,Long::sum));
         boolean caseAccess=access.hasAnyRole(actor,Set.of(SecretRole.SECURITY,SecretRole.REMEDIATOR));
+        boolean securityAccess=access.hasAnyRole(actor,Set.of(SecretRole.SECURITY));
         var gaps=metrics.stream().filter(m->m.get("key").equals("coverageGapScopes")).findFirst().orElseThrow();
         return facts("scope","workbench","unit","Mixed","total",null,"origin",f.origin(),"filters",f.normalized(),
             "snapshotId",h.snapshotId(),"asOf",h.asOf(),"expiresAt",h.expiresAt(),"restrictedCoverage",h.restrictedCoverage(),
@@ -65,8 +66,8 @@ public class SecretWorkbenchService {
                 "status",caseAccess?"AVAILABLE":"NOT_AUTHORIZED","actionCounts",caseAccess?counts:null,
                 "severityCounts",caseAccess?Map.of("CRITICAL",0,"HIGH",0,"MEDIUM",0,"LOW",0,"UNASSESSED",allCases.size()):null,
                 "severityStatus","LEGACY_UNAVAILABLE","severityReasonCode","SEVERITY_EVIDENCE_REQUIRED"),
-            "normalInventory",facts("unit","CredentialSet","value",snapshots.count(h,"NormalCredentialSet")),
-            "crossEnvironmentAlerts",facts("unit","CrossEnvironmentAlert","value",snapshots.count(h,"CrossEnvironmentAlert"),"items",snapshots.page(h,"CrossEnvironmentAlert",0,20)),
+            "normalInventory",facts("unit","CredentialSet","status",securityAccess?"AVAILABLE":"NOT_AUTHORIZED","value",securityAccess?snapshots.count(h,"NormalCredentialSet"):null),
+            "crossEnvironmentAlerts",facts("unit","CrossEnvironmentAlert","status",securityAccess?"AVAILABLE":"NOT_AUTHORIZED","value",securityAccess?snapshots.count(h,"CrossEnvironmentAlert"):null,"items",securityAccess?snapshots.page(h,"CrossEnvironmentAlert",0,20):List.of()),
             "partialCoverage","AVAILABLE".equals(gaps.get("status"))?((Number)gaps.get("value")).longValue()>0:null,
             "coverageStatus",gaps.get("status"));
     }
@@ -74,12 +75,14 @@ public class SecretWorkbenchService {
     public Map<String,Object> queue(String login,Filters f,String bucket,String stages,int page,int size,String snapshotId) {
         if(page<0||page>1_000_000||size<1||size>100)throw new ApiException(ErrorCode.INVALID_INPUT);
         SecretInventoryFilters.require(bucket,"ACTION_REQUIRED","CURRENT_CASES","NEEDS_DECISION","NEEDS_CASE_LINK","NORMAL_INVENTORY","COVERAGE_GAPS","UNCLASSIFIED");
-        if(stages!=null&&!Set.of("OPEN,IN_PROGRESS","REVALIDATION_PENDING","OPEN","IN_PROGRESS","RESOLVED").contains(stages))throw new ApiException(ErrorCode.INVALID_INPUT);
+        if(stages!=null&&!Set.of("OPEN,IN_PROGRESS","REVALIDATION_PENDING","OPEN","IN_PROGRESS","RESOLVED","RISK_ACCEPTED").contains(stages))throw new ApiException(ErrorCode.INVALID_INPUT);
         var actor=access.requirePrincipal(login);access.requireAnyRole(actor);
         var required=switch(bucket){case "ACTION_REQUIRED","CURRENT_CASES"->Set.of(SecretRole.SECURITY,SecretRole.REMEDIATOR);case "COVERAGE_GAPS","UNCLASSIFIED"->Set.of(SecretRole.SECURITY,SecretRole.OPERATIONS);default->Set.of(SecretRole.SECURITY);};
         if(!access.hasAnyRole(actor,required))throw new ApiException(ErrorCode.FORBIDDEN);
         var h=header(login,actor,f,snapshotId);String type=switch(bucket){case "ACTION_REQUIRED","CURRENT_CASES"->"ResponseCase";case "NEEDS_DECISION"->"DecisionOccurrence";case "NEEDS_CASE_LINK"->"LinkOccurrence";case "NORMAL_INVENTORY"->"NormalCredentialSet";case "COVERAGE_GAPS"->"GapScope";default->"UnclassifiedScope";};
-        var allowed=snapshots.page(h,type,0,Integer.MAX_VALUE).stream().filter(r->!bucket.equals("ACTION_REQUIRED")||(!Set.of("RESOLVED","RISK_ACCEPTED").contains(r.get("stage"))&&(stages==null||Arrays.asList(stages.split(",")).contains(r.get("stage"))))).toList();
+        var allowed=snapshots.page(h,type,0,Integer.MAX_VALUE).stream()
+            .filter(r->!bucket.equals("ACTION_REQUIRED")||!Set.of("RESOLVED","RISK_ACCEPTED").contains(r.get("stage")))
+            .filter(r->!type.equals("ResponseCase")||stages==null||Arrays.asList(stages.split(",")).contains(r.get("stage"))).toList();
         String unit=switch(type){case "ResponseCase"->"ResponseCase";case "NormalCredentialSet"->"CredentialSet";case "GapScope","UnclassifiedScope"->"Scope";default->"Occurrence";};
         return facts("items",allowed.stream().skip((long)page*size).limit(size).toList(),"total",allowed.size(),"page",page,"size",size,
             "unit",unit,"scope","reviewQueue","snapshotId",h.snapshotId(),"asOf",h.asOf(),"expiresAt",h.expiresAt(),"restrictedCoverage",h.restrictedCoverage(),

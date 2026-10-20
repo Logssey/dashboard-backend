@@ -148,6 +148,21 @@ class SecretFindingRepositoryTest {
     }
 
     @Test
+    void exactPartialCandidatePromotionKeepsItsOriginalIdentityAndFirstRun() {
+        String id="AKIA"+"ABCDEFGHIJKLMNOP",secret="aB3/".repeat(10);
+        var idScan=new GitleaksScanResult("8.30.1",CONFIG_HASH,List.of(new GitleaksFinding("aws-access-token",1,1,19,38)));
+        var pairScan=new GitleaksScanResult("8.30.1",CONFIG_HASH,List.of(new GitleaksFinding("aws-access-token",1,1,19,38),new GitleaksFinding("generic-api-key",2,2,1,60)));
+        long tool=repository.beginGitleaksRun(runScopeId,"8.30.1",CONFIG_HASH,Instant.now());
+        repository.recordObject(tool,"repo/promoted.txt","sha-before",("AWS_ACCESS_KEY_ID="+id+"\n").getBytes(StandardCharsets.UTF_8),idScan,Instant.now());
+        long original=jdbc.queryForObject("SELECT credential_set_id FROM secret_credential_sets",Long.class);
+        long firstRun=jdbc.queryForObject("SELECT first_seen_run_id FROM secret_credential_sets",Long.class);
+        repository.recordObject(tool,"repo/promoted.txt","sha-after",("AWS_ACCESS_KEY_ID="+id+"\nAWS_SECRET_ACCESS_KEY="+secret+"\n").getBytes(StandardCharsets.UTF_8),pairScan,Instant.now());
+        assertThat(count("secret_credential_sets")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT credential_set_id FROM secret_credential_sets WHERE component_state='CONFIRMED'",Long.class)).isEqualTo(original);
+        assertThat(jdbc.queryForObject("SELECT first_seen_run_id FROM secret_credential_sets",Long.class)).isEqualTo(firstRun);
+    }
+
+    @Test
     void rejectsMismatchedDetectorConfigurationBeforeWritingAnything() {
         long toolRunId = repository.beginGitleaksRun(runScopeId, "8.30.1", CONFIG_HASH, Instant.now());
         var mismatched = new GitleaksScanResult("8.30.2", CONFIG_HASH, List.of());

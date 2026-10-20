@@ -65,6 +65,27 @@ class SecretRunServiceTest {
     }
 
     @Test
+    void filteredHistoryFreezesPagesAndKeepsDateBoundsAndCountsTogether() {
+        long a=connection("ACTIVE",null),b=connection("ACTIVE",null);scope(a,"fixtures/",true);scope(b,"fixtures/",true);
+        long first=service.register(new SecretRunRequest(a,"first"),"admin").runId();
+        service.register(new SecretRunRequest(b,"second"),"admin");
+        jdbc.update("UPDATE secret_jobs SET status='FAILED',finished_at=now() WHERE connection_id=?",a);
+        var mapper=tools.jackson.databind.json.JsonMapper.builder().build();
+        var query=new SecretRunQueryService(jdbc,new SecretAccessService(jdbc),new com.logssey.secret.snapshot.SecretReadSnapshots(jdbc,mapper),service,mapper);
+        var tx=new org.springframework.transaction.support.TransactionTemplate(transactions);
+        tx.setIsolationLevel(org.springframework.transaction.TransactionDefinition.ISOLATION_REPEATABLE_READ);
+        var before=OffsetDateTime.now(ZoneOffset.UTC).minusDays(1);var after=before.plusDays(2);
+        var failed=tx.execute(s->query.list("admin","MANUAL","FAILED",a,before,after,0,20,null));
+        assertThat(failed.get("total")).isEqualTo(1L);assertThat(failed.get("items").toString()).contains("runId="+first).doesNotContain("approved_ref","auth_ref","github://");
+        var all=tx.execute(s->query.list("admin","ALL","ALL",null,null,null,0,20,null));
+        service.register(new SecretRunRequest(a,"third"),"admin");
+        var repeated=tx.execute(s->query.list("admin","ALL","ALL",null,null,null,0,20,all.get("snapshotId").toString()));
+        assertThat(repeated.get("total")).isEqualTo(2L);
+        assertThat(repeated.get("items")).isEqualTo(all.get("items"));
+        assertThatThrownBy(()->tx.execute(s->query.list("admin","MANUAL","ALL",null,null,null,0,20,all.get("snapshotId").toString()))).isInstanceOf(ApiException.class);
+    }
+
+    @Test
     void registersOnlyApprovedScopeSnapshotWithoutAdvancingScheduleOrScanning() {
         var originalDue = OffsetDateTime.now(ZoneOffset.UTC).minusHours(2).truncatedTo(ChronoUnit.MICROS);
         long connection = connection("ACTIVE", originalDue);
