@@ -41,7 +41,9 @@ public class SecretTriageController {
     public SecretScopeOriginResponse classify(@PathVariable long scopeId,
                                               @RequestBody SecretScopeOriginRequest request,
                                               Authentication authentication) {
-        return service.classify(scopeId, request, loginId(authentication));
+        service.scope(scopeId, loginId(authentication));
+        throw new com.logssey.common.error.ApiException(com.logssey.common.error.ErrorCode.CONFLICT,
+                "출처 제안과 독립 승인을 사용해 주세요.");
     }
 
     @GetMapping("/occurrences/{occurrenceId}/triage")
@@ -54,7 +56,9 @@ public class SecretTriageController {
     public SecretOccurrenceTriageResponse assess(@PathVariable long occurrenceId,
                                                   @RequestBody SecretExposureAssessmentRequest request,
                                                   Authentication authentication) {
-        return service.assess(occurrenceId, request, loginId(authentication));
+        service.occurrence(occurrenceId, loginId(authentication));
+        throw new com.logssey.common.error.ApiException(com.logssey.common.error.ErrorCode.CONFLICT,
+                "최신 근거를 확인하고 위치별 결정 API를 사용해 주세요.");
     }
 
     private static String loginId(Authentication authentication) {
