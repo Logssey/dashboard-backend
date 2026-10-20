@@ -20,7 +20,7 @@ public class SecretScopeAliasController {
     @PatchMapping @Transactional
     public Map<String,Object> update(@PathVariable long scopeId,@RequestBody Request r,Authentication a){
         var actor=access.requirePrincipal(a==null?null:a.getName());
-        if(r==null||!safeAlias(r.safeDisplayAlias()))throw new ApiException(ErrorCode.INVALID_INPUT);
+        if(r==null||!SecretDisplayLabels.safeAlias(r.safeDisplayAlias()))throw new ApiException(ErrorCode.INVALID_INPUT);
         var rows=jdbc.queryForList("SELECT connection_id,revision,alias_version FROM secret_connection_scopes WHERE scope_id=? FOR UPDATE",scopeId);
         if(rows.isEmpty())throw new ApiException(ErrorCode.NOT_FOUND);var s=rows.getFirst();
         access.requireConnectionRole(actor,((Number)s.get("connection_id")).longValue(),SecretRole.OPERATIONS);
@@ -30,11 +30,5 @@ public class SecretScopeAliasController {
         jdbc.update("INSERT INTO secret_audit_events(event_type,actor_user_id,target_type,target_id,target_version) VALUES('SCOPE_ALIAS_CHANGED',?,'SCOPE',?,?)",actor.userId(),scopeId,((Number)s.get("alias_version")).longValue()+1);
         snapshots.invalidateScope(scopeId);
         return facts("scopeId",scopeId,"safeDisplayAlias",r.safeDisplayAlias(),"scopeRevision",s.get("revision"),"aliasVersion",((Number)s.get("alias_version")).longValue()+1,"requiresSnapshotRefresh",true);
-    }
-    private static boolean safeAlias(String alias){
-        if(alias==null)return true;
-        if(!alias.matches("[A-Za-z가-힣][A-Za-z0-9가-힣 _-]{0,79}"))return false;
-        return !java.util.regex.Pattern.compile("AKIA[A-Z0-9]{16}|ASIA[A-Z0-9]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_|(?:secret_|ntn_)[A-Za-z0-9]{20,}|[A-Za-z0-9_-]{24,}|[0-9]{10,}")
-            .matcher(alias).find();
     }
 }

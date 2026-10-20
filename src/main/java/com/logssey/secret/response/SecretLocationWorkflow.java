@@ -61,7 +61,7 @@ public class SecretLocationWorkflow {
             boolean assigned=assignedRemediator(actor,caseId,occurrence);
             var ready=readiness.capabilities(actor,caseId,occurrence);
             boolean actionable=current&&Set.of("OPEN","IN_PROGRESS").contains(o.get("response_status"));
-            return facts("occurrenceId",occurrence,"safeLocationLabel","위치 #"+occurrence,
+            return facts("occurrenceId",occurrence,"safeLocationLabel",com.logssey.secret.connection.SecretDisplayLabels.location((String)o.get("safe_display_alias"),occurrence),
                 "source",o.get("source"),"environment",o.get("environment"),"exposure",o.get("exposure_status"),
                 "presence",o.get("presence_status"),"responseStatus",o.get("response_status"),"version",o.get("version"),
                 "assignedTeam",o.get("assigned_team"),"assignedUserId",o.get("assigned_user_id"),
@@ -287,9 +287,10 @@ public class SecretLocationWorkflow {
     }
     public List<Map<String,Object>> visibleLocations(long caseId,SecretPrincipal actor) {
         return named.queryForList("""
-            SELECT co.*,o.connection_id,o.environment,o.exposure_status,o.presence_status,conn.provider AS source,u.display_name AS assignee_name
+            SELECT co.*,o.connection_id,o.environment,o.exposure_status,o.presence_status,conn.provider AS source,u.display_name AS assignee_name,s.safe_display_alias
             FROM secret_case_occurrences co JOIN secret_occurrences o USING(occurrence_id)
             JOIN secret_connections conn ON conn.connection_id=o.connection_id
+            JOIN secret_connection_scopes s ON s.scope_id=o.scope_id
             LEFT JOIN dashboard_users u ON u.user_id=co.assigned_user_id
             WHERE co.case_id=:case AND
             """+SecretOccurrenceAccessSql.predicate("o",":userId")+" ORDER BY co.occurrence_id",Map.of("case",caseId,"userId",actor.userId()));

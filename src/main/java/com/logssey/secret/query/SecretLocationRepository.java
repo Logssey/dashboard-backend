@@ -12,6 +12,12 @@ public class SecretLocationRepository {
     private final NamedParameterJdbcTemplate jdbc;
     public SecretLocationRepository(JdbcTemplate jdbc) { this.jdbc = new NamedParameterJdbcTemplate(jdbc); }
 
+    public String safeLocationLabel(Row row) {
+        String alias=jdbc.queryForObject("SELECT safe_display_alias FROM secret_connection_scopes WHERE scope_id=:scope",
+            Map.of("scope",row.scopeId()),String.class);
+        return com.logssey.secret.connection.SecretDisplayLabels.location(alias,row.occurrenceId());
+    }
+
     // The ACL is applied before any grouping, count, timestamp, or validation projection.
     public List<Row> visible(long userId, Long secretId, SecretInventoryFilters filters) {
         return jdbc.query("""

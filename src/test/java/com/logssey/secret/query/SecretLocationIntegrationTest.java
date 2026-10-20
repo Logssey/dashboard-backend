@@ -65,6 +65,16 @@ class SecretLocationIntegrationTest {
         assertThat(next.get("credential")).isEqualTo(first.get("credential"));
         assertThat(next.get("restrictedCoverage")).isEqualTo(true);
     }
+    @Test void humanScopeLabelsHelpLocateKeysWithoutCopyingProtectedPaths() {
+        long conn=connection();grant(security,"SECURITY",conn);long scope=scope(conn),key=key("CONFIRMED","a3");
+        occurrence(key,conn,scope,"PRESENT");
+        jdbc.update("UPDATE secret_connection_scopes SET safe_display_alias='주문 서비스 GitHub' WHERE scope_id=?",scope);
+        var result=service.locations("security",key,filter("ALL"),0,20,"ALL","ALL","ALL",null);
+        assertThat(result.get("items").toString()).contains("주문 서비스 GitHub · 위치 #").doesNotContain("private/","private-approved-ref");
+        jdbc.update("UPDATE secret_connection_scopes SET safe_display_alias='ghp_123456789012345678901234567890123456' WHERE scope_id=?",scope);
+        result=service.locations("security",key,filter("ALL"),0,20,"ALL","ALL","ALL",null);
+        assertThat(result.get("items").toString()).contains("위치 #").doesNotContain("ghp_123456");
+    }
     @Test void operationsAndAdminDoNotGainCredentialReadRights() {
         long conn=connection(); grant(operations,"OPERATIONS",conn);
         assertCode(ErrorCode.FORBIDDEN,()->inventory("operations",filter("ALL"),null));

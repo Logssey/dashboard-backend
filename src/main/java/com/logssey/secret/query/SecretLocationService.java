@@ -173,7 +173,7 @@ public class SecretLocationService {
             "origin",first.origin(),"contentKind","METADATA_ONLY".equals(first.componentState())?"METADATA":"VALUE_FINDINGS",
             "workBucket",bucket,"whyHereCode",reason(representative),"nextActionCode",next(representative,actor),
             "requiresReassessment",rows.stream().anyMatch(Row::requiresReassessment),
-            "safeLocationLabel","위치 #"+representative.occurrenceId(),"currentCaseId",representative.caseId(),
+            "safeLocationLabel",repository.safeLocationLabel(representative),"currentCaseId",representative.caseId(),
             "casesByOrigin",cases.stream().map(id->facts("origin",first.origin(),"caseId",id)).toList(),
             "restrictedCoverage",!globalSecurity(actor));
     }
@@ -192,7 +192,7 @@ public class SecretLocationService {
         String validity=row.validity()==null?"UNCHECKED":row.validity();
         return facts("occurrenceId",row.occurrenceId(),"connectionId",row.connectionId(),"scopeId",row.scopeId(),
             "source",row.source(),"environment",row.environment(),"origin",row.origin(),"scopeRevision",row.scopeRevision(),
-            "safeLocationLabel","위치 #"+row.occurrenceId(),"presence",row.presence(),"exposure",row.exposure(),
+            "safeLocationLabel",repository.safeLocationLabel(row),"presence",row.presence(),"exposure",row.exposure(),
             "storagePolicy",facts("result",row.storagePolicyResult(),"reasonCode",row.storagePolicyReason(),
                 "bindingId",row.storageBindingId(),"policyId",row.storagePolicyId(),"version",row.storagePolicyVersion()),
             "requiresReassessment",row.requiresReassessment(),"allCurrentFindingsCorrected",row.allCurrentFindingsCorrected(),
