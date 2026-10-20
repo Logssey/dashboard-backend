@@ -85,7 +85,7 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
         List<Scope> scopes = jdbc.query("""
                 SELECT rs.run_scope_id, s.scope_id, s.content_type, s.approved_ref,
                        s.history_limit, s.enabled, c.scope_version,
-                       r.scope_version AS run_scope_version, c.status, c.auth_ref
+                       r.scope_version AS run_scope_version, c.status, c.auth_ref, s.revision, rs.scope_revision AS captured_revision
                 FROM secret_scan_runs r
                 JOIN secret_connections c ON c.connection_id = r.connection_id
                 JOIN secret_run_scopes rs ON rs.run_id = r.run_id
@@ -97,12 +97,12 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
                 rs.getString("content_type"), rs.getString("approved_ref"),
                 rs.getString("history_limit"), rs.getBoolean("enabled"),
                 rs.getLong("scope_version"), rs.getLong("run_scope_version"),
-                rs.getString("status"), rs.getString("auth_ref")),
+                rs.getString("status"), rs.getString("auth_ref"), rs.getLong("revision"), rs.getObject("captured_revision",Long.class)),
                 job.runId(), job.jobId(), job.connectionId());
         if (scopes.isEmpty() || scopes.stream().anyMatch(scope -> !scope.enabled()
                 || !"ACTIVE".equals(scope.connectionStatus())
                 || !expectedAuthRef.equals(scope.authRef())
-                || scope.connectionVersion() != scope.runVersion())) {
+                || scope.connectionVersion() != scope.runVersion() || !java.util.Objects.equals(scope.capturedRevision(),scope.revision()))) {
             throw new SecretJobFailure(SecretJobFailureCode.SOURCE_ACCESS_DENIED, false);
         }
         withLease(job, execution, () -> jdbc.update("""
@@ -119,7 +119,11 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
         AwsContentPipeline.RunValidation validation = new AwsContentPipeline.RunValidation();
         for (Scope scope : scopes) {
             if (leaseLost.get()) throw new SecretJobFailure(SecretJobFailureCode.LEASE_EXPIRED, true);
+            int failuresBefore = validation.failureCount();
             ScopeResult result = processScope(job, scope, execution, account, contentProgress, validation);
+            if (!execution.recordScopeEvidence(job.jobId(), job.leaseToken(), scope.runScopeId(), validation.failureCount() > failuresBefore)) {
+                throw new SecretJobFailure(SecretJobFailureCode.LEASE_EXPIRED, true);
+            }
             if (result.usable()) succeeded++;
             if (!result.complete()) allSucceeded = false;
             if (firstGap == null) firstGap = result.gap();
@@ -363,6 +367,6 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
     private record Scope(long runScopeId, long scopeId, String contentType,
                          String approvedRef, String historyLimit, boolean enabled,
                          long connectionVersion, long runVersion,
-                         String connectionStatus, String authRef) { }
+                         String connectionStatus, String authRef, long revision, Long capturedRevision) { }
     private record ScopeResult(boolean usable, boolean complete, String gap) { }
 }

@@ -617,7 +617,8 @@ class SecretRunServiceTest {
         assertThat(firstPage.items()).extracting(SecretRunListItemResponse::runId)
                 .containsExactly(newest.runId(), failed.runId());
         assertThat(firstPage.items().get(0).status()).isEqualTo("PENDING");
-        assertThat(firstPage.items().get(0).displayName()).isEqualTo("Repository A");
+        assertThat(firstPage.items().get(0).displayName()).isEqualTo("연결 #" + firstConnection);
+        assertThat(firstPage.items().get(0).coverage().safeDisplayAlias()).isEqualTo("연결 #" + firstConnection);
         assertThat(firstPage.items().get(0).provider()).isEqualTo("GITHUB");
         assertThat(firstPage.items().get(1).status()).isEqualTo("FAILED");
         assertThat(firstPage.items().get(1).failureCode()).isEqualTo("UNSPECIFIED_FAILURE");

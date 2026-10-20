@@ -112,6 +112,10 @@ class SecretJobRepository {
                 rs.getLong("detector_object_total")), runId);
     }
 
+    void recordScopeEvidence(long runScopeId, boolean validationFailed) {
+        jdbc.queryForObject("SELECT secret_record_scope_evidence(?, ?)", Object.class, runScopeId, validationFailed);
+    }
+
     void finish(JobRow row, OffsetDateTime now, String resultStatus) {
         jdbc.update("""
                 UPDATE secret_jobs SET status = 'SUCCEEDED', lease_owner = NULL, lease_until = NULL,
@@ -246,6 +250,7 @@ class SecretJobRepository {
                 FROM (
                     SELECT r.connection_id, MAX(s.finished_at) AS completed_at
                     FROM secret_scan_runs r
+                    JOIN secret_jobs j ON j.job_id=r.job_id AND j.kind='FULL_SCAN'
                     JOIN secret_run_scopes s ON s.run_id = r.run_id
                     WHERE r.run_id = ? AND r.collection_status = 'SUCCEEDED'
                     GROUP BY r.connection_id

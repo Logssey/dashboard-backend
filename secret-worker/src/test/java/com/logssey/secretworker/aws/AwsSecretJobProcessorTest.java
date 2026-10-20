@@ -80,6 +80,9 @@ class AwsSecretJobProcessorTest {
                 .isEqualTo("SUCCEEDED");
         assertThat(jdbc.queryForObject("SELECT detection_status FROM secret_scan_runs", String.class))
                 .isEqualTo("SKIPPED");
+        assertThat(jdbc.queryForMap("SELECT scope_outcome,detection_stage_status,detection_reason_code,validation_stage_status FROM secret_scope_outcomes"))
+                .containsEntry("scope_outcome","SUCCEEDED").containsEntry("detection_stage_status","SKIPPED")
+                .containsEntry("detection_reason_code","NOT_APPLICABLE_METADATA").containsEntry("validation_stage_status","SKIPPED");
         assertThat(jdbc.queryForObject("SELECT validation_status FROM secret_scan_runs", String.class))
                 .isEqualTo("SKIPPED");
         assertThat(jdbc.queryForMap("""

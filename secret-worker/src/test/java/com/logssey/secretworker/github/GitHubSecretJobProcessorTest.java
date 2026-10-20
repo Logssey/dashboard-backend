@@ -135,6 +135,10 @@ class GitHubSecretJobProcessorTest {
         assertThat(jdbc.queryForObject("SELECT result_status FROM secret_scan_runs", String.class))
                 .isEqualTo("SUCCEEDED");
         assertThat(jdbc.queryForObject("SELECT object_count FROM secret_run_scopes", Long.class)).isEqualTo(1L);
+        assertThat(jdbc.queryForMap("SELECT scope_revision,scope_outcome,detection_stage_status,validation_stage_status,validation_required FROM secret_scope_outcomes"))
+                .containsEntry("scope_revision",1L).containsEntry("scope_outcome","SUCCEEDED")
+                .containsEntry("detection_stage_status","SUCCEEDED").containsEntry("validation_stage_status","SKIPPED")
+                .containsEntry("validation_required",false);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_credential_sets", Long.class)).isEqualTo(1L);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_occurrences", Long.class)).isEqualTo(1L);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_findings", Long.class)).isEqualTo(2L);
@@ -286,6 +290,16 @@ class GitHubSecretJobProcessorTest {
                 .isEqualTo("FAILED");
         assertThat(jdbc.queryForObject("SELECT object_count FROM secret_run_scopes", Long.class)).isZero();
         assertThat(execution.complete(job.jobId(), job.leaseToken())).isFalse();
+    }
+
+    @Test
+    void changedScopeRevisionBeforeExecutionCannotReadTheNewSourceAsOldEvidence() {
+        insertRun();
+        jdbc.update("UPDATE secret_connection_scopes SET revision=revision+1");
+        var job=execution.claimNextJob("GITHUB").orElseThrow();
+        assertThatThrownBy(()->processor.process(job,execution)).isInstanceOf(SecretJobFailure.class);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_findings",Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_tool_runs",Long.class)).isZero();
     }
 
     private void insertRun() {
