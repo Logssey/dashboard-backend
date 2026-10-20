@@ -119,10 +119,9 @@ public class SecretWorkbenchService {
         for(var entry:byKey.entrySet()) {
             var keyRows=completeByKey.get(entry.getKey());Row first=keyRows.getFirst();
             if(keyRows.stream().anyMatch(r->!access.hasConnectionRole(actor,r.connectionId(),SecretRole.SECURITY)))continue;
-            boolean metadata=first.componentState().equals("METADATA_ONLY");
-            boolean normal=first.componentState().equals("CONFIRMED")&&keyRows.stream().allMatch(r->r.caseId()==null&&!r.requiresReassessment()&&r.exposure().equals("NORMAL")&&r.storagePolicyResult().equals("ALLOWED")&&valid.contains(r.occurrenceId()));
-            if(metadata||normal)subjects.add(new Subject("NormalCredentialSet",entry.getKey(),entry.getKey(),facts("credentialSetId",entry.getKey(),"secretId",entry.getKey(),"maskedLabel",first.maskedLabel(),
-                "inventorySubtype",metadata?"METADATA_ONLY":"AUTHORIZED_STORAGE","whyHereCode",metadata?"ACCESS_KEY_METADATA":"APPROVED_STORAGE","nextActionCode","OPEN_KEY"),keyRows.stream().map(Row::occurrenceId).toList()));
+            String subtype=locations.normalInventorySubtype(keyRows);
+            if(subtype!=null)subjects.add(new Subject("NormalCredentialSet",entry.getKey(),entry.getKey(),facts("credentialSetId",entry.getKey(),"secretId",entry.getKey(),"maskedLabel",first.maskedLabel(),
+                "inventorySubtype",subtype,"whyHereCode",switch(subtype){case "METADATA_ONLY"->"ACCESS_KEY_METADATA";case "RETIRED_HISTORY"->"PROVIDER_RETIREMENT_CONFIRMED";default->"APPROVED_STORAGE";},"nextActionCode","OPEN_KEY"),keyRows.stream().map(Row::occurrenceId).toList()));
         }
         boolean operations=access.hasAnyRole(actor,Set.of(SecretRole.OPERATIONS,SecretRole.SECURITY));
         if(operations) {
