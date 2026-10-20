@@ -8,6 +8,7 @@ import java.util.regex.Pattern;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
+import com.logssey.secret.command.SecretCommandExecutor;
 
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -121,7 +122,7 @@ public class SecretCaseService {
         }
         SecretCaseSummary before = repository.summary(caseId)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
-        if (before.version() != request.expectedVersion()) throw new ApiException(ErrorCode.CONFLICT);
+        SecretCommandExecutor.requireExpectedVersion(request.expectedVersion(), before.version());
         if (Objects.equals(before.assigneeTeam(), team)
                 && Objects.equals(before.assigneeUserId(), assigneeId)) {
             throw new ApiException(ErrorCode.INVALID_INPUT);

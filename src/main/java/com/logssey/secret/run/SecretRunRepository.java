@@ -146,14 +146,23 @@ class SecretRunRepository {
                 (rs, row) -> runStatus(rs), runId).stream().findFirst();
     }
 
-    long countRuns() {
-        return jdbc.queryForObject("SELECT COUNT(*) FROM secret_scan_runs", Long.class);
+    long countRuns(long userId) {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM secret_scan_runs r WHERE " + READABLE_RUN,
+                Long.class, userId);
     }
 
-    List<RunListEntry> listRuns(int size, long offset) {
-        return jdbc.query(RUN_STATUS_SELECT + "ORDER BY r.requested_at DESC, r.run_id DESC LIMIT ? OFFSET ?",
+    private static final String READABLE_RUN = """
+            EXISTS (SELECT 1 FROM secret_role_grants g
+                WHERE g.user_id = ? AND g.revoked_at IS NULL
+                  AND g.role IN ('SECURITY', 'OPERATIONS')
+                  AND (g.connection_id IS NULL OR g.connection_id = r.connection_id))
+            """;
+
+    List<RunListEntry> listRuns(long userId, int size, long offset) {
+        return jdbc.query(RUN_STATUS_SELECT + "WHERE " + READABLE_RUN
+                        + " ORDER BY r.requested_at DESC, r.run_id DESC LIMIT ? OFFSET ?",
                 (rs, row) -> new RunListEntry(runStatus(rs), rs.getString("provider"),
-                        rs.getString("display_name")), size, offset);
+                        rs.getString("display_name")), userId, size, offset);
     }
 
     private static RunStatus runStatus(ResultSet rs) throws SQLException {

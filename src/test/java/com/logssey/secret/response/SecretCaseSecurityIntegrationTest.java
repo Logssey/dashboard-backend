@@ -30,6 +30,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest(properties = {
+        "spring.config.import=",
+        "logssey.secret.bootstrap-operations-login-id=",
         "logssey.admin.login-id=case-admin",
         "logssey.admin.password=case-pass",
         "logssey.admin.display-name=Case Admin",
@@ -114,6 +116,41 @@ class SecretCaseSecurityIntegrationTest {
                 INSERT INTO secret_case_occurrences (case_id, occurrence_id, credential_set_id)
                 VALUES (?, ?, ?)
                 """, caseId, occurrence, secret);
+    }
+
+    @Test
+    void operationsBootstrapRequiresExplicitExistingAccountAndPreservesRevocation() {
+        jdbc.update("""
+                INSERT INTO dashboard_users(login_id,password_hash,display_name,role)
+                VALUES ('operations-bootstrap','hash','Operations','ADMIN')
+                ON CONFLICT (login_id) DO NOTHING
+                """);
+        var bootstrap = new SecretRoleBootstrap(jdbc, "case-admin", "", "", "operations-bootstrap");
+        bootstrap.grantConfiguredRoles();
+        bootstrap.grantConfiguredRoles();
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM secret_role_grants g
+                JOIN dashboard_users u ON u.user_id=g.user_id
+                WHERE u.login_id='operations-bootstrap' AND g.role='OPERATIONS' AND g.revoked_at IS NULL
+                """, Long.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM secret_role_grants g
+                JOIN dashboard_users u ON u.user_id=g.user_id
+                WHERE u.login_id='operations-bootstrap' AND g.role IN ('SECURITY','REMEDIATOR')
+                """, Long.class)).isZero();
+        jdbc.update("UPDATE secret_role_grants SET revoked_at=now() WHERE role='OPERATIONS'");
+        bootstrap.grantConfiguredRoles();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM secret_role_grants WHERE role='OPERATIONS' AND revoked_at IS NULL",
+                Long.class)).isZero();
+    }
+
+    @Test
+    void invalidOperationsBootstrapDoesNotPartiallyGrantRoles() {
+        assertThatThrownBy(() -> new SecretRoleBootstrap(jdbc, "case-admin", "", "", "missing-account")
+                .grantConfiguredRoles()).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> new SecretRoleBootstrap(jdbc, "", "", "", "case-admin")
+                .grantConfiguredRoles()).isInstanceOf(IllegalStateException.class);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM secret_role_grants", Long.class)).isZero();
     }
 
     @Test

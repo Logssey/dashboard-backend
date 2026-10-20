@@ -26,6 +26,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest(properties = {
+        "spring.config.import=",
+        "logssey.secret.bootstrap-operations-login-id=",
         "logssey.admin.login-id=revalidation-admin",
         "logssey.admin.password=revalidation-pass",
         "logssey.admin.display-name=Revalidation Admin",

@@ -12,6 +12,8 @@ import java.util.concurrent.TimeUnit;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
+import com.logssey.secret.access.SecretAccessService;
+import com.logssey.secret.command.SecretCommandExecutor;
 
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterAll;
@@ -54,7 +56,12 @@ class SecretRunServiceTest {
                 INSERT INTO dashboard_users (login_id, password_hash, display_name, role)
                 VALUES ('admin', 'test-hash', 'Test Admin', 'ADMIN')
                 """);
-        service = new SecretRunService(new SecretRunRepository(jdbc), transactions);
+        jdbc.update("""
+                INSERT INTO secret_role_grants (user_id, role, granted_by_user_id, grant_source)
+                VALUES (1, 'OPERATIONS', 1, 'MANUAL')
+                """);
+        service = new SecretRunService(new SecretRunRepository(jdbc), transactions,
+                new SecretAccessService(jdbc), new SecretCommandExecutor(jdbc, transactions));
     }
 
     @Test
@@ -127,10 +134,27 @@ class SecretRunServiceTest {
                 """, old.runId());
 
         assertThat(service.register(new SecretRunRequest(connection, "old-key"), "admin"))
-                .isEqualTo(new SecretRunAcceptedResponse(old.runId(), "SUCCEEDED"));
+                .isEqualTo(old);
         var next = service.register(new SecretRunRequest(connection, "new-key"), "admin");
         assertThat(next.runId()).isNotEqualTo(old.runId());
         assertThat(count("secret_jobs")).isEqualTo(2);
+    }
+
+    @Test
+    void legacySkippedRunCanBeReplayedBeforeACommandCacheEntryExists() {
+        long connection = connection("ACTIVE", null);
+        scope(connection, "fixtures/", true);
+        var request = new SecretRunRequest(connection, "pre-foundation-key");
+        var original = service.register(request, "admin");
+        // Reproduce an existing job created before V13 introduced command audit/idempotency.
+        jdbc.update("DELETE FROM secret_audit_events WHERE command_id IS NOT NULL");
+        jdbc.update("DELETE FROM secret_command_idempotency");
+        jdbc.update("UPDATE secret_jobs SET status='SUCCEEDED',finished_at=now() WHERE connection_id=?", connection);
+        jdbc.update("UPDATE secret_scan_runs SET result_status='SKIPPED',finished_at=now() WHERE run_id=?", original.runId());
+        assertThat(service.register(request, "admin"))
+                .isEqualTo(new SecretRunAcceptedResponse(original.runId(), "SKIPPED"));
+        assertThat(count("secret_jobs")).isEqualTo(1);
+        assertThat(count("secret_command_idempotency")).isEqualTo(1);
     }
 
     @Test
@@ -388,7 +412,7 @@ class SecretRunServiceTest {
     }
 
     @Test
-    void requiresCurrentDatabaseAdminForRegistrationAndStatus() {
+    void requiresCurrentSecretGrantForRegistrationAndStatus() {
         long connection = connection("ACTIVE", null);
         scope(connection, "fixtures/", true);
 
@@ -396,19 +420,41 @@ class SecretRunServiceTest {
                 () -> service.register(new SecretRunRequest(connection, null), "missing"));
         assertCode(ErrorCode.UNAUTHENTICATED,
                 () -> service.register(new SecretRunRequest(connection, null), null));
-        var nonAdmin = new SecretRunService(new SecretRunRepository(jdbc) {
-            @Override
-            Optional<Actor> actor(String loginId) {
-                return Optional.of(new Actor(1, "VIEWER"));
-            }
-        }, transactions);
+        jdbc.update("INSERT INTO dashboard_users (login_id,password_hash,display_name,role) VALUES ('viewer','x','Viewer','ADMIN')");
         assertCode(ErrorCode.FORBIDDEN,
-                () -> nonAdmin.register(new SecretRunRequest(connection, null), "viewer"));
-        assertCode(ErrorCode.FORBIDDEN, () -> nonAdmin.status(1, "viewer"));
+                () -> service.register(new SecretRunRequest(connection, null), "viewer"));
+        assertCode(ErrorCode.FORBIDDEN, () -> service.status(1, "viewer"));
         assertThat(count("secret_jobs")).isZero();
 
         var accepted = service.register(new SecretRunRequest(connection, null), "admin");
         assertCode(ErrorCode.NOT_FOUND, () -> service.status(accepted.runId() + 100, "admin"));
+    }
+
+    @Test
+    void scopedOperationsSeeOnlyTheirRunsAndRevokedRoleCannotReplay() {
+        long first = connection("ACTIVE", null);
+        long second = connection("ACTIVE", null);
+        scope(first, "first/", true);
+        scope(second, "second/", true);
+        var firstRun = service.register(new SecretRunRequest(first, "first-key"), "admin");
+        var secondRun = service.register(new SecretRunRequest(second, "second-key"), "admin");
+        long userId = jdbc.queryForObject("""
+                INSERT INTO dashboard_users(login_id,password_hash,display_name,role)
+                VALUES ('scoped-operations','hash','Scoped','ADMIN') RETURNING user_id
+                """, Long.class);
+        jdbc.update("""
+                INSERT INTO secret_role_grants(user_id,role,connection_id,granted_by_user_id,grant_source)
+                VALUES (?,'OPERATIONS',?,1,'MANUAL')
+                """, userId, first);
+        assertThat(service.list(0, 20, "scoped-operations").total()).isEqualTo(1);
+        assertThat(service.list(0, 20, "scoped-operations").items())
+                .singleElement().satisfies(run -> assertThat(run.runId()).isEqualTo(firstRun.runId()));
+        assertThat(service.status(firstRun.runId(), "scoped-operations").runId()).isEqualTo(firstRun.runId());
+        assertCode(ErrorCode.NOT_FOUND, () -> service.status(secondRun.runId(), "scoped-operations"));
+        jdbc.update("UPDATE secret_role_grants SET revoked_at=now() WHERE user_id=1");
+        assertCode(ErrorCode.FORBIDDEN,
+                () -> service.register(new SecretRunRequest(first, "first-key"), "admin"));
+        assertThat(count("secret_jobs")).isEqualTo(2);
     }
 
     @Test

@@ -203,6 +203,14 @@ class SecretCaseServiceTest {
     }
 
     @Test
+    void operationsRoleCannotReadCredentialCasesOrLocations() {
+        long caseId = caseFixture();
+        grant(securityUser, "OPERATIONS", null);
+        assertThat(service.list(0, 20, "PRODUCTION", "security").items()).isEmpty();
+        assertCode(ErrorCode.FORBIDDEN, () -> service.detail(caseId, "security"));
+    }
+
+    @Test
     void rejectsUnsafeReasonAndTeamWhileSupportingTeamOnlyAndUnassign() {
         long caseId = caseFixture();
         grant(securityUser, "SECURITY", null);
