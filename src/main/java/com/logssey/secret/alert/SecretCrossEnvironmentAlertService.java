@@ -69,7 +69,7 @@ public class SecretCrossEnvironmentAlertService {
     accepted=allLocations&&!fixtureIds.isEmpty()&&evidence.stream().map(e->(Long)e.get("attestationId")).collect(java.util.stream.Collectors.toSet()).containsAll(fixtureIds);
    }else if(r.reasonCode().equals("ALL_FINDINGS_FALSE_POSITIVE")&&a.get("status").equals("SUSPECTED_REAL")){
     accepted=allCurrentFindingsCorrected(id,correctionIds,actor);
-   }else if(r.reasonCode().equals("CREDENTIAL_RETIRED")&&a.get("status").equals("CONFIRMED_REAL")){
+   }else if(r.reasonCode().equals("CREDENTIAL_RETIRED")&&Set.of("SUSPECTED_REAL","CONFIRMED_REAL").contains(a.get("status"))){
     var eligible=(List<Map<String,Object>>)closure.get("lifecycleEvidence");
     accepted=!lifecycleIds.isEmpty()&&eligible.stream().map(e->(Long)e.get("evidenceId")).collect(java.util.stream.Collectors.toSet()).containsAll(lifecycleIds);
    }
@@ -154,6 +154,7 @@ public class SecretCrossEnvironmentAlertService {
   if(a.get("status").equals("SUSPECTED_REAL")){
    var fixtures=(List<Map<String,Object>>)eligible.get("fixtureAttestations");if(!fixtures.isEmpty()&&locations.stream().allMatch(l->fixtures.stream().anyMatch(f->Objects.equals(f.get("scopeId"),l.get("scope_id")))))allowed.add("VERIFIED_SYNTHETIC");
    var corrections=(List<Map<String,Object>>)eligible.get("corrections");if(!corrections.isEmpty()&&allCurrentFindingsCorrected(number(a,"alert_id"),corrections.stream().map(c->(Long)c.get("correctionId")).toList(),actor))allowed.add("ALL_FINDINGS_FALSE_POSITIVE");
+    if(!((List<?>)eligible.get("lifecycleEvidence")).isEmpty())allowed.add("CREDENTIAL_RETIRED");
   }else if(a.get("status").equals("CONFIRMED_REAL")&&!((List<?>)eligible.get("lifecycleEvidence")).isEmpty())allowed.add("CREDENTIAL_RETIRED");
   boolean open=a.get("closed_at")==null;p.put("capabilities",Map.of("canAssign",open&&manage,"canAcknowledge",open&&manage,"canClose",open&&manage&&!allowed.isEmpty()));
   if(detail){p.put("eligibleClosureEvidence",eligible);p.put("allowedClosureReasonCodes",allowed);p.put("allowedAcknowledgementReasonCodes",ACK);p.put("allowedAssignmentReasonCodes",ASSIGNMENT_REASONS);
