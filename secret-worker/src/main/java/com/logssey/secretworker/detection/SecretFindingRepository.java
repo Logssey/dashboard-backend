@@ -165,7 +165,7 @@ public final class SecretFindingRepository {
         List<SecretFindingNormalizer.Credential> normalized = inspection.credentials();
         int storedFindings = 0;
         for (SecretFindingNormalizer.Credential credential : normalized) {
-            long credentialSetId = upsertCredential(credential, now);
+            long credentialSetId = upsertCredential(credential, context.runId(), now);
             long occurrenceId = upsertOccurrence(credentialSetId, context, sourceObjectRef,
                     credential.locationKey(), objectVersion, now);
             for (GitleaksFinding finding : credential.findings()) {
@@ -182,7 +182,7 @@ public final class SecretFindingRepository {
         return new ObjectResult(normalized.size(), storedFindings);
     }
 
-    private long upsertCredential(SecretFindingNormalizer.Credential credential, Instant now) {
+    private long upsertCredential(SecretFindingNormalizer.Credential credential, long runId, Instant now) {
         String conflict = "CONFIRMED".equals(credential.componentState()) ? """
                 ON CONFLICT (issuer, credential_type, fingerprint_key_version, fingerprint)
                     WHERE component_state = 'CONFIRMED'
@@ -195,12 +195,12 @@ public final class SecretFindingRepository {
         Long id = jdbc.queryForObject("""
                 INSERT INTO secret_credential_sets
                     (issuer, credential_type, component_state, fingerprint, candidate_locator,
-                     fingerprint_key_version, masked_label, first_seen_at, last_seen_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     fingerprint_key_version, masked_label, first_seen_at, last_seen_at, first_seen_run_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """ + conflict + " RETURNING credential_set_id", Long.class,
                 credential.issuer(), credential.credentialType(), credential.componentState(),
                 credential.fingerprint(), credential.candidateLocator(), credential.fingerprintKeyVersion(),
-                credential.maskedLabel(), utc(now), utc(now));
+                credential.maskedLabel(), utc(now), utc(now), runId);
         return Objects.requireNonNull(id);
     }
 
