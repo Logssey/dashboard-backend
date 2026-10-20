@@ -63,6 +63,10 @@ public class AnalysisEngine {
         var beforePaths = PathSearch.find(graph.nodes(), before);
         var afterPaths = PathSearch.find(graph.nodes(), after);
 
+        // 머지 전에 이미 닿던 데이터까지의 가장 짧은 길이
+        Map<String, Integer> shortestBefore = new HashMap<>();
+        beforePaths.values().forEach(p -> shortestBefore.merge(p.target().id(), p.edges().size(), Math::min));
+
         List<Change> result = new ArrayList<>();
         for (var entry : afterPaths.entrySet()) {
             if (beforePaths.containsKey(entry.getKey())) continue;
@@ -73,7 +77,12 @@ public class AnalysisEngine {
             String roleId = credentialRole(path);
             var evidence = MAPPER.createObjectNode();
             if (cause != null) evidence.put("causeAction", cause.action());
-            if (tier == 1) {
+            Integer shortest = shortestBefore.get(path.target().id());
+            if (shortest != null && path.edges().size() < shortest) {
+                // 이미 닿던 데이터까지 더 짧은 길이 생김: 새 노출이 아니라 단축 (rule-spec path.shortened)
+                result.add(new Change("SHORTENED", "path.shortened", tier, "MEDIUM", "WARN", entry.getKey(),
+                        path.hops(), cause, evidence, roleId));
+            } else if (tier == 1) {
                 // 1등급 차단은 시뮬레이터가 허용을 확인했을 때만. 아니면 경고·HIGH 로 낮춘다 (rule-spec)
                 String beforeDecision = decide(graph, beforePolicies, roleId, path.target());
                 String afterDecision = decide(graph, changes.rolePolicies(), roleId, path.target());
@@ -95,8 +104,9 @@ public class AnalysisEngine {
             result.add(new Change("REMOVED", "path.removed", path.target().tier(), null, "INFO", entry.getKey(),
                     path.hops(), cause, evidence, credentialRole(path)));
         }
+        List<String> order = List.of("ADDED", "SHORTENED", "REMOVED");
         result.sort((a, b) -> a.change().equals(b.change())
-                ? Integer.compare(a.tier(), b.tier()) : a.change().compareTo(b.change()));
+                ? Integer.compare(a.tier(), b.tier()) : Integer.compare(order.indexOf(a.change()), order.indexOf(b.change())));
 
         int readersBefore = readers(graph, before, tfstateArns);
         int readersAfter = readers(graph, after, tfstateArns);

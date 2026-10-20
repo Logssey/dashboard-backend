@@ -109,12 +109,19 @@ class AnalyzeRunProcessorTest {
         assertThat(jdbc.queryForObject("SELECT stats -> 'resources' ->> 'delete' FROM iac_jobs WHERE kind = 'ANALYZE_RUN'",
                 String.class)).isEqualTo("1");
         assertThat(count("iac_plan_payloads")).as("분석이 끝나면 plan 은 남지 않는다 (SR-5)").isZero();
+        assertThat(count("iac_findings WHERE source = 'PATH' AND status = 'OPEN' AND rule_id = 'path.tier1.added'"))
+                .as("경로 결과는 발견 건으로도 남는다").isEqualTo(3);
+
         assertThat(jdbc.queryForObject("""
                 SELECT concat_ws('|', s ->> 'ruleId', s ->> 'severity', s ->> 'readersBefore', s ->> 'readersAfter',
                                  s ->> 'secretsAdded')
                 FROM (SELECT stats -> 'state' AS s FROM iac_jobs WHERE kind = 'ANALYZE_RUN') x
                 """, String.class)).as("tfstate 읽기 주체: 사용자 2 → 노드 역할까지 3")
                 .isEqualTo("state.reader_increase|HIGH|2|3|0");
+        // 같은 PR 에 거부 정책을 되살린 커밋이 오면 경로 발견 건은 닫힌다
+        analyze("nochange.json.gz", policySimulator());
+        assertThat(count("iac_findings WHERE source = 'PATH' AND status = 'OPEN'")).isZero();
+        assertThat(count("iac_findings WHERE source = 'PATH' AND status = 'FIXED'")).isEqualTo(3);
     }
 
     @Test
