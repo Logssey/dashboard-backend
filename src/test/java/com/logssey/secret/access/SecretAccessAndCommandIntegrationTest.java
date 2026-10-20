@@ -124,9 +124,13 @@ class SecretAccessAndCommandIntegrationTest {
                 INSERT INTO secret_case_occurrences(case_id,occurrence_id,credential_set_id)
                 SELECT ?,occurrence_id,credential_set_id FROM secret_occurrences WHERE occurrence_id=?
                 """, caseId, firstOccurrence);
+        // A case coordinator does not inherit permission to act on every linked location.
+        assertThat(access.canReadOccurrence(remediator, firstOccurrence)).isFalse();
+        jdbc.update("UPDATE secret_case_occurrences SET assigned_user_id=? WHERE case_id=? AND occurrence_id=?",
+                remediator.userId(),caseId,firstOccurrence);
         assertThat(access.canReadOccurrence(remediator, firstOccurrence)).isTrue();
         assertThat(access.canReadOccurrence(remediator, secondOccurrence)).isFalse();
-        jdbc.update("UPDATE secret_response_cases SET assigned_user_id=NULL,assigned_team='Responders' WHERE case_id=?", caseId);
+        jdbc.update("UPDATE secret_case_occurrences SET assigned_user_id=NULL,assigned_team='Responders' WHERE case_id=?", caseId);
         assertThat(access.canReadOccurrence(remediator, firstOccurrence)).isFalse();
         jdbc.update("INSERT INTO secret_team_memberships(user_id,team_name,added_by_user_id) VALUES (?,'Responders',?)",
                 remediator.userId(), security.userId());

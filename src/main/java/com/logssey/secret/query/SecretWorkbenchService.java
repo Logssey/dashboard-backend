@@ -6,6 +6,7 @@ import java.util.stream.Collectors;
 import com.logssey.common.error.*;
 import com.logssey.secret.access.*;
 import com.logssey.secret.connection.SecretCoverageService;
+import com.logssey.secret.closure.SecretClosureService;
 import com.logssey.secret.response.SecretLocationWorkflow;
 import com.logssey.secret.snapshot.SecretReadSnapshots;
 import com.logssey.secret.snapshot.SecretReadSnapshots.*;
@@ -31,10 +32,15 @@ public class SecretWorkbenchService {
     }
     private record Metric(String key,String unit,String type,boolean allowed,List<String> ignored) {}
     private final JdbcTemplate jdbc;private final SecretAccessService access;private final SecretLocationRepository locations;
-    private final SecretLocationWorkflow cases;private final SecretCoverageService coverage;private final SecretReadSnapshots snapshots;private final ObjectMapper json;
+    private final SecretLocationWorkflow cases;private final SecretCoverageService coverage;private final SecretReadSnapshots snapshots;private final ObjectMapper json;private final SecretClosureService closure;
+    @org.springframework.beans.factory.annotation.Autowired
+    public SecretWorkbenchService(JdbcTemplate jdbc,SecretAccessService access,SecretLocationRepository locations,SecretLocationWorkflow cases,
+            SecretCoverageService coverage,SecretReadSnapshots snapshots,ObjectMapper json,SecretClosureService closure) {
+        this.jdbc=jdbc;this.access=access;this.locations=locations;this.cases=cases;this.coverage=coverage;this.snapshots=snapshots;this.json=json;this.closure=closure;
+    }
     public SecretWorkbenchService(JdbcTemplate jdbc,SecretAccessService access,SecretLocationRepository locations,SecretLocationWorkflow cases,
             SecretCoverageService coverage,SecretReadSnapshots snapshots,ObjectMapper json) {
-        this.jdbc=jdbc;this.access=access;this.locations=locations;this.cases=cases;this.coverage=coverage;this.snapshots=snapshots;this.json=json;
+        this(jdbc,access,locations,cases,coverage,snapshots,json,null);
     }
     @Transactional(isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> summary(String login,Filters f,String snapshotId) {
@@ -99,7 +105,7 @@ public class SecretWorkbenchService {
         var rows=allRows.stream().filter(r->(f.connectionId()==null||r.connectionId()==f.connectionId())
             &&(f.source().equals("ALL")||f.source().equals(r.source()))&&(f.provider().equals("ALL")||f.provider().equals(r.issuer()))
             &&(f.environment().equals("ALL")||f.environment().equals(r.environment()))).toList();
-        var subjects=new ArrayList<Subject>();
+        var subjects=new ArrayList<Subject>();OffsetDateTime acceptanceDeadline=null;
         Set<Long> valid=validOccurrences(allRows);
         var completeByKey=allRows.stream().collect(Collectors.groupingBy(Row::secretId));
         var byKey=rows.stream().collect(Collectors.groupingBy(Row::secretId,LinkedHashMap::new,Collectors.toList()));
@@ -108,6 +114,12 @@ public class SecretWorkbenchService {
             var member=rows.stream().filter(r->Objects.equals(r.caseId(),id)).toList();
             if(f.assignee()!=null&&member.stream().noneMatch(r->assignmentMatches(actor,r,f.assignee())))continue;
             var c=cases.detail(id,login);c.remove("checklist");c.remove("occurrences");c.remove("capabilities");
+            var deadline=closure==null?null:closure.riskAcceptanceDeadline(id,login);
+            if(deadline!=null) {
+                c.put("underlyingActionStage",c.get("stage"));c.put("stage","RISK_ACCEPTED");
+                c.put("riskAcceptanceExpiresAt",deadline);
+                if(acceptanceDeadline==null||deadline.isBefore(acceptanceDeadline))acceptanceDeadline=deadline;
+            }
             c.put("credentialSetId",c.get("secretId"));c.put("whyHereCode","ACTIVE_RESPONSE");c.put("nextActionCode","OPEN_CASE");
             subjects.add(new Subject("ResponseCase",id,member.getFirst().secretId(),c,member.stream().map(Row::occurrenceId).toList()));
         }
@@ -152,6 +164,11 @@ public class SecretWorkbenchService {
             }
         }
         Header h=snapshots.create(actor.userId(),"WORKBENCH",f.normalized(),revision,!access.hasGlobalRole(actor,SecretRole.SECURITY),subjects);
+        if(acceptanceDeadline!=null&&acceptanceDeadline.isBefore(h.expiresAt())) {
+            if(!acceptanceDeadline.isAfter(OffsetDateTime.now()))throw new SecretReadConflict(SecretReadConflict.Reason.SNAPSHOT_EXPIRED);
+            jdbc.update("UPDATE secret_query_snapshots SET expires_at=? WHERE snapshot_id=?",acceptanceDeadline,h.snapshotId());
+            h=new Header(h.snapshotId(),h.scope(),h.ownerUserId(),h.asOf(),acceptanceDeadline,h.restrictedCoverage());
+        }
         boolean security=access.hasAnyRole(actor,Set.of(SecretRole.SECURITY)),response=security||access.hasAnyRole(actor,Set.of(SecretRole.REMEDIATOR));
         List<String> nonCaseIgnored=f.assignee()==null?List.of():List.of("assignee");
         List<String> na=new ArrayList<>();if(!f.provider().equals("ALL"))na.add("provider");if(!f.environment().equals("ALL"))na.add("environment");if(f.assignee()!=null)na.add("assignee");

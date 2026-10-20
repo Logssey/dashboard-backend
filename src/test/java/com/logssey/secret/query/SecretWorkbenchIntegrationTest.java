@@ -37,6 +37,25 @@ class SecretWorkbenchIntegrationTest {
         assertThat(queue.get("total")).isEqualTo(1);assertThat(queue.get("unit")).isEqualTo("ResponseCase");
         assertThat(metric(summary("security",filters(),null),"ongoingCases").get("value")).isEqualTo(2L);
     }
+    @Test void acceptedRiskStaysOutsideActionCardsAndItsDeadlineExpiresTheFrozenCounts(){
+        caseFixture(connection,scope);long id=jdbc.queryForObject("SELECT max(case_id) FROM secret_response_cases",Long.class);
+        var closure=org.mockito.Mockito.mock(com.logssey.secret.closure.SecretClosureService.class);
+        var deadline=java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC).plusMinutes(3);
+        org.mockito.Mockito.when(closure.riskAcceptanceDeadline(id,"security")).thenReturn(deadline);
+        var access=new SecretAccessService(jdbc);var json=JsonMapper.builder().build();var snapshots=new SecretReadSnapshots(jdbc,json);
+        service=new SecretWorkbenchService(jdbc,access,new SecretLocationRepository(jdbc),
+            new SecretLocationWorkflow(jdbc,access,new SecretCommandExecutor(jdbc,tm),snapshots),new SecretCoverageService(jdbc,access),snapshots,json,closure);
+        var first=summary("security",filters(),null);String snapshot=first.get("snapshotId").toString();
+        assertThat(metric(first,"ongoingCases").get("value")).isEqualTo(0L);
+        assertThat(((Map<?,?>)((Map<?,?>)first.get("caseSummary")).get("actionCounts")).get("RISK_ACCEPTED")).isEqualTo(1L);
+        assertThat((java.time.OffsetDateTime)first.get("expiresAt")).isEqualTo(deadline);
+        assertThat(tx.execute(s->service.queue("security",filters(),"ACTION_REQUIRED",null,0,20,snapshot)).get("total")).isEqualTo(0);
+        assertThat(tx.execute(s->service.queue("security",filters(),"CURRENT_CASES","RISK_ACCEPTED",0,20,snapshot)).get("total")).isEqualTo(1);
+        jdbc.update("UPDATE secret_query_snapshots SET expires_at=created_at+interval '1 microsecond' WHERE snapshot_id=?",java.util.UUID.fromString(snapshot));
+        code(ErrorCode.CONFLICT,()->summary("security",filters(),snapshot));
+        org.mockito.Mockito.when(closure.riskAcceptanceDeadline(id,"security")).thenReturn(null);
+        assertThat(metric(summary("security",filters(),null),"ongoingCases").get("value")).isEqualTo(1L);
+    }
     @Test void aGrantForConnectionOperationsDoesNotExposeKeysOrCases(){
         caseFixture(connection,scope);var result=summary("operations",filters(),null);
         assertThat(metric(result,"ongoingCases").get("status")).isEqualTo("NOT_AUTHORIZED");

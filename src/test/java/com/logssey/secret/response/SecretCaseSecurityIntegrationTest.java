@@ -119,6 +119,26 @@ class SecretCaseSecurityIntegrationTest {
     }
 
     @Test
+    void closureAndExceptionEndpointsWorkThroughSpringTransactionAndRepositoryProxies() throws Exception {
+        jdbc.update("INSERT INTO secret_role_grants(user_id,role,granted_by_user_id,grant_source) VALUES (?,'SECURITY',?,'MANUAL')",actorId,actorId);
+        MockMvc mvc=mvc();
+        var login=mvc.perform(post("/api/v1/auth/login").with(csrf()).contentType(MediaType.APPLICATION_JSON)
+            .content("{\"loginId\":\"case-admin\",\"password\":\"case-pass\"}")).andExpect(status().isOk()).andReturn();
+        var session=(MockHttpSession)login.getRequest().getSession(false);
+        for(String suffix:java.util.List.of("closure-checks","exceptions","transfer-evidence"))
+            mvc.perform(get("/api/v1/secrets/cases/"+caseId+"/"+suffix).session(session)).andExpect(status().isOk());
+        long occurrence=jdbc.queryForObject("SELECT opening_occurrence_id FROM secret_response_cases WHERE case_id=?",Long.class,caseId);
+        String body="{\"occurrenceIds\":["+occurrence+"],\"reasonCode\":\"BUSINESS_CONTINUITY\",\"evidenceRef\":\"TICKET:SEC-123\",\"expiresAt\":\""
+            +OffsetDateTime.now(ZoneOffset.UTC).plusDays(1)+"\",\"expectedCaseVersion\":0,\"idempotencyKey\":\"http-exception-"+caseId+"\"}";
+        mvc.perform(post("/api/v1/secrets/cases/"+caseId+"/exceptions").session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("APPROVED"));
+        mvc.perform(get("/api/v1/secrets/cases/"+caseId+"/exceptions").session(session))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.fullyRiskAccepted").value(true));
+        mvc.perform(get("/api/v1/secrets/summary?origin=TEST").session(session))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.caseSummary.actionCounts.RISK_ACCEPTED").value(1));
+    }
+
+    @Test
     void operationsBootstrapRequiresExplicitExistingAccountAndPreservesRevocation() {
         jdbc.update("""
                 INSERT INTO dashboard_users(login_id,password_hash,display_name,role)
