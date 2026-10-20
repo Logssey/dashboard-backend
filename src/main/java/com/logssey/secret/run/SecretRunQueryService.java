@@ -68,7 +68,7 @@ public class SecretRunQueryService {
         var args=new HashMap<String,Object>();args.put("run",runId);args.put("userId",actor.userId());
         long total=named.queryForObject("SELECT count(*)"+from,args,Long.class);args.put("limit",size);args.put("offset",(long)page*size);
         if(total==0&&!Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM secret_scan_runs r JOIN secret_role_grants g ON g.role='SECURITY' AND g.user_id=? AND g.revoked_at IS NULL AND (g.connection_id IS NULL OR g.connection_id=r.connection_id) WHERE r.run_id=?)",Boolean.class,actor.userId(),runId)))throw new ApiException(ErrorCode.NOT_FOUND);
-        var items=named.query("SELECT f.finding_id,f.occurrence_id,k.credential_set_id,k.masked_label,k.component_state,f.rule_id,f.rule_version,s.response_origin"+from+" ORDER BY f.finding_id LIMIT :limit OFFSET :offset",args,
+        var items=named.query("SELECT f.finding_id,f.occurrence_id,k.credential_set_id,k.masked_label,k.component_state,f.rule_id,f.rule_version,s.response_origin "+from+" ORDER BY f.finding_id LIMIT :limit OFFSET :offset",args,
             (rs,n)->facts("findingId",rs.getLong("finding_id"),"occurrenceId",rs.getLong("occurrence_id"),"credentialSetId",rs.getLong("credential_set_id"),"secretId",rs.getLong("credential_set_id"),
                 "maskedLabel",rs.getString("masked_label"),"componentState",rs.getString("component_state"),"ruleId",rs.getString("rule_id"),"ruleVersion",rs.getString("rule_version"),"origin",rs.getString("response_origin")));
         return facts("items",items,"total",total,"unit","Finding","page",page,"size",size,"runId",runId,"asOf",OffsetDateTime.now());
