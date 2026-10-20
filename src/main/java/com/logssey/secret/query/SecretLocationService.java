@@ -96,7 +96,8 @@ public class SecretLocationService {
         SecretInventoryFilters.require(actionStatus,"ALL","OPEN","IN_PROGRESS","REVALIDATION_PENDING","RESOLVED","NO_CASE");
         if(secretId<=0) throw new ApiException(ErrorCode.NOT_FOUND);
         var actor=reader(loginId);
-        var visible=repository.visible(actor.userId(),secretId,filters);
+        var base=new SecretInventoryFilters(filters.origin(),"ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL");
+        var visible=repository.visible(actor.userId(),secretId,base);
         // A nonexistent key and a key with no readable relationship produce the same response.
         if(visible.isEmpty()) throw new ApiException(ErrorCode.NOT_FOUND);
         String detailVersion=SecretReadSnapshots.digest(visible.stream().map(row -> row.occurrenceId()+":"+
@@ -104,7 +105,9 @@ public class SecretLocationService {
             row.caseVersion()+":"+row.validationAt()).collect(Collectors.joining("|")));
         if(expectedDetailVersion!=null && !expectedDetailVersion.equals(detailVersion))
             throw new ApiException(ErrorCode.CONFLICT,"위치 정보가 변경되었어요. 다시 확인해 주세요.");
-        var filtered=visible.stream().filter(row -> ("ALL".equals(presence)||row.presence().equals(presence))
+        var filtered=visible.stream().filter(row -> ("ALL".equals(filters.source())||row.source().equals(filters.source()))
+            &&("ALL".equals(filters.environment())||row.environment().equals(filters.environment()))
+            &&("ALL".equals(presence)||row.presence().equals(presence))
             &&("ALL".equals(exposure)||row.exposure().equals(exposure))
             &&("ALL".equals(actionStatus)||Objects.equals(row.actionStatus()==null?"NO_CASE":row.actionStatus(),actionStatus))).toList();
         var items=filtered.stream().skip((long)page*size).limit(size).map(row -> location(row,actor)).toList();

@@ -100,6 +100,15 @@ class SecretLocationIntegrationTest {
         assertCode(ErrorCode.NOT_FOUND,()->service.detail("security",key,"PRODUCTION"));
         assertCode(ErrorCode.NOT_FOUND,()->service.detail("security",99999,"PRODUCTION"));
     }
+    @Test void filteringAnAuthorizedKeysLocationsToZeroReturnsAnEmptyPage() {
+        long conn=connection(); grant(security,"SECURITY",conn); long key=key("CONFIRMED","f1");
+        occurrence(key,conn,scope(conn),"PRESENT");
+        var filters=new SecretInventoryFilters("PRODUCTION","AWS","ALL","ALL","ALL","ALL","ALL","ALL","ALL");
+        var result=service.locations("security",key,filters,0,20,"ALL","ALL","ALL",null);
+        assertThat(result.get("total")).isEqualTo(0);
+        assertThat(result.get("items")).isEqualTo(List.of());
+        assertThat(((Map<?,?>)result.get("credential")).get("id")).isEqualTo(key);
+    }
     private Map<String,Object> inventory(String login,SecretInventoryFilters f,String id) {
         return tx.execute(status->service.inventory(login,f,0,20,id));
     }
