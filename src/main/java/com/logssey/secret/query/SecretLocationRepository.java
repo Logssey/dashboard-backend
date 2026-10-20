@@ -29,8 +29,12 @@ public class SecretLocationRepository {
                        coalesce((to_jsonb(s)->>'revision')::bigint,s.response_origin_version) AS scope_revision,
                        current_case.case_id, current_case.response_status, current_case.case_version,
                        current_case.assigned_user_id, current_case.assigned_team,
-                       latest.result AS validation_result, latest.reason_code AS validation_reason,
-                       latest.completed_at AS validation_at, latest.provider_checked_at AS validation_checked_at,
+                       CASE WHEN current_case.validation_after_action_at IS NOT NULL AND (latest.provider_checked_at IS NULL OR latest.provider_checked_at<=current_case.validation_after_action_at)
+                         THEN 'UNCHECKED' ELSE latest.result END AS validation_result,
+                       CASE WHEN current_case.validation_after_action_at IS NOT NULL AND (latest.provider_checked_at IS NULL OR latest.provider_checked_at<=current_case.validation_after_action_at)
+                         THEN 'POST_ACTION_VALIDATION_REQUIRED' ELSE latest.reason_code END AS validation_reason,
+                       CASE WHEN current_case.validation_after_action_at IS NULL OR latest.provider_checked_at>current_case.validation_after_action_at THEN latest.completed_at END AS validation_at,
+                       CASE WHEN current_case.validation_after_action_at IS NULL OR latest.provider_checked_at>current_case.validation_after_action_at THEN latest.provider_checked_at END AS validation_checked_at,
                        policy.policy_result AS storage_policy_result,policy.reason_code AS storage_policy_reason,
                        policy.binding_id AS storage_binding_id,policy.policy_id AS storage_policy_id,
                        policy.policy_version AS storage_policy_version,policy.requires_reassessment,
@@ -49,7 +53,9 @@ public class SecretLocationRepository {
                     ORDER BY outcome.requested_at DESC,outcome.run_id DESC LIMIT 1
                 ) latest_scope ON TRUE
                 LEFT JOIN LATERAL (
-                    SELECT rc.case_id, co.response_status, rc.version AS case_version,
+                    SELECT rc.case_id, co.response_status, rc.version AS case_version,co.last_material_action_at,
+                           (SELECT max(a.performed_at) FROM secret_action_records a WHERE a.case_id=co.case_id AND a.occurrence_id=co.occurrence_id
+                             AND a.action_type IN ('ROTATED','REVOKED','REMOVED_FROM_SOURCE')) AS validation_after_action_at,
                            CASE WHEN jsonb_exists(to_jsonb(co),'assigned_user_id') THEN (to_jsonb(co)->>'assigned_user_id')::bigint
                                ELSE rc.assigned_user_id END AS assigned_user_id,
                            CASE WHEN jsonb_exists(to_jsonb(co),'assigned_team') THEN to_jsonb(co)->>'assigned_team'
@@ -119,6 +125,26 @@ public class SecretLocationRepository {
                     "lastUsedService",rs.getString("last_used_service"),"lastUsedRegion",rs.getString("last_used_region"),
                     "observedAt",rs.getObject("observed_at",OffsetDateTime.class)));
         return rows.isEmpty()?null:rows.getFirst();
+    }
+
+    /** Caller has already applied the shared occurrence ACL. No original path or key identity is loaded. */
+    public Map<String,Object> operationalFacts(long occurrenceId) {
+        var rows=jdbc.queryForList("""
+          SELECT fs.fixture_status,co.last_material_action_at,co.version AS location_version,co.action_cycle,
+             (SELECT max(a.performed_at) FROM secret_action_records a WHERE a.case_id=co.case_id AND a.occurrence_id=o.occurrence_id
+               AND a.action_type IN ('ROTATED','REVOKED','REMOVED_FROM_SOURCE')) AS validation_after_action_at,
+             co.actions_completed_at,v.result AS previous_validation_result,v.reason_code AS previous_validation_reason,
+             v.completed_at AS previous_validation_at,v.provider_checked_at AS previous_provider_checked_at
+          FROM secret_occurrences o JOIN secret_test_fixture_status fs USING(occurrence_id)
+          LEFT JOIN LATERAL(SELECT co.* FROM secret_case_occurrences co JOIN secret_response_cases c USING(case_id)
+            JOIN secret_connection_scopes s ON s.scope_id=o.scope_id WHERE co.occurrence_id=o.occurrence_id AND c.is_current
+             AND c.case_origin=s.response_origin ORDER BY c.case_id DESC LIMIT 1)co ON true
+          LEFT JOIN LATERAL(SELECT v.* FROM secret_validation_attempts v JOIN secret_scan_runs r ON r.run_id=v.run_id
+            WHERE v.credential_set_id=o.credential_set_id AND r.connection_id=o.connection_id
+             AND EXISTS(SELECT 1 FROM secret_findings f WHERE f.occurrence_id=o.occurrence_id AND f.run_id=v.run_id)
+            ORDER BY v.completed_at DESC,v.attempt_id DESC LIMIT 1)v ON true WHERE o.occurrence_id=:id
+          """,Map.of("id",occurrenceId));
+        return rows.isEmpty()?Map.of():rows.getFirst();
     }
 
     public record Row(long secretId,String issuer,String credentialType,String componentState,String maskedLabel,

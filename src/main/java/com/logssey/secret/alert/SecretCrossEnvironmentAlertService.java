@@ -30,6 +30,7 @@ public class SecretCrossEnvironmentAlertService {
   return Map.of("items",items.subList(from,to),"total",items.size(),"page",page,"size",size,"unit","CrossEnvironmentAlert","asOf",OffsetDateTime.now(ZoneOffset.UTC));
  }
  public Map<String,Object> detail(String login,long id){var actor=access.requirePrincipal(login);var a=read(id,false);var locations=visibleLocations(actor,id);if(locations.isEmpty())throw new ApiException(ErrorCode.NOT_FOUND);return projection(actor,a,locations,true);}
+ @Transactional
  public Map<String,Object> assign(String login,long id,SecretCrossEnvironmentAlertRequests.Assignment r){
   if(r==null||r.assigneeUserId()!=null&&r.assigneeUserId()<=0)throw new ApiException(ErrorCode.INVALID_INPUT);code(r.reasonCode(),ASSIGNMENT_REASONS);future(r.dueAt(),false);
   var actor=access.requirePrincipal(login);requireManage(actor,id);
@@ -43,6 +44,7 @@ public class SecretCrossEnvironmentAlertService {
    return new SecretCommandResult(id,number(a,"version")+1,SecretCommandResult.Status.OPEN);
   });return mutation("alertId",result);
  }
+ @Transactional
  public Map<String,Object> acknowledge(String login,long id,SecretCrossEnvironmentAlertRequests.Acknowledge r){
   if(r==null)throw new ApiException(ErrorCode.INVALID_INPUT);code(r.reasonCode(),ACK);var actor=access.requirePrincipal(login);requireManage(actor,id);
   var result=commands.execute(actor,SecretCommandExecutor.Kind.CROSS_ALERT_ACK,r.idempotencyKey(),digest(id,r.reasonCode(),r.expectedVersion()),()->requireManage(actor,id),()->{
@@ -52,6 +54,7 @@ public class SecretCrossEnvironmentAlertService {
    return new SecretCommandResult(id,number(a,"version")+1,SecretCommandResult.Status.OPEN);
   });return mutation("alertId",result);
  }
+ @Transactional
  public Map<String,Object> close(String login,long id,SecretCrossEnvironmentAlertRequests.Close r){
   if(r==null)throw new ApiException(ErrorCode.INVALID_INPUT);code(r.reasonCode(),CLOSE);var fixtureIds=ids(r.fixtureAttestationIds());var correctionIds=ids(r.correctionIds());var lifecycleIds=ids(r.lifecycleEvidenceIds());
   var actor=access.requirePrincipal(login);requireManage(actor,id);
@@ -59,13 +62,13 @@ public class SecretCrossEnvironmentAlertService {
    var a=read(id,true);requireOpen(a);SecretCommandExecutor.requireExpectedVersion(r.expectedVersion(),number(a,"version"));
    if(r.caseId()==null&&r.investigationTaskId()==null||r.caseId()!=null&&!Objects.equals(a.get("test_case_id"),r.caseId())
       ||r.investigationTaskId()!=null&&!Objects.equals(a.get("investigation_task_id"),r.investigationTaskId()))throw new ApiException(ErrorCode.EVIDENCE_REQUIRED);
-   var closure=closureEvidence(a);boolean accepted=false;
+   var closure=closureEvidence(a,actor);boolean accepted=false;
    if(r.reasonCode().equals("VERIFIED_SYNTHETIC")&&a.get("status").equals("SUSPECTED_REAL")){
     var evidence=(List<Map<String,Object>>)closure.get("fixtureAttestations");
     boolean allLocations=allLocations(id).stream().allMatch(l->evidence.stream().anyMatch(e->Objects.equals(e.get("scopeId"),l.get("scope_id"))&&fixtureIds.contains(e.get("attestationId"))));
     accepted=allLocations&&!fixtureIds.isEmpty()&&evidence.stream().map(e->(Long)e.get("attestationId")).collect(java.util.stream.Collectors.toSet()).containsAll(fixtureIds);
    }else if(r.reasonCode().equals("ALL_FINDINGS_FALSE_POSITIVE")&&a.get("status").equals("SUSPECTED_REAL")){
-    accepted=allCurrentFindingsCorrected(id,correctionIds);
+    accepted=allCurrentFindingsCorrected(id,correctionIds,actor);
    }else if(r.reasonCode().equals("CREDENTIAL_RETIRED")&&a.get("status").equals("CONFIRMED_REAL")){
     var eligible=(List<Map<String,Object>>)closure.get("lifecycleEvidence");
     accepted=!lifecycleIds.isEmpty()&&eligible.stream().map(e->(Long)e.get("evidenceId")).collect(java.util.stream.Collectors.toSet()).containsAll(lifecycleIds);
@@ -88,7 +91,7 @@ public class SecretCrossEnvironmentAlertService {
  private List<Map<String,Object>> visibleLocations(SecretPrincipal actor,long id){return allLocations(id).stream().filter(l->access.hasConnectionRole(actor,number(l,"connection_id"),SecretRole.SECURITY)).toList();}
  private boolean canManage(SecretPrincipal actor,long id){var all=allLocations(id);return !all.isEmpty()&&all.stream().allMatch(l->access.hasConnectionRole(actor,number(l,"connection_id"),SecretRole.SECURITY));}
  private void requireManage(SecretPrincipal actor,long id){if(!canManage(actor,id))throw new ApiException(ErrorCode.FORBIDDEN);}
- private Map<String,Object> closureEvidence(Map<String,Object> a){
+ private Map<String,Object> closureEvidence(Map<String,Object> a,SecretPrincipal actor){
   long id=number(a,"alert_id"),key=number(a,"credential_set_id");List<Map<String,Object>> fixtures=new ArrayList<>(),corrections=new ArrayList<>(),lifecycle=new ArrayList<>();
   for(var e:jdbc.queryForList("""
    SELECT DISTINCT f.attestation_id,f.scope_id,f.scope_revision,f.manifest_id,f.manifest_version,f.confirmed_at
@@ -108,19 +111,24 @@ public class SecretCrossEnvironmentAlertService {
   }
   if(tableExists("secret_credential_lifecycle_evidence")){
    for(var e:jdbc.queryForList("""
-    SELECT evidence_id,kind,verification_level,observed_at FROM secret_credential_lifecycle_evidence e
+    SELECT evidence_id,kind,verification_level,observed_at FROM secret_current_lifecycle_evidence e
     WHERE credential_set_id=? AND kind IN ('ROTATED','REVOKED','RETIRED')
      AND verification_level IN ('APPROVED_MANUAL','PROVIDER_VERIFIED')
+     AND ((e.origin='TEST' AND EXISTS(SELECT 1 FROM secret_cross_environment_alert_locations l WHERE l.alert_id=? AND l.occurrence_id=e.source_occurrence_id))
+       OR EXISTS(SELECT 1 FROM secret_lifecycle_evidence_applications app WHERE app.evidence_id=e.evidence_id AND app.case_id=?))
      AND NOT EXISTS(SELECT 1 FROM secret_validation_attempts v WHERE v.credential_set_id=e.credential_set_id
         AND v.result='VALID' AND v.provider_checked_at>e.performed_at)
-    ORDER BY evidence_id DESC
-    """,key))lifecycle.add(Map.of("evidenceId",e.get("evidence_id"),"kind",e.get("kind"),"verificationLevel",e.get("verification_level"),"observedAt",time(e,"observed_at")));
+    AND NOT EXISTS(SELECT 1 FROM secret_case_occurrences co JOIN secret_occurrences o USING(occurrence_id)
+       WHERE co.case_id=e.case_id AND NOT EXISTS(SELECT 1 FROM secret_role_grants g WHERE g.user_id=? AND g.role='SECURITY'
+         AND g.revoked_at IS NULL AND (g.connection_id IS NULL OR g.connection_id=o.connection_id)))
+     ORDER BY evidence_id DESC
+    """,key,id,a.get("test_case_id"),actor.userId()))lifecycle.add(Map.of("evidenceId",e.get("evidence_id"),"kind",e.get("kind"),"verificationLevel",e.get("verification_level"),"observedAt",time(e,"observed_at")));
   }
   return Map.of("fixtureAttestations",fixtures,"corrections",corrections,"lifecycleEvidence",lifecycle);
  }
- private boolean allCurrentFindingsCorrected(long id,List<Long> supplied){
+ private boolean allCurrentFindingsCorrected(long id,List<Long> supplied,SecretPrincipal actor){
   if(supplied.isEmpty()||!tableExists("secret_finding_corrections"))return false;
-  var a=read(id,false);var eligible=(List<Map<String,Object>>)closureEvidence(a).get("corrections");
+  var a=read(id,false);var eligible=(List<Map<String,Object>>)closureEvidence(a,actor).get("corrections");
   if(!eligible.stream().map(e->(Long)e.get("correctionId")).collect(java.util.stream.Collectors.toSet()).containsAll(supplied))return false;
   var active=jdbc.queryForObject("""
    SELECT count(*) FROM secret_current_valid_findings f JOIN secret_cross_environment_alert_locations l ON l.occurrence_id=f.occurrence_id WHERE l.alert_id=?
@@ -142,10 +150,10 @@ public class SecretCrossEnvironmentAlertService {
   p.put("restrictedCoverage",!access.hasGlobalRole(actor,SecretRole.SECURITY));
   p.put("nextActionCode",a.get("assignee_user_id")==null||a.get("due_at")==null?"ASSIGN_INVESTIGATION":"REVIEW_TEST_EVIDENCE");
   p.put("locations",locations.stream().map(l->Map.of("occurrenceId",l.get("occurrence_id"),"scopeId",l.get("scope_id"),"safeDisplayAlias",l.get("safe_display_alias")==null?"위치 #"+l.get("occurrence_id"):l.get("safe_display_alias"),"fixtureStatus",l.get("fixture_status"))).toList());
-  Map<String,Object> eligible=manage?closureEvidence(a):Map.of("fixtureAttestations",List.of(),"corrections",List.of(),"lifecycleEvidence",List.of());List<String> allowed=new ArrayList<>();
+  Map<String,Object> eligible=manage?closureEvidence(a,actor):Map.of("fixtureAttestations",List.of(),"corrections",List.of(),"lifecycleEvidence",List.of());List<String> allowed=new ArrayList<>();
   if(a.get("status").equals("SUSPECTED_REAL")){
    var fixtures=(List<Map<String,Object>>)eligible.get("fixtureAttestations");if(!fixtures.isEmpty()&&locations.stream().allMatch(l->fixtures.stream().anyMatch(f->Objects.equals(f.get("scopeId"),l.get("scope_id")))))allowed.add("VERIFIED_SYNTHETIC");
-   var corrections=(List<Map<String,Object>>)eligible.get("corrections");if(!corrections.isEmpty()&&allCurrentFindingsCorrected(number(a,"alert_id"),corrections.stream().map(c->(Long)c.get("correctionId")).toList()))allowed.add("ALL_FINDINGS_FALSE_POSITIVE");
+   var corrections=(List<Map<String,Object>>)eligible.get("corrections");if(!corrections.isEmpty()&&allCurrentFindingsCorrected(number(a,"alert_id"),corrections.stream().map(c->(Long)c.get("correctionId")).toList(),actor))allowed.add("ALL_FINDINGS_FALSE_POSITIVE");
   }else if(a.get("status").equals("CONFIRMED_REAL")&&!((List<?>)eligible.get("lifecycleEvidence")).isEmpty())allowed.add("CREDENTIAL_RETIRED");
   boolean open=a.get("closed_at")==null;p.put("capabilities",Map.of("canAssign",open&&manage,"canAcknowledge",open&&manage,"canClose",open&&manage&&!allowed.isEmpty()));
   if(detail){p.put("eligibleClosureEvidence",eligible);p.put("allowedClosureReasonCodes",allowed);p.put("allowedAcknowledgementReasonCodes",ACK);p.put("allowedAssignmentReasonCodes",ASSIGNMENT_REASONS);

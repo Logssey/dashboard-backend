@@ -38,7 +38,8 @@ class SecretGuideServiceTest {
     @Test
     void otherTestSourcesNeverLeaveTheServer() {
         when(cases.actorId("security")).thenReturn(Optional.of(7L));
-        when(cases.hasCaseRole(7, 17, "SECURITY")).thenReturn(true);
+        when(guides.canRead(7,17)).thenReturn(true);
+        when(guides.allLocationsReadable(7,17)).thenReturn(true);
         when(guides.currentCase(17)).thenReturn(Optional.of(new SecretGuideRepository.GuideCase(
                 "TEST", "OPEN", null, "AWS", "AWS_ACCESS_KEY_PAIR", "CONFIRMED",
                 "UNCHECKED", false)));
@@ -85,6 +86,7 @@ class SecretGuideServiceTest {
         verifyNoInteractions(provider);
 
         when(guides.currentCase(17)).thenReturn(Optional.of(guideCase("TEST", 7L)));
+        when(guides.canRead(7,17)).thenReturn(true);
         when(provider.selectSteps(any())).thenReturn(Optional.empty());
         assertThat(service.guide(17, "remediator").source()).isEqualTo("DEFAULT");
         verify(cases, never()).updateAssignment(anyLong(), anyLong(),
@@ -103,7 +105,8 @@ class SecretGuideServiceTest {
     private void prepare(String origin, Long assignee) {
         when(cases.actorId("security")).thenReturn(Optional.of(7L));
         when(guides.currentCase(17)).thenReturn(Optional.of(guideCase(origin, assignee)));
-        when(cases.hasCaseRole(7, 17, "SECURITY")).thenReturn(true);
+        when(guides.canRead(7,17)).thenReturn(true);
+        when(guides.allLocationsReadable(7,17)).thenReturn(true);
     }
 
     private static SecretGuideRepository.GuideCase guideCase(String origin, Long assignee) {
