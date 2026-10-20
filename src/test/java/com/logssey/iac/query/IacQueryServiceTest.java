@@ -118,7 +118,9 @@ class IacQueryServiceTest {
                        (?, 'REMOVED', 'path.removed', 'old-path', 2, NULL, ?::jsonb, NULL, NULL)
                 """, latest, HOPS, latest, HOPS);
         jdbc.update("INSERT INTO iac_jobs (kind, trigger_type, run_id, status, stats) "
-                + "VALUES ('ANALYZE_RUN', 'PR', ?, 'SUCCEEDED', '{\"resources\":{\"add\":0,\"change\":0,\"delete\":1}}')", latest);
+                + "VALUES ('ANALYZE_RUN', 'PR', ?, 'SUCCEEDED', '{\"resources\":{\"add\":0,\"change\":0,\"delete\":1},"
+                + "\"state\":{\"ruleId\":\"state.reader_increase\",\"severity\":\"HIGH\",\"readersBefore\":5,"
+                + "\"readersAfter\":6,\"secretsAdded\":0}}')", latest);
 
         var pr = service.pullRequest(58, null, "admin");
         assertThat(pr.runId()).isEqualTo(latest);
@@ -128,6 +130,7 @@ class IacQueryServiceTest {
         assertThat(pr.paths().getFirst().cause().action()).isEqualTo("DELETE");
         assertThat(pr.paths().getFirst().evidence().has("causeAction")).isFalse();
         assertThat(pr.resources().get("delete").asInt()).isEqualTo(1);
+        assertThat(pr.state().get("readersAfter").asInt()).isEqualTo(6);
 
         // 같은 응답이 계약 모양으로 직렬화되는지
         var mvc = MockMvcBuilders.standaloneSetup(new IacQueryController(service))
@@ -139,9 +142,27 @@ class IacQueryServiceTest {
                 .andExpect(jsonPath("$.paths[0].hops[2].name").value("logssey-prod-s3-tfstate"))
                 .andExpect(jsonPath("$.paths[0].evidence.simulator.after").value("allowed"))
                 .andExpect(jsonPath("$.paths[0].cause.address").value("module.iam.aws_iam_role_policy.deny_tfstate"))
-                .andExpect(jsonPath("$.resources.delete").value(1));
+                .andExpect(jsonPath("$.resources.delete").value(1))
+                .andExpect(jsonPath("$.state.ruleId").value("state.reader_increase"))
+                .andExpect(jsonPath("$.state.readersBefore").value(5));
         mvc.perform(get("/api/v1/iac/prs/59").principal(new UsernamePasswordAuthenticationToken("admin", "n/a")))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void stateSummaryShowsTheLatestStateCheck() {
+        assertThat(service.stateSummary("admin").checkedAt()).isNull();
+        jdbc.update("""
+                INSERT INTO iac_jobs (kind, trigger_type, status, finished_at, stats) VALUES
+                    ('CHECK_STATE', 'SCHEDULED', 'SUCCEEDED', now() - interval '2 days', '{"readerCount": 5, "tfstate": []}'),
+                    ('CHECK_STATE', 'SCHEDULED', 'SUCCEEDED', now(),
+                     '{"readerCount": 6, "tfstate": [{"arn": "arn:aws:s3:::logssey-prod-s3-tfstate", "name": "logssey-prod-s3-tfstate",
+                       "readers": [{"kind": "AWSUser", "name": "jongmin"}]}]}')
+                """);
+        var state = service.stateSummary("admin");
+        assertThat(state.readerCount()).isEqualTo(6);
+        assertThat(state.tfstate().get(0).get("readers").get(0).get("name").asString()).isEqualTo("jongmin");
+        assertThat(state.sensitiveActual()).isNull();
     }
 
     @Test
@@ -153,6 +174,7 @@ class IacQueryServiceTest {
         assertThat(pr.gate().findings()).extracting(IacPullRequestResponse.GateFinding::address)
                 .containsExactly("data.external.x");
         assertThat(pr.resources()).isNull();
+        assertThat(pr.state()).isNull();
     }
 
     @Test

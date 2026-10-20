@@ -53,7 +53,7 @@ public class AnalyzeRunProcessor implements IacJobProcessor {
 
         AnalysisEngine.Result result;
         try {
-            result = engine.analyze(loader.load(), plan);
+            result = engine.analyze(loader.load(), plan, repository.tfstateArns());
         } catch (Neo4jException e) {
             throw new IacJobFailure(IacJobFailureCode.GRAPH_UNAVAILABLE, true);
         } catch (SdkException e) {
@@ -68,6 +68,7 @@ public class AnalyzeRunProcessor implements IacJobProcessor {
                 // 같은 자격 증명(역할)으로 이어지는 경로들을 한 갈래로 센다 (화면의 "경로 −N")
                 "removedRoutes", removed.stream().map(AnalysisEngine.Change::roleId).filter(Objects::nonNull)
                         .distinct().count()));
+        stats.put("state", result.state());
         stats.put("verdict", result.verdict());
 
         boolean written = execution.persistIfLeased(job.jobId(), job.leaseToken(), () -> {

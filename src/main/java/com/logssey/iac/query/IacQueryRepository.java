@@ -107,13 +107,25 @@ public class IacQueryRepository {
                 json(rs.getString("evidence"))), runId);
     }
 
-    /** 분석 작업이 남긴 plan 리소스 수 ({add, change, delete}). */
-    JsonNode analysisResources(long runId) {
+    /** 분석 작업이 남긴 결과의 한 부분 (resources: plan 리소스 수, state: ③ State 영향). */
+    JsonNode analysisStats(long runId, String key) {
         return json(jdbc.query("""
-                SELECT (stats -> 'resources')::text FROM iac_jobs
+                SELECT (stats -> ?)::text FROM iac_jobs
                 WHERE run_id = ? AND kind = 'ANALYZE_RUN' AND status = 'SUCCEEDED'
                 ORDER BY job_id DESC LIMIT 1
-                """, (rs, row) -> rs.getString(1), runId).stream().findFirst().orElse(null));
+                """, (rs, row) -> rs.getString(1), key, runId).stream().findFirst().orElse(null));
+    }
+
+    /** 가장 최근 CHECK_STATE 결과와 시각. */
+    Optional<LatestJob> latestJob(String kind) {
+        return jdbc.query("""
+                SELECT finished_at, stats::text AS stats FROM iac_jobs
+                WHERE kind = ? AND status = 'SUCCEEDED' ORDER BY finished_at DESC, job_id DESC LIMIT 1
+                """, (rs, row) -> new LatestJob(rs.getObject("finished_at", OffsetDateTime.class),
+                json(rs.getString("stats"))), kind).stream().findFirst();
+    }
+
+    record LatestJob(OffsetDateTime finishedAt, JsonNode stats) {
     }
 
     private JsonNode json(String value) {

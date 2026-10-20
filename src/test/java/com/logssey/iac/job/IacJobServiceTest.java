@@ -57,11 +57,14 @@ class IacJobServiceTest {
         var second = service.recordCollectGraph(request("SUCCEEDED"), "admin");
 
         assertThat(first.enrichJobId()).isNotNull().isEqualTo(second.enrichJobId());
+        assertThat(first.stateJobId()).isNotNull().isEqualTo(second.stateJobId());
         assertThat(jdbc.queryForObject("""
                 SELECT status || '/' || (stats ->> 'nodes') || '/' || (finished_at - available_at)
                 FROM iac_jobs WHERE job_id = ?
                 """, String.class, first.jobId())).isEqualTo("SUCCEEDED/120/00:20:00");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM iac_jobs WHERE kind = 'ENRICH_GRAPH'", Long.class))
+                .isEqualTo(1L);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM iac_jobs WHERE kind = 'CHECK_STATE'", Long.class))
                 .isEqualTo(1L);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM iac_audit_events", Long.class)).isEqualTo(2L);
     }
@@ -70,6 +73,7 @@ class IacJobServiceTest {
     void failedCollectionQueuesNothing() {
         var failed = service.recordCollectGraph(request("FAILED"), "admin");
         assertThat(failed.enrichJobId()).isNull();
+        assertThat(failed.stateJobId()).isNull();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM iac_jobs WHERE kind = 'ENRICH_GRAPH'", Long.class))
                 .isZero();
     }

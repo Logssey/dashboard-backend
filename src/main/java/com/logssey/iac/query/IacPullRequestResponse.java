@@ -7,7 +7,7 @@ import tools.jackson.databind.JsonNode;
 
 /**
  * S-02 PR 상세 (API 계약 GET /prs/{number}). 가장 최근 run 기준.
- * title 은 GitHub 정보라 저장하지 않는다. resources 는 분석이 끝난 run 만, state 는 S4 까지 null.
+ * title 은 GitHub 정보라 저장하지 않는다. resources·state 는 분석이 끝난 run 만 (② 에서 막히면 null).
  */
 public record IacPullRequestResponse(int number, String title, long runId, String headSha, String status,
                                      String verdict, String highestSeverity, OffsetDateTime checkedAt,

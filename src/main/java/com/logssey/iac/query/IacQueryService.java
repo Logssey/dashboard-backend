@@ -56,7 +56,16 @@ public class IacQueryService {
                 repository.gateFindings(run.runId()));
         return new IacPullRequestResponse(number, null, run.runId(), run.headSha(), run.status(), run.verdict(),
                 run.highestSeverity(), run.checkedAt(), gate, repository.pathChanges(run.runId()),
-                repository.analysisResources(run.runId()), null);
+                repository.analysisStats(run.runId(), "resources"), repository.analysisStats(run.runId(), "state"));
+    }
+
+    /** S-01 F 의 State 부분. 버킷 정책·State 속 민감값은 아직 확인하지 않아 null. */
+    public IacStateSummaryResponse stateSummary(String loginId) {
+        requireAdmin(loginId);
+        return repository.latestJob("CHECK_STATE")
+                .map(job -> new IacStateSummaryResponse(job.finishedAt(), job.stats().path("readerCount").asLong(0),
+                        job.stats().path("tfstate"), null, null, null))
+                .orElseGet(() -> new IacStateSummaryResponse(null, 0, null, null, null, null));
     }
 
     private void requireAdmin(String loginId) {

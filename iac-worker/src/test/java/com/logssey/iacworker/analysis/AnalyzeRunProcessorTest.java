@@ -109,6 +109,12 @@ class AnalyzeRunProcessorTest {
         assertThat(jdbc.queryForObject("SELECT stats -> 'resources' ->> 'delete' FROM iac_jobs WHERE kind = 'ANALYZE_RUN'",
                 String.class)).isEqualTo("1");
         assertThat(count("iac_plan_payloads")).as("분석이 끝나면 plan 은 남지 않는다 (SR-5)").isZero();
+        assertThat(jdbc.queryForObject("""
+                SELECT concat_ws('|', s ->> 'ruleId', s ->> 'severity', s ->> 'readersBefore', s ->> 'readersAfter',
+                                 s ->> 'secretsAdded')
+                FROM (SELECT stats -> 'state' AS s FROM iac_jobs WHERE kind = 'ANALYZE_RUN') x
+                """, String.class)).as("tfstate 읽기 주체: 사용자 2 → 노드 역할까지 3")
+                .isEqualTo("state.reader_increase|HIGH|2|3|0");
     }
 
     @Test
@@ -125,6 +131,8 @@ class AnalyzeRunProcessorTest {
                 String.class)).as("노드 역할로 가는 한 갈래가 사라짐 (경로 -1)").isEqualTo("1");
         assertThat(jdbc.queryForObject("SELECT stats -> 'resources' ->> 'change' FROM iac_jobs WHERE kind = 'ANALYZE_RUN'",
                 String.class)).isEqualTo("10");
+        assertThat(jdbc.queryForObject("SELECT (stats -> 'state' ->> 'readersAfter') || '/' || coalesce(stats -> 'state' ->> 'ruleId', '-') "
+                + "FROM iac_jobs WHERE kind = 'ANALYZE_RUN'", String.class)).isEqualTo("2/-");
     }
 
     @Test
@@ -138,7 +146,7 @@ class AnalyzeRunProcessorTest {
     void tierOneAdditionTheSimulatorDoesNotConfirmIsOnlyAWarning() {
         long run = analyze("58.json.gz", (documents, action, resource) -> "implicitDeny");
         assertThat(jdbc.queryForObject("SELECT verdict || '/' || highest_severity FROM iac_runs WHERE run_id = ?",
-                String.class, run)).isEqualTo("WARN/HIGH");
+                String.class, run)).as("시뮬레이터가 확인 못 해도 읽기 주체 증가로 경고·HIGH").isEqualTo("WARN/HIGH");
     }
 
     @Test

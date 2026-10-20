@@ -31,6 +31,11 @@ public class IacQueryController {
         return service.paths(status, tier, cursor, limit, name(authentication));
     }
 
+    @GetMapping("/state/summary")
+    public IacStateSummaryResponse stateSummary(Authentication authentication) {
+        return service.stateSummary(name(authentication));
+    }
+
     @GetMapping("/prs/{number}")
     public IacPullRequestResponse pullRequest(@PathVariable int number, @RequestParam(required = false) String repo,
                                               Authentication authentication) {

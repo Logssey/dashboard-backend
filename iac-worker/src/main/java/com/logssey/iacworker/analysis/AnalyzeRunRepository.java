@@ -24,6 +24,11 @@ public class AnalyzeRunRepository {
                 runId).stream().findFirst();
     }
 
+    java.util.Set<String> tfstateArns() {
+        return new java.util.HashSet<>(jdbc.queryForList(
+                "SELECT arn FROM iac_data_assets WHERE kind = 'TFSTATE'", String.class));
+    }
+
     OffsetDateTime graphAsOf() {
         return jdbc.queryForObject("""
                 SELECT max(finished_at) FROM iac_jobs WHERE kind = 'COLLECT_GRAPH' AND status = 'SUCCEEDED'
