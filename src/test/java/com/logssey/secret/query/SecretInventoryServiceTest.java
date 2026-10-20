@@ -3,10 +3,10 @@ package com.logssey.secret.query;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
-import java.util.Optional;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
+import com.logssey.secret.access.SecretAccessService;
 
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterAll;
@@ -46,7 +46,11 @@ class SecretInventoryServiceTest {
                 INSERT INTO dashboard_users (login_id, password_hash, display_name, role)
                 VALUES ('admin', 'test-hash', 'Admin', 'ADMIN')
                 """);
-        service = new SecretInventoryService(new SecretInventoryRepository(jdbc));
+        jdbc.update("""
+                INSERT INTO secret_role_grants (user_id, role, granted_by_user_id, grant_source)
+                VALUES (1, 'SECURITY', 1, 'MANUAL'), (1, 'OPERATIONS', 1, 'MANUAL')
+                """);
+        service = new SecretInventoryService(new SecretInventoryRepository(jdbc), new SecretAccessService(jdbc));
     }
 
     @Test
@@ -144,7 +148,7 @@ class SecretInventoryServiceTest {
     }
 
     @Test
-    void onlyDatabaseAdminsMayReadInventoryAndActiveConnectionsWithApprovedScopes() {
+    void explicitSecretRolesControlInventoryAndExecutableConnections() {
         long active = connection("ACTIVE", "Approved");
         scope(active, "fixtures/", true);
         scope(active, "draft/", false);
@@ -166,15 +170,18 @@ class SecretInventoryServiceTest {
         assertCode(ErrorCode.UNAUTHENTICATED,
                 () -> service.list(0, 20, "ALL", "ALL", null));
         assertCode(ErrorCode.UNAUTHENTICATED, () -> service.connections("missing"));
-        var nonAdmin = new SecretInventoryService(new SecretInventoryRepository(jdbc) {
-            @Override
-            Optional<String> actorRole(String loginId) {
-                return Optional.of("VIEWER");
-            }
-        });
-        assertCode(ErrorCode.FORBIDDEN, () -> nonAdmin.list(0, 20, "ALL", "ALL", "viewer"));
-        assertCode(ErrorCode.FORBIDDEN, () -> nonAdmin.detail(1, "viewer"));
-        assertCode(ErrorCode.FORBIDDEN, () -> nonAdmin.connections("viewer"));
+        jdbc.update("INSERT INTO dashboard_users (login_id,password_hash,display_name,role) VALUES ('viewer','x','Viewer','ADMIN')");
+        assertCode(ErrorCode.FORBIDDEN, () -> service.list(0, 20, "ALL", "ALL", "viewer"));
+        assertCode(ErrorCode.FORBIDDEN, () -> service.detail(1, "viewer"));
+        assertCode(ErrorCode.FORBIDDEN, () -> service.connections("viewer"));
+    }
+
+    @Test
+    void operationsRoleDoesNotGrantCredentialInventoryRead() {
+        jdbc.update("UPDATE secret_role_grants SET revoked_at=now() WHERE role='SECURITY'");
+        assertCode(ErrorCode.FORBIDDEN, () -> service.list(0, 20, "ALL", "ALL", "admin"));
+        assertCode(ErrorCode.FORBIDDEN, () -> service.detail(1, "admin"));
+        assertThat(service.connections("admin").items()).isEmpty();
     }
 
     @Test

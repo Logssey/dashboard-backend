@@ -21,7 +21,7 @@ class SecretCaseRepository {
                   AND NOT EXISTS (
                     SELECT 1 FROM secret_role_grants g
                     WHERE g.user_id = ? AND g.revoked_at IS NULL
-                      AND g.role IN ('SECURITY', 'REMEDIATOR', 'OPERATIONS')
+                      AND g.role IN ('SECURITY', 'REMEDIATOR')
                       AND (g.connection_id IS NULL OR g.connection_id = o.connection_id)
                   )
             )
@@ -171,7 +171,7 @@ class SecretCaseRepository {
                        AND NOT EXISTS (
                          SELECT 1 FROM secret_role_grants g
                          WHERE g.user_id = ? AND g.revoked_at IS NULL
-                           AND g.role IN ('SECURITY', 'REMEDIATOR', 'OPERATIONS')
+                           AND g.role IN ('SECURITY', 'REMEDIATOR')
                            AND (g.connection_id IS NULL OR g.connection_id = o.connection_id)
                        )
                    )

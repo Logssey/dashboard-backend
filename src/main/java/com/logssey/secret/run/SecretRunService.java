@@ -13,6 +13,10 @@ import java.util.regex.Pattern;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
+import com.logssey.secret.access.SecretAccessService;
+import com.logssey.secret.access.SecretRole;
+import com.logssey.secret.command.SecretCommandExecutor;
+import com.logssey.secret.command.SecretCommandResult;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -75,10 +79,15 @@ public class SecretRunService {
 
     private final SecretRunRepository repository;
     private final TransactionTemplate transaction;
+    private final SecretAccessService access;
+    private final SecretCommandExecutor commands;
 
-    public SecretRunService(SecretRunRepository repository, PlatformTransactionManager transactionManager) {
+    public SecretRunService(SecretRunRepository repository, PlatformTransactionManager transactionManager,
+                            SecretAccessService access, SecretCommandExecutor commands) {
         this.repository = repository;
         this.transaction = new TransactionTemplate(transactionManager);
+        this.access = access;
+        this.commands = commands;
     }
 
     public SecretRunAcceptedResponse register(SecretRunRequest request, String loginId) {
@@ -87,9 +96,32 @@ public class SecretRunService {
                 && !request.idempotencyKey().matches("[A-Za-z0-9._:-]{1,120}")) {
             throw new ApiException(ErrorCode.INVALID_INPUT);
         }
+        var principal = access.requirePrincipal(loginId);
+        String commandKey = request.idempotencyKey() == null
+                ? java.util.UUID.randomUUID().toString() : request.idempotencyKey();
+        var result = commands.execute(principal, SecretCommandExecutor.Kind.MANUAL_SCAN,
+                commandKey, SecretCommandExecutor.digestSafeIds(request.connectionId()),
+                () -> {
+                    access.requireConnectionRole(principal, request.connectionId(), SecretRole.OPERATIONS);
+                    var connection = repository.lockConnection(request.connectionId())
+                            .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+                    if (!supportedProvider(connection.provider()) || !repository.hasSupportedScope(connection))
+                        throw new ApiException(ErrorCode.CONFLICT);
+                },
+                () -> {
+                    var accepted = registerWithinTransaction(request, loginId);
+                    return new SecretCommandResult(accepted.runId(), 0,
+                            SecretCommandResult.Status.valueOf(accepted.status()));
+                });
+        return new SecretRunAcceptedResponse(result.targetId(), result.status().name());
+    }
+
+    private SecretRunAcceptedResponse registerWithinTransaction(SecretRunRequest request, String loginId) {
         try {
             return Objects.requireNonNull(transaction.execute(ignored -> {
-                var actor = requireAdmin(loginId);
+                var principal = access.requirePrincipal(loginId);
+                access.requireConnectionRole(principal, request.connectionId(), SecretRole.OPERATIONS);
+                var actor = new SecretRunRepository.Actor(principal.userId(), null);
                 String key = request.idempotencyKey() == null
                         ? null : hashIdempotencyKey(actor.id(), request.idempotencyKey());
                 if (key != null) {
@@ -138,11 +170,13 @@ public class SecretRunService {
     }
 
     public SecretRunStatusResponse status(long runId, String loginId) {
-        requireAdmin(loginId);
+        var principal = access.requirePrincipal(loginId);
+        access.requireAnyRole(principal);
         if (runId <= 0) {
             throw new ApiException(ErrorCode.NOT_FOUND);
         }
         var run = repository.runStatus(runId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+        access.requireConnectionFactsRead(principal, run.connectionId());
         List<SecretRunScopeResultResponse> scopeResults = repository.runScopes(runId).stream()
                 .map(SecretRunService::scopeResult).toList();
         return new SecretRunStatusResponse(run.runId(), run.connectionId(), run.triggerType(),
@@ -157,12 +191,13 @@ public class SecretRunService {
 
     @Transactional(readOnly = true)
     public SecretRunListResponse list(int page, int size, String loginId) {
-        requireAdmin(loginId);
+        var principal = access.requirePrincipal(loginId);
+        access.requireAnyRole(principal);
         if (page < 0 || page > 1_000_000 || size < 1 || size > 100) {
             throw new ApiException(ErrorCode.INVALID_INPUT);
         }
-        long total = repository.countRuns();
-        var items = repository.listRuns(size, (long) page * size).stream().map(entry -> {
+        long total = repository.countRuns(principal.userId());
+        var items = repository.listRuns(principal.userId(), size, (long) page * size).stream().map(entry -> {
             var run = entry.status();
             return new SecretRunListItemResponse(run.runId(), run.connectionId(),
                     entry.provider(), entry.displayName(), run.triggerType(),
@@ -174,18 +209,6 @@ public class SecretRunService {
                             ? run.jobFailureCode() : run.runFailureCode()));
         }).toList();
         return new SecretRunListResponse(items, total, page, size);
-    }
-
-    private SecretRunRepository.Actor requireAdmin(String loginId) {
-        if (loginId == null || loginId.isBlank()) {
-            throw new ApiException(ErrorCode.UNAUTHENTICATED);
-        }
-        var actor = repository.actor(loginId)
-                .orElseThrow(() -> new ApiException(ErrorCode.UNAUTHENTICATED));
-        if (!"ADMIN".equals(actor.role())) {
-            throw new ApiException(ErrorCode.FORBIDDEN);
-        }
-        return actor;
     }
 
     private static SecretRunAcceptedResponse accepted(SecretRunRepository.JobRun run) {

@@ -37,7 +37,8 @@ class IacSchemaMigrationTest {
     @Test
     void appliesOnTopOfExistingSchemaAndSeedsRules() {
         assertThat(jdbc.queryForObject(
-                "SELECT max(version::int) FROM flyway_schema_history WHERE success", Integer.class)).isEqualTo(12);
+                "SELECT COUNT(*) FROM flyway_schema_history WHERE success AND version IN ('11','12')",
+                Integer.class)).isEqualTo(2);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM iac_rules", Integer.class)).isEqualTo(23);
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM iac_rules WHERE rule_id LIKE 'gate.%'", Integer.class)).isEqualTo(13);

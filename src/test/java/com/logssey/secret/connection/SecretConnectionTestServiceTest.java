@@ -7,6 +7,9 @@ import java.util.Optional;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
+import com.logssey.secret.access.SecretAccessService;
+import com.logssey.secret.access.SecretPrincipal;
+import com.logssey.secret.access.SecretRole;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -15,14 +18,15 @@ import static org.mockito.Mockito.*;
 
 class SecretConnectionTestServiceTest {
     private final SecretConnectionTestRepository repository = mock(SecretConnectionTestRepository.class);
+    private final SecretAccessService access = mock(SecretAccessService.class);
     private final AwsIdentityProbe aws = mock(AwsIdentityProbe.class);
     private final GitHubAuthProbe github = mock(GitHubAuthProbe.class);
     private final SecretConnectionTestService service = new SecretConnectionTestService(
-            repository, aws, github, Clock.fixed(Instant.parse("2026-10-14T01:02:03Z"), ZoneOffset.UTC));
+            repository, aws, github, Clock.fixed(Instant.parse("2026-10-14T01:02:03Z"), ZoneOffset.UTC), access);
 
     @Test
-    void adminProbesAwsIdentityWithoutReturningAccountOrProfile() {
-        when(repository.actorRole("admin")).thenReturn(Optional.of("ADMIN"));
+    void operationsProbesAwsIdentityWithoutReturningAccountOrProfile() {
+        when(access.requirePrincipal("admin")).thenReturn(new SecretPrincipal(1));
         when(repository.connection(7)).thenReturn(Optional.of(new SecretConnectionTestRepository.Connection(
                 7, "AWS", "ACTIVE", "aws-profile:test")));
         when(repository.awsScopes(7)).thenReturn(new SecretConnectionTestRepository.AwsScopeSummary(
@@ -41,12 +45,14 @@ class SecretConnectionTestServiceTest {
     }
 
     @Test
-    void rejectsNonAdminAndPausedBeforeProbing() {
-        when(repository.actorRole("user")).thenReturn(Optional.of("USER"));
+    void rejectsMissingOperationsGrantAndPausedBeforeProbing() {
+        when(access.requirePrincipal("user")).thenReturn(new SecretPrincipal(2));
+        doThrow(new ApiException(ErrorCode.FORBIDDEN)).when(access)
+                .requireConnectionRole(new SecretPrincipal(2), 7, SecretRole.OPERATIONS);
         assertThatThrownBy(() -> service.test(7, "user"))
                 .isInstanceOfSatisfying(ApiException.class,
                         error -> assertThat(error.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
-        when(repository.actorRole("admin")).thenReturn(Optional.of("ADMIN"));
+        when(access.requirePrincipal("admin")).thenReturn(new SecretPrincipal(1));
         when(repository.connection(7)).thenReturn(Optional.of(new SecretConnectionTestRepository.Connection(
                 7, "AWS", "PAUSED", "aws-profile:test")));
         assertThatThrownBy(() -> service.test(7, "admin"))
@@ -57,7 +63,7 @@ class SecretConnectionTestServiceTest {
 
     @Test
     void malformedOrMixedAwsScopesNeverReachSts() {
-        when(repository.actorRole("admin")).thenReturn(Optional.of("ADMIN"));
+        when(access.requirePrincipal("admin")).thenReturn(new SecretPrincipal(1));
         when(repository.connection(7)).thenReturn(Optional.of(new SecretConnectionTestRepository.Connection(
                 7, "AWS", "ACTIVE", "aws-profile:test")));
         when(repository.awsScopes(7)).thenReturn(new SecretConnectionTestRepository.AwsScopeSummary(
@@ -71,7 +77,7 @@ class SecretConnectionTestServiceTest {
 
     @Test
     void githubUsesOneEnabledApprovedScopeAndReturnsSafeFailureCode() {
-        when(repository.actorRole("admin")).thenReturn(Optional.of("ADMIN"));
+        when(access.requirePrincipal("admin")).thenReturn(new SecretPrincipal(1));
         when(repository.connection(8)).thenReturn(Optional.of(new SecretConnectionTestRepository.Connection(
                 8, "GITHUB", "ACTIVE", "opaque-github-app-ref")));
         var scope = new SecretConnectionTestRepository.Scope(
