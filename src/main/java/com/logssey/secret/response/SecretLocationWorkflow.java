@@ -44,7 +44,7 @@ public class SecretLocationWorkflow {
         if(locations.isEmpty())throw new ApiException(ErrorCode.NOT_FOUND);
         var c=jdbc.queryForMap("""
             SELECT c.*,k.masked_label,k.issuer,k.credential_type,u.display_name AS assignee_name,
-                to_jsonb(c)->>'opening_decision_id' AS opening_decision
+                (to_jsonb(c)->>'opening_decision_id')::bigint AS opening_decision
             FROM secret_response_cases c JOIN secret_credential_sets k USING(credential_set_id)
             LEFT JOIN dashboard_users u ON u.user_id=c.assigned_user_id WHERE case_id=?
             """,caseId);
@@ -202,7 +202,7 @@ public class SecretLocationWorkflow {
                       last_material_action_at=CASE WHEN ? THEN greatest(last_material_action_at,?) ELSE last_material_action_at END
                     WHERE case_id=? AND occurrence_id=?
                     """,!"PERMISSION_REDUCED".equals(request.actionType()),request.performedAt(),caseId,occurrence);
-                bumpCase(caseId,"IN_PROGRESS");event(caseId,occurrence,"ACTION_RECORDED",actor.userId(),num(c,"version")+1,num(o,"version")+1,id,request.actionType());
+                bumpCase(caseId,"IN_PROGRESS");stage(c,"IN_PROGRESS",actor.userId());event(caseId,occurrence,"ACTION_RECORDED",actor.userId(),num(c,"version")+1,num(o,"version")+1,id,request.actionType());
                 snapshots.invalidateOccurrence(occurrence);return new SecretCommandResult(caseId,num(c,"version")+1,SecretCommandResult.Status.IN_PROGRESS);
             });
     }
@@ -219,7 +219,7 @@ public class SecretLocationWorkflow {
                 if(!material)conflict();
                 jdbc.update("UPDATE secret_case_occurrences SET response_status='REVALIDATION_PENDING',actions_completed_at=now(),version=version+1 WHERE case_id=? AND occurrence_id=?",caseId,occurrence);
                 boolean remaining=Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM secret_case_occurrences WHERE case_id=? AND response_status IN ('OPEN','IN_PROGRESS'))",Boolean.class,caseId));
-                String stage=remaining?"IN_PROGRESS":"REVALIDATION_PENDING";bumpCase(caseId,stage);
+                String stage=remaining?"IN_PROGRESS":"REVALIDATION_PENDING";bumpCase(caseId,stage);stage(c,stage,actor.userId());
                 event(caseId,occurrence,"ACTIONS_COMPLETED",actor.userId(),num(c,"version")+1,num(o,"version")+1,null,null);
                 snapshots.invalidateOccurrence(occurrence);return new SecretCommandResult(caseId,num(c,"version")+1,SecretCommandResult.Status.valueOf(stage));
             });
@@ -303,6 +303,10 @@ public class SecretLocationWorkflow {
          WHERE m.team_name=? AND m.removed_at IS NULL AND g.role='REMEDIATOR' AND g.revoked_at IS NULL AND (g.connection_id IS NULL OR g.connection_id=?))
         """,Boolean.class,team,conn));}
     private void bumpCase(long c,String stage) {jdbc.update("UPDATE secret_response_cases SET action_status=coalesce(?,action_status),version=version+1,updated_at=now() WHERE case_id=?",stage,c);}
+    private void stage(Map<String,Object> before,String after,long actor) {
+        if(!Objects.equals(before.get("action_status"),after))jdbc.update("INSERT INTO secret_case_stage_history(case_id,from_status,to_status,reason_code,actor_user_id,case_version) VALUES(?,?,?,'EXTERNAL_ACTION_RECORDED',?,?)",
+            num(before,"case_id"),before.get("action_status"),after,actor,num(before,"version")+1);
+    }
     private void event(long c,Long o,String type,long actor,long cv,Long ov,Long ref,String reason) {jdbc.update("INSERT INTO secret_location_activities(case_id,occurrence_id,activity_type,actor_user_id,case_version,occurrence_version,reference_id,reason_code) VALUES (?,?,?,?,?,?,?,?)",c,o,type,actor,cv,ov,ref,reason);}
     private static void versions(Long cv,Long ov,Map<String,Object> c,Map<String,Object> o) {requireExpectedVersion(cv,num(c,"version"));requireExpectedVersion(ov,num(o,"version"));}
     private static void active(Map<String,Object> c) {if(!Boolean.TRUE.equals(c.get("is_current"))||!"IN_SCOPE".equals(c.get("disposition"))||"RESOLVED".equals(c.get("action_status")))conflict();}
