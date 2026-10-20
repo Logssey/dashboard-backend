@@ -34,7 +34,8 @@ public class SecretCaseController {
     public SecretCaseDetail open(@PathVariable long secretId,
                                  @RequestBody SecretCaseOpenRequest request,
                                  Authentication authentication) {
-        return service.open(secretId, request, loginId(authentication));
+        throw new com.logssey.common.error.ApiException(com.logssey.common.error.ErrorCode.CONFLICT,
+                "발견 위치의 노출 판정과 조치 요청을 함께 등록해 주세요.");
     }
 
     @GetMapping("/cases/{caseId}")

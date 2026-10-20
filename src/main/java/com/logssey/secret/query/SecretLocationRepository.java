@@ -33,7 +33,10 @@ public class SecretLocationRepository {
                        latest.completed_at AS validation_at, latest.provider_checked_at AS validation_checked_at,
                        policy.policy_result AS storage_policy_result,policy.reason_code AS storage_policy_reason,
                        policy.binding_id AS storage_binding_id,policy.policy_id AS storage_policy_id,
-                       policy.policy_version AS storage_policy_version,policy.requires_reassessment
+                       policy.policy_version AS storage_policy_version,policy.requires_reassessment,
+                       (EXISTS(SELECT 1 FROM secret_current_raw_findings raw WHERE raw.occurrence_id=o.occurrence_id)
+                        AND NOT EXISTS(SELECT 1 FROM secret_current_valid_findings valid WHERE valid.occurrence_id=o.occurrence_id))
+                           AS all_current_findings_corrected
                 FROM secret_occurrences o
                 JOIN secret_credential_sets c ON c.credential_set_id=o.credential_set_id
                 JOIN secret_connections conn ON conn.connection_id=o.connection_id
@@ -94,7 +97,7 @@ public class SecretLocationRepository {
                 rs.getObject("validation_at",OffsetDateTime.class),rs.getObject("validation_checked_at",OffsetDateTime.class),
                 rs.getString("storage_policy_result"),rs.getString("storage_policy_reason"),
                 rs.getObject("storage_binding_id",Long.class),rs.getObject("storage_policy_id",Long.class),
-                rs.getObject("storage_policy_version",Long.class),rs.getBoolean("requires_reassessment")));
+                rs.getObject("storage_policy_version",Long.class),rs.getBoolean("requires_reassessment"),rs.getBoolean("all_current_findings_corrected")));
     }
 
     private Map<String,Object> parameters(long userId,Long id,SecretInventoryFilters filters) {
@@ -124,5 +127,5 @@ public class SecretLocationRepository {
         long occurrenceVersion,long scopeRevision,Long caseId,String actionStatus,Long caseVersion,Long assignedUserId,
         String validity,String validationReason,OffsetDateTime validationAt,OffsetDateTime validationCheckedAt,
         String storagePolicyResult,String storagePolicyReason,Long storageBindingId,Long storagePolicyId,
-        Long storagePolicyVersion,boolean requiresReassessment) {}
+        Long storagePolicyVersion,boolean requiresReassessment,boolean allCurrentFindingsCorrected) {}
 }

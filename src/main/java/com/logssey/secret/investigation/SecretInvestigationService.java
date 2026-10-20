@@ -38,6 +38,7 @@ public class SecretInvestigationService {
  }
  public Map<String,Object> detail(String login,long taskId){var actor=access.requirePrincipal(login);var task=read(taskId,false);requireRead(actor,task);return projection(actor,task,true);}
 
+ @Transactional
  public Map<String,Object> assign(String login,long id,SecretInvestigationRequests.Assignment r){
   if(r==null)throw new ApiException(ErrorCode.INVALID_INPUT);code(r.reasonCode(),ASSIGNMENT_REASONS);future(r.dueAt(),false);
   var actor=access.requirePrincipal(login);var initial=read(id,false);requireRead(actor,initial);
@@ -54,6 +55,7 @@ public class SecretInvestigationService {
     return new SecretCommandResult(id,number(task,"version")+1,SecretCommandResult.Status.OPEN);
    });return mutation("taskId",result);
  }
+ @Transactional
  public Map<String,Object> evidence(String login,long id,SecretInvestigationRequests.Evidence r){
   if(r==null)throw new ApiException(ErrorCode.INVALID_INPUT);reference(r.evidenceRef(),true);code(r.evidenceKind(),EVIDENCE_KINDS);observed(r.observedAt());
   var actor=access.requirePrincipal(login);requireRead(actor,read(id,false));
@@ -65,6 +67,7 @@ public class SecretInvestigationService {
     return new SecretCommandResult(id,number(task,"version")+1,SecretCommandResult.Status.OPEN);
    });return mutation("taskId",result);
  }
+ @Transactional
  public Map<String,Object> close(String login,long id,SecretInvestigationRequests.Close r){
   if(r==null||(r.resolvingDecisionId()==null)==(r.restoredRunScopeId()==null))throw new ApiException(ErrorCode.INVALID_INPUT);
   var actor=access.requirePrincipal(login);requireRead(actor,read(id,false));
@@ -123,9 +126,19 @@ public class SecretInvestigationService {
    for(var r:jdbc.queryForList("""
     SELECT a.assessment_id,a.decision,a.assessed_at FROM secret_exposure_assessments a
     JOIN secret_occurrences o ON o.occurrence_id=a.occurrence_id JOIN secret_connection_scopes s ON s.scope_id=o.scope_id
-    WHERE a.occurrence_id=? AND a.version=o.exposure_assessment_version AND a.decision=o.exposure_status
+    JOIN secret_occurrence_policy_results policy ON policy.occurrence_id=o.occurrence_id
+    WHERE a.occurrence_id=? AND a.version=o.exposure_assessment_version
       AND a.assessed_at>=? AND a.scope_origin=s.response_origin
-      AND (to_jsonb(a)->>'scope_version')::bigint=COALESCE((to_jsonb(s)->>'response_origin_version')::bigint,0)
+      AND a.scope_version=s.response_origin_version AND a.scope_revision=s.revision
+      AND ((a.decision IN ('NORMAL','ABNORMAL') AND a.decision=o.exposure_status
+        AND NOT policy.requires_reassessment
+        AND a.policy_binding_id IS NOT DISTINCT FROM policy.binding_id
+        AND a.policy_version IS NOT DISTINCT FROM policy.policy_version)
+       OR (a.decision='FALSE_POSITIVE'
+        AND EXISTS(SELECT 1 FROM secret_current_raw_findings raw WHERE raw.occurrence_id=o.occurrence_id)
+        AND NOT EXISTS(SELECT 1 FROM secret_current_valid_findings valid WHERE valid.occurrence_id=o.occurrence_id)
+        AND EXISTS(SELECT 1 FROM secret_finding_dispositions correction WHERE correction.decision_id=a.assessment_id
+          AND correction.is_current AND correction.revoked_at IS NULL AND correction.reuse_expires_at>CURRENT_TIMESTAMP)))
     ORDER BY a.assessment_id DESC
     """,task.get("occurrence_id"),task.get("created_at")))decisions.add(Map.of("decisionId",r.get("assessment_id"),"decision",r.get("decision"),"decidedAt",time(r,"assessed_at")));
   }else{

@@ -14,7 +14,7 @@ public record SecretInventoryFilters(String origin, String source, String provid
         require(provider, "ALL", "GITHUB", "AWS", "NOTION", "KUBERNETES");
         require(environment, "ALL", "PROD", "DEV", "UNKNOWN");
         require(contentKind, "ALL", "VALUE_FINDINGS", "METADATA");
-        require(workBucket, "ALL", "NEEDS_DECISION", "ACTION_REQUIRED", "NORMAL_INVENTORY", "NEEDS_CASE_LINK");
+        require(workBucket, "ALL", "NEEDS_DECISION", "ACTION_REQUIRED", "NORMAL_INVENTORY", "NEEDS_CASE_LINK", "EXCLUDED_HISTORY");
         require(componentState, "ALL", "CONFIRMED", "CANDIDATE", "METADATA_ONLY");
         require(validity, "ALL", "VALID", "INVALID", "UNKNOWN", "UNCHECKED");
         require(severity, "ALL", "UNASSESSED", "LOW", "MEDIUM", "HIGH", "CRITICAL");
