@@ -46,6 +46,16 @@ CREATE TABLE secret_snapshot_metrics (
     PRIMARY KEY(snapshot_id, metric_key),
     CHECK ((status = 'AVAILABLE' AND value >= 0) OR (status <> 'AVAILABLE' AND value IS NULL))
 );
+-- Internal ACL membership is never part of a public snapshot row.
+CREATE TABLE secret_snapshot_location_memberships (
+    snapshot_id UUID NOT NULL,
+    subject_type VARCHAR(30) NOT NULL,
+    subject_id BIGINT NOT NULL,
+    occurrence_id BIGINT NOT NULL REFERENCES secret_occurrences(occurrence_id),
+    PRIMARY KEY(snapshot_id,subject_type,subject_id,occurrence_id),
+    FOREIGN KEY(snapshot_id,subject_type,subject_id)
+        REFERENCES secret_snapshot_subjects(snapshot_id,subject_type,subject_id) ON DELETE CASCADE
+);
 CREATE TABLE secret_snapshot_metric_memberships (
     snapshot_id UUID NOT NULL,
     metric_key VARCHAR(80) NOT NULL,

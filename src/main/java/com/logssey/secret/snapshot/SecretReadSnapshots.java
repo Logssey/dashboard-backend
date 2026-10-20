@@ -19,6 +19,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
+import com.logssey.secret.access.SecretOccurrenceAccessSql;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 
 /** Persistent snapshots contain only authorized public projections, never source references. */
 @Service
@@ -34,7 +36,12 @@ public class SecretReadSnapshots {
     public record Header(UUID snapshotId, String scope, long ownerUserId, OffsetDateTime asOf,
                          OffsetDateTime expiresAt, boolean restrictedCoverage) {}
 
-    public record Subject(String type, long id, Long credentialSetId, Map<String, Object> facts) {}
+    public record Subject(String type, long id, Long credentialSetId, Map<String, Object> facts,
+                          List<Long> visibleOccurrenceIds) {
+        public Subject(String type,long id,Long credentialSetId,Map<String,Object> facts) {
+            this(type,id,credentialSetId,facts,List.of());
+        }
+    }
 
     /** The caller must read the source rows in this same REPEATABLE_READ transaction. */
     @Transactional(isolation = Isolation.REPEATABLE_READ)
@@ -73,6 +80,13 @@ public class SecretReadSnapshots {
                 INSERT INTO secret_snapshot_subjects(snapshot_id,subject_type,subject_id,credential_set_id,
                     safe_sort_key,safe_facts) VALUES (?,?,?,?,?,CAST(? AS jsonb))
                 """, args);
+        List<Object[]> memberships=new ArrayList<>();
+        for(Subject subject:subjects) for(Long occurrenceId:subject.visibleOccurrenceIds())
+            memberships.add(new Object[]{id,subject.type(),subject.id(),occurrenceId});
+        jdbc.batchUpdate("""
+                INSERT INTO secret_snapshot_location_memberships(snapshot_id,subject_type,subject_id,occurrence_id)
+                VALUES (?,?,?,?)
+                """,memberships);
         return new Header(id, scope, userId, asOf, expires, restrictedCoverage);
     }
 
@@ -97,6 +111,13 @@ public class SecretReadSnapshots {
         if (!stored.filterDigest().equals(digest(canonicalFilters(filters)))) {
             throw new ApiException(ErrorCode.CONFLICT, "조회 조건이 달라졌어요. 새 기준으로 조회해 주세요.");
         }
+        boolean lostLocation=Boolean.TRUE.equals(new NamedParameterJdbcTemplate(jdbc).queryForObject("""
+                SELECT EXISTS(SELECT 1 FROM secret_snapshot_location_memberships m
+                JOIN secret_occurrences o ON o.occurrence_id=m.occurrence_id
+                WHERE m.snapshot_id=:snapshotId AND NOT (LOCATION_ACCESS))
+                """.replace("LOCATION_ACCESS",SecretOccurrenceAccessSql.predicate("o",":userId")),
+                Map.of("snapshotId",id,"userId",userId),Boolean.class));
+        if(lostLocation) throw new ApiException(ErrorCode.CONFLICT,"열람 권한이 변경되었어요. 새로 조회해 주세요.");
         return stored.header();
     }
 
@@ -122,9 +143,6 @@ public class SecretReadSnapshots {
                        || ':' || coalesce(revoked_at::text,'ACTIVE') AS fact
                 FROM secret_role_grants WHERE user_id = ?
                 UNION ALL
-                SELECT 'A:' || c.case_id || ':' || c.assigned_user_id || ':' || c.is_current
-                FROM secret_response_cases c WHERE c.assigned_user_id = ?
-                UNION ALL
                 SELECT 'T:' || membership_id || ':' || team_name || ':' || coalesce(removed_at::text,'ACTIVE')
                 FROM secret_team_memberships WHERE user_id = ?
                 UNION ALL
@@ -133,8 +151,28 @@ public class SecretReadSnapshots {
                     SELECT 1 FROM secret_role_grants g WHERE g.user_id = ? AND g.revoked_at IS NULL
                     AND (g.connection_id IS NULL OR g.connection_id = s.connection_id))
                 ORDER BY fact
-                """, (rs, row) -> rs.getString(1), userId, userId, userId, userId);
+                """, (rs, row) -> rs.getString(1), userId, userId, userId);
         return digest(String.join("\n", facts));
+    }
+
+    @Transactional
+    public void invalidateOccurrence(long occurrenceId) {
+        jdbc.update("""
+                UPDATE secret_query_snapshots s SET expires_at=GREATEST(now(),s.created_at+interval '1 microsecond')
+                WHERE s.expires_at>now() AND EXISTS (
+                    SELECT 1 FROM secret_snapshot_location_memberships m
+                    WHERE m.snapshot_id=s.snapshot_id AND m.occurrence_id=?)
+                """,occurrenceId);
+    }
+
+    @Transactional
+    public void invalidateScope(long scopeId) {
+        jdbc.update("""
+                UPDATE secret_query_snapshots s SET expires_at=GREATEST(now(),s.created_at+interval '1 microsecond')
+                WHERE s.expires_at>now() AND EXISTS (
+                    SELECT 1 FROM secret_snapshot_location_memberships m JOIN secret_occurrences o ON o.occurrence_id=m.occurrence_id
+                    WHERE m.snapshot_id=s.snapshot_id AND o.scope_id=?)
+                """,scopeId);
     }
 
     public static Map<String, Object> facts(Object... pairs) {

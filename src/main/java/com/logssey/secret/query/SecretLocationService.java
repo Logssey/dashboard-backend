@@ -15,6 +15,7 @@ import com.logssey.secret.access.SecretAccessService;
 import com.logssey.secret.access.SecretPrincipal;
 import com.logssey.secret.access.SecretRole;
 import com.logssey.secret.snapshot.SecretReadSnapshots;
+import com.logssey.secret.connection.SecretCoverageService;
 import com.logssey.secret.query.SecretLocationRepository.Row;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
@@ -26,12 +27,14 @@ public class SecretLocationService {
     private final SecretLocationRepository repository;
     private final SecretReadSnapshots snapshots;
     private final SecretAccessService access;
+    private final SecretCoverageService coverageService;
     private static final Set<String> SAFE_REASONS=Set.of("AUTHENTICATED","INVALID_ACCESS_KEY","SIGNATURE_AMBIGUOUS",
         "EXPIRED_SESSION","DISABLED","INCOMPLETE_PAIR","MISSING_SESSION_TOKEN","ACCESS_AMBIGUOUS",
         "RATE_LIMITED","PROVIDER_UNAVAILABLE","CLIENT_FAILURE","SYNTHETIC_FIXTURE","SOURCE_UNAVAILABLE");
 
-    public SecretLocationService(SecretLocationRepository repository,SecretReadSnapshots snapshots,SecretAccessService access) {
-        this.repository=repository; this.snapshots=snapshots; this.access=access;
+    public SecretLocationService(SecretLocationRepository repository,SecretReadSnapshots snapshots,SecretAccessService access,
+            SecretCoverageService coverageService) {
+        this.repository=repository; this.snapshots=snapshots; this.access=access; this.coverageService=coverageService;
     }
 
     @Transactional(isolation=Isolation.REPEATABLE_READ)
@@ -57,7 +60,8 @@ public class SecretLocationService {
                 item.put("occurrenceCount",rows.size());
                 if(!"ALL".equals(filters.validity()) && !filters.validity().equals(item.get("validationStatus"))) continue;
                 if(!"ALL".equals(filters.severity()) && !"UNASSESSED".equals(filters.severity())) continue;
-                subjects.add(new SecretReadSnapshots.Subject("CredentialSet",entry.getKey(),entry.getKey(),item));
+                subjects.add(new SecretReadSnapshots.Subject("CredentialSet",entry.getKey(),entry.getKey(),item,
+                    rows.stream().map(Row::occurrenceId).distinct().toList()));
             }
             header=snapshots.create(actor.userId(),"INVENTORY",filters.normalized(),revision,restricted,subjects);
         }
@@ -77,7 +81,7 @@ public class SecretLocationService {
         result.put("expiryPolicy","UNKNOWN"); result.put("expiresAt",null); result.put("lifecycleStatus","UNKNOWN");
         // Compatibility field contains safe public locations, not original paths or line context.
         result.put("occurrences",rows.stream().map(row-> {
-            var value=location(row,actor); value.put("id",row.occurrenceId());
+            var value=location(row,actor,loginId); value.put("id",row.occurrenceId());
             value.put("sourceObjectRef","위치 #"+row.occurrenceId()); value.put("locationKey",null);
             value.put("presenceStatus",row.presence()); value.put("exposureStatus",row.exposure());
             return value;
@@ -102,7 +106,7 @@ public class SecretLocationService {
         if(visible.isEmpty()) throw new ApiException(ErrorCode.NOT_FOUND);
         String detailVersion=SecretReadSnapshots.digest(visible.stream().map(row -> row.occurrenceId()+":"+
             row.occurrenceVersion()+":"+row.scopeRevision()+":"+row.presence()+":"+row.lastSeenAt()+":"+
-            row.caseVersion()+":"+row.validationAt()).collect(Collectors.joining("|")));
+            row.caseId()+":"+row.actionStatus()+":"+row.assignedUserId()+":"+row.validationAt()).collect(Collectors.joining("|")));
         if(expectedDetailVersion!=null && !expectedDetailVersion.equals(detailVersion))
             throw new ApiException(ErrorCode.CONFLICT,"위치 정보가 변경되었어요. 다시 확인해 주세요.");
         var filtered=visible.stream().filter(row -> ("ALL".equals(filters.source())||row.source().equals(filters.source()))
@@ -110,7 +114,7 @@ public class SecretLocationService {
             &&("ALL".equals(presence)||row.presence().equals(presence))
             &&("ALL".equals(exposure)||row.exposure().equals(exposure))
             &&("ALL".equals(actionStatus)||Objects.equals(row.actionStatus()==null?"NO_CASE":row.actionStatus(),actionStatus))).toList();
-        var items=filtered.stream().skip((long)page*size).limit(size).map(row -> location(row,actor)).toList();
+        var items=filtered.stream().skip((long)page*size).limit(size).map(row -> location(row,actor,loginId)).toList();
         return facts("credentialSetId",secretId,"credential",inventoryItem(visible,actor),"detailVersion",detailVersion,
             "items",items,"total",filtered.size(),"visibleLocationCount",filtered.size(),"page",page,"size",size,
             "origin",filters.origin(),"unit","Occurrence","restrictedCoverage",!globalSecurity(actor),
@@ -156,8 +160,11 @@ public class SecretLocationService {
             "restrictedCoverage",!globalSecurity(actor));
     }
 
-    private Map<String,Object> location(Row row,SecretPrincipal actor) {
+    private Map<String,Object> location(Row row,SecretPrincipal actor,String loginId) {
         boolean review=access.hasConnectionRole(actor,row.connectionId(),SecretRole.SECURITY);
+        var coverage=coverageService.occurrenceCoverage(loginId,row.occurrenceId());
+        var gapReasons=(java.util.Collection<?>)coverage.getOrDefault("gapReasonCodes",List.of());
+        boolean complete=gapReasons.isEmpty()&&coverage.get("lastSuccessfulScan")!=null;
         var visibleFacts=new ArrayList<String>();
         visibleFacts.add(row.presence());
         if("ABNORMAL".equals(row.exposure())) visibleFacts.add("EXPOSURE_CONFIRMED");
@@ -168,8 +175,7 @@ public class SecretLocationService {
             "safeLocationLabel","위치 #"+row.occurrenceId(),"presence",row.presence(),"exposure",row.exposure(),
             "storagePolicy",facts("result",row.storagePolicyResult(),"reasonCode","POLICY_EVIDENCE_REQUIRED"),
             "validity",facts("result",validity,"reasonCode",safeReason(row.validationReason()),"observedAt",text(row.validationAt())),
-            "coverage",facts("status","UNKNOWN","legacyLastCompleteCoverageAt",text(row.lastCompleteCoverageAt()),
-                "reasonCode","CURRENT_SCOPE_CHECK_REQUIRED"),
+            "coverage",coverage,
             "fixtureStatus","TEST".equals(row.origin())?null:"NOT_APPLICABLE",
             "fixtureReasonCode","ATTESTATION_EVIDENCE_REQUIRED",
             "caseId",row.caseId(),"actionStatus",row.actionStatus(),"assignedUserId",row.assignedUserId(),
@@ -179,10 +185,10 @@ public class SecretLocationService {
             "whyHereCode",reason(row),"nextActionCode",next(row,actor),
             "locationAbsenceCheck",facts("status","UNKNOWN","reasonCode","POST_ACTION_EVIDENCE_REQUIRED"),
             "credentialLifecycleCheck",facts("status","UNKNOWN","reasonCode","LIFECYCLE_EVIDENCE_REQUIRED"),
-            "coverageCheck",facts("status","UNKNOWN","reasonCode","CURRENT_SCOPE_CHECK_REQUIRED"),
+            "coverageCheck",facts("status",complete?"PASSED":"UNKNOWN","reasonCode",complete?"CURRENT_SCOPE_OBSERVED":"CURRENT_SCOPE_CHECK_REQUIRED"),
             "firstSeenAt",text(row.firstSeenAt()),"lastSeenAt",text(row.lastSeenAt()),
             "capabilities",facts("canReview",review&&"CONFIRMED".equals(row.componentState()),"canViewCase",row.caseId()!=null,
-                "canRecordAction",false,"canRequestRevalidation",false,"canViewCoverage",review,"canOpenSafeSource",false));
+                "canRecordAction",false,"canRequestRevalidation",false,"canViewCoverage",true,"canOpenSafeSource",false));
     }
 
     private String next(Row row,SecretPrincipal actor) {

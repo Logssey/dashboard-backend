@@ -14,6 +14,7 @@ import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
 import com.logssey.secret.access.SecretAccessService;
 import com.logssey.secret.snapshot.SecretReadSnapshots;
+import com.logssey.secret.connection.SecretCoverageService;
 import tools.jackson.databind.json.JsonMapper;
 import static org.assertj.core.api.Assertions.*;
 
@@ -35,7 +36,8 @@ class SecretLocationIntegrationTest {
         jdbc.execute("TRUNCATE dashboard_users,secret_connections RESTART IDENTITY CASCADE");
         security=user("security"); operations=user("operations"); hidden=user("hidden");
         service=new SecretLocationService(new SecretLocationRepository(jdbc),
-            new SecretReadSnapshots(jdbc,JsonMapper.builder().build()),new SecretAccessService(jdbc));
+            new SecretReadSnapshots(jdbc,JsonMapper.builder().build()),new SecretAccessService(jdbc),
+            new SecretCoverageService(jdbc,new SecretAccessService(jdbc)));
     }
     @Test void oneKeyKeepsIndependentLocationsWithoutDisclosingOriginalPaths() {
         long conn=connection(); grant(security,"SECURITY",conn); long scope=scope(conn);

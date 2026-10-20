@@ -17,7 +17,14 @@ public class SecretLocationRepository {
         return jdbc.query("""
                 SELECT c.credential_set_id, c.issuer, c.credential_type, c.component_state, c.masked_label,
                        o.occurrence_id, o.connection_id, o.scope_id, conn.provider AS source, s.response_origin,
-                       o.environment, o.exposure_status, o.presence_status, o.first_seen_at, o.last_seen_at,
+                       o.environment, o.exposure_status,
+                       CASE WHEN NOT s.enabled THEN 'UNKNOWN'
+                            WHEN latest_scope.scope_outcome IN ('PARTIAL','FAILED','SKIPPED','UNKNOWN')
+                              AND ((o.presence_status='PRESENT' AND latest_scope.requested_at>o.last_seen_at)
+                                OR (o.presence_status='MISSING' AND (o.last_complete_coverage_at IS NULL
+                                    OR latest_scope.requested_at>o.last_complete_coverage_at)))
+                            THEN 'UNKNOWN' ELSE o.presence_status END AS presence_status,
+                       o.first_seen_at, o.last_seen_at,
                        o.last_complete_coverage_at, o.exposure_assessment_version,
                        coalesce((to_jsonb(s)->>'revision')::bigint,s.response_origin_version) AS scope_revision,
                        current_case.case_id, current_case.response_status, current_case.case_version,
@@ -30,9 +37,17 @@ public class SecretLocationRepository {
                 JOIN secret_connections conn ON conn.connection_id=o.connection_id
                 JOIN secret_connection_scopes s ON s.scope_id=o.scope_id AND s.connection_id=o.connection_id
                 LEFT JOIN LATERAL (
+                    SELECT outcome.scope_outcome,outcome.requested_at FROM secret_scope_outcomes outcome
+                    WHERE outcome.scope_id=s.scope_id AND outcome.scope_revision=s.revision
+                      AND outcome.job_kind='FULL_SCAN'
+                    ORDER BY outcome.requested_at DESC,outcome.run_id DESC LIMIT 1
+                ) latest_scope ON TRUE
+                LEFT JOIN LATERAL (
                     SELECT rc.case_id, co.response_status, rc.version AS case_version,
-                           coalesce((to_jsonb(co)->>'assigned_user_id')::bigint,rc.assigned_user_id) AS assigned_user_id,
-                           coalesce(to_jsonb(co)->>'assigned_team',rc.assigned_team) AS assigned_team
+                           CASE WHEN jsonb_exists(to_jsonb(co),'assigned_user_id') THEN (to_jsonb(co)->>'assigned_user_id')::bigint
+                               ELSE rc.assigned_user_id END AS assigned_user_id,
+                           CASE WHEN jsonb_exists(to_jsonb(co),'assigned_team') THEN to_jsonb(co)->>'assigned_team'
+                               ELSE rc.assigned_team END AS assigned_team
                     FROM secret_case_occurrences co JOIN secret_response_cases rc ON rc.case_id=co.case_id
                     WHERE co.occurrence_id=o.occurrence_id AND rc.is_current AND rc.case_origin=s.response_origin
                     ORDER BY rc.case_id DESC LIMIT 1
@@ -42,6 +57,7 @@ public class SecretLocationRepository {
                     FROM secret_validation_attempts v JOIN secret_scan_runs r ON r.run_id=v.run_id
                     WHERE v.credential_set_id=c.credential_set_id AND r.connection_id=o.connection_id
                       AND EXISTS (SELECT 1 FROM secret_run_scopes rs WHERE rs.run_id=r.run_id AND rs.scope_id=o.scope_id)
+                      AND EXISTS (SELECT 1 FROM secret_findings f WHERE f.occurrence_id=o.occurrence_id AND f.run_id=v.run_id)
                     ORDER BY v.completed_at DESC,v.attempt_id DESC LIMIT 1
                 ) latest ON TRUE
                 WHERE (CAST(:secretId AS bigint) IS NULL OR o.credential_set_id=CAST(:secretId AS bigint))
