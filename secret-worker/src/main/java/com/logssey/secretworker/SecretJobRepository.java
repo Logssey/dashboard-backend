@@ -206,6 +206,17 @@ class SecretJobRepository {
                            CASE WHEN r.collection_status = 'SUCCEEDED'
                                   AND r.detection_status IN ('SUCCEEDED', 'SKIPPED')
                                   AND rs.collection_status = 'SUCCEEDED'
+                                  AND rs.detection_stage_status IN ('SUCCEEDED','SKIPPED')
+                                  AND rs.scope_revision = v.scope_revision AND scope.revision = v.scope_revision AND scope.response_origin_version=v.scope_origin_version
+                                  AND co.action_cycle = v.action_cycle AND co.version = v.occurrence_version
+                                  AND co.last_material_action_at = v.last_material_action_at
+                                  AND co.actions_completed_at = v.actions_completed_at
+                                  AND co.response_status = 'REVALIDATION_PENDING'
+                                  AND c.is_current AND c.disposition='IN_SCOPE'
+                                  AND c.case_origin=scope.response_origin AND conn.status='ACTIVE' AND scope.enabled
+                                  AND k.fingerprint_key_version = v.baseline_fingerprint_version AND k.fingerprint = v.baseline_identity
+                                  AND v.requested_at >= v.actions_completed_at AND v.requested_at > v.last_material_action_at
+                                  AND rs.started_at >= v.requested_at AND rs.finished_at >= v.actions_completed_at
                                   AND tr.status = 'SUCCEEDED'
                                   AND tr.config_hash = v.baseline_config_hash
                                   AND tr.engine_version = v.baseline_engine_version
@@ -218,13 +229,17 @@ class SecretJobRepository {
                                       ON found.occurrence_id = f.occurrence_id
                                     JOIN secret_response_cases c ON c.case_id = v.case_id
                                     WHERE f.run_id = v.run_id
-                                      AND found.scope_id = v.scope_id
+                                      AND found.scope_id = v.scope_id AND found.occurrence_id=v.occurrence_id
                                       AND found.credential_set_id = c.credential_set_id
                                 ) THEN 'PRESENT' ELSE 'MISSING' END
                                 ELSE 'UNKNOWN' END AS result
                     FROM secret_case_revalidations v
                     JOIN secret_scan_runs r ON r.run_id = v.run_id
                     JOIN secret_connections conn ON conn.connection_id = v.connection_id
+                    JOIN secret_connection_scopes scope ON scope.scope_id = v.scope_id
+                    JOIN secret_case_occurrences co ON co.case_id=v.case_id AND co.occurrence_id=v.occurrence_id
+                    JOIN secret_response_cases c ON c.case_id=v.case_id
+                    JOIN secret_credential_sets k ON k.credential_set_id=c.credential_set_id
                     JOIN secret_action_records a ON a.action_id = v.action_id
                     LEFT JOIN secret_run_scopes rs
                       ON rs.run_id = v.run_id AND rs.scope_id = v.scope_id

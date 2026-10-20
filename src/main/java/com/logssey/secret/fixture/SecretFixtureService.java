@@ -34,6 +34,7 @@ public class SecretFixtureService {
   }
   return Map.of("items",items,"eligibleMatches",matches,"fixtureStatus",visibleFixtureStatus(actor,key),"capabilities",Map.of("canAttest",!matches.isEmpty()));
  }
+ @Transactional
  public Map<String,Object> attest(String login,long key,Attest r){
   if(r==null||r.scopeId()==null||r.scopeId()<=0||r.manifestId()==null||r.manifestId()<=0||r.manifestVersion()==null||r.manifestVersion()<=0||r.matchEvidenceId()==null||r.matchEvidenceId()<=0)throw new ApiException(ErrorCode.INVALID_INPUT);
   var actor=access.requirePrincipal(login);long connection=scopeConnection(r.scopeId());access.requireConnectionRole(actor,connection,SecretRole.SECURITY);

@@ -55,6 +55,14 @@ class SecretRevalidationServiceIntegrationTest {
 
     @Autowired private JdbcTemplate jdbc;
     @Autowired private SecretRevalidationService service;
+    @Autowired private com.logssey.secret.lifecycle.SecretLifecycleService lifecycle;
+    @Autowired private SecretGuideService guide;
+    @Autowired private SecretGuideRepository guideRepository;
+    @Autowired private SecretCaseRepository caseRepository;
+    @Autowired private com.logssey.secret.fixture.SecretFixtureService fixtureService;
+    @Autowired private SecretLocationWorkflow workflow;
+    @Autowired private com.logssey.secret.query.SecretLocationService locations;
+    @Autowired private com.logssey.secret.alert.SecretCrossEnvironmentAlertService alerts;
     @Autowired private WebApplicationContext webContext;
 
     private long caseId;
@@ -165,11 +173,15 @@ class SecretRevalidationServiceIntegrationTest {
                 VALUES (?, ?, 'REVOKED', clock_timestamp() - INTERVAL '10 minutes',
                         ?, 'TICKET:SEC-123', 1)
                 """, caseId, occurrenceId, actor);
+        jdbc.update("""
+          UPDATE secret_case_occurrences SET assigned_user_id=?,last_material_action_at=(SELECT max(performed_at) FROM secret_action_records WHERE case_id=?),actions_completed_at=clock_timestamp()-INTERVAL '1 minute'
+          WHERE case_id=? AND occurrence_id=?
+          """,actor,caseId,caseId,occurrenceId);
     }
 
     @Test
     void requestIsSingleScopeAndIdempotentButUnfinishedRunCannotResolve() {
-        var request = new SecretRevalidationRequest(occurrenceId, 0L, "test-recheck-1");
+        var request = new SecretRevalidationRequest(occurrenceId, 0L, 0L, "test-recheck-1");
         var accepted = service.request(caseId, request, "revalidation-admin");
         assertThat(accepted.jobStatus()).isEqualTo("PENDING");
         assertThat(accepted.result()).isEqualTo("PENDING");
@@ -192,7 +204,7 @@ class SecretRevalidationServiceIntegrationTest {
     @Test
     void resolutionRequiresPostActionMissingEvidenceForEveryLocation() {
         var accepted = service.request(caseId,
-                new SecretRevalidationRequest(occurrenceId, 0L, "test-recheck-2"),
+                new SecretRevalidationRequest(occurrenceId, 0L, 0L, "test-recheck-2"),
                 "revalidation-admin");
         jdbc.update("""
                 UPDATE secret_scan_runs SET collection_status = 'SUCCEEDED',
@@ -215,22 +227,15 @@ class SecretRevalidationServiceIntegrationTest {
                 new SecretResolveRequest(1L, "POST_ACTION_REVALIDATION"),
                 "revalidation-admin")).isInstanceOf(ApiException.class);
         jdbc.update("UPDATE secret_connection_scopes SET enabled = TRUE WHERE scope_id = ?", scopeId);
-        var resolved = service.resolve(caseId,
-                new SecretResolveRequest(1L, "POST_ACTION_REVALIDATION"),
-                "revalidation-admin");
-        assertThat(resolved.stage()).isEqualTo("RESOLVED");
-        assertThat(jdbc.queryForObject("""
-                SELECT count(*) FROM secret_case_resolution_locations WHERE case_id = ?
-                """, Long.class, caseId)).isEqualTo(1);
-        assertThatThrownBy(() -> service.resolve(caseId,
-                new SecretResolveRequest(2L, "POST_ACTION_REVALIDATION"),
-                "revalidation-admin")).isInstanceOf(ApiException.class);
+        assertThatThrownBy(()->service.resolve(caseId,new SecretResolveRequest(1L,"POST_ACTION_REVALIDATION"),"revalidation-admin")).isInstanceOf(ApiException.class);
+        assertThat(jdbc.queryForObject("SELECT action_status FROM secret_response_cases WHERE case_id=?",String.class,caseId)).isEqualTo("REVALIDATION_PENDING");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_case_resolutions WHERE case_id=?",Long.class,caseId)).isZero();
     }
 
     @Test
     void unknownOutcomeDoesNotClaimResolution() {
         var accepted = service.request(caseId,
-                new SecretRevalidationRequest(occurrenceId, 0L, "test-recheck-3"),
+                new SecretRevalidationRequest(occurrenceId, 0L, 0L, "test-recheck-3"),
                 "revalidation-admin");
         jdbc.update("""
                 UPDATE secret_case_revalidations SET status = 'UNKNOWN',
@@ -242,11 +247,143 @@ class SecretRevalidationServiceIntegrationTest {
                 "revalidation-admin")).isInstanceOf(ApiException.class);
     }
 
+    @Test void coordinatorNeverInheritsLocationOrIncompleteActionRights(){
+        jdbc.update("UPDATE secret_case_occurrences SET assigned_user_id=NULL WHERE case_id=?",caseId);
+        assertThatThrownBy(()->service.request(caseId,new SecretRevalidationRequest(occurrenceId,0L,0L,"no-own"),"revalidation-admin")).isInstanceOf(ApiException.class);
+        long actor=actor();jdbc.update("UPDATE secret_case_occurrences SET assigned_user_id=?,actions_completed_at=NULL WHERE case_id=?",actor,caseId);
+        assertThatThrownBy(()->service.request(caseId,new SecretRevalidationRequest(occurrenceId,0L,0L,"incomplete"),"revalidation-admin")).isInstanceOf(ApiException.class);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_case_revalidations",Long.class)).isZero();
+    }
+    @Test void staleLocationAndRevokedReplayAreRejectedWithoutDuplicateJobs(){
+        assertThatThrownBy(()->service.request(caseId,new SecretRevalidationRequest(occurrenceId,0L,2L,"stale"),"revalidation-admin")).isInstanceOf(ApiException.class);
+        jdbc.update("UPDATE secret_response_cases SET review_status='UNREVIEWED' WHERE case_id=?",caseId);
+        var r=new SecretRevalidationRequest(occurrenceId,0L,0L,"current");service.request(caseId,r,"revalidation-admin");
+        jdbc.update("UPDATE secret_role_grants SET revoked_at=clock_timestamp() WHERE role='REMEDIATOR'");
+        assertThatThrownBy(()->service.request(caseId,r,"revalidation-admin")).isInstanceOf(ApiException.class);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_case_revalidations",Long.class)).isEqualTo(1);
+    }
+    @Test void presentRevalidationStartsFreshActionCycleWithoutReusingOldCompletion(){
+        var v=service.request(caseId,new SecretRevalidationRequest(occurrenceId,0L,0L,"present"),"revalidation-admin");
+        jdbc.update("UPDATE secret_jobs SET status='SUCCEEDED',finished_at=now() WHERE job_id=(SELECT job_id FROM secret_scan_runs WHERE run_id=?)",v.runId());
+        jdbc.update("UPDATE secret_case_revalidations SET status='PRESENT',finished_at=now() WHERE run_id=?",v.runId());
+        var r=new SecretResumeRequest(occurrenceId,1L,1L,"REVALIDATION_PRESENT","resume");
+        service.resume(caseId,r,"revalidation-admin");service.resume(caseId,r,"revalidation-admin");
+        var o=jdbc.queryForMap("SELECT * FROM secret_case_occurrences WHERE case_id=? AND occurrence_id=?",caseId,occurrenceId);
+        assertThat(o).containsEntry("action_cycle",2L).containsEntry("response_status","IN_PROGRESS").containsEntry("last_material_action_at",null).containsEntry("actions_completed_at",null);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_case_resume_events",Long.class)).isEqualTo(1);
+        assertThatThrownBy(()->service.request(caseId,new SecretRevalidationRequest(occurrenceId,2L,2L,"premature"),"revalidation-admin")).isInstanceOf(ApiException.class);
+    }
+    @Test void independentManualReviewPreservesOriginalAndNeverBecomesProviderProof(){
+        long reviewer=reviewer();var submitted=lifecycle.submit(caseId,new com.logssey.secret.lifecycle.SecretLifecycleService.Submission("REVOKED",java.time.OffsetDateTime.now().minusMinutes(2),"CHANGE:SEC-12",0L,"submit"),"revalidation-admin");
+        long id=((Number)submitted.get("evidenceId")).longValue();
+        var r=new com.logssey.secret.lifecycle.SecretLifecycleService.Review("APPROVE","EXTERNAL_RECORD_CONFIRMED",1L,1L,"approve");
+        assertThatThrownBy(()->lifecycle.review(caseId,id,r,"revalidation-admin")).isInstanceOf(ApiException.class);
+        lifecycle.review(caseId,id,r,"independent");lifecycle.review(caseId,id,r,"independent");
+        assertThat(jdbc.queryForMap("SELECT verification_level,verification_method,version FROM secret_credential_lifecycle_evidence WHERE evidence_id=?",id))
+            .containsEntry("verification_level","PENDING").containsEntry("verification_method","EXTERNAL_RECORD").containsEntry("version",1L);
+        assertThat(jdbc.queryForObject("SELECT verification_level FROM secret_current_lifecycle_evidence WHERE evidence_id=?",String.class,id)).isEqualTo("APPROVED_MANUAL");
+        var json=lifecycle.list(caseId,"revalidation-admin").toString();assertThat(json).contains("LIMITED","APPROVED_MANUAL","PROVIDER_RETIREMENT_NOT_VERIFIED").doesNotContain("auth_ref","fingerprint","source_object_ref");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_lifecycle_evidence_reviews",Long.class)).isEqualTo(1);
+        assertThatThrownBy(()->jdbc.update("UPDATE secret_credential_lifecycle_evidence SET kind='ROTATED' WHERE evidence_id=?",id)).isInstanceOf(org.springframework.dao.DataAccessException.class);
+        lifecycle.review(caseId,id,new com.logssey.secret.lifecycle.SecretLifecycleService.Review("REJECT","CONTRADICTORY_EVIDENCE",2L,2L,"reject"),"independent");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_current_lifecycle_evidence",Long.class)).isZero();
+    }
+    @Test void arbitraryProviderEvidenceIsRejectedAtDatabaseBoundary(){
+        assertThatThrownBy(()->jdbc.update("""
+         INSERT INTO secret_credential_lifecycle_evidence(case_id,credential_set_id,source_occurrence_id,origin,kind,verification_method,verification_level,
+          provider_validator_id,validator_version,endpoint_class,reason_code,performed_at,observed_at)
+         SELECT case_id,credential_set_id,opening_occurrence_id,case_origin,'REVOKED','PROVIDER','PROVIDER_VERIFIED','FAKE','1','AWS_STS',
+          'CONFIRMED_KEY_RETIRED',now(),now() FROM secret_response_cases WHERE case_id=?
+         """,caseId)).isInstanceOf(org.springframework.dao.DataAccessException.class).hasMessageContaining("TRUSTED_LIFECYCLE_WRITER_REQUIRED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_credential_lifecycle_evidence",Long.class)).isZero();
+    }
+    @Test void repositoryNameAndTestLabelNeverProveSyntheticFixture(){
+        jdbc.update("UPDATE secret_connection_scopes SET approved_ref='github://Logssey/test-find-key/develop/fixtures/'");
+        assertThat(guide.guide(caseId,"revalidation-admin").source()).isEqualTo("DEFAULT");
+        assertThatThrownBy(()->lifecycle.submit(caseId,new com.logssey.secret.lifecycle.SecretLifecycleService.Submission("FIXTURE_RETIRED",java.time.OffsetDateTime.now().minusMinutes(1),"CHANGE:SEC-2",0L,"fake-fixture"),"revalidation-admin")).isInstanceOf(ApiException.class);
+    }
+    @Test void onlyExactApprovedFixtureCanSelectExternalGuideAndRealProofImmediatelyDisablesIt(){
+        long key=jdbc.queryForObject("SELECT credential_set_id FROM secret_response_cases WHERE case_id=?",Long.class,caseId);
+        long scope=jdbc.queryForObject("SELECT scope_id FROM secret_occurrences WHERE occurrence_id=?",Long.class,occurrenceId);
+        jdbc.update("UPDATE secret_credential_sets SET fingerprint=decode(repeat('ab',32),'hex') WHERE credential_set_id=?",key);
+        long manifest=jdbc.queryForObject("INSERT INTO secret_fixture_manifests(version,protected_manifest_ref,approval_status,valid_from,valid_until) VALUES(1,'FIXTURE:SAFE','DRAFT',now()-INTERVAL '1 day',now()+INTERVAL '1 day') RETURNING manifest_id",Long.class);
+        jdbc.update("INSERT INTO secret_fixture_manifest_identities(manifest_id,manifest_version,scope_id,scope_revision,issuer,credential_type,fingerprint_key_version,protected_fingerprint) SELECT ?,1,?,1,issuer,credential_type,fingerprint_key_version,fingerprint FROM secret_credential_sets WHERE credential_set_id=?",manifest,scope,key);
+        jdbc.update("UPDATE secret_fixture_manifests SET approval_status='APPROVED',approved_by_user_id=? WHERE manifest_id=?",actor(),manifest);
+        long rs=jdbc.queryForObject("SELECT rs.run_scope_id FROM secret_run_scopes rs JOIN secret_occurrences o ON o.last_seen_run_id=rs.run_id WHERE o.occurrence_id=?",Long.class,occurrenceId);
+        long match=jdbc.queryForObject("INSERT INTO secret_fixture_match_evidence(credential_set_id,scope_id,scope_revision,manifest_id,manifest_version,run_scope_id,comparator_id,comparator_version,match_result,observed_at) VALUES(?,?,1,?,1,?,'LOGSSEY_PROTECTED_IDENTITY','1','MATCH',now()) RETURNING match_evidence_id",Long.class,key,scope,manifest,rs);
+        fixtureService.attest("revalidation-admin",key,new com.logssey.secret.fixture.SecretFixtureService.Attest(scope,1L,manifest,1L,match,"exact"));
+        var calls=new java.util.concurrent.atomic.AtomicInteger();
+        var localGuide=new SecretGuideService(caseRepository,guideRepository,context->{calls.incrementAndGet();return java.util.Optional.of(java.util.List.of("VERIFY_EXPOSURE","EXTERNAL_ROTATION","RECORD_ACTION","REVALIDATE"));});
+        assertThat(localGuide.guide(caseId,"revalidation-admin").source()).isEqualTo("GROQ");assertThat(calls.get()).isEqualTo(1);
+        long reviewer=reviewer();var submitted=lifecycle.submit(caseId,new com.logssey.secret.lifecycle.SecretLifecycleService.Submission("FIXTURE_RETIRED",java.time.OffsetDateTime.now().minusSeconds(2),"CHANGE:SEC-14",0L,"fixture-retired"),"revalidation-admin");
+        long evidence=((Number)submitted.get("evidenceId")).longValue();
+        lifecycle.review(caseId,evidence,new com.logssey.secret.lifecycle.SecretLifecycleService.Review("APPROVE","EXTERNAL_RECORD_CONFIRMED",1L,1L,"fixture-review"),"independent");
+        assertThat(lifecycle.locationCheck(new com.logssey.secret.access.SecretPrincipal(actor()),occurrenceId).get("coverageLimit")).isEqualTo("SIMULATION");
+        jdbc.update("INSERT INTO secret_validation_attempts(credential_set_id,run_id,job_id,validator_id,validator_version,endpoint_class,requested_at,completed_at,provider_checked_at,result,reason_code) SELECT ?,run_id,job_id,'AWS_STS_GET_CALLER_IDENTITY','1','AWS_STS',now(),now(),now(),'VALID','AUTHENTICATED' FROM secret_scan_runs WHERE run_id=(SELECT last_seen_run_id FROM secret_occurrences WHERE occurrence_id=?)",key,occurrenceId);
+        assertThat(localGuide.guide(caseId,"revalidation-admin").source()).isEqualTo("DEFAULT");assertThat(calls.get()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_current_lifecycle_evidence WHERE evidence_id=?",Long.class,evidence)).isZero();
+    }
+    @Test void laterProviderAuthenticationContradictsManualRetirementAndAnApprovalCannotOverrideIt(){
+        reviewer();var submitted=lifecycle.submit(caseId,new com.logssey.secret.lifecycle.SecretLifecycleService.Submission("RETIRED",java.time.OffsetDateTime.now().minusMinutes(2),"CHANGE:SEC-15",0L,"retired"),"revalidation-admin");
+        long evidence=((Number)submitted.get("evidenceId")).longValue();
+        jdbc.update("INSERT INTO secret_validation_attempts(credential_set_id,run_id,job_id,validator_id,validator_version,endpoint_class,requested_at,completed_at,provider_checked_at,result,reason_code) SELECT credential_set_id,last_seen_run_id,(SELECT job_id FROM secret_scan_runs WHERE run_id=o.last_seen_run_id),'AWS_STS_GET_CALLER_IDENTITY','1','AWS_STS',now(),now(),now(),'VALID','AUTHENTICATED' FROM secret_occurrences o WHERE occurrence_id=?",occurrenceId);
+        assertThatThrownBy(()->lifecycle.review(caseId,evidence,new com.logssey.secret.lifecycle.SecretLifecycleService.Review("APPROVE","EXTERNAL_RECORD_CONFIRMED",1L,1L,"contradiction"),"independent")).isInstanceOf(ApiException.class);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_lifecycle_evidence_reviews",Long.class)).isZero();
+    }
+
+    @Test void validationBeforeMaterialActionIsHistoryUntilAFreshProviderObservationArrives(){
+        long key=jdbc.queryForObject("SELECT credential_set_id FROM secret_response_cases WHERE case_id=?",Long.class,caseId);
+        jdbc.update("""
+          INSERT INTO secret_validation_attempts(credential_set_id,run_id,job_id,validator_id,validator_version,endpoint_class,requested_at,completed_at,provider_checked_at,result,reason_code)
+          SELECT credential_set_id,last_seen_run_id,(SELECT job_id FROM secret_scan_runs WHERE run_id=o.last_seen_run_id),'AWS_STS_GET_CALLER_IDENTITY','1','AWS_STS',
+            now()-INTERVAL '30 minutes',now()-INTERVAL '30 minutes',now()-INTERVAL '30 minutes','VALID','AUTHENTICATED'
+          FROM secret_occurrences o WHERE occurrence_id=?
+          """,occurrenceId);
+        var filter=new com.logssey.secret.query.SecretInventoryFilters("TEST","ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL");
+        var before=locations.locations("revalidation-admin",key,filter,0,20,"ALL","ALL","ALL",null);
+        var item=(java.util.Map<?,?>)((java.util.List<?>)before.get("items")).getFirst();var validity=(java.util.Map<?,?>)item.get("validity");
+        assertThat(validity.get("result")).isEqualTo("UNCHECKED");assertThat(validity.get("reasonCode")).isEqualTo("POST_ACTION_VALIDATION_REQUIRED");
+        assertThat(((java.util.Map<?,?>)validity.get("lastObservation")).get("result")).isEqualTo("VALID");assertThat(validity.get("observedAt")).isNull();
+        assertThat(item.get("lastMaterialActionAt")).isNotNull();assertThat(item.get("fixtureStatus")).isEqualTo("NOT_APPLICABLE");
+        jdbc.update("UPDATE secret_validation_attempts SET provider_checked_at=clock_timestamp(),completed_at=clock_timestamp()");
+        var after=locations.locations("revalidation-admin",key,filter,0,20,"ALL","ALL","ALL",null);
+        assertThat(((java.util.Map<?,?>)((java.util.Map<?,?>)((java.util.List<?>)after.get("items")).getFirst()).get("validity")).get("result")).isEqualTo("VALID");
+    }
+
+    @Test void evidencedAlertClosureDoesNotReopenUntilAContradictoryProviderObservation(){
+        reviewer();jdbc.update("UPDATE secret_run_scopes SET detection_stage_status='SUCCEEDED',validation_stage_status='SKIPPED',validation_required=false");
+        jdbc.update("""
+         INSERT INTO secret_validation_attempts(credential_set_id,run_id,job_id,validator_id,validator_version,endpoint_class,requested_at,completed_at,provider_checked_at,result,reason_code)
+         SELECT credential_set_id,last_seen_run_id,(SELECT job_id FROM secret_scan_runs WHERE run_id=o.last_seen_run_id),'AWS_STS_GET_CALLER_IDENTITY','1','AWS_STS',
+          now()-INTERVAL '3 minutes',now()-INTERVAL '3 minutes',now()-INTERVAL '3 minutes','VALID','AUTHENTICATED'
+         FROM secret_occurrences o WHERE occurrence_id=?
+         """,occurrenceId);
+        jdbc.queryForObject("SELECT secret_reconcile_test_alerts(NULL)",Long.class);
+        long alert=jdbc.queryForObject("SELECT alert_id FROM secret_cross_environment_alerts",Long.class);
+        var submitted=lifecycle.submit(caseId,new com.logssey.secret.lifecycle.SecretLifecycleService.Submission("REVOKED",java.time.OffsetDateTime.now().minusMinutes(1),"CHANGE:SEC-16",0L,"retirement-for-alert"),"revalidation-admin");
+        long evidence=((Number)submitted.get("evidenceId")).longValue();
+        lifecycle.review(caseId,evidence,new com.logssey.secret.lifecycle.SecretLifecycleService.Review("APPROVE","EXTERNAL_RECORD_CONFIRMED",1L,1L,"alert-review"),"independent");
+        alerts.close("revalidation-admin",alert,new com.logssey.secret.alert.SecretCrossEnvironmentAlertRequests.Close(0L,"CREDENTIAL_RETIRED",null,null,java.util.List.of(evidence),caseId,null,"close-real-alert"));
+        assertThat(jdbc.queryForObject("SELECT secret_reconcile_test_alerts(NULL)",Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_cross_environment_alerts",Long.class)).isEqualTo(1);
+        jdbc.update("UPDATE secret_validation_attempts SET provider_checked_at=clock_timestamp(),completed_at=clock_timestamp()");
+        jdbc.queryForObject("SELECT secret_reconcile_test_alerts(NULL)",Long.class);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_cross_environment_alerts",Long.class)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT previous_alert_id FROM secret_cross_environment_alerts WHERE closed_at IS NULL",Long.class)).isEqualTo(alert);
+    }
+
+    private long actor(){return jdbc.queryForObject("SELECT user_id FROM dashboard_users WHERE login_id='revalidation-admin'",Long.class);}
+    private long reviewer(){
+        jdbc.update("INSERT INTO dashboard_users(login_id,password_hash,display_name) VALUES('independent','unused','Reviewer') ON CONFLICT(login_id) DO NOTHING");
+        long id=jdbc.queryForObject("SELECT user_id FROM dashboard_users WHERE login_id='independent'",Long.class);
+        jdbc.update("INSERT INTO secret_role_grants(user_id,role,granted_by_user_id,grant_source) VALUES(?,'SECURITY',?,'MANUAL')",id,actor());return id;
+    }
+
     @Test
     void revalidationEndpointNeedsSessionAndCsrf() throws Exception {
         MockMvc mvc = MockMvcBuilders.webAppContextSetup(webContext).apply(springSecurity()).build();
         String body = "{\"occurrenceId\":" + occurrenceId
-                + ",\"expectedVersion\":0,\"idempotencyKey\":\"browser-recheck\"}";
+                + ",\"expectedCaseVersion\":0,\"expectedOccurrenceVersion\":0,\"idempotencyKey\":\"browser-recheck\"}";
         mvc.perform(post("/api/v1/secrets/cases/{caseId}/revalidations", caseId)
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isForbidden());

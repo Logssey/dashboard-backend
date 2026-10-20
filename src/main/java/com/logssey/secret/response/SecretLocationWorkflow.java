@@ -27,8 +27,13 @@ public class SecretLocationWorkflow {
     private final SecretAccessService access;
     private final SecretCommandExecutor commands;
     private final SecretReadSnapshots snapshots;
+    private final SecretLocationReadiness readiness;
+    @org.springframework.beans.factory.annotation.Autowired
+    public SecretLocationWorkflow(JdbcTemplate jdbc,SecretAccessService access,SecretCommandExecutor commands,SecretReadSnapshots snapshots,SecretLocationReadiness readiness) {
+        this.jdbc=jdbc;this.named=new NamedParameterJdbcTemplate(jdbc);this.access=access;this.commands=commands;this.snapshots=snapshots;this.readiness=readiness;
+    }
     public SecretLocationWorkflow(JdbcTemplate jdbc,SecretAccessService access,SecretCommandExecutor commands,SecretReadSnapshots snapshots) {
-        this.jdbc=jdbc;this.named=new NamedParameterJdbcTemplate(jdbc);this.access=access;this.commands=commands;this.snapshots=snapshots;
+        this(jdbc,access,commands,snapshots,new SecretLocationReadiness(jdbc,access));
     }
     public record Assignment(String team,Long assigneeUserId,String reasonCode,Long expectedCaseVersion,Long expectedOccurrenceVersion) {}
     public record Action(String actionType,Long occurrenceId,OffsetDateTime performedAt,String evidenceRef,
@@ -54,6 +59,7 @@ public class SecretLocationWorkflow {
             long occurrence=num(o,"occurrence_id"),connection=num(o,"connection_id");
             boolean security=access.hasConnectionRole(actor,connection,SecretRole.SECURITY);
             boolean assigned=assignedRemediator(actor,caseId,occurrence);
+            var ready=readiness.capabilities(actor,caseId,occurrence);
             boolean actionable=current&&Set.of("OPEN","IN_PROGRESS").contains(o.get("response_status"));
             return facts("occurrenceId",occurrence,"safeLocationLabel","위치 #"+occurrence,
                 "source",o.get("source"),"environment",o.get("environment"),"exposure",o.get("exposure_status"),
@@ -62,7 +68,8 @@ public class SecretLocationWorkflow {
                 "assigneeDisplayName",o.get("assignee_name"),"actionCycle",o.get("action_cycle"),
                 "lastMaterialActionAt",o.get("last_material_action_at"),"actionsCompletedAt",o.get("actions_completed_at"),
                 "canAssign",security&&current,"canRecordAction",assigned&&actionable,"canCompleteActions",assigned&&actionable&&o.get("last_material_action_at")!=null,
-                "canRequestRevalidation",false,"canResume",false);
+                "canRequestRevalidation",ready.get("canRequestRevalidation"),"canResume",ready.get("canResume"),
+                "locationAbsenceCheck",ready.get("locationAbsenceCheck"),"recentRevalidation",ready.get("recentRevalidation"),"revalidationBlockReasonCode",ready.get("revalidationBlockReasonCode"));
         }).toList();
         return facts("caseId",caseId,"secretId",c.get("credential_set_id"),"maskedLabel",c.get("masked_label"),
             "issuer",c.get("issuer"),"credentialType",c.get("credential_type"),"caseOrigin",c.get("case_origin"),
@@ -76,7 +83,7 @@ public class SecretLocationWorkflow {
             "reviewStatus","NOT_REQUIRED","readAt",OffsetDateTime.now(),"changedSinceSnapshot",false,
             "capabilities",facts("canAssign",allSecurity&&current,"canReview",false,"canStart",false,
                 "canRecordAction",items.stream().anyMatch(i->Boolean.TRUE.equals(i.get("canRecordAction"))),
-                "canUpdateChecklist",current&&(allSecurity||items.stream().anyMatch(i->Boolean.TRUE.equals(i.get("canRecordAction")))),"canResolve",false,"canRequestRevalidation",false));
+                "canUpdateChecklist",current&&(allSecurity||items.stream().anyMatch(i->Boolean.TRUE.equals(i.get("canRecordAction")))),"canResolve",false,"canRequestRevalidation",items.stream().anyMatch(i->Boolean.TRUE.equals(i.get("canRequestRevalidation")))));
     }
 
     @Transactional(readOnly=true)

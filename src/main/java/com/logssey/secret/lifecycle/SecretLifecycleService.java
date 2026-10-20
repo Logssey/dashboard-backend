@@ -1,0 +1,133 @@
+package com.logssey.secret.lifecycle;
+import java.time.OffsetDateTime;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.*;
+import com.logssey.common.error.*;
+import com.logssey.secret.access.*;
+import com.logssey.secret.command.*;
+import com.logssey.secret.response.SecretLocationWorkflow;
+import com.logssey.secret.snapshot.SecretReadSnapshots;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import static com.logssey.secret.snapshot.SecretReadSnapshots.facts;
+import static com.logssey.secret.command.SecretCommandExecutor.requireExpectedVersion;
+/** Immutable external records are separate from independent approvals and provider observations. */
+@Service
+public class SecretLifecycleService {
+ public record Submission(String kind,OffsetDateTime performedAt,String evidenceRef,Long expectedCaseVersion,String idempotencyKey){}
+ public record Review(String decision,String reasonCode,Long expectedEvidenceVersion,Long expectedCaseVersion,String idempotencyKey){}
+ private static final Set<String> KINDS=Set.of("ROTATED","REVOKED","RETIRED","FIXTURE_RETIRED");
+ private static final Map<String,List<String>> REASONS=Map.of("APPROVE",List.of("EXTERNAL_RECORD_CONFIRMED"),"REJECT",List.of("INSUFFICIENT_EVIDENCE","WRONG_CREDENTIAL","CONTRADICTORY_EVIDENCE"));
+ private final JdbcTemplate jdbc;private final SecretAccessService access;private final SecretLocationWorkflow workflow;
+ private final SecretCommandExecutor commands;private final SecretReadSnapshots snapshots;
+ public SecretLifecycleService(JdbcTemplate jdbc,SecretAccessService access,SecretLocationWorkflow workflow,SecretCommandExecutor commands,SecretReadSnapshots snapshots){this.jdbc=jdbc;this.access=access;this.workflow=workflow;this.commands=commands;this.snapshots=snapshots;}
+ @Transactional(readOnly=true)
+ public Map<String,Object> list(long caseId,String login){
+  var actor=access.requirePrincipal(login);var locations=workflow.visibleLocations(caseId,actor);if(locations.isEmpty())throw new ApiException(ErrorCode.NOT_FOUND);
+  var c=jdbc.queryForMap("SELECT * FROM secret_response_cases WHERE case_id=?",caseId);var ids=locations.stream().map(o->num(o,"occurrence_id")).toList();
+  var items=jdbc.queryForList("""
+    SELECT e.*,1+(SELECT count(*) FROM secret_lifecycle_evidence_reviews WHERE evidence_id=e.evidence_id) AS current_version,
+     r.decision AS review_decision,r.reviewed_by_user_id,r.reviewed_at,
+     EXISTS(SELECT 1 FROM secret_current_lifecycle_evidence current WHERE current.evidence_id=e.evidence_id) AS applicable
+    FROM secret_credential_lifecycle_evidence e LEFT JOIN LATERAL(SELECT * FROM secret_lifecycle_evidence_reviews
+     WHERE evidence_id=e.evidence_id ORDER BY review_id DESC LIMIT 1)r ON true WHERE e.case_id=? ORDER BY e.created_at DESC,e.evidence_id DESC
+    """,caseId).stream().filter(e->ids.contains(num(e,"source_occurrence_id"))).map(e->{
+     String level="PROVIDER_VERIFIED".equals(e.get("verification_level"))?"PROVIDER_VERIFIED":
+       "APPROVE".equals(e.get("review_decision"))?"APPROVED_MANUAL":"REJECT".equals(e.get("review_decision"))?"REJECTED":"PENDING";
+     return facts("evidenceId",e.get("evidence_id"),"caseId",caseId,"credentialSetId",c.get("credential_set_id"),"evidenceOrigin",e.get("origin"),
+      "kind",e.get("kind"),"verificationMethod",e.get("verification_method"),"verificationLevel",level,
+      "reviewStatus",level.equals("APPROVED_MANUAL")?"APPROVED":level,"performedAt",e.get("performed_at"),"observedAt",e.get("observed_at"),
+      "evidenceRef",e.get("evidence_ref"),"submittedByUserId",e.get("submitted_by_user_id"),"reviewedByUserId",e.get("reviewed_by_user_id"),
+      "reviewedAt",e.get("reviewed_at"),"version",e.get("current_version"),"isCurrentlyApplicable",e.get("applicable"),
+      "coverageLimit",level.equals("PROVIDER_VERIFIED")?"FULL":e.get("kind").equals("FIXTURE_RETIRED")?"SIMULATION":"LIMITED",
+      "limitations",level.equals("PROVIDER_VERIFIED")?List.of():List.of("PROVIDER_RETIREMENT_NOT_VERIFIED"),
+      "capabilities",facts("canReview",active(c)&&workflow.hasAllSecurity(actor,caseId)&&"EXTERNAL_RECORD".equals(e.get("verification_method"))&&!Objects.equals(e.get("submitted_by_user_id"),actor.userId())));
+    }).toList();
+  return facts("caseId",caseId,"caseVersion",c.get("version"),"items",items,"allowedKinds",synthetic(caseId)?List.of("FIXTURE_RETIRED"):List.of("ROTATED","REVOKED","RETIRED"),
+    "allowedReviewReasonCodes",REASONS,"capabilities",facts("canSubmit",active(c)&&locations.stream().anyMatch(o->canSubmit(actor,caseId,num(o,"occurrence_id")))),
+    "providerVerificationStatus","NOT_SUPPORTED_BY_CURRENT_VALIDATORS");
+ }
+ public Map<String,Object> submit(long caseId,Submission r,String login){
+  var actor=access.requirePrincipal(login);if(r==null||!KINDS.contains(r.kind()==null?"":r.kind())||r.performedAt()==null||!safeRef(r.evidenceRef()))invalid();
+  var result=commands.execute(actor,SecretCommandExecutor.Kind.LIFECYCLE_SUBMIT,r.idempotencyKey(),digest(caseId,r),()->requireSubmit(actor,caseId),()->{
+   var c=workflow.lockCase(caseId);requireExpectedVersion(r.expectedCaseVersion(),num(c,"version"));if(!active(c))conflict();
+   var source=workflow.visibleLocations(caseId,actor).stream().filter(o->canSubmit(actor,caseId,num(o,"occurrence_id"))).findFirst().orElseThrow(()->new ApiException(ErrorCode.FORBIDDEN));
+   OffsetDateTime now=jdbc.queryForObject("SELECT clock_timestamp()",OffsetDateTime.class);
+   if(r.performedAt().isAfter(now)||r.performedAt().isBefore(now.minusDays(90)))invalid();
+   if("FIXTURE_RETIRED".equals(r.kind())!=synthetic(caseId))throw new ApiException(ErrorCode.EVIDENCE_REQUIRED);
+   long id=jdbc.queryForObject("""
+    INSERT INTO secret_credential_lifecycle_evidence(case_id,credential_set_id,source_occurrence_id,origin,kind,verification_method,
+      verification_level,evidence_ref,performed_at,observed_at,submitted_by_user_id)
+    VALUES(?,?,?,?,?,'EXTERNAL_RECORD','PENDING',?,?,?,?) RETURNING evidence_id
+    """,Long.class,caseId,c.get("credential_set_id"),source.get("occurrence_id"),c.get("case_origin"),r.kind(),r.evidenceRef(),r.performedAt(),now,actor.userId());
+   bump(caseId);invalidate(caseId);activity(caseId,num(source,"occurrence_id"),"LIFECYCLE_SUBMITTED",actor.userId(),num(c,"version")+1,id);
+   return new SecretCommandResult(id,1,SecretCommandResult.Status.PENDING);
+  });return mutation(result);
+ }
+ public Map<String,Object> review(long caseId,long evidenceId,Review r,String login){
+  var actor=access.requirePrincipal(login);if(r==null||!REASONS.getOrDefault(r.decision()==null?"":r.decision(),List.of()).contains(r.reasonCode()))invalid();
+  var result=commands.execute(actor,SecretCommandExecutor.Kind.LIFECYCLE_REVIEW,r.idempotencyKey(),digest(caseId,evidenceId,r),()->requireReview(actor,caseId,evidenceId),()->{
+   var c=workflow.lockCase(caseId);requireExpectedVersion(r.expectedCaseVersion(),num(c,"version"));if(!active(c))conflict();
+   var e=jdbc.queryForMap("SELECT * FROM secret_credential_lifecycle_evidence WHERE evidence_id=? AND case_id=? FOR UPDATE",evidenceId,caseId);
+   long version=jdbc.queryForObject("SELECT 1+count(*) FROM secret_lifecycle_evidence_reviews WHERE evidence_id=?",Long.class,evidenceId);
+   requireExpectedVersion(r.expectedEvidenceVersion(),version);
+   if("APPROVE".equals(r.decision())&&(contradicted(num(e,"credential_set_id"),e.get("performed_at"))||("FIXTURE_RETIRED".equals(e.get("kind"))&&!synthetic(caseId))))throw new ApiException(ErrorCode.EVIDENCE_REQUIRED);
+   jdbc.update("""
+    INSERT INTO secret_lifecycle_evidence_reviews(evidence_id,decision,reason_code,expected_evidence_version,case_version,reviewed_by_user_id)
+    VALUES(?,?,?,?,?,?)
+    """,evidenceId,r.decision(),r.reasonCode(),version,num(c,"version")+1,actor.userId());
+   if("APPROVE".equals(r.decision()))jdbc.update("""
+    INSERT INTO secret_lifecycle_evidence_applications(evidence_id,case_id,credential_set_id,origin,reviewed_by_user_id)
+    VALUES(?,?,?,?,?) ON CONFLICT(evidence_id,case_id) DO NOTHING
+    """,evidenceId,caseId,c.get("credential_set_id"),c.get("case_origin"),actor.userId());
+   bump(caseId);invalidate(caseId);activity(caseId,num(e,"source_occurrence_id"),"LIFECYCLE_REVIEWED",actor.userId(),num(c,"version")+1,evidenceId);
+   return new SecretCommandResult(evidenceId,version+1,"APPROVE".equals(r.decision())?SecretCommandResult.Status.APPROVED:SecretCommandResult.Status.REJECTED);
+  });return mutation(result);
+ }
+ public Map<String,Object> locationCheck(SecretPrincipal actor,long occurrence){
+  access.requireOccurrenceRead(actor,occurrence);
+  var rows=jdbc.queryForList("""
+    SELECT e.evidence_id,e.verification_level,e.kind,e.observed_at FROM secret_current_lifecycle_evidence e
+    JOIN secret_case_occurrences co ON co.case_id=e.case_id AND co.occurrence_id=? JOIN secret_response_cases c ON c.case_id=e.case_id
+    WHERE c.is_current AND e.source_occurrence_id=? ORDER BY e.observed_at DESC,e.evidence_id DESC LIMIT 1
+    """,occurrence,occurrence);
+  if(rows.isEmpty())return facts("status","UNKNOWN","reasonCode","LIFECYCLE_EVIDENCE_REQUIRED");
+  var e=rows.getFirst();return facts("status","PASSED","reasonCode","FIXTURE_RETIRED".equals(e.get("kind"))?"SYNTHETIC_FIXTURE_REMOVAL":
+    "PROVIDER_VERIFIED".equals(e.get("verification_level"))?"PROVIDER_RETIREMENT_CONFIRMED":"EXTERNAL_RECORD_APPROVED",
+    "verificationLevel",e.get("verification_level"),"evidenceId",e.get("evidence_id"),"observedAt",e.get("observed_at"),
+    "coverageLimit","FIXTURE_RETIRED".equals(e.get("kind"))?"SIMULATION":"PROVIDER_VERIFIED".equals(e.get("verification_level"))?"FULL":"LIMITED");
+ }
+ public boolean assignedActionable(SecretPrincipal actor,long caseId,long occurrence){
+  return workflow.assignedRemediator(actor,caseId,occurrence)&&Boolean.TRUE.equals(jdbc.queryForObject("""
+   SELECT EXISTS(SELECT 1 FROM secret_case_occurrences co JOIN secret_response_cases c USING(case_id) WHERE case_id=? AND occurrence_id=?
+    AND c.is_current AND c.disposition='IN_SCOPE' AND co.response_status IN ('OPEN','IN_PROGRESS'))
+   """,Boolean.class,caseId,occurrence));
+ }
+ private void requireSubmit(SecretPrincipal actor,long caseId){if(workflow.visibleLocations(caseId,actor).stream().noneMatch(o->canSubmit(actor,caseId,num(o,"occurrence_id"))))throw new ApiException(ErrorCode.FORBIDDEN);}
+ private boolean canSubmit(SecretPrincipal actor,long c,long o){var connection=jdbc.queryForObject("SELECT connection_id FROM secret_occurrences WHERE occurrence_id=?",Long.class,o);return access.hasConnectionRole(actor,connection,SecretRole.SECURITY)||workflow.assignedRemediator(actor,c,o);}
+ private void requireReview(SecretPrincipal actor,long caseId,long id){
+  if(!workflow.hasAllSecurity(actor,caseId))throw new ApiException(ErrorCode.FORBIDDEN);
+  var rows=jdbc.queryForList("SELECT submitted_by_user_id,verification_method FROM secret_credential_lifecycle_evidence WHERE evidence_id=? AND case_id=?",id,caseId);
+  if(rows.isEmpty())throw new ApiException(ErrorCode.NOT_FOUND);var e=rows.getFirst();
+  if(!"EXTERNAL_RECORD".equals(e.get("verification_method"))||Objects.equals(e.get("submitted_by_user_id"),actor.userId()))throw new ApiException(ErrorCode.FORBIDDEN);
+ }
+ private boolean synthetic(long caseId){return Boolean.TRUE.equals(jdbc.queryForObject("""
+   SELECT c.case_origin='TEST' AND NOT EXISTS(SELECT 1 FROM secret_confirmed_real_credentials r WHERE r.credential_set_id=c.credential_set_id)
+    AND EXISTS(SELECT 1 FROM secret_case_occurrences co WHERE co.case_id=c.case_id)
+    AND NOT EXISTS(SELECT 1 FROM secret_case_occurrences co JOIN secret_occurrences o USING(occurrence_id) WHERE co.case_id=c.case_id
+      AND NOT EXISTS(SELECT 1 FROM secret_current_fixture_attestations f WHERE f.credential_set_id=c.credential_set_id AND f.scope_id=o.scope_id))
+   FROM secret_response_cases c WHERE c.case_id=?
+   """,Boolean.class,caseId));}
+ private boolean contradicted(long key,Object performed){return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM secret_validation_attempts WHERE credential_set_id=? AND result='VALID' AND reason_code='AUTHENTICATED' AND provider_checked_at>?)",Boolean.class,key,performed));}
+ private void invalidate(long c){jdbc.queryForList("SELECT occurrence_id FROM secret_case_occurrences WHERE case_id=?",Long.class,c).forEach(snapshots::invalidateOccurrence);}
+ private void bump(long c){jdbc.update("UPDATE secret_response_cases SET version=version+1,updated_at=now() WHERE case_id=?",c);}
+ private void activity(long c,long o,String type,long actor,long version,long id){jdbc.update("INSERT INTO secret_location_activities(case_id,occurrence_id,activity_type,actor_user_id,case_version,reference_id) VALUES(?,?,?,?,?,?)",c,o,type,actor,version,id);}
+ private static boolean active(Map<String,Object> c){return Boolean.TRUE.equals(c.get("is_current"))&&"IN_SCOPE".equals(c.get("disposition"))&&!"RESOLVED".equals(c.get("action_status"));}
+ private static boolean safeRef(String ref){return ref!=null&&ref.matches("(TICKET|CHANGE):[A-Z]{2,10}-[1-9][0-9]{0,9}");}
+ private static Map<String,Object> mutation(SecretCommandResult r){return facts("evidenceId",r.targetId(),"version",r.version(),"status",r.status(),"requiresSnapshotRefresh",true);}
+ private static long num(Map<String,Object> row,String k){return ((Number)row.get(k)).longValue();}
+ private static byte[] digest(Object... values){try{return MessageDigest.getInstance("SHA-256").digest(Arrays.deepToString(values).getBytes(StandardCharsets.UTF_8));}catch(Exception e){throw new IllegalStateException(e);}}
+ private static void invalid(){throw new ApiException(ErrorCode.INVALID_INPUT);}private static void conflict(){throw new ApiException(ErrorCode.CONFLICT);}
+}

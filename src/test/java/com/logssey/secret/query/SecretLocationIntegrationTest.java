@@ -35,9 +35,12 @@ class SecretLocationIntegrationTest {
     @BeforeEach void setup() {
         jdbc.execute("TRUNCATE dashboard_users,secret_connections RESTART IDENTITY CASCADE");
         security=user("security"); operations=user("operations"); hidden=user("hidden");
-        service=new SecretLocationService(new SecretLocationRepository(jdbc),
-            new SecretReadSnapshots(jdbc,JsonMapper.builder().build()),new SecretAccessService(jdbc),
-            new SecretCoverageService(jdbc,new SecretAccessService(jdbc)));
+        var access=new SecretAccessService(jdbc);var snapshots=new SecretReadSnapshots(jdbc,JsonMapper.builder().build());
+        var commands=new com.logssey.secret.command.SecretCommandExecutor(jdbc,new org.springframework.jdbc.datasource.DataSourceTransactionManager(jdbc.getDataSource()));
+        var readiness=new com.logssey.secret.response.SecretLocationReadiness(jdbc,access);
+        var workflow=new com.logssey.secret.response.SecretLocationWorkflow(jdbc,access,commands,snapshots,readiness);
+        var lifecycle=new com.logssey.secret.lifecycle.SecretLifecycleService(jdbc,access,workflow,commands,snapshots);
+        service=new SecretLocationService(new SecretLocationRepository(jdbc),snapshots,access,new SecretCoverageService(jdbc,access),readiness,lifecycle);
     }
     @Test void oneKeyKeepsIndependentLocationsWithoutDisclosingOriginalPaths() {
         long conn=connection(); grant(security,"SECURITY",conn); long scope=scope(conn);

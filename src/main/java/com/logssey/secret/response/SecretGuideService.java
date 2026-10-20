@@ -24,16 +24,9 @@ public class SecretGuideService {
         if (caseId <= 0) throw new ApiException(ErrorCode.NOT_FOUND);
         var guideCase = guides.currentCase(caseId)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
-        boolean security = cases.hasCaseRole(actorId, caseId, "SECURITY");
-        boolean assignedRemediator = guideCase.assigneeUserId() != null
-                && guideCase.assigneeUserId() == actorId
-                && cases.hasCaseRole(actorId, caseId, "REMEDIATOR");
-        if (!security && !assignedRemediator) throw new ApiException(ErrorCode.FORBIDDEN);
-
-        // ADR-S009 limits initial external experiments to the approved synthetic fixture.
-        if (!"TEST".equals(guideCase.origin()) || !guideCase.syntheticFixture()) {
+        if(!guides.canRead(actorId,caseId))throw new ApiException(ErrorCode.FORBIDDEN);
+        if(!"TEST".equals(guideCase.origin())||!guideCase.syntheticFixture()||!guides.allLocationsReadable(actorId,caseId))
             return SecretGuideCatalog.fallback();
-        }
         try {
             return provider.selectSteps(guideCase.safeContext())
                     .flatMap(SecretGuideCatalog::fromSelectedCodes)

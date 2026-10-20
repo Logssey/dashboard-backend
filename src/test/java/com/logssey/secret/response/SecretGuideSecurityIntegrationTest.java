@@ -132,7 +132,7 @@ class SecretGuideSecurityIntegrationTest {
                         .session(session).with(csrf()))
                 .andExpect(status().isForbidden());
 
-        jdbc.update("UPDATE secret_response_cases SET assigned_user_id = ? WHERE case_id = ?",
+        jdbc.update("UPDATE secret_case_occurrences SET assigned_user_id = ? WHERE case_id = ?",
                 actorId, caseId);
         mvc.perform(post("/api/v1/secrets/cases/{caseId}/guide", caseId)
                         .session(session).with(csrf()))
@@ -145,7 +145,7 @@ class SecretGuideSecurityIntegrationTest {
                 SET approved_ref = 'github://Logssey/test-find-key/develop/fixtures/'
                 WHERE scope_key = 'fixture'
                 """);
-        assertThat(guideRepository.currentCase(caseId).orElseThrow().syntheticFixture()).isTrue();
+        assertThat(guideRepository.currentCase(caseId).orElseThrow().syntheticFixture()).isFalse();
         assertThat(jdbc.queryForObject("SELECT version FROM secret_response_cases WHERE case_id = ?",
                 Long.class, caseId)).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM secret_audit_events WHERE case_id = ?",

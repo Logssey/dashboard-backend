@@ -28,13 +28,15 @@ public class SecretLocationService {
     private final SecretReadSnapshots snapshots;
     private final SecretAccessService access;
     private final SecretCoverageService coverageService;
+    private final com.logssey.secret.response.SecretLocationReadiness readiness;
+    private final com.logssey.secret.lifecycle.SecretLifecycleService lifecycle;
     private static final Set<String> SAFE_REASONS=Set.of("AUTHENTICATED","INVALID_ACCESS_KEY","SIGNATURE_AMBIGUOUS",
         "EXPIRED_SESSION","DISABLED","INCOMPLETE_PAIR","MISSING_SESSION_TOKEN","ACCESS_AMBIGUOUS",
-        "RATE_LIMITED","PROVIDER_UNAVAILABLE","CLIENT_FAILURE","SYNTHETIC_FIXTURE","SOURCE_UNAVAILABLE");
+        "POST_ACTION_VALIDATION_REQUIRED","RATE_LIMITED","PROVIDER_UNAVAILABLE","CLIENT_FAILURE","SYNTHETIC_FIXTURE","SOURCE_UNAVAILABLE");
 
     public SecretLocationService(SecretLocationRepository repository,SecretReadSnapshots snapshots,SecretAccessService access,
-            SecretCoverageService coverageService) {
-        this.repository=repository; this.snapshots=snapshots; this.access=access; this.coverageService=coverageService;
+            SecretCoverageService coverageService,com.logssey.secret.response.SecretLocationReadiness readiness,com.logssey.secret.lifecycle.SecretLifecycleService lifecycle) {
+        this.repository=repository; this.snapshots=snapshots; this.access=access; this.coverageService=coverageService;this.readiness=readiness;this.lifecycle=lifecycle;
     }
 
     @Transactional(isolation=Isolation.REPEATABLE_READ)
@@ -108,7 +110,8 @@ public class SecretLocationService {
             row.occurrenceVersion()+":"+row.scopeRevision()+":"+row.presence()+":"+row.lastSeenAt()+":"+
             row.caseId()+":"+row.actionStatus()+":"+row.assignedUserId()+":"+row.validationAt()+":"+
             row.storageBindingId()+":"+row.storagePolicyVersion()+":"+row.storagePolicyResult()+":"+
-            row.storagePolicyReason()+":"+row.requiresReassessment()+":"+row.allCurrentFindingsCorrected()).collect(Collectors.joining("|")));
+            row.storagePolicyReason()+":"+row.requiresReassessment()+":"+row.allCurrentFindingsCorrected()+":"+
+            repository.operationalFacts(row.occurrenceId()).get("location_version")).collect(Collectors.joining("|")));
         if(expectedDetailVersion!=null && !expectedDetailVersion.equals(detailVersion))
             throw new ApiException(ErrorCode.CONFLICT,"위치 정보가 변경되었어요. 다시 확인해 주세요.");
         var filtered=visible.stream().filter(row -> ("ALL".equals(filters.source())||row.source().equals(filters.source()))
@@ -148,11 +151,14 @@ public class SecretLocationService {
         var priority=List.of("ACTION_REQUIRED","NEEDS_CASE_LINK","NEEDS_DECISION","NORMAL_INVENTORY","INVENTORY","EXCLUDED_HISTORY");
         var representative=rows.stream().min(Comparator.comparingInt(row->priority.indexOf(bucket(row)))).orElse(first);
         String bucket=bucket(representative);
+        OffsetDateTime lastMaterial=rows.stream().map(row->repository.operationalFacts(row.occurrenceId()).get("validation_after_action_at"))
+            .filter(Objects::nonNull).map(v->((java.sql.Timestamp)v).toInstant().atOffset(java.time.ZoneOffset.UTC)).max(Comparator.naturalOrder()).orElse(null);
+        boolean needsPostAction=lastMaterial!=null&&(latest.validationCheckedAt()==null||!latest.validationCheckedAt().isAfter(lastMaterial));
         return facts("id",first.secretId(),"issuer",first.issuer(),"provider",first.issuer(),
             "credentialType",first.credentialType(),"componentState",first.componentState(),"maskedLabel",first.maskedLabel(),
-            "severity","UNASSESSED","validationStatus",latest.validity()==null?"UNCHECKED":latest.validity(),
-            "validationReasonCode",safeReason(latest.validationReason()),"validatedAt",text(latest.validationAt()),
-            "validationCheckedAt",text(latest.validationCheckedAt()),"evidenceOrigin",latest.origin(),
+            "severity","UNASSESSED","validationStatus",needsPostAction?"UNCHECKED":latest.validity()==null?"UNCHECKED":latest.validity(),
+            "validationReasonCode",needsPostAction?"POST_ACTION_VALIDATION_REQUIRED":safeReason(latest.validationReason()),"validatedAt",needsPostAction?null:text(latest.validationAt()),
+            "validationCheckedAt",needsPostAction?null:text(latest.validationCheckedAt()),"lastMaterialActionAt",text(lastMaterial),"evidenceOrigin",latest.origin(),
             "occurrenceCount",rows.size(),"visibleLocationCount",rows.size(),"matchedLocationCount",rows.size(),
             "firstSeenAt",text(rows.stream().map(Row::firstSeenAt).min(Comparator.naturalOrder()).orElse(null)),
             "lastSeenAt",text(rows.stream().map(Row::lastSeenAt).max(Comparator.naturalOrder()).orElse(null)),
@@ -165,6 +171,7 @@ public class SecretLocationService {
     }
 
     private Map<String,Object> location(Row row,SecretPrincipal actor,String loginId) {
+        var operational=repository.operationalFacts(row.occurrenceId());
         boolean review=access.hasConnectionRole(actor,row.connectionId(),SecretRole.SECURITY);
         var coverage=coverageService.occurrenceCoverage(loginId,row.occurrenceId());
         var gapReasons=(java.util.Collection<?>)coverage.getOrDefault("gapReasonCodes",List.of());
@@ -173,6 +180,7 @@ public class SecretLocationService {
         visibleFacts.add(row.presence());
         if("ABNORMAL".equals(row.exposure())) visibleFacts.add("EXPOSURE_CONFIRMED");
         if("UNKNOWN".equals(row.presence())) visibleFacts.add("COVERAGE_UNKNOWN");
+        var ready=row.caseId()==null?facts("canRequestRevalidation",false):readiness.capabilities(actor,row.caseId(),row.occurrenceId());
         String validity=row.validity()==null?"UNCHECKED":row.validity();
         return facts("occurrenceId",row.occurrenceId(),"connectionId",row.connectionId(),"scopeId",row.scopeId(),
             "source",row.source(),"environment",row.environment(),"origin",row.origin(),"scopeRevision",row.scopeRevision(),
@@ -180,21 +188,26 @@ public class SecretLocationService {
             "storagePolicy",facts("result",row.storagePolicyResult(),"reasonCode",row.storagePolicyReason(),
                 "bindingId",row.storageBindingId(),"policyId",row.storagePolicyId(),"version",row.storagePolicyVersion()),
             "requiresReassessment",row.requiresReassessment(),"allCurrentFindingsCorrected",row.allCurrentFindingsCorrected(),
-            "validity",facts("result",validity,"reasonCode",safeReason(row.validationReason()),"observedAt",text(row.validationAt())),
+            "validity",facts("result",validity,"reasonCode",safeReason(row.validationReason()),"observedAt",text(row.validationAt()),
+                "providerCheckedAt",text(row.validationCheckedAt()),"postActionAfterAt",operational.get("validation_after_action_at"),"lastObservation",operational.get("previous_validation_result")==null?null:
+                 facts("result",operational.get("previous_validation_result"),"reasonCode",safeReason((String)operational.get("previous_validation_reason")),
+                  "observedAt",operational.get("previous_validation_at"),"providerCheckedAt",operational.get("previous_provider_checked_at"))),
+            "lastMaterialActionAt",operational.get("last_material_action_at"),"actionCycle",operational.get("action_cycle"),"actionsCompletedAt",operational.get("actions_completed_at"),
             "coverage",coverage,
-            "fixtureStatus","TEST".equals(row.origin())?null:"NOT_APPLICABLE",
-            "fixtureReasonCode","ATTESTATION_EVIDENCE_REQUIRED",
+            "fixtureStatus",operational.getOrDefault("fixture_status","NOT_APPLICABLE"),
+            "fixtureReasonCode",operational.get("fixture_status")==null?"ATTESTATION_EVIDENCE_REQUIRED":null,
             "caseId",row.caseId(),"actionStatus",row.actionStatus(),"assignedUserId",row.assignedUserId(),
             "occurrenceVersion",row.occurrenceVersion(),"caseVersion",row.caseVersion(),"facts",visibleFacts,
             "caseLinkStatus",row.caseId()!=null?"LINKED":(row.requiresReassessment()?"NEEDS_DECISION":("ABNORMAL".equals(row.exposure())?"NEEDS_CASE_LINK":
                 ("METADATA_ONLY".equals(row.componentState())?"NOT_REQUIRED":"NEEDS_DECISION"))),
             "whyHereCode",reason(row),"nextActionCode",next(row,actor),
-            "locationAbsenceCheck",facts("status","UNKNOWN","reasonCode","POST_ACTION_EVIDENCE_REQUIRED"),
-            "credentialLifecycleCheck",facts("status","UNKNOWN","reasonCode","LIFECYCLE_EVIDENCE_REQUIRED"),
+            "recentRevalidation",ready.get("recentRevalidation"),"revalidationBlockReasonCode",ready.get("revalidationBlockReasonCode"),
+            "locationAbsenceCheck",ready.getOrDefault("locationAbsenceCheck",facts("status","UNKNOWN","reasonCode","POST_ACTION_EVIDENCE_REQUIRED")),
+            "credentialLifecycleCheck",lifecycle.locationCheck(actor,row.occurrenceId()),
             "coverageCheck",facts("status",complete?"PASSED":"UNKNOWN","reasonCode",complete?"CURRENT_SCOPE_OBSERVED":"CURRENT_SCOPE_CHECK_REQUIRED"),
             "firstSeenAt",text(row.firstSeenAt()),"lastSeenAt",text(row.lastSeenAt()),
             "capabilities",facts("canReview",review&&"CONFIRMED".equals(row.componentState()),"canViewCase",row.caseId()!=null,
-                "canRecordAction",false,"canRequestRevalidation",false,"canViewCoverage",access.canReadConnectionFacts(actor,row.connectionId()),
+                "canRecordAction",row.caseId()!=null && lifecycle.assignedActionable(actor,row.caseId(),row.occurrenceId()),"canRequestRevalidation",ready.get("canRequestRevalidation"),"canViewCoverage",access.canReadConnectionFacts(actor,row.connectionId()),
                 "canOpenSafeSource",false));
     }
 

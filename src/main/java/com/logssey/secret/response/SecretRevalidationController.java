@@ -43,7 +43,7 @@ public class SecretRevalidationController {
     }
 
     @PostMapping("/revalidation-resume")
-    public SecretCaseDetail resume(@PathVariable long caseId,
+    public java.util.Map<String,Object> resume(@PathVariable long caseId,
                                    @RequestBody SecretResumeRequest request,
                                    Authentication authentication) {
         return service.resume(caseId, request, loginId(authentication));
