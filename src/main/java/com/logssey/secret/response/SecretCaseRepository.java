@@ -367,7 +367,7 @@ class SecretCaseRepository {
         return jdbc.query("""
                 SELECT item_id, guide_version, item_code, status, evidence_ref,
                        completed_at, completed_by_user_id, updated_at
-                FROM secret_checklist_items WHERE case_id = ?
+                FROM secret_checklist_items WHERE case_id = ? AND occurrence_id IS NULL
                 ORDER BY CASE item_code
                     WHEN 'IDENTIFY_OWNER' THEN 1
                     WHEN 'ROTATE_OR_REVOKE' THEN 2

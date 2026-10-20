@@ -60,32 +60,14 @@ public class SecretAccessService {
         if (!canReadConnectionFacts(principal, connectionId)) throw new ApiException(ErrorCode.NOT_FOUND);
     }
 
-    /** Assigned case access is bounded again by the occurrence's connection grant and active team. */
+    /** Only a live per-location assignment can grant REMEDIATOR access. */
     public boolean canReadOccurrence(SecretPrincipal principal, long occurrenceId) {
         if (occurrenceId <= 0) return false;
-        return exists("""
-                SELECT EXISTS (
-                    SELECT 1 FROM secret_occurrences o
-                    WHERE o.occurrence_id = ? AND EXISTS (
-                        SELECT 1 FROM secret_role_grants g
-                        WHERE g.user_id = ? AND g.revoked_at IS NULL
-                          AND (g.connection_id IS NULL OR g.connection_id = o.connection_id)
-                          AND (g.role = 'SECURITY' OR (g.role = 'REMEDIATOR' AND EXISTS (
-                              SELECT 1 FROM secret_case_occurrences co
-                              JOIN secret_response_cases c ON c.case_id = co.case_id
-                              WHERE co.occurrence_id = o.occurrence_id AND c.is_current
-                                AND (c.assigned_user_id = g.user_id OR
-                                    (c.assigned_user_id IS NULL AND c.assigned_team IS NOT NULL AND EXISTS (
-                                        SELECT 1 FROM secret_team_memberships tm
-                                        WHERE tm.user_id = g.user_id AND tm.team_name = c.assigned_team
-                                          AND tm.removed_at IS NULL
-                                    )))
-                          )))
-                    )
-                )
-                """, occurrenceId, principal.userId());
+        return Boolean.TRUE.equals(new org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate(jdbc)
+            .queryForObject("SELECT EXISTS(SELECT 1 FROM secret_occurrences o WHERE o.occurrence_id=:id AND "
+                + SecretOccurrenceAccessSql.predicate("o", ":userId") + ")",
+                java.util.Map.of("id", occurrenceId, "userId", principal.userId()), Boolean.class));
     }
-
     public void requireOccurrenceRead(SecretPrincipal principal, long occurrenceId) {
         if (!canReadOccurrence(principal, occurrenceId)) throw new ApiException(ErrorCode.NOT_FOUND);
     }
