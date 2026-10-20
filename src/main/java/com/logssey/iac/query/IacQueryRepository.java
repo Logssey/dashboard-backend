@@ -48,6 +48,31 @@ public class IacQueryRepository {
         return counts;
     }
 
+    long openDrifts() {
+        return jdbc.queryForObject("SELECT count(*) FROM iac_findings WHERE source = 'DRIFT' AND status = 'OPEN'",
+                Long.class);
+    }
+
+    List<IacDriftResponse> drifts(String status) {
+        return jdbc.query("""
+                SELECT finding_id, rule_id, enforcement, severity, resource_address, params ->> 'action' AS action,
+                       params -> 'attributes' AS attributes, status, assignee_user_id, version, first_seen_at, last_seen_at
+                FROM iac_findings WHERE source = 'DRIFT' AND status = ?
+                ORDER BY CASE severity WHEN 'HIGH' THEN 0 WHEN 'MEDIUM' THEN 1 ELSE 2 END, resource_address
+                LIMIT 200
+                """, (rs, row) -> {
+                    var attributes = json(rs.getString("attributes"));
+                    List<String> names = new java.util.ArrayList<>();
+                    if (attributes != null) attributes.forEach(a -> names.add(a.asString()));
+                    return new IacDriftResponse(rs.getLong("finding_id"), rs.getString("rule_id"),
+                            rs.getString("enforcement"), rs.getString("severity"), rs.getString("resource_address"),
+                            rs.getString("action"), names, rs.getString("status"),
+                            rs.getObject("assignee_user_id", Long.class), rs.getLong("version"),
+                            rs.getObject("first_seen_at", OffsetDateTime.class),
+                            rs.getObject("last_seen_at", OffsetDateTime.class));
+                }, status);
+    }
+
     Optional<OffsetDateTime> lastSucceeded(String kind) {
         return Optional.ofNullable(jdbc.queryForObject("""
                 SELECT max(finished_at) FROM iac_jobs WHERE kind = ? AND status = 'SUCCEEDED'

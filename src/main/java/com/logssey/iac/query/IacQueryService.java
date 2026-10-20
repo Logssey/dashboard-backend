@@ -2,6 +2,7 @@ package com.logssey.iac.query;
 
 import java.time.Duration;
 import java.time.OffsetDateTime;
+import java.util.List;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
@@ -26,7 +27,8 @@ public class IacQueryService {
         var graphAsOf = repository.lastSucceeded("COLLECT_GRAPH").orElse(null);
         boolean stale = graphAsOf == null || graphAsOf.isBefore(OffsetDateTime.now().minus(GRAPH_STALE_AFTER));
         return new IacSummaryResponse(
-                new IacSummaryResponse.Metrics(repository.openPaths(1), repository.openPaths(null), null, null, null),
+                new IacSummaryResponse.Metrics(repository.openPaths(1), repository.openPaths(null),
+                        repository.openDrifts(), null, null),
                 repository.severityCounts(), repository.lastSucceeded("ENRICH_GRAPH").orElse(null), graphAsOf, stale);
     }
 
@@ -57,6 +59,14 @@ public class IacQueryService {
         return new IacPullRequestResponse(number, null, run.runId(), run.headSha(), run.status(), run.verdict(),
                 run.highestSeverity(), run.checkedAt(), gate, repository.pathChanges(run.runId()),
                 repository.analysisStats(run.runId(), "resources"), repository.analysisStats(run.runId(), "state"));
+    }
+
+    public List<IacDriftResponse> drifts(String status, String loginId) {
+        requireAdmin(loginId);
+        if (!List.of("OPEN", "FIXED", "ACCEPTED").contains(status)) {
+            throw new ApiException(ErrorCode.INVALID_INPUT);
+        }
+        return repository.drifts(status);
     }
 
     /** S-01 F 의 State 부분. 버킷 정책·State 속 민감값은 아직 확인하지 않아 null. */

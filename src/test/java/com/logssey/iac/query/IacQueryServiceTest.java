@@ -71,13 +71,19 @@ class IacQueryServiceTest {
         finding("fp-daily", "MEDIUM", null, daily);
         finding("fp-pr", "CRITICAL", run, null);
         job("COLLECT_GRAPH", "SUCCEEDED", "now() - interval '30 hours'");
+        jdbc.update("""
+                INSERT INTO iac_findings (rule_id, source, enforcement, severity, environment, resource_address, params,
+                                          fingerprint, last_job_id, first_seen_at, last_seen_at)
+                VALUES ('drift.high', 'DRIFT', 'WARN', 'HIGH', 'PROD', 'module.edge.aws_route53_record.grafana["A"]',
+                        '{"action":"update","attributes":["alias"]}', 'drift-dns', ?, now(), now())
+                """, daily);
 
         var summary = service.summary("admin");
 
         assertThat(summary.metrics().tier1OpenPaths()).isEqualTo(2);
         assertThat(summary.metrics().openPaths()).isEqualTo(3);
-        assertThat(summary.metrics().drifts()).isNull();
-        assertThat(summary.severityCounts()).containsEntry("CRITICAL", 2L).containsEntry("HIGH", 1L)
+        assertThat(summary.metrics().drifts()).isEqualTo(1);
+        assertThat(summary.severityCounts()).containsEntry("CRITICAL", 2L).containsEntry("HIGH", 2L)
                 .containsEntry("MEDIUM", 1L).containsEntry("LOW", 0L);
         assertThat(summary.lastFullCheckAt()).isNotNull();
         assertThat(summary.graphStale()).isTrue();
@@ -147,6 +153,27 @@ class IacQueryServiceTest {
                 .andExpect(jsonPath("$.state.readersBefore").value(5));
         mvc.perform(get("/api/v1/iac/prs/59").principal(new UsernamePasswordAuthenticationToken("admin", "n/a")))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void driftsListAttributeNamesOnly() {
+        long daily = job("CHECK_DRIFT", "SUCCEEDED", "now()");
+        jdbc.update("""
+                INSERT INTO iac_findings (rule_id, source, enforcement, severity, environment, resource_address, params,
+                                          fingerprint, last_job_id, status, first_seen_at, last_seen_at)
+                VALUES ('drift.medium', 'DRIFT', 'INFO', 'MEDIUM', 'PROD', 'module.rds.aws_db_instance.this',
+                        '{"action":"update","attributes":["allocated_storage"]}', 'drift-db', ?, 'OPEN', now(), now()),
+                       ('drift.high', 'DRIFT', 'WARN', 'HIGH', 'PROD', 'module.edge.aws_route53_record.grafana["A"]',
+                        '{"action":"update","attributes":["alias"]}', 'drift-dns', ?, 'OPEN', now(), now()),
+                       ('drift.low', 'DRIFT', 'INFO', 'LOW', 'PROD', 'module.s3.aws_s3_bucket.x',
+                        '{"action":"update","attributes":["tags"]}', 'drift-old', ?, 'FIXED', now(), now())
+                """, daily, daily, daily);
+        var open = service.drifts("OPEN", "admin");
+        assertThat(open).extracting(IacDriftResponse::ruleId).containsExactly("drift.high", "drift.medium");
+        assertThat(open.getFirst().attributes()).containsExactly("alias");
+        assertThat(service.drifts("FIXED", "admin")).hasSize(1);
+        assertThatThrownBy(() -> service.drifts("BOGUS", "admin"))
+                .satisfies(e -> assertThat(((ApiException) e).errorCode()).isEqualTo(ErrorCode.INVALID_INPUT));
     }
 
     @Test

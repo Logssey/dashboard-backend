@@ -12,7 +12,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** ERD "구현 검증": 기존 V10 위 적용, 잘못된 FK·값 거부, 같은 지문 중복 거부. */
+/** ERD "구현 검증": 기존 V10 위에 IaC 마이그레이션(V11~) 적용, 잘못된 FK·값 거부, 같은 지문 중복 거부. */
 class IacSchemaMigrationTest {
     private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:18.6");
     private static final String SHA = "a".repeat(40);
@@ -37,8 +37,8 @@ class IacSchemaMigrationTest {
     @Test
     void appliesOnTopOfExistingSchemaAndSeedsRules() {
         assertThat(jdbc.queryForObject(
-                "SELECT max(version::int) FROM flyway_schema_history WHERE success", Integer.class)).isEqualTo(11);
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM iac_rules", Integer.class)).isEqualTo(20);
+                "SELECT max(version::int) FROM flyway_schema_history WHERE success", Integer.class)).isEqualTo(12);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM iac_rules", Integer.class)).isEqualTo(23);
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM iac_rules WHERE rule_id LIKE 'gate.%'", Integer.class)).isEqualTo(13);
         assertThat(jdbc.queryForObject(

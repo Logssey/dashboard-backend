@@ -8,6 +8,7 @@
 #        #58  tfstate 거부 정책 삭제 → 차단
 #        #60  IMDSv2 강제          → 경로 감소
 #        #61  변경 없음             → 통과
+#   4. main 매일 점검 + DNS 콘솔 변경 fixture 업로드 → 워커가 드리프트 점검 (CHECK_DRIFT) → 높음 1건
 #
 # 먼저 띄울 것 (README.md): compose DB, API(bootRun), 로컬 Neo4j, iac-worker
 # 실행: dashboard-backend 에서 bash iac-worker/local/demo.sh
@@ -72,3 +73,14 @@ for number in 58 60 61; do
   done
   call GET "/api/v1/iac/prs/$number" | jq -c '{number, status, verdict, highestSeverity, changes: (.paths | length), resources}'
 done
+
+echo "== 4. main 점검 (드리프트)"
+sha=$(head -c 20 /dev/urandom | od -An -tx1 | tr -d ' \n')
+run=$(call POST /api/v1/iac/runs -H 'Content-Type: application/json' \
+  -d "{\"repo\":\"Logssey/infrastructure\",\"headSha\":\"$sha\",\"trigger\":\"PUSH\",\"gate\":{\"status\":\"PASSED\",\"findings\":[]}}" | jq -r .runId)
+call PUT "/api/v1/iac/runs/$run/plan" -H 'Content-Type: application/gzip' --data-binary "@$PLANS/drift-dns.json.gz" | jq -c .
+for _ in $(seq 1 30); do
+  [ "$(call GET "/api/v1/iac/runs/$run" | jq -r .status)" = DONE ] && break
+  sleep 2
+done
+call GET /api/v1/iac/drifts | jq -c '.[] | {ruleId, severity, address, attributes}'

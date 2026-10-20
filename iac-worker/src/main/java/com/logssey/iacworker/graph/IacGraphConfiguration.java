@@ -5,6 +5,7 @@ import com.logssey.iacworker.analysis.AnalyzeRunProcessor;
 import com.logssey.iacworker.analysis.AnalyzeRunRepository;
 import com.logssey.iacworker.analysis.AwsIamSimulator;
 import com.logssey.iacworker.analysis.GraphLoader;
+import com.logssey.iacworker.drift.CheckDriftProcessor;
 import com.logssey.iacworker.state.CheckStateProcessor;
 import com.logssey.iacworker.state.StateReaders;
 
@@ -23,7 +24,7 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.cloudfront.CloudFrontClient;
 import software.amazon.awssdk.services.iam.IamClient;
 
-/** 그래프 주소가 있을 때만 보강·분석 처리기를 만든다. 없으면 ENRICH_GRAPH·ANALYZE_RUN·CHECK_STATE 작업은 PENDING 으로 남는다. */
+/** 그래프 주소가 있을 때만 보강·분석 처리기를 만든다. 없으면 IaC 작업은 PENDING 으로 남는다. */
 @Configuration
 @EnableConfigurationProperties(IacGraphProperties.class)
 @ConditionalOnExpression("!'${logssey.iac.graph.uri:}'.isBlank()")
@@ -59,6 +60,11 @@ public class IacGraphConfiguration {
     @Bean
     CheckStateProcessor checkStateProcessor(Driver driver, JdbcTemplate jdbc) {
         return new CheckStateProcessor(new StateReaders(driver), jdbc);
+    }
+
+    @Bean
+    CheckDriftProcessor checkDriftProcessor(JdbcTemplate jdbc) {
+        return new CheckDriftProcessor(jdbc);
     }
 
     /** 읽기 전용 자격 증명 (cloudfront:ListDistributions, iam:SimulateCustomPolicy). 비우면 기본 체인. */

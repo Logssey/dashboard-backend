@@ -31,6 +31,12 @@ public class IacQueryController {
         return service.paths(status, tier, cursor, limit, name(authentication));
     }
 
+    @GetMapping("/drifts")
+    public java.util.List<IacDriftResponse> drifts(@RequestParam(defaultValue = "OPEN") String status,
+                                                   Authentication authentication) {
+        return service.drifts(status, name(authentication));
+    }
+
     @GetMapping("/state/summary")
     public IacStateSummaryResponse stateSummary(Authentication authentication) {
         return service.stateSummary(name(authentication));
