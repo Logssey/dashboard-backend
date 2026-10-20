@@ -69,6 +69,8 @@ public final class AwsContentPipeline {
 
         void failed() { failed++; }
 
+        public int failureCount() { return failed; }
+
         public String status() {
             if (failed > 0 || inconclusive > 0) return "PARTIAL";
             return checked > 0 ? "SUCCEEDED" : "SKIPPED";

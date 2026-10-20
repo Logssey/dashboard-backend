@@ -74,6 +74,11 @@ public class SecretJobExecutionService {
         }));
     }
 
+    /** Records stage facts only after the scope callback, fenced by the same live lease. */
+    public boolean recordScopeEvidence(long jobId, String token, long runScopeId, boolean validationFailed) {
+        return persistIfLeased(jobId, token, () -> repository.recordScopeEvidence(runScopeId, validationFailed));
+    }
+
     /** Succeeds only after all stages and snapshotted scopes have terminal results. */
     public boolean complete(long jobId, String leaseToken) {
         return Objects.requireNonNull(transaction.execute(status -> {

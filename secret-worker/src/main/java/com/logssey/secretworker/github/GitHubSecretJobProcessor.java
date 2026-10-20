@@ -84,7 +84,7 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
                                AtomicBoolean leaseLost) {
         List<Scope> scopes = jdbc.query("""
                 SELECT rs.run_scope_id, s.approved_ref, s.history_limit, s.enabled,
-                       c.scope_version, r.scope_version AS run_scope_version, c.status
+                       c.scope_version, r.scope_version AS run_scope_version, c.status, s.revision, rs.scope_revision AS captured_revision
                 FROM secret_scan_runs r
                 JOIN secret_connections c ON c.connection_id = r.connection_id
                 JOIN secret_run_scopes rs ON rs.run_id = r.run_id
@@ -94,11 +94,11 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
                 ORDER BY rs.run_scope_id
                 """, (rs, row) -> new Scope(rs.getLong("run_scope_id"), rs.getString("approved_ref"),
                 rs.getString("history_limit"), rs.getBoolean("enabled"),
-                rs.getLong("scope_version"), rs.getLong("run_scope_version"), rs.getString("status")),
+                rs.getLong("scope_version"), rs.getLong("run_scope_version"), rs.getString("status"), rs.getLong("revision"), rs.getObject("captured_revision",Long.class)),
                 job.runId(), job.jobId(), job.connectionId());
         if (scopes.isEmpty() || scopes.stream().anyMatch(scope -> !scope.enabled()
                 || !"ACTIVE".equals(scope.connectionStatus())
-                || scope.connectionVersion() != scope.runVersion())) {
+                || scope.connectionVersion() != scope.runVersion() || !java.util.Objects.equals(scope.capturedRevision(),scope.revision()))) {
             throw new SecretJobFailure(SecretJobFailureCode.SOURCE_ACCESS_DENIED, false);
         }
         withLease(job, execution, () -> jdbc.update("""
@@ -114,7 +114,11 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
         String firstFailure = null;
         for (Scope scope : scopes) {
             if (leaseLost.get()) throw new SecretJobFailure(SecretJobFailureCode.LEASE_EXPIRED, true);
+            int failuresBefore = validation.failed;
             ScopeResult result = processScope(job, scope, execution, validation);
+            if (!execution.recordScopeEvidence(job.jobId(), job.leaseToken(), scope.id(), validation.failed > failuresBefore)) {
+                throw new SecretJobFailure(SecretJobFailureCode.LEASE_EXPIRED, true);
+            }
             if (result.usable()) successfulScopes++;
             acceptedObjects += result.objectCount();
             totalGaps += result.gapCount();
@@ -294,6 +298,6 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
     }
 
     private record Scope(long id, String approvedRef, String historyLimit, boolean enabled,
-                         long connectionVersion, long runVersion, String connectionStatus) { }
+                         long connectionVersion, long runVersion, String connectionStatus, long revision, Long capturedRevision) { }
     private record ScopeResult(boolean usable, int objectCount, int gapCount, String failureCode) { }
 }

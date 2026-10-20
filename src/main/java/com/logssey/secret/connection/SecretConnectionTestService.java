@@ -50,8 +50,10 @@ public class SecretConnectionTestService {
             case "GITHUB" -> testGitHub(connection);
             default -> throw new ApiException(ErrorCode.CONFLICT);
         };
-        return new SecretConnectionTestResponse(id, connection.provider(),
+        var response = new SecretConnectionTestResponse(id, connection.provider(),
                 result.status(), result.reasonCode(), OffsetDateTime.now(clock));
+        repository.recordProbe(id, loginId, response);
+        return response;
     }
 
     private ConnectionProbeResult testAws(SecretConnectionTestRepository.Connection connection) {

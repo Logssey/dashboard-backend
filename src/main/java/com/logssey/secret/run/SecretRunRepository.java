@@ -36,6 +36,18 @@ class SecretRunRepository {
 
     private final JdbcTemplate jdbc;
 
+    SecretRunCoverageResponse coverage(long runId,String loginId) {
+        var coverage=new SecretScanFactsRepository(jdbc).runCoverage(runId);
+        if(coverage.revalidation()==null)return coverage;
+        var access=new com.logssey.secret.access.SecretAccessService(jdbc);
+        if(access.canReadOccurrence(access.requirePrincipal(loginId),coverage.revalidation().occurrenceId()))return coverage;
+        return new SecretRunCoverageResponse(coverage.successfulScopeCount(),coverage.finishedScopeCount(),coverage.gapScopeCount(),
+            coverage.unverifiedScopeCount(),coverage.scopeStatusCounts(),coverage.aggregationStatus(),coverage.findingCount(),
+            coverage.distinctCredentialCount(),coverage.newCredentialCount(),coverage.newCredentialCountReason(),coverage.coverageComplete(),
+            coverage.unit(),coverage.asOf(),null,coverage.provider(),coverage.safeDisplayAlias());
+    }
+    List<SecretRunScopeResultResponse> safeScopes(long runId) { return new SecretScanFactsRepository(jdbc).scopes(runId); }
+
     SecretRunRepository(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
     }

@@ -177,8 +177,7 @@ public class SecretRunService {
         }
         var run = repository.runStatus(runId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
         access.requireConnectionFactsRead(principal, run.connectionId());
-        List<SecretRunScopeResultResponse> scopeResults = repository.runScopes(runId).stream()
-                .map(SecretRunService::scopeResult).toList();
+        List<SecretRunScopeResultResponse> scopeResults = repository.safeScopes(runId);
         return new SecretRunStatusResponse(run.runId(), run.connectionId(), run.triggerType(),
                 displayStatus(run.jobStatus(), run.resultStatus()), run.collectionStatus(),
                 run.detectionStatus(), run.validationStatus(), run.scopeCount(),
@@ -186,7 +185,7 @@ public class SecretRunService {
                 run.attemptNo(), run.maxAttempts(), run.requestedAt(), run.startedAt(),
                 run.finishedAt(), run.availableAt(), safeFailureCode(
                         run.runFailureCode() == null ? run.jobFailureCode() : run.runFailureCode()),
-                scopeResults);
+                scopeResults, repository.coverage(runId,loginId));
     }
 
     @Transactional(readOnly = true)
@@ -200,13 +199,13 @@ public class SecretRunService {
         var items = repository.listRuns(principal.userId(), size, (long) page * size).stream().map(entry -> {
             var run = entry.status();
             return new SecretRunListItemResponse(run.runId(), run.connectionId(),
-                    entry.provider(), entry.displayName(), run.triggerType(),
+                    entry.provider(), "연결 #"+run.connectionId(), run.triggerType(),
                     displayStatus(run.jobStatus(), run.resultStatus()), run.collectionStatus(),
                     run.detectionStatus(), run.validationStatus(), run.scopeCount(),
                     run.completedScopeCount(), run.incompleteScopeCount(), run.objectCount(),
                     run.requestedAt(), run.startedAt(), run.finishedAt(),
                     safeFailureCode(run.runFailureCode() == null
-                            ? run.jobFailureCode() : run.runFailureCode()));
+                            ? run.jobFailureCode() : run.runFailureCode()), repository.coverage(run.runId(),loginId));
         }).toList();
         return new SecretRunListResponse(items, total, page, size);
     }
@@ -226,7 +225,7 @@ public class SecretRunService {
         };
     }
 
-    private static String safeFailureCode(String code) {
+    static String safeFailureCode(String code) {
         if (code == null) {
             return null;
         }
@@ -243,7 +242,7 @@ public class SecretRunService {
                 scope.collectionStatus(), scope.objectCount(), safeFailureCode(gap));
     }
 
-    private static String region(String type, String approvedRef) {
+    static String region(String type, String approvedRef) {
         if (approvedRef == null) return null;
         if ("IAM_ACCESS_KEY_METADATA".equals(type)) {
             return IAM_REF.matcher(approvedRef).matches() ? "global" : null;
