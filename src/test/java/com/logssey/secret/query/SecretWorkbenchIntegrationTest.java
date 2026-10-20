@@ -60,6 +60,26 @@ class SecretWorkbenchIntegrationTest {
         assertThat(metric(result,"coverageGapScopes").get("notApplicableFilters")).isEqualTo(List.of("provider","environment","assignee"));
         assertThat(metric(result,"coverageGapScopes").get("value")).isEqualTo(1L);
     }
+    @Test void teamAssignmentsMatchMeButAreNotCountedAsUnassigned(){
+        caseFixture(connection,scope);grant(security,"REMEDIATOR",connection);
+        jdbc.update("INSERT INTO secret_team_memberships(user_id,team_name,added_by_user_id) VALUES(?,'response-team',?)",security,security);
+        jdbc.update("UPDATE secret_case_occurrences SET assigned_team='response-team'");
+        var mine=new SecretWorkbenchService.Filters("PRODUCTION","ALL","ALL","ALL",null,"ME");
+        var unassigned=new SecretWorkbenchService.Filters("PRODUCTION","ALL","ALL","ALL",null,"UNASSIGNED");
+        assertThat(metric(summary("security",mine,null),"ongoingCases").get("value")).isEqualTo(1L);
+        assertThat(metric(summary("security",unassigned,null),"ongoingCases").get("value")).isEqualTo(0L);
+        assertThat(metric(summary("security",mine,null),"needsDecisionLocations").get("notApplicableFilters")).isEqualTo(List.of("assignee"));
+    }
+    @Test void aRemediatorsSnapshotIgnoresHiddenScopesButTracksItsOwnRevision(){
+        caseFixture(connection,scope);long person=user("remediator");grant(person,"REMEDIATOR",connection);
+        jdbc.update("UPDATE secret_case_occurrences SET assigned_user_id=?",person);
+        long hidden=jdbc.queryForObject("INSERT INTO secret_connection_scopes(connection_id,scope_key,revision,content_type,approved_ref,enabled) VALUES(?,'hidden',1,'TEXT','private',true) RETURNING scope_id",Long.class,connection);
+        var snapshots=new SecretReadSnapshots(jdbc,JsonMapper.builder().build());String first=snapshots.authorizationRevision(person);
+        jdbc.update("UPDATE secret_connection_scopes SET response_origin_version=response_origin_version+1,enabled=false WHERE scope_id=?",hidden);
+        assertThat(snapshots.authorizationRevision(person)).isEqualTo(first);
+        jdbc.update("UPDATE secret_connection_scopes SET revision=revision+1 WHERE scope_id=?",scope);
+        assertThat(snapshots.authorizationRevision(person)).isNotEqualTo(first);
+    }
     private Map<String,Object> summary(String login,SecretWorkbenchService.Filters f,String id){return tx.execute(s->service.summary(login,f,id));}
     @SuppressWarnings("unchecked") private Map<String,Object> metric(Map<String,Object> summary,String key){return ((List<Map<String,Object>>)summary.get("metrics")).stream().filter(m->m.get("key").equals(key)).findFirst().orElseThrow();}
     private SecretWorkbenchService.Filters filters(){return new SecretWorkbenchService.Filters("PRODUCTION","ALL","ALL","ALL",null,null);}

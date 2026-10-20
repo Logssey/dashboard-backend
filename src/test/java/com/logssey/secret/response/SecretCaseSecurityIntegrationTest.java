@@ -145,6 +145,23 @@ class SecretCaseSecurityIntegrationTest {
     }
 
     @Test
+    void scopeAliasesRejectCredentialPatternsWithoutPersistingAnyChange() throws Exception {
+        long scope=jdbc.queryForObject("SELECT scope_id FROM secret_connection_scopes",Long.class);
+        jdbc.update("INSERT INTO secret_role_grants(user_id,role,granted_by_user_id,grant_source) VALUES(?,'OPERATIONS',?,'MANUAL')",actorId,actorId);
+        var mvc=mvc();var login=mvc.perform(post("/api/v1/auth/login").with(csrf()).contentType(MediaType.APPLICATION_JSON)
+            .content("{\"loginId\":\"case-admin\",\"password\":\"case-pass\"}")).andExpect(status().isOk()).andReturn();
+        var session=(MockHttpSession)login.getRequest().getSession(false);
+        for(String alias:java.util.List.of("ghp_"+"A".repeat(36),"AKIA"+"A".repeat(16),"ntn_"+"A".repeat(46))) {
+            String body="{\"safeDisplayAlias\":\""+alias+"\",\"expectedScopeRevision\":1,\"expectedAliasVersion\":0}";
+            mvc.perform(patch("/api/v1/secrets/scopes/{scopeId}/display-alias",scope).session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest());
+        }
+        assertThat(jdbc.queryForObject("SELECT alias_version FROM secret_connection_scopes WHERE scope_id=?",Long.class,scope)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_scope_alias_history",Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_audit_events WHERE event_type='SCOPE_ALIAS_CHANGED'",Long.class)).isZero();
+    }
+
+    @Test
     void invalidOperationsBootstrapDoesNotPartiallyGrantRoles() {
         assertThatThrownBy(() -> new SecretRoleBootstrap(jdbc, "case-admin", "", "", "missing-account")
                 .grantConfiguredRoles()).isInstanceOf(IllegalStateException.class);

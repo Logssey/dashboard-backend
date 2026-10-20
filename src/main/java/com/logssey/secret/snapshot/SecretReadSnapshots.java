@@ -170,20 +170,22 @@ public class SecretReadSnapshots {
 
     /** Revision uses permission records and readable scope revisions, never hidden occurrence activity. */
     public String authorizationRevision(long userId) {
-        List<String> facts = jdbc.query("""
+        List<String> facts = new NamedParameterJdbcTemplate(jdbc).query("""
                 SELECT 'G:' || grant_id || ':' || role || ':' || coalesce(connection_id::text,'*')
                        || ':' || coalesce(revoked_at::text,'ACTIVE') AS fact
-                FROM secret_role_grants WHERE user_id = ?
+                FROM secret_role_grants WHERE user_id = :userId
                 UNION ALL
                 SELECT 'T:' || membership_id || ':' || team_name || ':' || coalesce(removed_at::text,'ACTIVE')
-                FROM secret_team_memberships WHERE user_id = ?
+                FROM secret_team_memberships WHERE user_id = :userId
                 UNION ALL
-                SELECT 'S:' || s.scope_id || ':' || s.response_origin_version || ':' || s.enabled
+                SELECT 'S:' || s.scope_id || ':' || s.revision || ':' || s.response_origin_version || ':' || s.enabled
                 FROM secret_connection_scopes s WHERE EXISTS (
-                    SELECT 1 FROM secret_role_grants g WHERE g.user_id = ? AND g.revoked_at IS NULL
-                    AND (g.connection_id IS NULL OR g.connection_id = s.connection_id))
+                    SELECT 1 FROM secret_role_grants g WHERE g.user_id = :userId AND g.revoked_at IS NULL
+                    AND (g.connection_id IS NULL OR g.connection_id = s.connection_id)
+                    AND (g.role IN ('SECURITY','OPERATIONS') OR (g.role='REMEDIATOR' AND EXISTS(
+                        SELECT 1 FROM secret_occurrences o WHERE o.scope_id=s.scope_id AND LOCATION_ACCESS))))
                 ORDER BY fact
-                """, (rs, row) -> rs.getString(1), userId, userId, userId);
+                """.replace("LOCATION_ACCESS",SecretOccurrenceAccessSql.predicate("o",":userId")),Map.of("userId",userId), (rs, row) -> rs.getString(1));
         return digest(String.join("\n", facts));
     }
 
