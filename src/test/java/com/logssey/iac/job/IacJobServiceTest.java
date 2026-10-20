@@ -70,6 +70,24 @@ class IacJobServiceTest {
     }
 
     @Test
+    void manualTriggerQueuesOnlyJobsThatCanRunNow() {
+        var enrich = service.trigger("enrich-graph", "admin");
+        assertThat(enrich.kind()).isEqualTo("ENRICH_GRAPH");
+        assertThat(service.trigger("enrich-graph", "admin").jobId()).as("대기 중이면 같은 작업").isEqualTo(enrich.jobId());
+        assertThat(jdbc.queryForObject("SELECT trigger_type FROM iac_jobs WHERE job_id = ?", String.class, enrich.jobId()))
+                .isEqualTo("MANUAL");
+        assertThat(service.trigger("check-state", "admin").kind()).isEqualTo("CHECK_STATE");
+        assertThatThrownBy(() -> service.trigger("collect-graph", "admin"))
+                .satisfies(e -> assertThat(((ApiException) e).errorCode()).isEqualTo(ErrorCode.CONFLICT));
+        assertThatThrownBy(() -> service.trigger("check-drift", "admin"))
+                .satisfies(e -> assertThat(((ApiException) e).errorCode()).isEqualTo(ErrorCode.CONFLICT));
+        assertThatThrownBy(() -> service.trigger("rm-rf", "admin"))
+                .satisfies(e -> assertThat(((ApiException) e).errorCode()).isEqualTo(ErrorCode.NOT_FOUND));
+        assertThat(jdbc.queryForObject("SELECT after_safe ->> 'kind' FROM iac_audit_events WHERE event_type = 'JOB_TRIGGERED' "
+                + "ORDER BY audit_id LIMIT 1", String.class)).isEqualTo("ENRICH_GRAPH");
+    }
+
+    @Test
     void failedCollectionQueuesNothing() {
         var failed = service.recordCollectGraph(request("FAILED"), "admin");
         assertThat(failed.enrichJobId()).isNull();
