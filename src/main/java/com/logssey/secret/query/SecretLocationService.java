@@ -108,7 +108,7 @@ public class SecretLocationService {
             row.occurrenceVersion()+":"+row.scopeRevision()+":"+row.presence()+":"+row.lastSeenAt()+":"+
             row.caseId()+":"+row.actionStatus()+":"+row.assignedUserId()+":"+row.validationAt()+":"+
             row.storageBindingId()+":"+row.storagePolicyVersion()+":"+row.storagePolicyResult()+":"+
-            row.storagePolicyReason()+":"+row.requiresReassessment()).collect(Collectors.joining("|")));
+            row.storagePolicyReason()+":"+row.requiresReassessment()+":"+row.allCurrentFindingsCorrected()).collect(Collectors.joining("|")));
         if(expectedDetailVersion!=null && !expectedDetailVersion.equals(detailVersion))
             throw new ApiException(ErrorCode.CONFLICT,"위치 정보가 변경되었어요. 다시 확인해 주세요.");
         var filtered=visible.stream().filter(row -> ("ALL".equals(filters.source())||row.source().equals(filters.source()))
@@ -145,7 +145,8 @@ public class SecretLocationService {
         var first=rows.getFirst();
         var latest=rows.stream().filter(row->row.validationAt()!=null).max(Comparator.comparing(Row::validationAt)).orElse(first);
         var cases=rows.stream().filter(row->row.caseId()!=null).map(Row::caseId).distinct().toList();
-        var representative=rows.stream().filter(row->"ABNORMAL".equals(row.exposure())).findFirst().orElse(first);
+        var priority=List.of("ACTION_REQUIRED","NEEDS_CASE_LINK","NEEDS_DECISION","NORMAL_INVENTORY","INVENTORY","EXCLUDED_HISTORY");
+        var representative=rows.stream().min(Comparator.comparingInt(row->priority.indexOf(bucket(row)))).orElse(first);
         String bucket=bucket(representative);
         return facts("id",first.secretId(),"issuer",first.issuer(),"provider",first.issuer(),
             "credentialType",first.credentialType(),"componentState",first.componentState(),"maskedLabel",first.maskedLabel(),
@@ -178,7 +179,7 @@ public class SecretLocationService {
             "safeLocationLabel","위치 #"+row.occurrenceId(),"presence",row.presence(),"exposure",row.exposure(),
             "storagePolicy",facts("result",row.storagePolicyResult(),"reasonCode",row.storagePolicyReason(),
                 "bindingId",row.storageBindingId(),"policyId",row.storagePolicyId(),"version",row.storagePolicyVersion()),
-            "requiresReassessment",row.requiresReassessment(),
+            "requiresReassessment",row.requiresReassessment(),"allCurrentFindingsCorrected",row.allCurrentFindingsCorrected(),
             "validity",facts("result",validity,"reasonCode",safeReason(row.validationReason()),"observedAt",text(row.validationAt())),
             "coverage",coverage,
             "fixtureStatus","TEST".equals(row.origin())?null:"NOT_APPLICABLE",
@@ -199,6 +200,7 @@ public class SecretLocationService {
 
     private String next(Row row,SecretPrincipal actor) {
         if("METADATA_ONLY".equals(row.componentState())) return "VIEW_METADATA";
+        if(row.allCurrentFindingsCorrected()&&row.caseId()==null) return "VIEW_DECISION_HISTORY";
         if(row.requiresReassessment() && access.hasConnectionRole(actor,row.connectionId(),SecretRole.SECURITY)) return "REVIEW_EVIDENCE";
         if(row.caseId()!=null) return "VIEW_CASE";
         if(access.hasConnectionRole(actor,row.connectionId(),SecretRole.SECURITY))
@@ -207,6 +209,7 @@ public class SecretLocationService {
     }
     private static String reason(Row row) {
         if("METADATA_ONLY".equals(row.componentState())) return "ACCESS_KEY_METADATA";
+        if(row.allCurrentFindingsCorrected()) return "ALL_FINDINGS_CORRECTED";
         if(row.requiresReassessment()) return "POLICY_REVIEW_REQUIRED";
         if("CANDIDATE".equals(row.componentState())) return "INCOMPLETE_CREDENTIAL";
         if("ABNORMAL".equals(row.exposure())) return row.caseId()==null?"CASE_LINK_REQUIRED":"EXPOSURE_CONFIRMED";
@@ -214,7 +217,10 @@ public class SecretLocationService {
         return "ALLOWED".equals(row.storagePolicyResult())?"APPROVED_STORAGE":"STORAGE_POLICY_REQUIRED";
     }
     private static String bucket(Row row) {
-        if("METADATA_ONLY".equals(row.componentState())) return "INVENTORY";
+        if("METADATA_ONLY".equals(row.componentState())) return "NORMAL_INVENTORY";
+        if(row.caseId()!=null&&!"RESOLVED".equals(row.actionStatus())) return "ACTION_REQUIRED";
+        if(row.allCurrentFindingsCorrected()) return "EXCLUDED_HISTORY";
+        if("RESOLVED".equals(row.actionStatus())) return "INVENTORY";
         if(row.requiresReassessment()) return "NEEDS_DECISION";
         if("ABNORMAL".equals(row.exposure())) return row.caseId()==null?"NEEDS_CASE_LINK":"ACTION_REQUIRED";
         if("NORMAL".equals(row.exposure())&&"ALLOWED".equals(row.storagePolicyResult())&&!row.requiresReassessment()) return "NORMAL_INVENTORY";

@@ -50,7 +50,23 @@ class SecretStoragePolicyIntegrationTest {
     @Autowired SecretStoragePolicyService service;
     @Autowired WebApplicationContext context;
     @Autowired com.logssey.secret.query.SecretLocationService locations;
+    @Autowired com.logssey.secret.decision.SecretDecisionService decisions;
+    @Autowired com.logssey.secret.investigation.SecretInvestigationService investigations;
     long creator,reviewer,operator,connection,scope,occurrence;
+
+    @Test void springProxyDecisionAndInvestigationCommandsUseWritableAtomicTransactions() {
+        var result=decisions.decide("policy-creator",occurrence,new com.logssey.secret.decision.SecretDecisionContracts.DecisionRequest(
+            "NEEDS_MORE_INFO","INSUFFICIENT_EVIDENCE",null,List.of(),0L,0L,null,"proxy-decision",
+            "POLICY_UNKNOWN",creator,OffsetDateTime.now().plusDays(1),"TICKET:SEC-123"));
+        long task=result.investigationTaskId();
+        investigations.evidence("policy-creator",task,new com.logssey.secret.investigation.SecretInvestigationRequests.Evidence(
+            "POLICY:SECRET-12","POLICY_REFERENCE",OffsetDateTime.now(),0L,"proxy-evidence"));
+        investigations.assign("policy-creator",task,new com.logssey.secret.investigation.SecretInvestigationRequests.Assignment(
+            reviewer,OffsetDateTime.now().plusDays(2),"OWNERSHIP_CHANGE",1L,"proxy-assignment"));
+        assertCode(ErrorCode.EVIDENCE_REQUIRED,()->investigations.close("policy-creator",task,
+            new com.logssey.secret.investigation.SecretInvestigationRequests.Close(2L,result.decisionId(),null,"proxy-close")));
+        assertThat(investigations.detail("policy-creator",task).get("version")).isEqualTo(2L);
+    }
 
     @BeforeEach void fixture() {
         jdbc.execute("TRUNCATE secret_connections,secret_storage_policies RESTART IDENTITY CASCADE");

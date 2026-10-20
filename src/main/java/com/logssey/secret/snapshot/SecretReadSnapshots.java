@@ -77,6 +77,10 @@ public class SecretReadSnapshots {
                         FROM secret_occurrences o JOIN secret_scope_policy_bindings b ON b.scope_id=o.scope_id AND b.effective_until IS NULL
                         JOIN secret_storage_policies p ON p.policy_id=b.policy_id AND p.version=b.policy_version
                         WHERE o.occurrence_id IN (:ids) AND p.status='ACTIVE' AND p.valid_from>now()
+                        UNION ALL
+                        SELECT d.reuse_expires_at AS deadline
+                        FROM secret_finding_dispositions d JOIN secret_current_raw_findings f ON f.finding_id=d.finding_id
+                        WHERE f.occurrence_id IN (:ids) AND d.is_current AND d.revoked_at IS NULL AND d.reuse_expires_at>now()
                     ) boundaries
                     """,Map.of("ids",visibleIds),OffsetDateTime.class);
             if(deadline!=null && deadline.isBefore(expires)) expires=deadline;

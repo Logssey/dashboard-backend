@@ -263,7 +263,6 @@ public class SecretStoragePolicyService {
                 INSERT INTO secret_scope_policy_bindings(scope_id,scope_revision,scope_origin_version,scope_fingerprint,
                     policy_id,policy_version,classification_decision_id) VALUES (?,?,?,?,?,?,?)
                 """,scopeId,scope.revision(),next,scope.fingerprint(),proposal.policyId(),proposal.policyVersion(),decisionId);
-        jdbc.update("UPDATE secret_occurrences SET policy_recheck_required=true WHERE scope_id=? AND exposure_status<>'UNKNOWN'",scopeId);
         jdbc.update("""
                 INSERT INTO secret_scope_classification_impacts(decision_id,occurrence_id,case_id,previous_origin,new_origin)
                 SELECT ?,o.occurrence_id,c.case_id,?,? FROM secret_occurrences o
@@ -272,9 +271,13 @@ public class SecretStoragePolicyService {
                 LEFT JOIN secret_response_cases c ON c.case_id=co.case_id AND c.is_current
                 WHERE o.scope_id=?
                 """,decisionId,scope.origin(),proposal.origin(),scopeId);
+        // Acquire case reference locks before occurrence writes, matching the location-action order.
+        jdbc.update("UPDATE secret_occurrences SET policy_recheck_required=true WHERE scope_id=? AND exposure_status<>'UNKNOWN'",scopeId);
         repository.audit("CLASSIFICATION_APPROVED","SCOPE",scopeId,next,actor.userId());
         snapshots.invalidateScope(scopeId);
-        // The optional investigation module reconciles newly classified TEST findings in this transaction.
+        if (jdbc.queryForObject("SELECT to_regprocedure('secret_apply_storage_policy_defaults(bigint)')::text",String.class)!=null)
+            jdbc.query("SELECT secret_apply_storage_policy_defaults(NULL::bigint)",(rs,row)->rs.getObject(1));
+        // Reuse exact corrections before deciding whether a TEST Finding needs an investigation.
         if (jdbc.queryForObject("SELECT to_regprocedure('secret_reconcile_test_alerts(bigint)')::text",String.class)!=null)
             jdbc.query("SELECT secret_reconcile_test_alerts(NULL::bigint)",(rs,row)->rs.getObject(1));
         return classification(scope(scopeId,false),actor,true);
