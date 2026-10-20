@@ -34,3 +34,6 @@ DO $$ DECLARE old_expression TEXT; BEGIN
  EXECUTE 'ALTER TABLE secret_audit_events ADD CONSTRAINT ck_secret_audit_event_type CHECK (('
    ||old_expression||') OR event_type=''SCOPE_ALIAS_CHANGED'')';
 END $$;
+
+-- Actual detector-attempt provenance; NULL historical rows never prove comparable absence.
+ALTER TABLE secret_tool_runs ADD COLUMN fingerprint_key_version VARCHAR(40), ADD COLUMN scope_origin_version BIGINT;

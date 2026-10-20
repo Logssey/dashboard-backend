@@ -128,6 +128,7 @@ class SecretJobRepository {
                     finished_at = ?
                 WHERE run_id = ?
                 """, resultStatus, resultStatus, now, row.runId());
+        new SecretFullScanPresence(jdbc).reconcile(row.runId(),now);
         if(Boolean.TRUE.equals(jdbc.queryForObject("SELECT to_regprocedure('secret_apply_storage_policy_defaults(bigint)') IS NOT NULL",Boolean.class))) {
             jdbc.queryForObject("SELECT secret_apply_storage_policy_defaults(?)",Object.class,row.runId());
         }
@@ -161,6 +162,7 @@ class SecretJobRepository {
                     started_at = NULL, finished_at = NULL
                 WHERE run_id = ? AND collection_status IN ('RUNNING', 'PARTIAL', 'FAILED')
                 """, row.runId());
+        new SecretFullScanPresence(jdbc).reconcile(row.runId(),now);
         // A completed collection remains evidence of success even when a later stage needs a retry.
         updateLastCollectionSuccess(row);
     }
@@ -196,6 +198,7 @@ class SecretJobRepository {
                 SET status = 'UNKNOWN', failure_code = ?, finished_at = ?
                 WHERE run_id = ? AND status = 'PENDING'
                 """, code, now, row.runId());
+        new SecretFullScanPresence(jdbc).reconcile(row.runId(),now);
         updateLastCollectionSuccess(row);
     }
 

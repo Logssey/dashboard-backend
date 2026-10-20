@@ -46,25 +46,29 @@ public final class SecretFindingRepository {
 
     private long startOrRestartToolRun(long runScopeId, String engineVersion, String configHash, Instant now) {
         List<ExistingToolRun> existing = jdbc.query("""
-                SELECT tr.tool_run_id, tr.engine_version, tr.config_hash, rs.run_id, rs.scope_id
+                SELECT tr.tool_run_id, tr.engine_version, tr.config_hash, rs.run_id, rs.scope_id,tr.fingerprint_key_version,tr.scope_origin_version,sc.response_origin_version AS current_origin_version
                 FROM secret_tool_runs tr
                 JOIN secret_run_scopes rs ON rs.run_scope_id = tr.run_scope_id
+                JOIN secret_connection_scopes sc ON sc.scope_id=rs.scope_id
                 WHERE tr.run_scope_id = ? AND tr.engine = 'GITLEAKS'
                 FOR UPDATE OF tr
                 """, (rs, row) -> new ExistingToolRun(rs.getLong("tool_run_id"),
                 rs.getString("engine_version"), rs.getString("config_hash"),
-                rs.getLong("run_id"), rs.getLong("scope_id")), runScopeId);
+                rs.getLong("run_id"), rs.getLong("scope_id"),rs.getString("fingerprint_key_version"),rs.getObject("scope_origin_version",Long.class),rs.getLong("current_origin_version")), runScopeId);
         if (existing.isEmpty()) {
             Long id = jdbc.queryForObject("""
                     INSERT INTO secret_tool_runs
-                        (run_scope_id, engine, engine_version, config_hash, status, started_at)
-                    VALUES (?, 'GITLEAKS', ?, ?, 'RUNNING', ?)
+                        (run_scope_id, engine, engine_version, config_hash, status, started_at,fingerprint_key_version,scope_origin_version)
+                    SELECT ?, 'GITLEAKS', ?, ?, 'RUNNING', ?,?,s.response_origin_version FROM secret_run_scopes rs
+                    JOIN secret_connection_scopes s ON s.scope_id=rs.scope_id WHERE rs.run_scope_id=?
                     RETURNING tool_run_id
-                    """, Long.class, runScopeId, engineVersion, configHash, utc(now));
+                    """, Long.class, runScopeId, engineVersion, configHash, utc(now),normalizer.keyVersion(),runScopeId);
             return Objects.requireNonNull(id);
         }
         ExistingToolRun old = existing.getFirst();
-        if (!old.engineVersion().equals(engineVersion) || !old.configHash().equals(configHash)) {
+        if (!old.engineVersion().equals(engineVersion) || !old.configHash().equals(configHash)
+            || old.fingerprintVersion()!=null&&!old.fingerprintVersion().equals(normalizer.keyVersion())
+            || old.originVersion()!=null&&old.originVersion()!=old.currentOriginVersion()) {
             throw new IllegalStateException("TOOL_RUN_CONFIG_CHANGED");
         }
         // A leased job may restart after partial ingestion. Prior findings are not fresh evidence
@@ -81,9 +85,9 @@ public final class SecretFindingRepository {
         jdbc.update("DELETE FROM secret_findings WHERE tool_run_id = ?", old.id());
         jdbc.update("""
                 UPDATE secret_tool_runs SET status = 'RUNNING', finding_count = 0,
-                    started_at = ?, finished_at = NULL, failure_code = NULL
+                    started_at = ?, finished_at = NULL, failure_code = NULL,fingerprint_key_version=?,scope_origin_version=?
                 WHERE tool_run_id = ?
-                """, utc(now), old.id());
+                """, utc(now),normalizer.keyVersion(),old.currentOriginVersion(), old.id());
         return old.id();
     }
 
@@ -269,6 +273,6 @@ public final class SecretFindingRepository {
     private record ToolContext(long runId, long connectionId, long scopeId,
                                String engineVersion, String configHash, String status) { }
     private record ExistingToolRun(long id, String engineVersion, String configHash,
-                                   long runId, long scopeId) { }
+                                   long runId, long scopeId,String fingerprintVersion,Long originVersion,long currentOriginVersion) { }
     public record ObjectResult(int credentialCount, int newFindingCount) { }
 }
