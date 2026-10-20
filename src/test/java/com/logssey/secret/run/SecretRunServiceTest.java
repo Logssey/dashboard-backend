@@ -65,6 +65,55 @@ class SecretRunServiceTest {
     }
 
     @Test
+    void executionFindingsReturnActualSafeRowsAndRequireLocationReadAccess() {
+        long conn=connection("ACTIVE",null),scope=scope(conn,"fixtures/",true);
+        long run=service.register(new SecretRunRequest(conn,"finding-query"),"admin").runId();
+        long key=jdbc.queryForObject("""
+            INSERT INTO secret_credential_sets(issuer,credential_type,component_state,fingerprint,fingerprint_key_version,masked_label,first_seen_at,last_seen_at)
+            VALUES('AWS','AWS_ACCESS_KEY_PAIR','CONFIRMED',decode(md5(random()::text),'hex'),'test','AWS ••••1234',now(),now()) RETURNING credential_set_id
+            """,Long.class);
+        long occurrence=jdbc.queryForObject("""
+            INSERT INTO secret_occurrences(credential_set_id,connection_id,scope_id,source_object_ref,location_key,environment,exposure_status,exposure_range,presence_status,first_seen_at,last_seen_at)
+            VALUES(?,?,?,'protected/private-path','L4','UNKNOWN','UNKNOWN','UNKNOWN','PRESENT',now(),now()) RETURNING occurrence_id
+            """,Long.class,key,conn,scope);
+        long tool=jdbc.queryForObject("INSERT INTO secret_tool_runs(run_scope_id,engine,engine_version,config_hash,status) SELECT run_scope_id,'GITLEAKS','test','test','SUCCEEDED' FROM secret_run_scopes WHERE run_id=? RETURNING tool_run_id",Long.class,run);
+        jdbc.update("INSERT INTO secret_findings(occurrence_id,run_id,tool_run_id,finding_key,rule_id,rule_version,detected_at) VALUES(?,?,?,'one','aws-key','1',now())",occurrence,run,tool);
+        var mapper=tools.jackson.databind.json.JsonMapper.builder().build();
+        var query=new SecretRunQueryService(jdbc,new SecretAccessService(jdbc),new com.logssey.secret.snapshot.SecretReadSnapshots(jdbc,mapper),service,mapper);
+        assertCode(ErrorCode.FORBIDDEN,()->query.findings("admin",run,0,20));
+        jdbc.update("INSERT INTO secret_role_grants(user_id,role,connection_id,granted_by_user_id,grant_source) VALUES(1,'SECURITY',?,1,'MANUAL')",conn);
+        var result=query.findings("admin",run,0,20);
+        assertThat(result.get("unit")).isEqualTo("Finding");assertThat(result.get("total")).isEqualTo(1L);
+        assertThat(result.get("items").toString()).contains("AWS ••••1234","ruleId=aws-key","occurrenceId="+occurrence)
+            .doesNotContain("protected/private-path","fingerprint","source_object_ref");
+        long hidden=connection("ACTIVE",null);scope(hidden,"private/",true);
+        long hiddenRun=service.register(new SecretRunRequest(hidden,"hidden-finding-query"),"admin").runId();
+        assertCode(ErrorCode.NOT_FOUND,()->query.findings("admin",hiddenRun,0,20));
+        assertCode(ErrorCode.NOT_FOUND,()->query.findings("admin",999999,0,20));
+    }
+
+    @Test
+    void filteredHistoryFreezesPagesAndKeepsDateBoundsAndCountsTogether() {
+        long a=connection("ACTIVE",null),b=connection("ACTIVE",null);scope(a,"fixtures/",true);scope(b,"fixtures/",true);
+        long first=service.register(new SecretRunRequest(a,"first"),"admin").runId();
+        service.register(new SecretRunRequest(b,"second"),"admin");
+        jdbc.update("UPDATE secret_jobs SET status='FAILED',finished_at=now() WHERE connection_id=?",a);
+        var mapper=tools.jackson.databind.json.JsonMapper.builder().build();
+        var query=new SecretRunQueryService(jdbc,new SecretAccessService(jdbc),new com.logssey.secret.snapshot.SecretReadSnapshots(jdbc,mapper),service,mapper);
+        var tx=new org.springframework.transaction.support.TransactionTemplate(transactions);
+        tx.setIsolationLevel(org.springframework.transaction.TransactionDefinition.ISOLATION_REPEATABLE_READ);
+        var before=OffsetDateTime.now(ZoneOffset.UTC).minusDays(1);var after=before.plusDays(2);
+        var failed=tx.execute(s->query.list("admin","MANUAL","FAILED",a,before,after,0,20,null));
+        assertThat(failed.get("total")).isEqualTo(1L);assertThat(failed.get("items").toString()).contains("runId="+first).doesNotContain("approved_ref","auth_ref","github://");
+        var all=tx.execute(s->query.list("admin","ALL","ALL",null,null,null,0,20,null));
+        service.register(new SecretRunRequest(a,"third"),"admin");
+        var repeated=tx.execute(s->query.list("admin","ALL","ALL",null,null,null,0,20,all.get("snapshotId").toString()));
+        assertThat(repeated.get("total")).isEqualTo(2L);
+        assertThat(repeated.get("items")).isEqualTo(all.get("items"));
+        assertThatThrownBy(()->tx.execute(s->query.list("admin","MANUAL","ALL",null,null,null,0,20,all.get("snapshotId").toString()))).isInstanceOf(ApiException.class);
+    }
+
+    @Test
     void registersOnlyApprovedScopeSnapshotWithoutAdvancingScheduleOrScanning() {
         var originalDue = OffsetDateTime.now(ZoneOffset.UTC).minusHours(2).truncatedTo(ChronoUnit.MICROS);
         long connection = connection("ACTIVE", originalDue);

@@ -10,9 +10,10 @@ import static com.logssey.secret.evidence.SecretEvidenceRules.*;
 
 @Repository
 class SecretClosureRepository {
-    final JdbcTemplate jdbc;
+    private final JdbcTemplate jdbc;
     private final SecretAccessService access;
     SecretClosureRepository(JdbcTemplate jdbc,SecretAccessService access) {this.jdbc=jdbc;this.access=access;}
+    public JdbcTemplate jdbc() {return jdbc;}
     Map<String,Object> caseRow(long id,boolean lock) {
         if(lock)jdbc.queryForObject("SELECT case_id FROM secret_response_cases WHERE case_id=? FOR UPDATE",Long.class,id);
         return jdbc.queryForList("""

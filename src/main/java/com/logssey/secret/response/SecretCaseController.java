@@ -17,10 +17,12 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 public class SecretCaseController {
     private final SecretCaseService service;
     private final SecretLocationWorkflow workflow;
+    private final com.logssey.secret.query.SecretWorkbenchService workbench;
 
-    public SecretCaseController(SecretCaseService service, SecretLocationWorkflow workflow) {
+    public SecretCaseController(SecretCaseService service, SecretLocationWorkflow workflow,com.logssey.secret.query.SecretWorkbenchService workbench) {
         this.service = service;
         this.workflow = workflow;
+        this.workbench=workbench;
     }
 
     @GetMapping("/cases")
@@ -31,7 +33,14 @@ public class SecretCaseController {
                                        @RequestParam(required = false) String stages,
                                        @RequestParam(required = false) String assignmentStatus,
                                        @RequestParam(required = false) String assignee,
+                                       @RequestParam(defaultValue="ALL") String source,@RequestParam(defaultValue="ALL") String provider,
+                                       @RequestParam(defaultValue="ALL") String environment,@RequestParam(required=false) Long connectionId,
+                                       @RequestParam(required=false) String snapshotId,
                                        Authentication authentication) {
+        if(scope.equals("currentCases")&&assignmentStatus==null)return workbench.queue(loginId(authentication),
+            new com.logssey.secret.query.SecretWorkbenchService.Filters(origin,source,provider,environment,connectionId,assignee),"CURRENT_CASES",stages,page,size,snapshotId);
+        if(snapshotId!=null||!source.equals("ALL")||!provider.equals("ALL")||!environment.equals("ALL")||connectionId!=null)
+            throw new com.logssey.common.error.ApiException(com.logssey.common.error.ErrorCode.INVALID_INPUT);
         return workflow.list(loginId(authentication),origin,scope,stages,assignmentStatus,assignee,page,size);
     }
 

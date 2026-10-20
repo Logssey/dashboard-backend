@@ -32,14 +32,16 @@ public class SecretInventoryController {
                                    @RequestParam(defaultValue = "ALL") String validity,
                                    @RequestParam(defaultValue = "ALL") String severity,
                                    @RequestParam(required=false) String snapshotId,
+                                   @RequestParam(required=false) Long runId,
                                    Authentication authentication) {
         if(!"ALL".equals(issuer)) {
             if(!"ALL".equals(provider)&&!provider.equals(issuer))
                 throw new com.logssey.common.error.ApiException(com.logssey.common.error.ErrorCode.INVALID_INPUT);
             provider=issuer;
         }
-        return locations.inventory(loginId(authentication),new SecretInventoryFilters(origin,source,provider,environment,
-            contentKind,workBucket,componentState,validity,severity),page,size,snapshotId);
+        var filters=new SecretInventoryFilters(origin,source,provider,environment,contentKind,workBucket,componentState,validity,severity);
+        return runId==null?locations.inventory(loginId(authentication),filters,page,size,snapshotId):
+            locations.inventory(loginId(authentication),filters,page,size,snapshotId,runId);
     }
 
     @GetMapping("/connections")

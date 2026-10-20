@@ -185,8 +185,20 @@ public final class SecretFindingNormalizer {
         byte[] digest = hmac(identity);
         List<GitleaksFinding> evidence = components.stream().map(Component::finding)
                 .filter(Objects::nonNull).distinct().toList();
+        List<byte[]> promotionLocators=new ArrayList<>();
+        // Recompute the exact protected identity of prior partial components in this same object.
+        // Neither a common masked suffix nor a nearby line establishes candidate identity.
+        if(complete&&"AWS".equals(issuer)&&components.size()<=3) {
+            for(int subset=1;subset<(1<<components.size())-1;subset++) {
+                List<Component> partial=new ArrayList<>();for(int i=0;i<components.size();i++)if((subset&(1<<i))!=0)partial.add(components.get(i));
+                String partialLocation=location(partial.stream().mapToInt(Component::line).min().orElseThrow(),partial.stream().mapToInt(Component::line).max().orElseThrow());
+                List<String> fields=new ArrayList<>(List.of(issuer,type,Long.toString(connectionId),source,partialLocation));
+                partial.stream().sorted(java.util.Comparator.comparing(Component::role)).forEach(c->{fields.add(c.role());fields.add(c.value());});
+                promotionLocators.add(hmac(fields));
+            }
+        }
         return new Credential(issuer, type, complete ? "CONFIRMED" : "CANDIDATE",
-                complete ? digest : null, complete ? null : digest, keyVersion, label, location, evidence);
+                complete ? digest : null, complete ? null : digest, keyVersion, label, location, evidence,promotionLocators);
     }
 
     private byte[] hmac(List<String> fields) {
@@ -286,14 +298,16 @@ public final class SecretFindingNormalizer {
 
     public record Credential(String issuer, String credentialType, String componentState,
                              byte[] fingerprint, byte[] candidateLocator, String fingerprintKeyVersion,
-                             String maskedLabel, String locationKey, List<GitleaksFinding> findings) {
+                             String maskedLabel, String locationKey, List<GitleaksFinding> findings,List<byte[]> promotionLocators) {
         public Credential {
             fingerprint = fingerprint == null ? null : fingerprint.clone();
             candidateLocator = candidateLocator == null ? null : candidateLocator.clone();
             findings = List.copyOf(findings);
+            promotionLocators=promotionLocators.stream().map(byte[]::clone).toList();
         }
         @Override public byte[] fingerprint() { return fingerprint == null ? null : fingerprint.clone(); }
         @Override public byte[] candidateLocator() { return candidateLocator == null ? null : candidateLocator.clone(); }
+        @Override public List<byte[]> promotionLocators(){return promotionLocators.stream().map(byte[]::clone).toList();}
         @Override public String toString() {
             return "Credential[issuer=" + issuer + ", credentialType=" + credentialType
                     + ", componentState=" + componentState + ", locationKey=" + locationKey + "]";

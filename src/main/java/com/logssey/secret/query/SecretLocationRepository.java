@@ -12,6 +12,12 @@ public class SecretLocationRepository {
     private final NamedParameterJdbcTemplate jdbc;
     public SecretLocationRepository(JdbcTemplate jdbc) { this.jdbc = new NamedParameterJdbcTemplate(jdbc); }
 
+    public String safeLocationLabel(Row row) {
+        String alias=jdbc.queryForObject("SELECT safe_display_alias FROM secret_connection_scopes WHERE scope_id=:scope",
+            Map.of("scope",row.scopeId()),String.class);
+        return com.logssey.secret.connection.SecretDisplayLabels.location(alias,row.occurrenceId());
+    }
+
     // The ACL is applied before any grouping, count, timestamp, or validation projection.
     public List<Row> visible(long userId, Long secretId, SecretInventoryFilters filters) {
         return jdbc.query("""
@@ -109,6 +115,49 @@ public class SecretLocationRepository {
     private Map<String,Object> parameters(long userId,Long id,SecretInventoryFilters filters) {
         var result=new java.util.HashMap<String,Object>(filters.normalized());
         result.put("userId",userId); result.put("secretId",id); return result;
+    }
+
+    public java.util.Set<Long> runOccurrenceIds(long userId,long runId) {
+        return new java.util.HashSet<>(jdbc.queryForList("""
+            SELECT DISTINCT o.occurrence_id FROM secret_findings f JOIN secret_occurrences o USING(occurrence_id)
+            WHERE f.run_id=:run AND
+            """+com.logssey.secret.access.SecretOccurrenceAccessSql.predicate("o",":userId"),Map.of("run",runId,"userId",userId),Long.class));
+    }
+
+    /** Rows must be the whole authorized key in one origin, before source/environment filters. */
+    public boolean retiredHistory(List<Row> rows) {
+        if(rows.isEmpty()) return false;
+        var first=rows.getFirst();
+        if(!java.util.Set.of("PRODUCTION","TEST").contains(first.origin()) || rows.stream().anyMatch(row ->
+            row.secretId()!=first.secretId() || !row.origin().equals(first.origin()) || !"CONFIRMED".equals(row.componentState())
+            || "UNKNOWN".equals(row.presence()) || row.requiresReassessment() || row.allCurrentFindingsCorrected()
+            || (row.caseId()!=null && !"RESOLVED".equals(row.actionStatus()))
+            || (row.caseId()==null && !("NORMAL".equals(row.exposure()) && "ALLOWED".equals(row.storagePolicyResult())
+                && "PRESENT".equals(row.presence()))))) return false;
+        // A proof in another unreadable location/origin must not change this user's classification.
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+            SELECT EXISTS(SELECT 1 FROM secret_current_lifecycle_evidence evidence
+              WHERE evidence.credential_set_id=:key AND evidence.origin=:origin
+                AND evidence.source_occurrence_id IN (:locations)
+                AND evidence.verification_level='PROVIDER_VERIFIED' AND evidence.kind IN ('REVOKED','ROTATED','RETIRED'))
+            """,Map.of("key",first.secretId(),"origin",first.origin(),
+                "locations",rows.stream().map(Row::occurrenceId).distinct().toList()),Boolean.class));
+    }
+
+    /** Shared by independent inventory and workbench snapshots, using the same authorized key. */
+    public String normalInventorySubtype(List<Row> rows) {
+        if(rows.isEmpty() || "UNCLASSIFIED".equals(rows.getFirst().origin())) return null;
+        var first=rows.getFirst();
+        if(rows.stream().anyMatch(row->row.secretId()!=first.secretId() || !row.origin().equals(first.origin()))) return null;
+        if(retiredHistory(rows)) return "RETIRED_HISTORY";
+        if(rows.stream().allMatch(row->"METADATA_ONLY".equals(row.componentState()) && row.caseId()==null)) return "METADATA_ONLY";
+        if(rows.stream().anyMatch(row->!"CONFIRMED".equals(row.componentState()) || row.caseId()!=null
+            || row.requiresReassessment() || row.allCurrentFindingsCorrected() || !"PRESENT".equals(row.presence())
+            || !"NORMAL".equals(row.exposure()) || !"ALLOWED".equals(row.storagePolicyResult()))) return null;
+        var ids=rows.stream().map(Row::occurrenceId).distinct().toList();
+        var current=jdbc.queryForList("SELECT DISTINCT occurrence_id FROM secret_current_valid_findings WHERE occurrence_id IN (:locations)",
+            Map.of("locations",ids),Long.class);
+        return current.containsAll(ids)?"AUTHORIZED_STORAGE":null;
     }
 
     public Map<String,Object> iamMetadata(long credentialSetId,List<Long> visibleScopeIds) {

@@ -55,8 +55,8 @@ public class SecretLocationReadiness {
    "canRequestRevalidation",reason==null,"canResume",canResume,"revalidationBlockReasonCode",reason,
    "recentRevalidation",jdbc.queryForList("""
      SELECT v.revalidation_id AS "revalidationId",v.occurrence_id AS "occurrenceId",v.run_id AS "runId",j.status AS "jobStatus",
-       v.status AS result,v.failure_code AS "failureCode",v.requested_at AS "requestedAt",v.finished_at AS "finishedAt"
+       v.status AS result,v.failure_code AS "failureCode",v.requested_at AS "requestedAt",v.finished_at AS "finishedAt",?::boolean AS "canViewRun"
      FROM secret_case_revalidations v JOIN secret_jobs j USING(job_id) WHERE v.revalidation_id=?
-     """,o.get("revalidation_id")).stream().findFirst().orElse(null));
+     """,access.canReadConnectionFacts(actor,((Number)o.get("connection_id")).longValue()),o.get("revalidation_id")).stream().findFirst().orElse(null));
  }
 }

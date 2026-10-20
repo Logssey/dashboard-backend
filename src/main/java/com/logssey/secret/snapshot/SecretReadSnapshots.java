@@ -53,11 +53,16 @@ public class SecretReadSnapshots {
                 INSERT INTO secret_snapshot_owner_locks(user_id,epoch) VALUES (?,1)
                 ON CONFLICT(user_id) DO UPDATE SET epoch=secret_snapshot_owner_locks.epoch+1
                 """, userId);
-        jdbc.update("DELETE FROM secret_query_snapshots WHERE owner_user_id = ? AND expires_at <= now()", userId);
+        jdbc.update("DELETE FROM secret_snapshot_retirements WHERE owner_user_id=? AND retired_at < now()-interval '24 hours'",userId);
         jdbc.update("""
-                DELETE FROM secret_query_snapshots WHERE snapshot_id IN (
+            WITH retired AS(DELETE FROM secret_query_snapshots WHERE owner_user_id=? AND expires_at<=now() RETURNING snapshot_id,owner_user_id)
+            INSERT INTO secret_snapshot_retirements(snapshot_id,owner_user_id) SELECT snapshot_id,owner_user_id FROM retired ON CONFLICT DO NOTHING
+            """,userId);
+        jdbc.update("""
+                WITH retired AS(DELETE FROM secret_query_snapshots WHERE snapshot_id IN (
                     SELECT snapshot_id FROM secret_query_snapshots WHERE owner_user_id = ?
-                    ORDER BY created_at DESC, snapshot_id DESC OFFSET 4)
+                    ORDER BY created_at DESC, snapshot_id DESC OFFSET 4) RETURNING snapshot_id,owner_user_id)
+                INSERT INTO secret_snapshot_retirements(snapshot_id,owner_user_id) SELECT snapshot_id,owner_user_id FROM retired ON CONFLICT DO NOTHING
                 """, userId);
         UUID id = UUID.randomUUID();
         OffsetDateTime asOf = jdbc.queryForObject("SELECT CURRENT_TIMESTAMP",OffsetDateTime.class);
@@ -125,14 +130,18 @@ public class SecretReadSnapshots {
                     rs.getObject("as_of", OffsetDateTime.class), rs.getObject("expires_at", OffsetDateTime.class),
                     rs.getBoolean("restricted_coverage")), rs.getString("authorization_revision"),
                     rs.getString("filter_digest")), id, userId, scope);
-        if (rows.isEmpty()) throw new ApiException(ErrorCode.NOT_FOUND);
-        var stored = rows.getFirst();
-        if (!stored.header().expiresAt().isAfter(OffsetDateTime.now(ZoneOffset.UTC))
-                || !stored.authorizationRevision().equals(authorizationRevision)) {
-            throw new ApiException(ErrorCode.CONFLICT, "조회 기준이 만료되었어요. 새로고침해 주세요.");
+        if (rows.isEmpty()) {
+            if(Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM secret_snapshot_retirements WHERE snapshot_id=? AND owner_user_id=?)",Boolean.class,id,userId)))
+                throw new com.logssey.secret.query.SecretReadConflict(com.logssey.secret.query.SecretReadConflict.Reason.SNAPSHOT_EXPIRED);
+            throw new ApiException(ErrorCode.NOT_FOUND);
         }
+        var stored = rows.getFirst();
+        if (!stored.header().expiresAt().isAfter(OffsetDateTime.now(ZoneOffset.UTC)))
+            throw new com.logssey.secret.query.SecretReadConflict(com.logssey.secret.query.SecretReadConflict.Reason.SNAPSHOT_EXPIRED);
+        if(!stored.authorizationRevision().equals(authorizationRevision))
+            throw new com.logssey.secret.query.SecretReadConflict(com.logssey.secret.query.SecretReadConflict.Reason.SNAPSHOT_ACCESS_CHANGED);
         if (!stored.filterDigest().equals(digest(canonicalFilters(filters)))) {
-            throw new ApiException(ErrorCode.CONFLICT, "조회 조건이 달라졌어요. 새 기준으로 조회해 주세요.");
+            throw new com.logssey.secret.query.SecretReadConflict(com.logssey.secret.query.SecretReadConflict.Reason.SNAPSHOT_MISMATCH);
         }
         boolean lostLocation=Boolean.TRUE.equals(new NamedParameterJdbcTemplate(jdbc).queryForObject("""
                 SELECT EXISTS(SELECT 1 FROM secret_snapshot_location_memberships m
@@ -140,7 +149,7 @@ public class SecretReadSnapshots {
                 WHERE m.snapshot_id=:snapshotId AND NOT (LOCATION_ACCESS))
                 """.replace("LOCATION_ACCESS",SecretOccurrenceAccessSql.predicate("o",":userId")),
                 Map.of("snapshotId",id,"userId",userId),Boolean.class));
-        if(lostLocation) throw new ApiException(ErrorCode.CONFLICT,"열람 권한이 변경되었어요. 새로 조회해 주세요.");
+        if(lostLocation) throw new com.logssey.secret.query.SecretReadConflict(com.logssey.secret.query.SecretReadConflict.Reason.SNAPSHOT_ACCESS_CHANGED);
         return stored.header();
     }
 
@@ -161,20 +170,22 @@ public class SecretReadSnapshots {
 
     /** Revision uses permission records and readable scope revisions, never hidden occurrence activity. */
     public String authorizationRevision(long userId) {
-        List<String> facts = jdbc.query("""
+        List<String> facts = new NamedParameterJdbcTemplate(jdbc).query("""
                 SELECT 'G:' || grant_id || ':' || role || ':' || coalesce(connection_id::text,'*')
                        || ':' || coalesce(revoked_at::text,'ACTIVE') AS fact
-                FROM secret_role_grants WHERE user_id = ?
+                FROM secret_role_grants WHERE user_id = :userId
                 UNION ALL
                 SELECT 'T:' || membership_id || ':' || team_name || ':' || coalesce(removed_at::text,'ACTIVE')
-                FROM secret_team_memberships WHERE user_id = ?
+                FROM secret_team_memberships WHERE user_id = :userId
                 UNION ALL
-                SELECT 'S:' || s.scope_id || ':' || s.response_origin_version || ':' || s.enabled
+                SELECT 'S:' || s.scope_id || ':' || s.revision || ':' || s.response_origin_version || ':' || s.enabled
                 FROM secret_connection_scopes s WHERE EXISTS (
-                    SELECT 1 FROM secret_role_grants g WHERE g.user_id = ? AND g.revoked_at IS NULL
-                    AND (g.connection_id IS NULL OR g.connection_id = s.connection_id))
+                    SELECT 1 FROM secret_role_grants g WHERE g.user_id = :userId AND g.revoked_at IS NULL
+                    AND (g.connection_id IS NULL OR g.connection_id = s.connection_id)
+                    AND (g.role IN ('SECURITY','OPERATIONS') OR (g.role='REMEDIATOR' AND EXISTS(
+                        SELECT 1 FROM secret_occurrences o WHERE o.scope_id=s.scope_id AND LOCATION_ACCESS))))
                 ORDER BY fact
-                """, (rs, row) -> rs.getString(1), userId, userId, userId);
+                """.replace("LOCATION_ACCESS",SecretOccurrenceAccessSql.predicate("o",":userId")),Map.of("userId",userId), (rs, row) -> rs.getString(1));
         return digest(String.join("\n", facts));
     }
 
@@ -192,10 +203,13 @@ public class SecretReadSnapshots {
     public void invalidateScope(long scopeId) {
         jdbc.update("""
                 UPDATE secret_query_snapshots s SET expires_at=GREATEST(now(),s.created_at+interval '1 microsecond')
-                WHERE s.expires_at>now() AND EXISTS (
+                WHERE s.expires_at>now() AND (EXISTS (
                     SELECT 1 FROM secret_snapshot_location_memberships m JOIN secret_occurrences o ON o.occurrence_id=m.occurrence_id
-                    WHERE m.snapshot_id=s.snapshot_id AND o.scope_id=?)
-                """,scopeId);
+                    WHERE m.snapshot_id=s.snapshot_id AND o.scope_id=?) OR EXISTS (
+                    SELECT 1 FROM secret_snapshot_subjects subject
+                    WHERE subject.snapshot_id=s.snapshot_id AND subject.subject_type IN ('GapScope','UnclassifiedScope')
+                      AND subject.subject_id=?))
+                """,scopeId,scopeId);
     }
 
     public static Map<String, Object> facts(Object... pairs) {

@@ -84,10 +84,10 @@ public class SecretCoverageService {
             .stream().findFirst().orElseThrow(()->new ApiException(ErrorCode.NOT_FOUND));
         List<Map<String,Object>> rows=new ArrayList<>();
         for(var scope:currentScopes(connectionId,origin)) {
-            if(classificationStatus.equals("NEEDS_REVIEW")&&!"UNCLASSIFIED".equals(scope.get("response_origin")))continue;
+            if(classificationStatus.equals("NEEDS_REVIEW")&&!Boolean.TRUE.equals(jdbc.queryForObject("SELECT needs_review FROM secret_scope_governance_status WHERE scope_id=?",Boolean.class,scope.get("scope_id"))))continue;
             var cov=coverage(scope,connection);
             if(gapOnly&&((List<?>)cov.get("gapReasonCodes")).isEmpty())continue;
-            rows.add(scopeItem(scope,connection,cov));
+            rows.add(scopeItem(scope,connection,cov,access.hasConnectionRole(a,connectionId,SecretRole.OPERATIONS)));
         }
         return page(rows,page,size,"Scope",Map.of("origin",origin,"classificationStatus",classificationStatus,"gapOnly",gapOnly));
     }
@@ -102,7 +102,7 @@ public class SecretCoverageService {
             if(connectionId!=null&&connectionId!=id||!source.equals("ALL")&&!source.equals(c.get("provider"))||!access.canReadConnectionFacts(a,id))continue;
             for(var s:currentScopes(id,origin)) {
                 var cov=coverage(s,c);
-                if(!((List<?>)cov.get("gapReasonCodes")).isEmpty())rows.add(scopeItem(s,c,cov));
+                if(!((List<?>)cov.get("gapReasonCodes")).isEmpty())rows.add(scopeItem(s,c,cov,access.hasConnectionRole(a,id,SecretRole.OPERATIONS)));
             }
         }
         return page(rows,page,size,"Scope",Map.of("origin",origin,"source",source));
@@ -119,17 +119,19 @@ public class SecretCoverageService {
 
     private List<Map<String,Object>> currentScopes(long connectionId,String origin) {
         return jdbc.queryForList("""
-            SELECT scope_id,connection_id,scope_key,revision,content_type,response_origin,safe_display_alias,enabled
+            SELECT scope_id,connection_id,scope_key,revision,content_type,response_origin,safe_display_alias,alias_version,enabled
             FROM secret_connection_scopes WHERE connection_id=? AND enabled
               AND (?='ALL' OR response_origin=?) ORDER BY scope_id
             """,connectionId,origin,origin);
     }
 
-    private Map<String,Object> scopeItem(Map<String,Object> s,Map<String,Object> c,Map<String,Object> coverage) {
+    private Map<String,Object> scopeItem(Map<String,Object> s,Map<String,Object> c,Map<String,Object> coverage,boolean canEditAlias) {
         Map<String,Object> item=new LinkedHashMap<>();long id=number(s,"scope_id");
         item.put("scopeId",id);item.put("connectionId",c.get("connection_id"));item.put("scopeRevision",s.get("revision"));
         item.put("source",c.get("provider"));item.put("contentType",safeType((String)s.get("content_type")));item.put("origin",s.get("response_origin"));
         item.put("safeDisplayAlias",s.get("safe_display_alias")==null?"범위 #"+id:s.get("safe_display_alias"));
+        item.put("customSafeDisplayAlias",s.get("safe_display_alias"));item.put("aliasVersion",s.get("alias_version"));
+        item.put("capabilities",Map.of("canEditAlias",canEditAlias));
         item.put("coverage",coverage);return item;
     }
 

@@ -119,6 +119,26 @@ class SecretCaseSecurityIntegrationTest {
     }
 
     @Test
+    void closureAndExceptionEndpointsWorkThroughSpringTransactionAndRepositoryProxies() throws Exception {
+        jdbc.update("INSERT INTO secret_role_grants(user_id,role,granted_by_user_id,grant_source) VALUES (?,'SECURITY',?,'MANUAL')",actorId,actorId);
+        MockMvc mvc=mvc();
+        var login=mvc.perform(post("/api/v1/auth/login").with(csrf()).contentType(MediaType.APPLICATION_JSON)
+            .content("{\"loginId\":\"case-admin\",\"password\":\"case-pass\"}")).andExpect(status().isOk()).andReturn();
+        var session=(MockHttpSession)login.getRequest().getSession(false);
+        for(String suffix:java.util.List.of("closure-checks","exceptions","transfer-evidence"))
+            mvc.perform(get("/api/v1/secrets/cases/"+caseId+"/"+suffix).session(session)).andExpect(status().isOk());
+        long occurrence=jdbc.queryForObject("SELECT opening_occurrence_id FROM secret_response_cases WHERE case_id=?",Long.class,caseId);
+        String body="{\"occurrenceIds\":["+occurrence+"],\"reasonCode\":\"BUSINESS_CONTINUITY\",\"evidenceRef\":\"TICKET:SEC-123\",\"expiresAt\":\""
+            +OffsetDateTime.now(ZoneOffset.UTC).plusDays(1)+"\",\"expectedCaseVersion\":0,\"idempotencyKey\":\"http-exception-"+caseId+"\"}";
+        mvc.perform(post("/api/v1/secrets/cases/"+caseId+"/exceptions").session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("APPROVED"));
+        mvc.perform(get("/api/v1/secrets/cases/"+caseId+"/exceptions").session(session))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.fullyRiskAccepted").value(true));
+        mvc.perform(get("/api/v1/secrets/summary?origin=TEST").session(session))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.caseSummary.actionCounts.RISK_ACCEPTED").value(1));
+    }
+
+    @Test
     void operationsBootstrapRequiresExplicitExistingAccountAndPreservesRevocation() {
         jdbc.update("""
                 INSERT INTO dashboard_users(login_id,password_hash,display_name,role)
@@ -142,6 +162,23 @@ class SecretCaseSecurityIntegrationTest {
         bootstrap.grantConfiguredRoles();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM secret_role_grants WHERE role='OPERATIONS' AND revoked_at IS NULL",
                 Long.class)).isZero();
+    }
+
+    @Test
+    void scopeAliasesRejectCredentialPatternsWithoutPersistingAnyChange() throws Exception {
+        long scope=jdbc.queryForObject("SELECT scope_id FROM secret_connection_scopes",Long.class);
+        jdbc.update("INSERT INTO secret_role_grants(user_id,role,granted_by_user_id,grant_source) VALUES(?,'OPERATIONS',?,'MANUAL')",actorId,actorId);
+        var mvc=mvc();var login=mvc.perform(post("/api/v1/auth/login").with(csrf()).contentType(MediaType.APPLICATION_JSON)
+            .content("{\"loginId\":\"case-admin\",\"password\":\"case-pass\"}")).andExpect(status().isOk()).andReturn();
+        var session=(MockHttpSession)login.getRequest().getSession(false);
+        for(String alias:java.util.List.of("ghp_"+"A".repeat(36),"AKIA"+"A".repeat(16),"ntn_"+"A".repeat(46))) {
+            String body="{\"safeDisplayAlias\":\""+alias+"\",\"expectedScopeRevision\":1,\"expectedAliasVersion\":0}";
+            mvc.perform(patch("/api/v1/secrets/scopes/{scopeId}/display-alias",scope).session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest());
+        }
+        assertThat(jdbc.queryForObject("SELECT alias_version FROM secret_connection_scopes WHERE scope_id=?",Long.class,scope)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_scope_alias_history",Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_audit_events WHERE event_type='SCOPE_ALIAS_CHANGED'",Long.class)).isZero();
     }
 
     @Test

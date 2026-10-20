@@ -51,13 +51,17 @@ public class SecretScanFactsRepository {
         long incomplete=counts.get("PARTIAL")+counts.get("FAILED")+counts.get("SKIPPED")+counts.get("CANCELLED");
         boolean complete=!legacy&&!scopes.isEmpty()&&counts.get("SUCCEEDED")==scopes.size();
         var result=jdbc.queryForMap("""
-            SELECT count(f.finding_id) AS findings, count(DISTINCT o.credential_set_id) AS credentials
+            SELECT count(f.finding_id) AS findings, count(DISTINCT o.credential_set_id) AS credentials,
+                count(DISTINCT o.credential_set_id) FILTER(WHERE c.first_seen_run_id=f.run_id) AS new_credentials,
+                count(*) FILTER(WHERE c.first_seen_run_id IS NULL) AS legacy_credentials
             FROM secret_findings f JOIN secret_occurrences o ON o.occurrence_id=f.occurrence_id
             JOIN secret_credential_sets c ON c.credential_set_id=o.credential_set_id
             WHERE f.run_id=? AND c.component_state<>'METADATA_ONLY'
             """,runId);
         long findings=((Number)result.get("findings")).longValue();
         long credentials=((Number)result.get("credentials")).longValue();
+        long newCredentials=((Number)result.get("new_credentials")).longValue();
+        boolean legacyFirstSeen=((Number)result.get("legacy_credentials")).longValue()>0;
         boolean metadataOnly=scopes.stream().allMatch(s->s.contentType().endsWith("_METADATA"));
         boolean linkedCounts=!metadataOnly&&(complete||findings>0);
         var revalidation=jdbc.query("SELECT case_id, occurrence_id FROM secret_case_revalidations WHERE run_id=?",
@@ -65,8 +69,8 @@ public class SecretScanFactsRepository {
         var connection=jdbc.queryForMap("SELECT r.connection_id,c.provider FROM secret_scan_runs r JOIN secret_connections c ON c.connection_id=r.connection_id WHERE r.run_id=?",runId);
         return new SecretRunCoverageResponse(legacy?null:counts.get("SUCCEEDED"),finished,legacy?null:incomplete,
             scopes.size()-counts.get("SUCCEEDED"),counts,legacy?"LEGACY_UNAVAILABLE":unknown>0?"RESULT_LINK_UNAVAILABLE":"AVAILABLE",
-            linkedCounts?findings:null,linkedCounts?credentials:null,null,
-            metadataOnly||revalidation!=null?"NOT_APPLICABLE":"FIRST_SEEN_RUN_NOT_RECORDED",complete,"Scope",OffsetDateTime.now(java.time.ZoneOffset.UTC),revalidation,(String)connection.get("provider"),"연결 #"+connection.get("connection_id"));
+            linkedCounts?findings:null,linkedCounts?credentials:null,!metadataOnly&&revalidation==null&&linkedCounts&&!legacyFirstSeen?newCredentials:null,
+            metadataOnly||revalidation!=null?"NOT_APPLICABLE":legacyFirstSeen?"LEGACY_UNAVAILABLE":linkedCounts?null:"RESULT_LINK_UNAVAILABLE",complete,"Scope",OffsetDateTime.now(java.time.ZoneOffset.UTC),revalidation,(String)connection.get("provider"),"연결 #"+connection.get("connection_id"));
     }
 
     private static String stageReason(boolean recorded,String status,String reason) {

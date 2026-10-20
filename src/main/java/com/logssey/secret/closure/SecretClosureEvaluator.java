@@ -82,20 +82,20 @@ class SecretClosureEvaluator {
         if(rows.isEmpty()){checks.add(new Check("REQUIRED_LOCATIONS","UNKNOWN","NO_LOCATION_EVIDENCE",null,List.of()));positionsPassed=false;}
         var lifecycle=repository.lifecycle(c).stream().filter(e->actor==null||repository.readable(actor,number(e,"source_occurrence_id"))).toList();
         Set<Long> relatedScopes=new HashSet<>(rows.stream().map(row->number(row,"scope_id")).toList());
-        var currentFixtures=repository.jdbc.queryForList("""
+        var currentFixtures=repository.jdbc().queryForList("""
             SELECT f.attestation_id,f.scope_id,f.scope_revision,f.manifest_id,f.manifest_version
             FROM secret_current_fixture_attestations f WHERE f.credential_set_id=? ORDER BY f.attestation_id
             """,c.get("credential_set_id")).stream().filter(f->relatedScopes.contains(number(f,"scope_id"))).toList();
         boolean synthetic="TEST".equals(c.get("case_origin"))&&!rows.isEmpty()&&rows.stream()
             .filter(row->row.get("linked_case_id")!=null).allMatch(row->currentFixtures.stream()
                 .anyMatch(f->Objects.equals(f.get("scope_id"),row.get("scope_id"))&&Objects.equals(f.get("scope_revision"),row.get("revision"))));
-        boolean real=Boolean.TRUE.equals(repository.jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM secret_confirmed_real_credentials WHERE credential_set_id=?)",Boolean.class,c.get("credential_set_id")));
+        boolean real=Boolean.TRUE.equals(repository.jdbc().queryForObject("SELECT EXISTS(SELECT 1 FROM secret_confirmed_real_credentials WHERE credential_set_id=?)",Boolean.class,c.get("credential_set_id")));
         synthetic=synthetic&&!real&&rows.stream().anyMatch(row->row.get("linked_case_id")!=null);
         var lifeIds=lifecycle.stream().filter(e->!"FIXTURE_RETIRED".equals(e.get("kind"))).map(e->number(e,"evidence_id")).toList();
         var providerIds=lifecycle.stream().filter(e->!"FIXTURE_RETIRED".equals(e.get("kind"))&&"PROVIDER_VERIFIED".equals(e.get("verification_level"))).map(e->number(e,"evidence_id")).toList();
         var manualIds=lifecycle.stream().filter(e->!"FIXTURE_RETIRED".equals(e.get("kind"))&&"APPROVED_MANUAL".equals(e.get("verification_level"))).map(e->number(e,"evidence_id")).toList();
         var fixtureRetireIds=lifecycle.stream().filter(e->"FIXTURE_RETIRED".equals(e.get("kind"))).map(e->number(e,"evidence_id")).toList();
-        var alerts="TEST".equals(c.get("case_origin"))?repository.jdbc.queryForList("SELECT alert_id,status,version,closed_at FROM secret_cross_environment_alerts WHERE credential_set_id=? ORDER BY alert_id",c.get("credential_set_id")):List.<Map<String,Object>>of();
+        var alerts="TEST".equals(c.get("case_origin"))?repository.jdbc().queryForList("SELECT alert_id,status,version,closed_at FROM secret_cross_environment_alerts WHERE credential_set_id=? ORDER BY alert_id",c.get("credential_set_id")):List.<Map<String,Object>>of();
         boolean alertsClosed=alerts.stream().noneMatch(alert->alert.get("closed_at")==null);
         if("TEST".equals(c.get("case_origin")))checks.add(new Check("CROSS_ENVIRONMENT_ALERTS",alertsClosed?"PASSED":"BLOCKED",
             alertsClosed?"RELATED_ALERTS_REVIEWED":"CROSS_ENVIRONMENT_ALERT_OPEN",null,List.of()));
@@ -113,7 +113,7 @@ class SecretClosureEvaluator {
                 if(!manualIds.isEmpty())options.add(new CoverageOption("LIMITED",List.of("PROVIDER_RETIREMENT_NOT_VERIFIED","APPROVED_SUPPORTED_SCOPES_ONLY","MISUSE_NOT_ASSESSED"),union(revalidationIds,manualIds)));
             }
         }
-        var dispositions=repository.jdbc.queryForList("""
+        var dispositions=repository.jdbc().queryForList("""
             SELECT d.disposition_id,d.occurrence_id,d.created_at FROM secret_current_finding_dispositions d
             JOIN secret_findings f ON f.finding_id=d.finding_id JOIN secret_occurrences o ON o.occurrence_id=d.occurrence_id
             WHERE o.credential_set_id=? AND f.run_id=o.last_seen_run_id ORDER BY d.disposition_id
@@ -135,7 +135,7 @@ class SecretClosureEvaluator {
 
     private List<EvidenceReference> eligibleTransfers(long id,List<Map<String,Object>> rows) {
         Set<Long> required=new HashSet<>(rows.stream().filter(row->row.get("linked_case_id")!=null).map(row->number(row,"occurrence_id")).toList());
-        return repository.jdbc.queryForList("""
+        return repository.jdbc().queryForList("""
             SELECT e.evidence_id,e.submitted_at FROM secret_case_transfer_evidence e
             JOIN LATERAL(SELECT r.decision FROM secret_case_transfer_reviews r WHERE r.evidence_id=e.evidence_id ORDER BY r.review_id DESC LIMIT 1)review ON review.decision='APPROVE'
             WHERE e.case_id=? AND NOT EXISTS(SELECT 1 FROM secret_case_transfer_locations l
@@ -143,7 +143,7 @@ class SecretClosureEvaluator {
               WHERE l.evidence_id=e.evidence_id AND (l.scope_revision<>s.revision OR l.scope_origin_version<>s.response_origin_version
                   OR l.assessment_version<>o.exposure_assessment_version)) ORDER BY e.evidence_id
             """,id).stream().filter(e->{
-                var covered=new HashSet<>(repository.jdbc.query("SELECT occurrence_id FROM secret_case_transfer_locations WHERE evidence_id=?",(rs,n)->rs.getLong(1),e.get("evidence_id")));
+                var covered=new HashSet<>(repository.jdbc().query("SELECT occurrence_id FROM secret_case_transfer_locations WHERE evidence_id=?",(rs,n)->rs.getLong(1),e.get("evidence_id")));
                 return !required.isEmpty()&&covered.containsAll(required);
             }).map(e->new EvidenceReference(number(e,"evidence_id"),"OUT_OF_SCOPE","승인된 이관 근거 #"+number(e,"evidence_id"),time(e,"submitted_at"))).toList();
     }
@@ -156,7 +156,7 @@ class SecretClosureEvaluator {
     }
     private void normalizePolicyClock(Map<String,Object> row) {
         if(!Set.of("ALLOWED","DENIED").contains(text(row,"policy_result")))return;
-        boolean usable=Boolean.TRUE.equals(repository.jdbc.queryForObject("""
+        boolean usable=Boolean.TRUE.equals(repository.jdbc().queryForObject("""
             SELECT status='ACTIVE' AND valid_from<=clock_timestamp() AND (valid_until IS NULL OR valid_until>clock_timestamp())
             FROM secret_storage_policies WHERE policy_id=? AND version=?
             """,Boolean.class,row.get("policy_id"),row.get("policy_version")));

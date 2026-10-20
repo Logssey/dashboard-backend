@@ -8,7 +8,10 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/v1/secrets")
 public class SecretCoverageController {
     private final SecretCoverageService service;
-    public SecretCoverageController(SecretCoverageService service){this.service=service;}
+    private final com.logssey.secret.query.SecretWorkbenchService workbench;
+    @org.springframework.beans.factory.annotation.Autowired
+    public SecretCoverageController(SecretCoverageService service,com.logssey.secret.query.SecretWorkbenchService workbench){this.service=service;this.workbench=workbench;}
+    SecretCoverageController(SecretCoverageService service){this(service,null);}
     @GetMapping("/connections/manage")
     public Map<String,Object> connections(@RequestParam(defaultValue="ALL") String status,
         @RequestParam(defaultValue="ALL") String origin,@RequestParam(defaultValue="0") int page,
@@ -22,9 +25,13 @@ public class SecretCoverageController {
     @GetMapping("/coverage-gaps")
     public Map<String,Object> gaps(@RequestParam(defaultValue="PRODUCTION") String origin,
         @RequestParam(defaultValue="ALL") String source,@RequestParam(required=false) Long connectionId,
+        @RequestParam(defaultValue="ALL") String provider,@RequestParam(defaultValue="ALL") String environment,
+        @RequestParam(required=false) String assignee,@RequestParam(defaultValue="true") boolean gapOnly,
         @RequestParam(required=false) String snapshotId,@RequestParam(defaultValue="0") int page,
         @RequestParam(defaultValue="20") int size,@RequestParam Map<String,String> params,Authentication a){
-        requireKnown(params,"origin","source","connectionId","snapshotId","page","size");return service.gaps(login(a),origin,source,connectionId,snapshotId,page,size);}
+        requireKnown(params,"origin","source","provider","environment","assignee","connectionId","snapshotId","gapOnly","page","size");
+        if(!gapOnly)throw new com.logssey.common.error.ApiException(com.logssey.common.error.ErrorCode.INVALID_INPUT);
+        return workbench.queue(login(a),new com.logssey.secret.query.SecretWorkbenchService.Filters(origin,source,provider,environment,connectionId,assignee),"COVERAGE_GAPS",null,page,size,snapshotId);}
     private static void requireKnown(Map<String,String> params,String... names) {
         if(!java.util.Set.of(names).containsAll(params.keySet()))throw new com.logssey.common.error.ApiException(com.logssey.common.error.ErrorCode.INVALID_INPUT);
     }

@@ -41,34 +41,45 @@ public class SecretLocationService {
 
     @Transactional(isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> inventory(String loginId,SecretInventoryFilters filters,int page,int size,String snapshotId) {
+        return inventory(loginId,filters,page,size,snapshotId,null);
+    }
+
+    @Transactional(isolation=Isolation.REPEATABLE_READ)
+    public Map<String,Object> inventory(String loginId,SecretInventoryFilters filters,int page,int size,String snapshotId,Long runId) {
         validatePage(page,size);
+        if(runId!=null&&runId<=0)throw new ApiException(ErrorCode.INVALID_INPUT);
         var actor=reader(loginId);
+        var normalized=new java.util.TreeMap<>(filters.normalized());if(runId!=null)normalized.put("runId",runId.toString());
         String revision=snapshots.authorizationRevision(actor.userId());
         boolean restricted=!globalSecurity(actor);
         SecretReadSnapshots.Header header;
         if(snapshotId!=null && !snapshotId.isBlank()) {
-            header=snapshots.require(snapshotId,actor.userId(),"INVENTORY",filters.normalized(),revision);
+            header=snapshots.require(snapshotId,actor.userId(),"INVENTORY",normalized,revision);
         } else {
-            var grouped=repository.visible(actor.userId(),null,filters).stream().collect(Collectors.groupingBy(
+            var runOccurrences=runId==null?null:repository.runOccurrenceIds(actor.userId(),runId);
+            var base=new SecretInventoryFilters(filters.origin(),"ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL");
+            var allVisible=repository.visible(actor.userId(),null,base).stream().collect(Collectors.groupingBy(Row::secretId));
+            var grouped=repository.visible(actor.userId(),null,filters).stream().filter(r->runOccurrences==null||runOccurrences.contains(r.occurrenceId())).collect(Collectors.groupingBy(
                 Row::secretId,LinkedHashMap::new,Collectors.toList()));
             var subjects=new ArrayList<SecretReadSnapshots.Subject>();
             for(var entry:grouped.entrySet()) {
                 var rows=entry.getValue();
-                if(!matchesWorkBucket(rows,filters.workBucket())) continue;
-                var matched="ALL".equals(filters.workBucket())?rows:rows.stream()
+                var keyRows=allVisible.get(entry.getKey());
+                String subtype=inventorySubtype(keyRows);
+                if("NORMAL_INVENTORY".equals(filters.workBucket()) ? subtype==null : !matchesWorkBucket(rows,filters.workBucket())) continue;
+                var matched=Set.of("ALL","NORMAL_INVENTORY").contains(filters.workBucket())?rows:rows.stream()
                     .filter(row->bucket(row).equals(filters.workBucket())).toList();
-                var item=inventoryItem(matched,actor);
-                item.put("visibleLocationCount",rows.size());
-                item.put("occurrenceCount",rows.size());
+                var item=inventoryItem(keyRows,actor,subtype);
+                item.put("matchedLocationCount",matched.size());
                 if(!"ALL".equals(filters.validity()) && !filters.validity().equals(item.get("validationStatus"))) continue;
                 if(!"ALL".equals(filters.severity()) && !"UNASSESSED".equals(filters.severity())) continue;
                 subjects.add(new SecretReadSnapshots.Subject("CredentialSet",entry.getKey(),entry.getKey(),item,
-                    rows.stream().map(Row::occurrenceId).distinct().toList()));
+                    keyRows.stream().map(Row::occurrenceId).distinct().toList()));
             }
-            header=snapshots.create(actor.userId(),"INVENTORY",filters.normalized(),revision,restricted,subjects);
+            header=snapshots.create(actor.userId(),"INVENTORY",normalized,revision,restricted,subjects);
         }
         return facts("items",snapshots.page(header,"CredentialSet",page,size),"total",snapshots.count(header,"CredentialSet"),
-            "page",page,"size",size,"filters",filters.normalized(),"scope","inventory","unit","CredentialSet",
+            "page",page,"size",size,"filters",normalized,"scope","inventory","unit","CredentialSet",
             "asOf",header.asOf(),"snapshotId",header.snapshotId(),"expiresAt",header.expiresAt(),
             "restrictedCoverage",header.restrictedCoverage(),"partialCoverage",null,"coverageStatus","UNKNOWN");
     }
@@ -145,12 +156,21 @@ public class SecretLocationService {
     }
 
     private Map<String,Object> inventoryItem(List<Row> rows,SecretPrincipal actor) {
+        return inventoryItem(rows,actor,inventorySubtype(rows));
+    }
+
+    private String inventorySubtype(List<Row> rows) {
+        return repository.normalInventorySubtype(rows);
+    }
+
+    private Map<String,Object> inventoryItem(List<Row> rows,SecretPrincipal actor,String subtype) {
         var first=rows.getFirst();
         var latest=rows.stream().filter(row->row.validationAt()!=null).max(Comparator.comparing(Row::validationAt)).orElse(first);
         var cases=rows.stream().filter(row->row.caseId()!=null).map(Row::caseId).distinct().toList();
         var priority=List.of("ACTION_REQUIRED","NEEDS_CASE_LINK","NEEDS_DECISION","NORMAL_INVENTORY","INVENTORY","EXCLUDED_HISTORY");
         var representative=rows.stream().min(Comparator.comparingInt(row->priority.indexOf(bucket(row)))).orElse(first);
-        String bucket=bucket(representative);
+        String bucket=subtype!=null?"NORMAL_INVENTORY":bucket(representative);
+        if(subtype==null && "NORMAL_INVENTORY".equals(bucket)) bucket="NEEDS_DECISION";
         OffsetDateTime lastMaterial=rows.stream().map(row->repository.operationalFacts(row.occurrenceId()).get("validation_after_action_at"))
             .filter(Objects::nonNull).map(v->((java.sql.Timestamp)v).toInstant().atOffset(java.time.ZoneOffset.UTC)).max(Comparator.naturalOrder()).orElse(null);
         boolean needsPostAction=lastMaterial!=null&&(latest.validationCheckedAt()==null||!latest.validationCheckedAt().isAfter(lastMaterial));
@@ -163,9 +183,11 @@ public class SecretLocationService {
             "firstSeenAt",text(rows.stream().map(Row::firstSeenAt).min(Comparator.naturalOrder()).orElse(null)),
             "lastSeenAt",text(rows.stream().map(Row::lastSeenAt).max(Comparator.naturalOrder()).orElse(null)),
             "origin",first.origin(),"contentKind","METADATA_ONLY".equals(first.componentState())?"METADATA":"VALUE_FINDINGS",
-            "workBucket",bucket,"whyHereCode",reason(representative),"nextActionCode",next(representative,actor),
+            "workBucket",bucket,"inventorySubtype",subtype,
+            "whyHereCode","RETIRED_HISTORY".equals(subtype)?"PROVIDER_RETIREMENT_CONFIRMED":reason(representative),
+            "nextActionCode","RETIRED_HISTORY".equals(subtype)?"VIEW_DETAIL":next(representative,actor),
             "requiresReassessment",rows.stream().anyMatch(Row::requiresReassessment),
-            "safeLocationLabel","위치 #"+representative.occurrenceId(),"currentCaseId",representative.caseId(),
+            "safeLocationLabel",repository.safeLocationLabel(representative),"currentCaseId",representative.caseId(),
             "casesByOrigin",cases.stream().map(id->facts("origin",first.origin(),"caseId",id)).toList(),
             "restrictedCoverage",!globalSecurity(actor));
     }
@@ -184,7 +206,7 @@ public class SecretLocationService {
         String validity=row.validity()==null?"UNCHECKED":row.validity();
         return facts("occurrenceId",row.occurrenceId(),"connectionId",row.connectionId(),"scopeId",row.scopeId(),
             "source",row.source(),"environment",row.environment(),"origin",row.origin(),"scopeRevision",row.scopeRevision(),
-            "safeLocationLabel","위치 #"+row.occurrenceId(),"presence",row.presence(),"exposure",row.exposure(),
+            "safeLocationLabel",repository.safeLocationLabel(row),"presence",row.presence(),"exposure",row.exposure(),
             "storagePolicy",facts("result",row.storagePolicyResult(),"reasonCode",row.storagePolicyReason(),
                 "bindingId",row.storageBindingId(),"policyId",row.storagePolicyId(),"version",row.storagePolicyVersion()),
             "requiresReassessment",row.requiresReassessment(),"allCurrentFindingsCorrected",row.allCurrentFindingsCorrected(),

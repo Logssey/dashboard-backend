@@ -34,13 +34,13 @@ public class SecretRevalidationService {
     activity(caseId,occurrence,"REVALIDATION_REQUESTED",actor.userId(),t.version()+1,t.occurrenceVersion()+1,v.revalidationId());
     return new SecretCommandResult(v.revalidationId(),t.version()+1,SecretCommandResult.Status.PENDING);
    });
-  return repository.list(caseId).stream().filter(v->v.revalidationId()==result.targetId()).findFirst().orElseThrow(()->new ApiException(ErrorCode.NOT_FOUND));
+  return runAccess(actor,repository.list(caseId).stream().filter(v->v.revalidationId()==result.targetId()).findFirst().orElseThrow(()->new ApiException(ErrorCode.NOT_FOUND)));
  }
  @Transactional(readOnly=true)
  public List<SecretRevalidationResult> list(long caseId,String login){
   var actor=access.requirePrincipal(login);var allowed=workflow.visibleLocations(caseId,actor).stream().map(o->((Number)o.get("occurrence_id")).longValue()).collect(java.util.stream.Collectors.toSet());
   if(allowed.isEmpty())throw new ApiException(ErrorCode.NOT_FOUND);
-  return repository.list(caseId).stream().filter(v->allowed.contains(v.occurrenceId())).toList();
+  return repository.list(caseId).stream().filter(v->allowed.contains(v.occurrenceId())).map(v->runAccess(actor,v)).toList();
  }
  public SecretCaseDetail resolve(long caseId,SecretResolveRequest request,String login){workflow.rejectLegacy(caseId,login);throw new ApiException(ErrorCode.CONFLICT);}
  public Map<String,Object> resume(long caseId,SecretResumeRequest r,String login){
@@ -58,6 +58,10 @@ public class SecretRevalidationService {
   });return workflow.detail(caseId,login);
  }
  private void requireAssigned(SecretPrincipal actor,long c,long o){if(!workflow.assignedRemediator(actor,c,o))throw new ApiException(ErrorCode.FORBIDDEN);}
+ private SecretRevalidationResult runAccess(SecretPrincipal actor,SecretRevalidationResult result){
+  Long connection=jdbc.queryForObject("SELECT connection_id FROM secret_occurrences WHERE occurrence_id=?",Long.class,result.occurrenceId());
+  return result.withRunAccess(connection!=null&&access.canReadConnectionFacts(actor,connection));
+ }
  private void activity(long c,long o,String type,long actor,long cv,long ov,long ref){jdbc.update("INSERT INTO secret_location_activities(case_id,occurrence_id,activity_type,actor_user_id,case_version,occurrence_version,reference_id) VALUES(?,?,?,?,?,?,?)",c,o,type,actor,cv,ov,ref);}
  private static byte[] digest(Object... values){try{return MessageDigest.getInstance("SHA-256").digest(Arrays.deepToString(values).getBytes(StandardCharsets.UTF_8));}catch(Exception e){throw new IllegalStateException(e);}}
  private static void invalid(){throw new ApiException(ErrorCode.INVALID_INPUT);}private static void conflict(){throw new ApiException(ErrorCode.CONFLICT);}
