@@ -37,19 +37,21 @@ public class SecretRunController {
     }
 
     @GetMapping("/{runId}")
-    public SecretRunStatusResponse status(@PathVariable long runId, Authentication authentication) {
-        return service.status(runId, authentication == null ? null : authentication.getName());
+    public Object status(@PathVariable long runId, Authentication authentication) {
+        String login=authentication == null ? null : authentication.getName();
+        return queries==null?service.status(runId,login):queries.status(login,runId);
     }
 
     @GetMapping
     public java.util.Map<String,Object> list(@RequestParam(defaultValue = "0") int page,
                                       @RequestParam(defaultValue = "20") int size,
                                       @RequestParam(defaultValue="ALL") String type,@RequestParam(defaultValue="ALL") String status,
+                                      @RequestParam(defaultValue="ALL") String provider,
                                       @RequestParam(required=false) Long connectionId,@RequestParam(required=false) java.time.OffsetDateTime from,
                                       @RequestParam(required=false) java.time.OffsetDateTime to,@RequestParam(required=false) String snapshotId,
                                       @RequestParam java.util.Map<String,String> params,Authentication authentication) {
-        if(!java.util.Set.of("page","size","type","status","connectionId","from","to","snapshotId").containsAll(params.keySet()))throw new com.logssey.common.error.ApiException(com.logssey.common.error.ErrorCode.INVALID_INPUT);
-        return queries.list(authentication == null ? null : authentication.getName(),type,status,connectionId,from,to,page,size,snapshotId);
+        if(!java.util.Set.of("page","size","type","status","provider","connectionId","from","to","snapshotId").containsAll(params.keySet()))throw new com.logssey.common.error.ApiException(com.logssey.common.error.ErrorCode.INVALID_INPUT);
+        return queries.list(authentication == null ? null : authentication.getName(),type,status,provider,connectionId,from,to,page,size,snapshotId);
     }
 
     @GetMapping("/{runId}/findings")

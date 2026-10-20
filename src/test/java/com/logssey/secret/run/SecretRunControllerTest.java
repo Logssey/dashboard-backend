@@ -21,7 +21,7 @@ class SecretRunControllerTest {
     void listsPaginatedRunSummariesWithoutSourceOrCredentialReferences() throws Exception {
         var service = mock(SecretRunService.class);
         var queries=mock(SecretRunQueryService.class);
-        when(queries.list("admin","ALL","ALL",null,null,null,1,10,null)).thenReturn(java.util.Map.of(
+        when(queries.list("admin","ALL","ALL","ALL",null,null,null,1,10,null)).thenReturn(java.util.Map.of(
             "items",java.util.List.of(java.util.Map.of("runId",42,"status","PARTIAL","incompleteScopeCount",1,"collectedObjectCount",3,"failureCode","AWS_ACCESS_DENIED")),"total",12,"page",1,"size",10));
         var mvc=MockMvcBuilders.standaloneSetup(new SecretRunController(service,queries)).build();
         mvc.perform(get("/api/v1/secrets/runs?page=1&size=10")

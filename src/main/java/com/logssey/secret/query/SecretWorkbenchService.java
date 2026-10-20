@@ -84,24 +84,29 @@ public class SecretWorkbenchService {
             .filter(r->!bucket.equals("ACTION_REQUIRED")||!Set.of("RESOLVED","RISK_ACCEPTED").contains(r.get("stage")))
             .filter(r->!type.equals("ResponseCase")||stages==null||Arrays.asList(stages.split(",")).contains(r.get("stage"))).toList();
         String unit=switch(type){case "ResponseCase"->"ResponseCase";case "NormalCredentialSet"->"CredentialSet";case "GapScope","UnclassifiedScope"->"Scope";default->"Occurrence";};
+        var applied=new TreeMap<>(f.normalized());var ignored=new ArrayList<String>();
+        if(!type.equals("ResponseCase")&&f.assignee()!=null){applied.remove("assignee");ignored.add("assignee");}
+        if(type.equals("GapScope")||type.equals("UnclassifiedScope"))for(String key:List.of("provider","environment"))if(!applied.getOrDefault(key,"ALL").equals("ALL")){applied.remove(key);ignored.add(key);}
         return facts("items",allowed.stream().skip((long)page*size).limit(size).toList(),"total",allowed.size(),"page",page,"size",size,
             "unit",unit,"scope","reviewQueue","snapshotId",h.snapshotId(),"asOf",h.asOf(),"expiresAt",h.expiresAt(),"restrictedCoverage",h.restrictedCoverage(),
-            "partialCoverage",null,"filters",f.normalized());
+            "partialCoverage",null,"filters",f.normalized(),"appliedFilters",applied,"notApplicableFilters",ignored);
     }
     private Header header(String login,SecretPrincipal actor,Filters f,String supplied) {
         if(f.connectionId()!=null&&!access.canReadConnectionFacts(actor,f.connectionId())&&!access.hasConnectionRole(actor,f.connectionId(),SecretRole.REMEDIATOR))throw new ApiException(ErrorCode.FORBIDDEN);
         String revision=snapshots.authorizationRevision(actor.userId());
         if(supplied!=null&&!supplied.isBlank())return snapshots.require(supplied,actor.userId(),"WORKBENCH",f.normalized(),revision);
-        var rows=locations.visible(actor.userId(),null,new SecretInventoryFilters(f.origin(),f.source(),f.provider(),f.environment(),"ALL","ALL","ALL","ALL","ALL"))
-            .stream().filter(r->f.connectionId()==null||r.connectionId()==f.connectionId()).toList();
+        var allRows=locations.visible(actor.userId(),null,new SecretInventoryFilters(f.origin(),"ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL"));
+        var rows=allRows.stream().filter(r->(f.connectionId()==null||r.connectionId()==f.connectionId())
+            &&(f.source().equals("ALL")||f.source().equals(r.source()))&&(f.provider().equals("ALL")||f.provider().equals(r.issuer()))
+            &&(f.environment().equals("ALL")||f.environment().equals(r.environment()))).toList();
         var subjects=new ArrayList<Subject>();
-        Set<Long> valid=validOccurrences(rows);
+        Set<Long> valid=validOccurrences(allRows);
+        var completeByKey=allRows.stream().collect(Collectors.groupingBy(Row::secretId));
         var byKey=rows.stream().collect(Collectors.groupingBy(Row::secretId,LinkedHashMap::new,Collectors.toList()));
         var caseIds=rows.stream().map(Row::caseId).filter(Objects::nonNull).distinct().toList();
         for(long id:caseIds) {
             var member=rows.stream().filter(r->Objects.equals(r.caseId(),id)).toList();
-            if(f.assignee()!=null&&member.stream().noneMatch(r->f.assignee().equals("UNASSIGNED")?r.assignedUserId()==null:
-                Objects.equals(r.assignedUserId(),f.assignee().equals("ME")?actor.userId():Long.valueOf(f.assignee()))))continue;
+            if(f.assignee()!=null&&member.stream().noneMatch(r->assignmentMatches(actor,r,f.assignee())))continue;
             var c=cases.detail(id,login);c.remove("checklist");c.remove("occurrences");c.remove("capabilities");
             c.put("credentialSetId",c.get("secretId"));c.put("whyHereCode","ACTIVE_RESPONSE");c.put("nextActionCode","OPEN_CASE");
             subjects.add(new Subject("ResponseCase",id,member.getFirst().secretId(),c,member.stream().map(Row::occurrenceId).toList()));
@@ -112,7 +117,7 @@ public class SecretWorkbenchService {
             else if(r.exposure().equals("ABNORMAL")&&r.caseId()==null)subjects.add(subject("LinkOccurrence",r,"CASE_LINK_REQUIRED","OPEN_REVIEW"));
         }
         for(var entry:byKey.entrySet()) {
-            var keyRows=entry.getValue();Row first=keyRows.getFirst();
+            var keyRows=completeByKey.get(entry.getKey());Row first=keyRows.getFirst();
             if(keyRows.stream().anyMatch(r->!access.hasConnectionRole(actor,r.connectionId(),SecretRole.SECURITY)))continue;
             boolean metadata=first.componentState().equals("METADATA_ONLY");
             boolean normal=first.componentState().equals("CONFIRMED")&&keyRows.stream().allMatch(r->r.caseId()==null&&!r.requiresReassessment()&&r.exposure().equals("NORMAL")&&r.storagePolicyResult().equals("ALLOWED")&&valid.contains(r.occurrenceId()));
@@ -140,9 +145,10 @@ public class SecretWorkbenchService {
         }
         Header h=snapshots.create(actor.userId(),"WORKBENCH",f.normalized(),revision,!access.hasGlobalRole(actor,SecretRole.SECURITY),subjects);
         boolean security=access.hasAnyRole(actor,Set.of(SecretRole.SECURITY)),response=security||access.hasAnyRole(actor,Set.of(SecretRole.REMEDIATOR));
+        List<String> nonCaseIgnored=f.assignee()==null?List.of():List.of("assignee");
         List<String> na=new ArrayList<>();if(!f.provider().equals("ALL"))na.add("provider");if(!f.environment().equals("ALL"))na.add("environment");if(f.assignee()!=null)na.add("assignee");
         for(var m:List.of(new Metric("ongoingCases","ResponseCase","ResponseCase",response,List.of()),new Metric("revalidationPendingCases","ResponseCase","ResponseCase",response,List.of()),
-            new Metric("needsDecisionLocations","Occurrence","DecisionOccurrence",security,List.of()),new Metric("needsCaseLinkLocations","Occurrence","LinkOccurrence",security,List.of()),
+            new Metric("needsDecisionLocations","Occurrence","DecisionOccurrence",security,nonCaseIgnored),new Metric("needsCaseLinkLocations","Occurrence","LinkOccurrence",security,nonCaseIgnored),
             new Metric("coverageGapScopes","Scope","GapScope",operations,na),new Metric("unclassifiedScopes","Scope","UnclassifiedScope",operations,na))) {
             var members=subjects.stream().filter(s->s.type().equals(m.type())).filter(s->!m.key().equals("ongoingCases")||Set.of("OPEN","IN_PROGRESS").contains(s.facts().get("stage")))
                 .filter(s->!m.key().equals("revalidationPendingCases")||s.facts().get("stage").equals("REVALIDATION_PENDING")).toList();
@@ -160,6 +166,16 @@ public class SecretWorkbenchService {
     private Set<Long> validOccurrences(List<Row> rows) {
         if(rows.isEmpty())return Set.of();
         return new HashSet<>(new NamedParameterJdbcTemplate(jdbc).queryForList("SELECT DISTINCT occurrence_id FROM secret_current_valid_findings WHERE occurrence_id IN (:ids)",Map.of("ids",rows.stream().map(Row::occurrenceId).toList()),Long.class));
+    }
+    private boolean assignmentMatches(SecretPrincipal actor,Row r,String filter) {
+        if(r.caseId()==null)return false;
+        var rows=jdbc.queryForList("SELECT co.assigned_user_id,co.assigned_team,c.assigned_user_id AS coordinator_user_id,c.assigned_team AS coordinator_team FROM secret_case_occurrences co JOIN secret_response_cases c USING(case_id) WHERE co.case_id=? AND co.occurrence_id=?",r.caseId(),r.occurrenceId());
+        if(rows.isEmpty())return false;var a=rows.getFirst();
+        if(filter.equals("UNASSIGNED"))return a.get("assigned_user_id")==null&&a.get("assigned_team")==null;
+        long user=filter.equals("ME")?actor.userId():Long.parseLong(filter);
+        if(Objects.equals(a.get("assigned_user_id"),user)||Objects.equals(a.get("coordinator_user_id"),user))return true;
+        if(a.get("assigned_user_id")!=null&&a.get("coordinator_user_id")!=null)return false;
+        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM secret_team_memberships WHERE user_id=? AND removed_at IS NULL AND ((?::bigint IS NULL AND team_name=?) OR (?::bigint IS NULL AND team_name=?)))",Boolean.class,user,a.get("assigned_user_id"),a.get("assigned_team"),a.get("coordinator_user_id"),a.get("coordinator_team")));
     }
     @SuppressWarnings("unchecked") private List<Map<String,Object>> allPages(java.util.function.IntFunction<Map<String,Object>> query) {
         var out=new ArrayList<Map<String,Object>>();for(int p=0;;p++){var result=query.apply(p);var items=(List<Map<String,Object>>)result.get("items");out.addAll(items);if(out.size()>=((Number)result.get("total")).longValue()||items.isEmpty())return out;}

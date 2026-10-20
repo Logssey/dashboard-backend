@@ -18,7 +18,7 @@ public class SecretWorkbenchController {
         return service.summary(a==null?null:a.getName(),new SecretWorkbenchService.Filters(origin,source,provider,environment,connectionId,assignee),snapshotId);
     }
 
-    @GetMapping("/scopes")
+    @GetMapping(value="/scopes",params="snapshotId")
     public Map<String,Object> scopes(@RequestParam(defaultValue="PRODUCTION") String origin,
         @RequestParam(defaultValue="ALL") String source,@RequestParam(defaultValue="ALL") String provider,
         @RequestParam(defaultValue="ALL") String environment,@RequestParam(required=false) Long connectionId,

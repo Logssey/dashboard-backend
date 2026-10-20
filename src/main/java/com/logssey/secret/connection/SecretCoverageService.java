@@ -84,8 +84,7 @@ public class SecretCoverageService {
             .stream().findFirst().orElseThrow(()->new ApiException(ErrorCode.NOT_FOUND));
         List<Map<String,Object>> rows=new ArrayList<>();
         for(var scope:currentScopes(connectionId,origin)) {
-            if(classificationStatus.equals("NEEDS_REVIEW")&&!"UNCLASSIFIED".equals(scope.get("response_origin"))
-                &&!Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM secret_scope_classification_proposals WHERE scope_id=? AND status='PENDING_APPROVAL')",Boolean.class,scope.get("scope_id"))))continue;
+            if(classificationStatus.equals("NEEDS_REVIEW")&&!Boolean.TRUE.equals(jdbc.queryForObject("SELECT needs_review FROM secret_scope_governance_status WHERE scope_id=?",Boolean.class,scope.get("scope_id"))))continue;
             var cov=coverage(scope,connection);
             if(gapOnly&&((List<?>)cov.get("gapReasonCodes")).isEmpty())continue;
             rows.add(scopeItem(scope,connection,cov));

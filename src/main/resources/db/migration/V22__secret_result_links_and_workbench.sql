@@ -7,6 +7,18 @@ CREATE TABLE secret_snapshot_retirements (
     owner_user_id BIGINT NOT NULL REFERENCES dashboard_users(user_id),
     retired_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE VIEW secret_scope_governance_status AS
+SELECT s.scope_id,
+ (s.response_origin='UNCLASSIFIED'
+ OR EXISTS(SELECT 1 FROM secret_scope_classification_proposals p WHERE p.scope_id=s.scope_id AND p.status='PENDING_APPROVAL')
+ OR NOT EXISTS(SELECT 1 FROM secret_scope_origin_decisions d WHERE d.scope_id=s.scope_id AND d.version=s.response_origin_version AND d.decision='APPROVED')
+ OR (s.content_type IN ('GITHUB_REPOSITORY_FILES','AWS_SECRETS_MANAGER_VALUE','AWS_SSM_PARAMETER_VALUE','AWS_S3_OBJECT_CONTENT') AND NOT EXISTS(
+   SELECT 1 FROM secret_scope_policy_bindings b JOIN secret_storage_policies p ON p.policy_id=b.policy_id AND p.version=b.policy_version
+   JOIN secret_storage_policy_rules r ON r.policy_id=p.policy_id AND r.policy_version=p.version
+   WHERE b.scope_id=s.scope_id AND b.effective_until IS NULL AND p.status='ACTIVE' AND p.valid_from<=now() AND (p.valid_until IS NULL OR p.valid_until>now())
+     AND r.scope_id=s.scope_id AND r.scope_revision=s.revision AND r.scope_fingerprint=md5(jsonb_build_array(s.content_type,s.approved_ref,s.history_limit)::text)
+ ))) AS needs_review
+FROM secret_connection_scopes s;
 CREATE TABLE secret_scope_alias_history (
     alias_change_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     scope_id BIGINT NOT NULL REFERENCES secret_connection_scopes(scope_id),
