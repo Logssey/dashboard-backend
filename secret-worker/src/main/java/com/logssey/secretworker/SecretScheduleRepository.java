@@ -120,7 +120,7 @@ public class SecretScheduleRepository {
 
         jdbc.update("""
                 UPDATE secret_connections SET next_due_at = ?, updated_at = ? WHERE connection_id = ?
-                """, connection.scheduledAt().plus(properties.scanInterval()), now, connection.id());
+                """, now.plus(properties.scanInterval()), now, connection.id());
     }
 
     public record DueConnection(long id, long scopeVersion, OffsetDateTime scheduledAt) {
