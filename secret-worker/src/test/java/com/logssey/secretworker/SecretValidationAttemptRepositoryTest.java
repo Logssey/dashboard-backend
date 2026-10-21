@@ -303,6 +303,7 @@ class SecretValidationAttemptRepositoryTest {
 
     @Test
     void syntheticSourceAndDisabledProfileNeverInvokeProvider() {
+        jdbc.update("UPDATE secret_connection_scopes SET synthetic_fixture=true WHERE scope_id=(SELECT scope_id FROM secret_run_scopes WHERE run_scope_id=?)", runScopeId);
         var candidate = discovered();
         var calls = new java.util.concurrent.atomic.AtomicInteger();
         var result =
