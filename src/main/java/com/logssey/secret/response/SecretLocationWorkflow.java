@@ -79,12 +79,16 @@ public class SecretLocationWorkflow {
                 "lastCheckedAt",observed.get("lastSuccessfulScan")==null?null:((Map<?,?>)observed.get("lastSuccessfulScan")).get("finishedAt"),
                 "locationAbsenceCheck",ready.get("locationAbsenceCheck"),"recentRevalidation",ready.get("recentRevalidation"),"revalidationBlockReasonCode",ready.get("revalidationBlockReasonCode"));
         }).toList();
+        items.forEach(item->{
+            item.put("remediationPresence",com.logssey.secret.query.SecretRemediationSummary.state(item));
+            item.put("postActionRedetected",Boolean.TRUE.equals(item.get("requiredRemediation"))&&com.logssey.secret.query.SecretRemediationSummary.redetected(item));
+        });
         boolean restricted=!access.hasGlobalRole(actor,SecretRole.SECURITY);
         var remediation=com.logssey.secret.query.SecretRemediationSummary.summarize(items,restricted);
         var priorities=new ArrayList<String>();
         if(((Number)remediation.get("postActionRedetectedCount")).longValue()>0)priorities.add("POST_ACTION_REDETECTED");
         if(current&&!"RESOLVED".equals(c.get("action_status")))priorities.add("CONFIRMED_EXPOSURE");
-        boolean unassigned=items.stream().anyMatch(i->i.get("assignedUserId")==null&&Boolean.TRUE.equals(i.get("requiredRemediation")));
+        boolean unassigned=items.stream().anyMatch(i->i.get("assignedUserId")==null&&i.get("assignedTeam")==null&&Boolean.TRUE.equals(i.get("requiredRemediation")));
         if(unassigned)priorities.add("ASSIGNEE_REQUIRED");
         boolean allMissing=((Number)remediation.get("requiredLocationCount")).longValue()>0
             &&Objects.equals(remediation.get("requiredLocationCount"),remediation.get("postActionMissingLocationCount"));
@@ -106,7 +110,7 @@ public class SecretLocationWorkflow {
         result.put("remediationSummary",remediation);
         result.put("whyHereCode","ACTIVE_RESPONSE");result.put("nextActionCode",next);
         result.put("taskGuidance",com.logssey.secret.query.SecretTaskGuidance.build("ACTIVE_RESPONSE",next,facts("type","CASE","id",caseId),executable,
-            next.equals("REQUEST_REVALIDATION")?"EVIDENCE_REQUIRED":"ROLE_REQUIRED",unassigned?"SECURITY":"REMEDIATOR",c.get("updated_at"),null,null,List.of(),priorities));
+            next.equals("REQUEST_REVALIDATION")?"EVIDENCE_REQUIRED":"ROLE_REQUIRED",unassigned?"SECURITY":"REMEDIATOR",remediation.get("evidenceObservedAt"),null,null,List.of(),priorities));
         return result;
     }
 
@@ -130,12 +134,15 @@ public class SecretLocationWorkflow {
             boolean full=hasAllSecurity(actor,id);
             boolean matched=loc.stream().anyMatch(o->assignmentMatches(o,assignmentStatus,assignee,actor.userId()));
             if(!matched)continue;
+            var currentDetail=detail(id,login);
             visible.add(facts("caseId",id,"secretId",c.get("credential_set_id"),"maskedLabel",c.get("masked_label"),
                 "issuer",c.get("issuer"),"credentialType",c.get("credential_type"),"caseOrigin",c.get("case_origin"),
                 "stage",c.get("action_status"),"version",c.get("version"),"assigneeTeam",full?c.get("assigned_team"):null,
                 "assigneeUserId",full?c.get("assigned_user_id"):null,"createdAt",c.get("opened_at"),
-                "updatedAt",full?c.get("updated_at"):null,"visibleOccurrenceCount",loc.size(),"restrictedCoverage",!full));
+                "updatedAt",full?c.get("updated_at"):null,"visibleOccurrenceCount",loc.size(),"restrictedCoverage",!full,
+                "taskGuidance",currentDetail.get("taskGuidance"),"remediationSummary",currentDetail.get("remediationSummary")));
         }
+        visible.sort(java.util.Comparator.comparingInt((Map<String,Object> item)->com.logssey.secret.query.SecretRemediationSummary.priority(item)).thenComparingLong(item->num(item,"caseId")));
         return facts("items",visible.stream().skip((long)page*size).limit(size).toList(),"total",visible.size(),"page",page,"size",size,
             "scope",scope,"unit","ResponseCase","asOf",OffsetDateTime.now());
     }

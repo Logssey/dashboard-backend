@@ -199,7 +199,6 @@ public class SecretLocationService {
         if(((Number)summary.get("postActionRedetectedCount")).longValue()>0)priorities.add("POST_ACTION_REDETECTED");
         if(rows.stream().anyMatch(r->r.exposure().equals("ABNORMAL")))priorities.add("CONFIRMED_EXPOSURE");
         if(rows.stream().anyMatch(r->"VALID".equals(r.validity())&&"DENIED".equals(r.storagePolicyResult())))priorities.add("VALID_AND_POLICY_DENIED");
-        if(rows.stream().anyMatch(r->r.caseId()!=null&&!"RESOLVED".equals(r.actionStatus())&&r.assignedUserId()==null))priorities.add("ASSIGNEE_REQUIRED");
         result.put("taskGuidance",SecretTaskGuidance.build((String)result.get("whyHereCode"),(String)result.get("nextActionCode"),
             facts("type","OCCURRENCE","id",representative.occurrenceId(),"secretId",first.secretId(),"caseId",representative.caseId()),
             true,null,null,text(representative.lastSeenAt()),null,null,List.of(),priorities));
