@@ -28,9 +28,13 @@ public class SecretLocationWorkflow {
     private final SecretCommandExecutor commands;
     private final SecretReadSnapshots snapshots;
     private final SecretLocationReadiness readiness;
+    private final com.logssey.secret.connection.SecretCoverageService coverage;
     @org.springframework.beans.factory.annotation.Autowired
+    public SecretLocationWorkflow(JdbcTemplate jdbc,SecretAccessService access,SecretCommandExecutor commands,SecretReadSnapshots snapshots,SecretLocationReadiness readiness,com.logssey.secret.connection.SecretCoverageService coverage) {
+        this.jdbc=jdbc;this.named=new NamedParameterJdbcTemplate(jdbc);this.access=access;this.commands=commands;this.snapshots=snapshots;this.readiness=readiness;this.coverage=coverage;
+    }
     public SecretLocationWorkflow(JdbcTemplate jdbc,SecretAccessService access,SecretCommandExecutor commands,SecretReadSnapshots snapshots,SecretLocationReadiness readiness) {
-        this.jdbc=jdbc;this.named=new NamedParameterJdbcTemplate(jdbc);this.access=access;this.commands=commands;this.snapshots=snapshots;this.readiness=readiness;
+        this(jdbc,access,commands,snapshots,readiness,new com.logssey.secret.connection.SecretCoverageService(jdbc,access));
     }
     public SecretLocationWorkflow(JdbcTemplate jdbc,SecretAccessService access,SecretCommandExecutor commands,SecretReadSnapshots snapshots) {
         this(jdbc,access,commands,snapshots,new SecretLocationReadiness(jdbc,access));
@@ -61,6 +65,7 @@ public class SecretLocationWorkflow {
             boolean assigned=assignedRemediator(actor,caseId,occurrence);
             var ready=readiness.capabilities(actor,caseId,occurrence);
             boolean actionable=current&&Set.of("OPEN","IN_PROGRESS").contains(o.get("response_status"));
+            var observed=coverage.occurrenceCoverage(actor,occurrence);
             return facts("occurrenceId",occurrence,"safeLocationLabel",com.logssey.secret.connection.SecretDisplayLabels.location((String)o.get("safe_display_alias"),occurrence),
                 "source",o.get("source"),"environment",o.get("environment"),"exposure",o.get("exposure_status"),
                 "presence",o.get("presence_status"),"responseStatus",o.get("response_status"),"version",o.get("version"),
@@ -69,9 +74,23 @@ public class SecretLocationWorkflow {
                 "lastMaterialActionAt",o.get("last_material_action_at"),"actionsCompletedAt",o.get("actions_completed_at"),
                 "canAssign",security&&current,"canRecordAction",assigned&&actionable,"canCompleteActions",assigned&&actionable&&o.get("last_material_action_at")!=null,
                 "canRequestRevalidation",ready.get("canRequestRevalidation"),"canResume",ready.get("canResume"),
+                "requiredRemediation",current&&!"RESOLVED".equals(o.get("response_status")),"actionStatus",o.get("response_status"),
+                "currentCoverage",observed.get("lastSuccessfulScan")!=null&&((List<?>)observed.get("gapReasonCodes")).isEmpty(),"lastSeenAt",o.get("last_seen_at"),
+                "lastCheckedAt",observed.get("lastSuccessfulScan")==null?null:((Map<?,?>)observed.get("lastSuccessfulScan")).get("finishedAt"),
                 "locationAbsenceCheck",ready.get("locationAbsenceCheck"),"recentRevalidation",ready.get("recentRevalidation"),"revalidationBlockReasonCode",ready.get("revalidationBlockReasonCode"));
         }).toList();
-        return facts("caseId",caseId,"secretId",c.get("credential_set_id"),"maskedLabel",c.get("masked_label"),
+        boolean restricted=!access.hasGlobalRole(actor,SecretRole.SECURITY);
+        var remediation=com.logssey.secret.query.SecretRemediationSummary.summarize(items,restricted);
+        var priorities=new ArrayList<String>();
+        if(((Number)remediation.get("postActionRedetectedCount")).longValue()>0)priorities.add("POST_ACTION_REDETECTED");
+        if(current&&!"RESOLVED".equals(c.get("action_status")))priorities.add("CONFIRMED_EXPOSURE");
+        boolean unassigned=items.stream().anyMatch(i->i.get("assignedUserId")==null&&Boolean.TRUE.equals(i.get("requiredRemediation")));
+        if(unassigned)priorities.add("ASSIGNEE_REQUIRED");
+        boolean allMissing=((Number)remediation.get("requiredLocationCount")).longValue()>0
+            &&Objects.equals(remediation.get("requiredLocationCount"),remediation.get("postActionMissingLocationCount"));
+        String next=unassigned?"ASSIGN_LOCATION":allMissing?"REVIEW_CLOSURE":"REVALIDATION_PENDING".equals(c.get("action_status"))?"REQUEST_REVALIDATION":"RESOLVED".equals(c.get("action_status"))?"VIEW_DETAIL":"RECORD_LOCATION_ACTION";
+        boolean executable=items.stream().anyMatch(i->Boolean.TRUE.equals(i.get(unassigned?"canAssign":next.equals("REQUEST_REVALIDATION")?"canRequestRevalidation":"canRecordAction")))||Set.of("VIEW_DETAIL","REVIEW_CLOSURE").contains(next);
+        var result=facts("caseId",caseId,"secretId",c.get("credential_set_id"),"maskedLabel",c.get("masked_label"),
             "issuer",c.get("issuer"),"credentialType",c.get("credential_type"),"caseOrigin",c.get("case_origin"),
             "stage",c.get("action_status"),"disposition",c.get("disposition"),"isCurrent",c.get("is_current"),
             "assigneeTeam",allSecurity?c.get("assigned_team"):null,"assigneeUserId",allSecurity?c.get("assigned_user_id"):null,
@@ -84,6 +103,11 @@ public class SecretLocationWorkflow {
             "capabilities",facts("canAssign",allSecurity&&current,"canReview",false,"canStart",false,
                 "canRecordAction",items.stream().anyMatch(i->Boolean.TRUE.equals(i.get("canRecordAction"))),
                 "canUpdateChecklist",current&&(allSecurity||items.stream().anyMatch(i->Boolean.TRUE.equals(i.get("canRecordAction")))),"canResolve",false,"canRequestRevalidation",items.stream().anyMatch(i->Boolean.TRUE.equals(i.get("canRequestRevalidation")))));
+        result.put("remediationSummary",remediation);
+        result.put("whyHereCode","ACTIVE_RESPONSE");result.put("nextActionCode",next);
+        result.put("taskGuidance",com.logssey.secret.query.SecretTaskGuidance.build("ACTIVE_RESPONSE",next,facts("type","CASE","id",caseId),executable,
+            next.equals("REQUEST_REVALIDATION")?"EVIDENCE_REQUIRED":"ROLE_REQUIRED",unassigned?"SECURITY":"REMEDIATOR",c.get("updated_at"),null,null,List.of(),priorities));
+        return result;
     }
 
     @Transactional(readOnly=true)
@@ -287,7 +311,7 @@ public class SecretLocationWorkflow {
     }
     public List<Map<String,Object>> visibleLocations(long caseId,SecretPrincipal actor) {
         return named.queryForList("""
-            SELECT co.*,o.connection_id,o.environment,o.exposure_status,o.presence_status,conn.provider AS source,u.display_name AS assignee_name,s.safe_display_alias
+            SELECT co.*,o.connection_id,o.environment,o.exposure_status,o.presence_status,o.last_seen_at,conn.provider AS source,u.display_name AS assignee_name,s.safe_display_alias
             FROM secret_case_occurrences co JOIN secret_occurrences o USING(occurrence_id)
             JOIN secret_connections conn ON conn.connection_id=o.connection_id
             JOIN secret_connection_scopes s ON s.scope_id=o.scope_id

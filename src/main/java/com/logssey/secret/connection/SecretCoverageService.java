@@ -35,7 +35,9 @@ public class SecretCoverageService {
 
     /** Location readers receive only that location's scope coverage, without management access. */
     public Map<String,Object> occurrenceCoverage(String login,long occurrenceId) {
-        var principal=access.requirePrincipal(login);
+        return occurrenceCoverage(access.requirePrincipal(login),occurrenceId);
+    }
+    public Map<String,Object> occurrenceCoverage(SecretPrincipal principal,long occurrenceId) {
         access.requireOccurrenceRead(principal,occurrenceId);
         var row=jdbc.queryForList("""
             SELECT s.scope_id,s.connection_id,s.scope_key,s.revision,s.content_type,s.response_origin,
