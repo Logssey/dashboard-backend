@@ -39,6 +39,59 @@ public class SecretInvestigationService {
  public Map<String,Object> detail(String login,long taskId){var actor=access.requirePrincipal(login);var task=read(taskId,false);requireRead(actor,task);return projection(actor,task,true);}
 
  @Transactional
+ public Map<String,Object> request(String login,SecretInvestigationRequests.Request r){
+  if(r==null||r.targetId()==null||r.targetId()<=0)throw new ApiException(ErrorCode.INVALID_INPUT);
+  code(r.targetType(),Set.of("SCOPE","OCCURRENCE"));
+  code(r.missingReasonCode(),Set.of("SOURCE_CLASSIFICATION","POLICY_UNKNOWN","OWNER_UNKNOWN","SOURCE_PERMISSION","EVIDENCE_INCOMPLETE"));
+  if(r.targetType().equals("OCCURRENCE")&&r.missingReasonCode().equals("SOURCE_CLASSIFICATION"))throw new ApiException(ErrorCode.INVALID_INPUT);
+  future(r.dueAt(),false);reference(r.evidenceRef(),false);
+  var actor=access.requirePrincipal(login);
+  var result=commands.execute(actor,SecretCommandExecutor.Kind.INVESTIGATION_REQUEST,r.idempotencyKey(),
+   digest(r.targetType(),r.targetId(),r.missingReasonCode(),r.assigneeUserId(),r.dueAt(),r.evidenceRef(),r.expectedTargetVersion()),
+   ()->requestTarget(actor,r.targetType(),r.targetId(),false),()->{
+    var target=requestTarget(actor,r.targetType(),r.targetId(),true);
+    SecretCommandExecutor.requireExpectedVersion(r.expectedTargetVersion(),number(target,"target_version"));
+    validateOwner(target,r.assigneeUserId());
+    String field=r.targetType().equals("SCOPE")?"scope_id":"occurrence_id";
+    var existing=jdbc.queryForList("SELECT task_id FROM secret_investigation_tasks WHERE "+field+"=? AND missing_reason_code=? AND status='OPEN' FOR UPDATE",r.targetId(),r.missingReasonCode());
+    if(!existing.isEmpty()){
+     var task=read(number(existing.getFirst(),"task_id"),false);requireRead(actor,task);
+     return new SecretCommandResult(number(task,"task_id"),number(task,"version"),SecretCommandResult.Status.OPEN);
+    }
+    long id=jdbc.queryForObject("INSERT INTO secret_investigation_tasks(target_type,"+field+",missing_reason_code,creation_source,requested_by_user_id,assignee_user_id,due_at,evidence_ref) VALUES(?,?,?,'HUMAN_HANDOFF',?,?,?,?) RETURNING task_id",
+     Long.class,r.targetType(),r.targetId(),r.missingReasonCode(),actor.userId(),r.assigneeUserId(),r.dueAt(),r.evidenceRef());
+    history(id,"REQUESTED",actor.userId(),0,r.evidenceRef(),"missingReasonCode",r.missingReasonCode());
+    return new SecretCommandResult(id,0,SecretCommandResult.Status.OPEN);
+   });return mutation("taskId",result);
+ }
+
+ private Map<String,Object> requestTarget(SecretPrincipal actor,String type,long id,boolean lock){
+  var target=jdbc.queryForList(type.equals("SCOPE")?
+   "SELECT connection_id,scope_id,response_origin_version AS target_version,'SCOPE' AS target_type FROM secret_connection_scopes WHERE scope_id=?"+(lock?" FOR UPDATE":""):
+   "SELECT connection_id,scope_id,exposure_assessment_version AS target_version,'OCCURRENCE' AS target_type FROM secret_occurrences WHERE occurrence_id=?"+(lock?" FOR UPDATE":""),id)
+   .stream().findFirst().orElseThrow(()->new ApiException(ErrorCode.NOT_FOUND));
+  if(type.equals("SCOPE"))access.requireConnectionFactsRead(actor,number(target,"connection_id"));else access.requireOccurrenceRead(actor,id);
+  return target;
+ }
+
+ @Transactional
+ public Map<String,Object> acceptEvidence(String login,long id,SecretInvestigationRequests.AcceptEvidence r){
+  if(r==null||r.historyId()==null)throw new ApiException(ErrorCode.INVALID_INPUT);
+  var actor=access.requirePrincipal(login);
+  var result=commands.execute(actor,SecretCommandExecutor.Kind.INVESTIGATION_ACCEPT,r.idempotencyKey(),digest(id,r.historyId(),r.expectedVersion()),
+   ()->{var t=read(id,false);requireRead(actor,t);access.requireConnectionRole(actor,number(t,"connection_id"),SecretRole.SECURITY);},()->{
+    var task=read(id,true);requireOpen(task);SecretCommandExecutor.requireExpectedVersion(r.expectedVersion(),number(task,"version"));
+    if(!Set.of("OWNER_UNKNOWN","EVIDENCE_INCOMPLETE").contains(task.get("missing_reason_code")))throw new ApiException(ErrorCode.INVALID_INPUT);
+    var evidence=jdbc.queryForList("SELECT * FROM secret_investigation_history WHERE task_id=? AND history_id=? AND event_type='EVIDENCE_ADDED'",id,r.historyId())
+      .stream().findFirst().orElseThrow(()->new ApiException(ErrorCode.EVIDENCE_REQUIRED));
+    if(task.get("missing_reason_code").equals("OWNER_UNKNOWN")&&!evidence.get("safe_changes").toString().contains("OWNER_CONFIRMATION"))throw new ApiException(ErrorCode.EVIDENCE_REQUIRED);
+    jdbc.update("UPDATE secret_investigation_tasks SET version=version+1 WHERE task_id=?",id);
+    historyChanges(id,"EVIDENCE_ACCEPTED",actor.userId(),number(task,"version")+1,(String)evidence.get("evidence_ref"),Map.of("acceptedHistoryId",r.historyId()));
+    return new SecretCommandResult(id,number(task,"version")+1,SecretCommandResult.Status.OPEN);
+   });return mutation("taskId",result);
+ }
+
+ @Transactional
  public Map<String,Object> assign(String login,long id,SecretInvestigationRequests.Assignment r){
   if(r==null)throw new ApiException(ErrorCode.INVALID_INPUT);code(r.reasonCode(),ASSIGNMENT_REASONS);future(r.dueAt(),false);
   var actor=access.requirePrincipal(login);var initial=read(id,false);requireRead(actor,initial);
@@ -69,15 +122,16 @@ public class SecretInvestigationService {
  }
  @Transactional
  public Map<String,Object> close(String login,long id,SecretInvestigationRequests.Close r){
-  if(r==null||(r.resolvingDecisionId()==null)==(r.restoredRunScopeId()==null))throw new ApiException(ErrorCode.INVALID_INPUT);
+  if(r==null||java.util.stream.Stream.of(r.resolvingDecisionId(),r.restoredRunScopeId(),r.scopeOriginDecisionId(),r.policyBindingId(),r.acceptedEvidenceHistoryId()).filter(Objects::nonNull).count()!=1)throw new ApiException(ErrorCode.INVALID_INPUT);
   var actor=access.requirePrincipal(login);requireRead(actor,read(id,false));
-  var result=commands.execute(actor,SecretCommandExecutor.Kind.INVESTIGATION_CLOSE,r.idempotencyKey(),digest(id,r.expectedVersion(),r.resolvingDecisionId(),r.restoredRunScopeId()),
+  var result=commands.execute(actor,SecretCommandExecutor.Kind.INVESTIGATION_CLOSE,r.idempotencyKey(),digest(id,r.expectedVersion(),r.resolvingDecisionId(),r.restoredRunScopeId(),r.scopeOriginDecisionId(),r.policyBindingId(),r.acceptedEvidenceHistoryId()),
    ()->requireRead(actor,read(id,false)),()->{
     var task=read(id,true);requireOpen(task);SecretCommandExecutor.requireExpectedVersion(r.expectedVersion(),number(task,"version"));
-    var eligible=closureEvidence(task);String key=r.resolvingDecisionId()!=null?"decisions":"runScopes";String idField=r.resolvingDecisionId()!=null?"decisionId":"runScopeId";
-    Long evidence=r.resolvingDecisionId()!=null?r.resolvingDecisionId():r.restoredRunScopeId();
+    var eligible=closureEvidence(task);String key=r.resolvingDecisionId()!=null?"decisions":r.restoredRunScopeId()!=null?"runScopes":r.scopeOriginDecisionId()!=null?"scopeDecisions":r.policyBindingId()!=null?"policyBindings":"acceptedEvidence";
+    String idField=r.resolvingDecisionId()!=null?"decisionId":r.restoredRunScopeId()!=null?"runScopeId":r.scopeOriginDecisionId()!=null?"scopeOriginDecisionId":r.policyBindingId()!=null?"policyBindingId":"historyId";
+    Long evidence=r.resolvingDecisionId()!=null?r.resolvingDecisionId():r.restoredRunScopeId()!=null?r.restoredRunScopeId():r.scopeOriginDecisionId()!=null?r.scopeOriginDecisionId():r.policyBindingId()!=null?r.policyBindingId():r.acceptedEvidenceHistoryId();
     if(((List<Map<String,Object>>)eligible.get(key)).stream().noneMatch(e->Objects.equals(e.get(idField),evidence)))throw new ApiException(ErrorCode.EVIDENCE_REQUIRED);
-    jdbc.update("UPDATE secret_investigation_tasks SET status='CLOSED',closed_at=clock_timestamp(),resolving_decision_id=?,restored_run_scope_id=?,version=version+1 WHERE task_id=?",r.resolvingDecisionId(),r.restoredRunScopeId(),id);
+    jdbc.update("UPDATE secret_investigation_tasks SET status='CLOSED',closed_at=clock_timestamp(),resolving_decision_id=?,restored_run_scope_id=?,scope_origin_decision_id=?,policy_binding_id=?,accepted_evidence_history_id=?,version=version+1 WHERE task_id=?",r.resolvingDecisionId(),r.restoredRunScopeId(),r.scopeOriginDecisionId(),r.policyBindingId(),r.acceptedEvidenceHistoryId(),id);
     history(id,"CLOSED",actor.userId(),number(task,"version")+1,null,"resolutionKind",r.resolvingDecisionId()!=null?"DECISION":"SCOPE_RESTORED");
     return new SecretCommandResult(id,number(task,"version")+1,SecretCommandResult.Status.CLOSED);
    });return mutation("taskId",result);
@@ -107,7 +161,9 @@ public class SecretInvestigationService {
 
  private Map<String,Object> read(long id,boolean lock){return jdbc.queryForList(SELECT+" WHERE t.task_id=?"+(lock?" FOR UPDATE OF t":""),id).stream().findFirst().orElseThrow(()->new ApiException(ErrorCode.NOT_FOUND));}
  private boolean canRead(SecretPrincipal actor,Map<String,Object> task){long connection=number(task,"connection_id");return access.hasConnectionRole(actor,connection,SecretRole.SECURITY)
-  ||"SCOPE".equals(task.get("target_type"))&&access.hasConnectionRole(actor,connection,SecretRole.OPERATIONS);}
+  ||"SCOPE".equals(task.get("target_type"))&&access.hasConnectionRole(actor,connection,SecretRole.OPERATIONS)
+  ||"HUMAN_HANDOFF".equals(task.get("creation_source"))&&Objects.equals(task.get("requested_by_user_id"),actor.userId())
+     &&task.get("occurrence_id")!=null&&access.canReadOccurrence(actor,number(task,"occurrence_id"));}
  private void requireRead(SecretPrincipal actor,Map<String,Object> task){if(!canRead(actor,task))throw new ApiException(ErrorCode.NOT_FOUND);}
  private static void requireOpen(Map<String,Object> task){if(!task.get("status").equals("OPEN"))throw new ApiException(ErrorCode.CONFLICT);}
  private void validateOwner(Map<String,Object> task,Long owner){
@@ -122,7 +178,7 @@ public class SecretInvestigationService {
  }
  private Map<String,Object> closureEvidence(Map<String,Object> task){
   List<Map<String,Object>> decisions=new ArrayList<>(),runs=new ArrayList<>();
-  if(task.get("target_type").equals("OCCURRENCE")){
+  if(task.get("target_type").equals("OCCURRENCE")&&!Set.of("SOURCE_PERMISSION","SOURCE_CLASSIFICATION").contains(task.get("missing_reason_code"))){
    for(var r:jdbc.queryForList("""
     SELECT a.assessment_id,a.decision,a.assessed_at FROM secret_exposure_assessments a
     JOIN secret_occurrences o ON o.occurrence_id=a.occurrence_id JOIN secret_connection_scopes s ON s.scope_id=o.scope_id
@@ -141,22 +197,48 @@ public class SecretInvestigationService {
           AND correction.is_current AND correction.revoked_at IS NULL AND correction.reuse_expires_at>CURRENT_TIMESTAMP)))
     ORDER BY a.assessment_id DESC
     """,task.get("occurrence_id"),task.get("created_at")))decisions.add(Map.of("decisionId",r.get("assessment_id"),"decision",r.get("decision"),"decidedAt",time(r,"assessed_at")));
-  }else{
+  }
+  if(task.get("missing_reason_code").equals("SOURCE_PERMISSION")){
    for(var r:jdbc.queryForList("""
     SELECT so.run_scope_id,so.run_id,so.finished_at FROM secret_scope_outcomes so JOIN secret_connection_scopes s ON s.scope_id=so.scope_id
     WHERE so.scope_id=? AND so.scope_revision=s.revision AND s.enabled AND so.scope_outcome='SUCCEEDED'
       AND so.job_kind='FULL_SCAN' AND so.job_status='SUCCEEDED' AND so.finished_at>=? AND so.requested_at>=? ORDER BY so.run_scope_id DESC
-    """,task.get("scope_id"),task.get("created_at"),task.get("created_at")))runs.add(Map.of("runScopeId",r.get("run_scope_id"),"runId",r.get("run_id"),"finishedAt",time(r,"finished_at")));
+    """,task.get("resolved_scope_id"),task.get("created_at"),task.get("created_at")))runs.add(Map.of("runScopeId",r.get("run_scope_id"),"runId",r.get("run_id"),"finishedAt",time(r,"finished_at")));
   }
-  return Map.of("decisions",decisions,"runScopes",runs);
+  List<Map<String,Object>> origins=new ArrayList<>(),bindings=new ArrayList<>(),accepted=new ArrayList<>();
+  if(task.get("missing_reason_code").equals("SOURCE_CLASSIFICATION"))
+   for(var r:jdbc.queryForList("""
+    SELECT d.decision_id,d.decided_at FROM secret_scope_origin_decisions d JOIN secret_connection_scopes s USING(scope_id)
+    WHERE d.scope_id=? AND d.version=s.response_origin_version AND d.decision='APPROVED' AND d.decided_at>=? ORDER BY d.decision_id DESC
+    """,task.get("resolved_scope_id"),task.get("created_at")))origins.add(Map.of("scopeOriginDecisionId",r.get("decision_id"),"decidedAt",time(r,"decided_at")));
+  if(task.get("missing_reason_code").equals("POLICY_UNKNOWN"))
+   for(var r:jdbc.queryForList("""
+    SELECT b.binding_id,b.effective_from FROM secret_scope_policy_bindings b
+    JOIN secret_storage_policies p ON p.policy_id=b.policy_id AND p.version=b.policy_version
+    JOIN secret_connection_scopes s USING(scope_id)
+    WHERE b.scope_id=? AND b.effective_until IS NULL AND b.effective_from>=? AND p.status='ACTIVE'
+      AND p.valid_from<=now() AND (p.valid_until IS NULL OR p.valid_until>now())
+      AND EXISTS(SELECT 1 FROM secret_storage_policy_rules r WHERE r.policy_id=b.policy_id AND r.policy_version=b.policy_version
+        AND r.scope_id=s.scope_id AND r.scope_revision=s.revision AND r.scope_fingerprint=md5(jsonb_build_array(s.content_type,s.approved_ref,s.history_limit)::text))
+    """,task.get("resolved_scope_id"),task.get("created_at")))bindings.add(Map.of("policyBindingId",r.get("binding_id"),"effectiveFrom",time(r,"effective_from")));
+  if(Set.of("OWNER_UNKNOWN","EVIDENCE_INCOMPLETE").contains(task.get("missing_reason_code")))
+   for(var r:jdbc.queryForList("""
+    SELECT h.history_id,h.created_at FROM secret_investigation_history h WHERE h.task_id=? AND h.event_type='EVIDENCE_ACCEPTED'
+      AND EXISTS(SELECT 1 FROM secret_role_grants g WHERE g.user_id=h.actor_user_id AND g.role='SECURITY'
+        AND g.revoked_at IS NULL AND (g.connection_id IS NULL OR g.connection_id=?)) ORDER BY h.history_id DESC
+    """,task.get("task_id"),task.get("connection_id")))accepted.add(Map.of("historyId",r.get("history_id"),"acceptedAt",time(r,"created_at")));
+  return Map.of("decisions",decisions,"runScopes",runs,"scopeDecisions",origins,"policyBindings",bindings,"acceptedEvidence",accepted);
  }
  private Map<String,Object> projection(SecretPrincipal actor,Map<String,Object> t,boolean detail){
   Map<String,Object> p=new LinkedHashMap<>();
   String[][] fields={{"taskId","task_id"},{"targetType","target_type"},{"occurrenceId","occurrence_id"},{"scopeId","resolved_scope_id"},{"credentialSetId","credential_set_id"},{"connectionId","connection_id"},{"missingReasonCode","missing_reason_code"},{"creationSource","creation_source"},{"assigneeUserId","assignee_user_id"},{"assigneeDisplayName","assignee_display_name"},{"status","status"},{"version","version"},{"evidenceRef","evidence_ref"}};
   for(var f:fields)p.put(f[0],t.get(f[1]));p.put("dueAt",time(t,"due_at"));p.put("createdAt",time(t,"created_at"));p.put("closedAt",time(t,"closed_at"));
   p.put("safeDisplayAlias",t.get("safe_display_alias")==null?"범위 #"+t.get("resolved_scope_id"):t.get("safe_display_alias"));
-  var closure=closureEvidence(t);boolean canClose=((List<?>)closure.get("decisions")).size()+((List<?>)closure.get("runScopes")).size()>0;
-  boolean open=t.get("status").equals("OPEN");p.put("capabilities",Map.of("canAssign",open,"canAddEvidence",open,"canClose",open&&canClose));
+  var closure=closureEvidence(t);boolean canClose=closure.values().stream().anyMatch(v->!((List<?>)v).isEmpty());
+  boolean open=t.get("status").equals("OPEN");boolean security=access.hasConnectionRole(actor,number(t,"connection_id"),SecretRole.SECURITY);
+  p.put("capabilities",Map.of("canAssign",open,"canAddEvidence",open,"canClose",open&&canClose,"canReviewEvidence",open&&security&&Set.of("OWNER_UNKNOWN","EVIDENCE_INCOMPLETE").contains(t.get("missing_reason_code"))));
+  p.put("taskGuidance",com.logssey.secret.query.SecretTaskGuidance.build((String)t.get("missing_reason_code"),canClose?"CLOSE_INVESTIGATION":t.get("assignee_user_id")==null?"ASSIGN_INVESTIGATION":"ADD_INVESTIGATION_EVIDENCE",
+    Map.of("type","INVESTIGATION","id",t.get("task_id")),open,open?null:"TASK_CLOSED","SECURITY",time(t,"created_at"),time(t,"created_at"),number(t,"task_id"),List.of(),List.of()));
   if(detail){p.put("eligibleAssignees",eligibleOwners(t));p.put("eligibleClosureEvidence",closure);
    p.put("allowedAssignmentReasonCodes",(Boolean.TRUE.equals(t.get("human_follow_up_required"))||"HUMAN_MORE_INFO".equals(t.get("creation_source")))?List.of("INITIAL_ASSIGNMENT","OWNERSHIP_CHANGE","DUE_DATE_CHANGE"):ASSIGNMENT_REASONS);
    p.put("allowedEvidenceKinds",EVIDENCE_KINDS);p.put("activities",jdbc.query("""

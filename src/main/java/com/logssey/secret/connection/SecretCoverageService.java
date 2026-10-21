@@ -87,7 +87,7 @@ public class SecretCoverageService {
             if(classificationStatus.equals("NEEDS_REVIEW")&&!Boolean.TRUE.equals(jdbc.queryForObject("SELECT needs_review FROM secret_scope_governance_status WHERE scope_id=?",Boolean.class,scope.get("scope_id"))))continue;
             var cov=coverage(scope,connection);
             if(gapOnly&&((List<?>)cov.get("gapReasonCodes")).isEmpty())continue;
-            rows.add(scopeItem(scope,connection,cov,access.hasConnectionRole(a,connectionId,SecretRole.OPERATIONS)));
+            rows.add(scopeItem(scope,connection,cov,a));
         }
         return page(rows,page,size,"Scope",Map.of("origin",origin,"classificationStatus",classificationStatus,"gapOnly",gapOnly));
     }
@@ -102,7 +102,7 @@ public class SecretCoverageService {
             if(connectionId!=null&&connectionId!=id||!source.equals("ALL")&&!source.equals(c.get("provider"))||!access.canReadConnectionFacts(a,id))continue;
             for(var s:currentScopes(id,origin)) {
                 var cov=coverage(s,c);
-                if(!((List<?>)cov.get("gapReasonCodes")).isEmpty())rows.add(scopeItem(s,c,cov,access.hasConnectionRole(a,id,SecretRole.OPERATIONS)));
+                if(!((List<?>)cov.get("gapReasonCodes")).isEmpty())rows.add(scopeItem(s,c,cov,a));
             }
         }
         return page(rows,page,size,"Scope",Map.of("origin",origin,"source",source));
@@ -125,14 +125,24 @@ public class SecretCoverageService {
             """,connectionId,origin,origin);
     }
 
-    private Map<String,Object> scopeItem(Map<String,Object> s,Map<String,Object> c,Map<String,Object> coverage,boolean canEditAlias) {
+    private Map<String,Object> scopeItem(Map<String,Object> s,Map<String,Object> c,Map<String,Object> coverage,SecretPrincipal actor) {
         Map<String,Object> item=new LinkedHashMap<>();long id=number(s,"scope_id");
         item.put("scopeId",id);item.put("connectionId",c.get("connection_id"));item.put("scopeRevision",s.get("revision"));
         item.put("source",c.get("provider"));item.put("contentType",safeType((String)s.get("content_type")));item.put("origin",s.get("response_origin"));
         item.put("safeDisplayAlias",s.get("safe_display_alias")==null?"범위 #"+id:s.get("safe_display_alias"));
         item.put("customSafeDisplayAlias",s.get("safe_display_alias"));item.put("aliasVersion",s.get("alias_version"));
+        boolean canEditAlias=access.hasConnectionRole(actor,number(c,"connection_id"),SecretRole.OPERATIONS);
+        boolean security=access.hasConnectionRole(actor,number(c,"connection_id"),SecretRole.SECURITY);
         item.put("capabilities",Map.of("canEditAlias",canEditAlias));
-        item.put("coverage",coverage);return item;
+        item.put("coverage",coverage);
+        var reasons=jdbc.query("SELECT unnest(setup_reason_codes) FROM secret_scope_governance_status WHERE scope_id=?",(rs,n)->rs.getString(1),id);
+        item.put("setupReasonCodes",reasons);
+        var pending=jdbc.queryForList("SELECT proposed_by_user_id,reviewer_user_id,created_at FROM secret_scope_classification_proposals WHERE scope_id=? AND status='PENDING_APPROVAL'",id);
+        var proposal=pending.isEmpty()?null:pending.getFirst();
+        boolean approve=security&&proposal!=null&&number(proposal,"proposed_by_user_id")!=actor.userId()
+            &&(proposal.get("reviewer_user_id")==null||number(proposal,"reviewer_user_id")==actor.userId());
+        item.put("taskGuidance",com.logssey.secret.query.SecretTaskGuidance.scope(id,number(c,"connection_id"),reasons,canEditAlias||security,approve,proposal==null?null:time(proposal,"created_at")));
+        return item;
     }
 
     private Map<String,Object> coverage(Map<String,Object> s,Map<String,Object> c) {

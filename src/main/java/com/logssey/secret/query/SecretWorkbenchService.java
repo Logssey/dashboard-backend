@@ -184,10 +184,12 @@ public class SecretWorkbenchService {
         }
         return h;
     }
-    private Subject subject(String type,Row r,String why,String next){return new Subject(type,r.occurrenceId(),r.secretId(),facts("credentialSetId",r.secretId(),"secretId",r.secretId(),"occurrenceId",r.occurrenceId(),
+    private Subject subject(String type,Row r,String why,String next){var item=facts("credentialSetId",r.secretId(),"secretId",r.secretId(),"occurrenceId",r.occurrenceId(),
         "caseId",r.caseId(),"maskedLabel",r.maskedLabel(),"componentState",r.componentState(),"source",r.source(),"environment",r.environment(),"origin",r.origin(),
         "presence",r.presence(),"exposure",r.exposure(),"validationStatus",r.validity()==null?"UNCHECKED":r.validity(),"severity","UNASSESSED", "safeLocationLabel",locations.safeLocationLabel(r),
-        "whyHereCode",why,"nextActionCode",next),List.of(r.occurrenceId()));}
+        "whyHereCode",why,"nextActionCode",next,"lastSeenAt",r.lastSeenAt(),"capabilities",Map.of("canReview",true));
+        item.put("taskGuidance",SecretTaskGuidance.location(item));
+        return new Subject(type,r.occurrenceId(),r.secretId(),item,List.of(r.occurrenceId()));}
     private static Set<String> stageFilter(String bucket,String stages) {
         if(stages==null)return Set.of();
         var allowed=switch(bucket){

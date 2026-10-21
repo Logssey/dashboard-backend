@@ -426,6 +426,19 @@ class SecretStoragePolicyIntegrationTest {
         return new ProposalRequest(origin,null,null,"POLICY_PENDING","TICKET:SEC-123",version,mode,null,key);
     }
 
+    @Test void scopeHandoffClosesOnlyWithTheCurrentFormalSourceDecision() {
+        var requested=investigations.request("policy-operator",new com.logssey.secret.investigation.SecretInvestigationRequests.Request(
+            "SCOPE",scope,"SOURCE_CLASSIFICATION",null,null,null,0L,"source-handoff"));
+        long task=(Long)requested.get("taskId");
+        var result=changes.propose(scope,change("PRODUCTION","DIRECT",0L,"source-for-handoff"),"policy-creator");
+        var wrong=new com.logssey.secret.investigation.SecretInvestigationRequests.Close(0L,null,null,"wrong-source-proof",result.changeResult().decisionId()+100,null,null);
+        assertCode(ErrorCode.EVIDENCE_REQUIRED,()->investigations.close("policy-operator",task,wrong));
+        investigations.close("policy-operator",task,new com.logssey.secret.investigation.SecretInvestigationRequests.Close(
+            0L,null,null,"close-source-handoff",result.changeResult().decisionId(),null,null));
+        assertThat(investigations.detail("policy-operator",task).get("status")).isEqualTo("CLOSED");
+        assertThat(service.classification(scope,"policy-operator").setupReasonCodes()).contains("POLICY_MISSING");
+    }
+
     private PolicySummary activate(String effect) {
         var draft=service.draft(draft(effect),"policy-creator");
         return service.approvePolicy(draft.policyId(),draft.version(),new VersionRequest(draft.version()),"policy-reviewer");
