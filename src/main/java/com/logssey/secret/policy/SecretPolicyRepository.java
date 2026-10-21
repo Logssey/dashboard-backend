@@ -52,7 +52,8 @@ class SecretPolicyRepository {
                 rs.getLong("expected_scope_version"),rs.getLong("scope_revision"),rs.getString("scope_fingerprint"),
                 rs.getString("proposed_origin"),rs.getObject("policy_id",Long.class),rs.getObject("policy_version",Long.class),
                 rs.getString("reason_code"),rs.getString("evidence_ref"),rs.getLong("proposed_by_user_id"),
-                rs.getString("status"),rs.getLong("version"),rs.getObject("created_at",OffsetDateTime.class)),scopeId,proposalId)
+                rs.getString("status"),rs.getLong("version"),rs.getObject("created_at",OffsetDateTime.class),
+                rs.getString("approval_mode"),rs.getString("approval_rule_version"),rs.getObject("reviewer_user_id",Long.class)),scopeId,proposalId)
                 .stream().findFirst();
     }
 
@@ -67,7 +68,7 @@ class SecretPolicyRepository {
                 """, (rs,row) -> new OriginDecision(rs.getLong("decision_id"),rs.getObject("proposal_id",Long.class),
                 rs.getString("decision"),rs.getString("from_origin"),rs.getString("to_origin"),rs.getString("reason_code"),
                 rs.getString("evidence_ref"),rs.getLong("actor_user_id"),rs.getObject("decided_at",OffsetDateTime.class),
-                rs.getLong("version")),scopeId);
+                rs.getLong("version"),rs.getString("approval_mode"),rs.getString("approval_rule_version")),scopeId);
     }
 
     Optional<OriginDecision> approvedDecision(long scopeId,long version) {
@@ -76,7 +77,7 @@ class SecretPolicyRepository {
                 """, (rs,row) -> new OriginDecision(rs.getLong("decision_id"),rs.getObject("proposal_id",Long.class),
                 rs.getString("decision"),rs.getString("from_origin"),rs.getString("to_origin"),rs.getString("reason_code"),
                 rs.getString("evidence_ref"),rs.getLong("actor_user_id"),rs.getObject("decided_at",OffsetDateTime.class),
-                rs.getLong("version")),scopeId,version).stream().findFirst();
+                rs.getLong("version"),rs.getString("approval_mode"),rs.getString("approval_rule_version")),scopeId,version).stream().findFirst();
     }
 
     Optional<Binding> binding(long scopeId) {
@@ -87,6 +88,20 @@ class SecretPolicyRepository {
     }
 
     OffsetDateTime now() { return jdbc.queryForObject("SELECT CURRENT_TIMESTAMP",OffsetDateTime.class); }
+
+    List<String> setupReasons(long scopeId) {
+        return jdbc.query("SELECT unnest(setup_reason_codes) FROM secret_scope_governance_status WHERE scope_id=?",
+            (rs,row)->rs.getString(1),scopeId);
+    }
+
+    List<Reviewer> reviewers(long connectionId,long excludeUserId) {
+        return jdbc.query("""
+            SELECT u.user_id,u.display_name FROM dashboard_users u WHERE u.user_id<>? AND EXISTS(
+              SELECT 1 FROM secret_role_grants g WHERE g.user_id=u.user_id AND g.role='SECURITY'
+                AND g.revoked_at IS NULL AND (g.connection_id IS NULL OR g.connection_id=?))
+            ORDER BY u.user_id
+            """,(rs,row)->new Reviewer(rs.getLong(1),rs.getString(2)),excludeUserId,connectionId);
+    }
 
     void audit(String event,String targetType,long targetId,long version,long actorId) {
         jdbc.update("""
@@ -113,6 +128,7 @@ class SecretPolicyRepository {
     }
     record ProposalState(long id,long scopeId,long expectedScopeVersion,long scopeRevision,String fingerprint,
                          String origin,Long policyId,Long policyVersion,String reason,String evidence,long proposer,
-                         String status,long version,OffsetDateTime createdAt) { }
+                         String status,long version,OffsetDateTime createdAt,String approvalMode,String approvalRuleVersion,
+                         Long reviewerUserId) { }
     record Binding(long id,long policyId,long policyVersion) { }
 }

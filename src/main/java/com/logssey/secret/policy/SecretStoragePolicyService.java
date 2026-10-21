@@ -211,7 +211,8 @@ public class SecretStoragePolicyService {
         var actor=access.requirePrincipal(login);
         lockGovernance();
         var scope=scope(scopeId,true);
-        access.requireConnectionRole(actor,scope.connectionId(),SecretRole.OPERATIONS);
+        if (!access.hasConnectionRole(actor,scope.connectionId(),SecretRole.OPERATIONS)
+                && !access.hasConnectionRole(actor,scope.connectionId(),SecretRole.SECURITY)) forbidden();
         if (request==null || !allowed(request.origin(),"TEST","PRODUCTION")
                 || (request.storagePolicyId()==null)!=(request.storagePolicyVersion()==null)
                 || !allowed(request.reasonCode(),"POLICY_PENDING","SOURCE_CLASSIFICATION","SOURCE_CORRECTION")) invalid();
@@ -250,6 +251,13 @@ public class SecretStoragePolicyService {
                 || !proposal.fingerprint().equals(scope.fingerprint())) conflict();
         preventFixtureMisclassification(scope,proposal.origin());
         if (proposal.policyId()!=null) applicablePolicy(proposal.policyId(),proposal.policyVersion(),scope);
+        if (proposal.reviewerUserId()!=null && proposal.reviewerUserId()!=actor.userId()) forbidden();
+        return applyApprovedProposal(scope,proposal,actor);
+    }
+
+    Classification applyApprovedProposal(Scope scope,ProposalState proposal,SecretPrincipal actor) {
+        long scopeId=scope.id();
+        long proposalId=proposal.id();
         long next=nextDecisionVersion(scopeId);
         long decisionId=recordDecision(scope,proposal,"APPROVED",proposal.reason(),actor.userId(),next);
         jdbc.update("""
@@ -325,8 +333,10 @@ public class SecretStoragePolicyService {
                 binding==null?null:binding.policyVersion(),approval,policyStatus(scope,binding),approved==null?null:approved.actorUserId(),
                 approved==null?null:approved.decidedAt(),policy,pending==null?null:new Proposal(pending.id(),scope.id(),
                 pending.origin(),pending.policyId(),pending.policyVersion(),pending.reason(),pending.evidence(),
-                pending.proposer(),pending.expectedScopeVersion(),pending.version(),pending.status(),pending.createdAt(),capabilities),
-                history,capabilities,changed);
+                pending.proposer(),pending.expectedScopeVersion(),pending.version(),pending.status(),pending.createdAt(),capabilities,
+                pending.approvalMode(),pending.approvalRuleVersion(),pending.reviewerUserId()),
+                history,capabilities,changed,repository.setupReasons(scope.id()),
+                repository.reviewers(scope.connectionId(),pending==null?actor.userId():pending.proposer()),null);
     }
 
     private ClassificationCapabilities classificationCapabilities(SecretPrincipal actor,Scope scope,ProposalState pending) {
@@ -335,9 +345,11 @@ public class SecretStoragePolicyService {
                 && pending.scopeRevision()==scope.revision() && pending.fingerprint().equals(scope.fingerprint());
         if (current && pending.policyId()!=null) current=policy(pending.policyId(),pending.policyVersion(),false).usable(repository.now());
         return new ClassificationCapabilities(scope.available() && SOURCE_TYPES.contains(scope.contentType()) && pending==null
-                && access.hasConnectionRole(actor,scope.connectionId(),SecretRole.OPERATIONS),
-                scope.available() && security && current && pending.proposer()!=actor.userId(),
-                security && pending!=null,scope.available() && security && CONTENT_TYPES.contains(scope.contentType()));
+                && (security || access.hasConnectionRole(actor,scope.connectionId(),SecretRole.OPERATIONS)),
+                scope.available() && security && current && pending.proposer()!=actor.userId()
+                    && (pending.reviewerUserId()==null || pending.reviewerUserId()==actor.userId()),
+                security && pending!=null,scope.available() && security && CONTENT_TYPES.contains(scope.contentType()),
+                pending!=null && scope.available() && (security || pending.proposer()==actor.userId() && access.hasConnectionRole(actor,scope.connectionId(),SecretRole.OPERATIONS)));
     }
 
     private PolicySummary summary(Policy policy,SecretPrincipal actor,boolean changed) {
@@ -370,7 +382,7 @@ public class SecretStoragePolicyService {
                 || !path.startsWith(github.group(4)) || "PREFIX".equals(rule.pathMatch()) && !path.endsWith("/")) invalid();
     }
 
-    private void validateSupportedScope(Scope scope) {
+    void validateSupportedScope(Scope scope) {
         if ("GITHUB_REPOSITORY_FILES".equals(scope.contentType())) {
             if (!"CURRENT_COMMIT_ONLY".equals(scope.historyLimit()) || !GITHUB.matcher(scope.approvedRef()).matches()
                     || scope.approvedRef().contains("..") || scope.approvedRef().contains("\\")) conflict();
@@ -413,8 +425,8 @@ public class SecretStoragePolicyService {
     private long recordDecision(Scope scope,ProposalState proposal,String decision,String reason,long actor,long version) {
         return jdbc.queryForObject("""
                 INSERT INTO secret_scope_origin_decisions(scope_id,from_origin,to_origin,reason_code,actor_user_id,
-                    version,proposal_id,evidence_ref,decision) VALUES (?,?,?,?,?,?,?,?,?) RETURNING decision_id
-                """,Long.class,scope.id(),scope.origin(),proposal.origin(),reason,actor,version,proposal.id(),proposal.evidence(),decision);
+                    version,proposal_id,evidence_ref,decision,approval_mode,approval_rule_version) VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING decision_id
+                """,Long.class,scope.id(),scope.origin(),proposal.origin(),reason,actor,version,proposal.id(),proposal.evidence(),decision,proposal.approvalMode(),proposal.approvalRuleVersion());
     }
     private long nextDecisionVersion(long scopeId) {
         return jdbc.queryForObject("SELECT COALESCE(MAX(version),0)+1 FROM secret_scope_origin_decisions WHERE scope_id=?",Long.class,scopeId);
@@ -424,12 +436,12 @@ public class SecretStoragePolicyService {
         if (latest==null) notFound();
         return latest;
     }
-    private void preventFixtureMisclassification(Scope scope,String origin) {
+    void preventFixtureMisclassification(Scope scope,String origin) {
         var match=GITHUB.matcher(scope.approvedRef());
         if (match.matches() && "Logssey".equalsIgnoreCase(match.group(1)) && "test-find-key".equalsIgnoreCase(match.group(2))
                 && "PRODUCTION".equals(origin)) conflict();
     }
-    private void lockGovernance() { jdbc.queryForObject("SELECT pg_advisory_xact_lock(?)",Object.class,6197611306L); }
+    void lockGovernance() { jdbc.queryForObject("SELECT pg_advisory_xact_lock(?)",Object.class,6197611306L); }
     private SecretPrincipal reader(String login) {
         var actor=access.requirePrincipal(login);
         if (!access.hasAnyRole(actor,READ_ROLES)) forbidden();
@@ -448,11 +460,7 @@ public class SecretStoragePolicyService {
         if (rules.isEmpty()) notFound();
         for (var rule:rules) access.requireConnectionRole(actor,rule.connectionId(),SecretRole.SECURITY);
     }
-    private boolean needsReview(Scope scope) {
-        return "UNCLASSIFIED".equals(scope.origin()) || repository.pending(scope.id()).isPresent()
-                || repository.approvedDecision(scope.id(),scope.originVersion()).isEmpty()
-                || !Set.of("ACTIVE","NOT_APPLICABLE").contains(policyStatus(scope,repository.binding(scope.id()).orElse(null)));
-    }
+    private boolean needsReview(Scope scope) { return !repository.setupReasons(scope.id()).isEmpty(); }
     private String policyStatus(Scope scope,Binding binding) {
         if (!CONTENT_TYPES.contains(scope.contentType())) return "NOT_APPLICABLE";
         if (binding==null) return "POLICY_PENDING";

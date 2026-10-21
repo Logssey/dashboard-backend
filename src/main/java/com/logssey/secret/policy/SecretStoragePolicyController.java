@@ -9,7 +9,8 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/v1/secrets")
 public class SecretStoragePolicyController {
     private final SecretStoragePolicyService service;
-    public SecretStoragePolicyController(SecretStoragePolicyService service) { this.service=service; }
+    private final SecretScopeChangeService changes;
+    public SecretStoragePolicyController(SecretStoragePolicyService service,SecretScopeChangeService changes) { this.service=service;this.changes=changes; }
 
     @GetMapping("/scopes")
     public Page<Classification> scopes(@RequestParam(defaultValue="NEEDS_REVIEW") String classificationStatus,
@@ -24,17 +25,25 @@ public class SecretStoragePolicyController {
     @PostMapping("/scopes/{scopeId}/classification-proposals")
     @ResponseStatus(HttpStatus.CREATED)
     public Classification propose(@PathVariable long scopeId,@RequestBody ProposalRequest request,Authentication authentication) {
-        return service.propose(scopeId,request,login(authentication));
+        return changes.propose(scopeId,request,login(authentication));
+    }
+    @PostMapping("/scopes/{scopeId}/classification-preview")
+    public Preview preview(@PathVariable long scopeId,@RequestBody PreviewRequest request,Authentication authentication) {
+        return changes.preview(scopeId,request,login(authentication));
+    }
+    @PatchMapping("/scopes/{scopeId}/classification-proposals/{proposalId}/assignment")
+    public Classification assign(@PathVariable long scopeId,@PathVariable long proposalId,@RequestBody ReviewAssignmentRequest request,Authentication authentication) {
+        return changes.assign(scopeId,proposalId,request,login(authentication));
     }
     @PostMapping("/scopes/{scopeId}/classification-proposals/{proposalId}/approve")
     public Classification approveProposal(@PathVariable long scopeId,@PathVariable long proposalId,
                                           @RequestBody ApproveProposalRequest request,Authentication authentication) {
-        return service.approveProposal(scopeId,proposalId,request,login(authentication));
+        return changes.approve(scopeId,proposalId,request,login(authentication));
     }
     @PostMapping("/scopes/{scopeId}/classification-proposals/{proposalId}/reject")
     public Classification rejectProposal(@PathVariable long scopeId,@PathVariable long proposalId,
                                          @RequestBody RejectProposalRequest request,Authentication authentication) {
-        return service.rejectProposal(scopeId,proposalId,request,login(authentication));
+        return changes.reject(scopeId,proposalId,request,login(authentication));
     }
     @GetMapping("/storage-policies")
     public Page<PolicySummary> policies(@RequestParam(defaultValue="ACTIVE") String status,
