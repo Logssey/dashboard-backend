@@ -346,7 +346,8 @@ WHERE k.issuer=? AND k.credential_type=? AND k.component_state=? AND k.fingerpri
     }
 
     private String preflight(Map<String, Object> c, boolean fixture, boolean enabled) {
-        if (fixture || Boolean.TRUE.equals(c.get("synthetic_fixture"))) return "SYNTHETIC_FIXTURE";
+        if (Boolean.TRUE.equals(c.get("synthetic_fixture"))) return "SYNTHETIC_FIXTURE";
+        if (fixture || Boolean.TRUE.equals(c.get("source_guard_blocked"))) return "SOURCE_GUARD_BLOCKED";
         if (!enabled || !Boolean.TRUE.equals(c.get("validation_enabled"))) return "DISABLED";
         if (!"CONFIRMED".equals(c.get("component_state")))
             return "AWS_TEMPORARY_CREDENTIALS".equals(c.get("credential_type"))

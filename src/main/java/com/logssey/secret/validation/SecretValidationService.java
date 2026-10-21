@@ -366,6 +366,7 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
             reasons.add("UNSUPPORTED_SOURCE");
         if (!"CONFIRMED".equals(c.get("component_state"))) reasons.add("INCOMPLETE_PAIR");
         if (Boolean.TRUE.equals(c.get("synthetic_fixture"))) reasons.add("SYNTHETIC_FIXTURE");
+        if (Boolean.TRUE.equals(c.get("source_guard_blocked"))) reasons.add("SOURCE_GUARD_BLOCKED");
         if (!global(c) || !Boolean.TRUE.equals(c.get("validation_enabled")))
             reasons.add("DISABLED");
         if (!PROFILE.equals(c.get("connection_profile"))) reasons.add("PROFILE_UNCONFIGURED");
