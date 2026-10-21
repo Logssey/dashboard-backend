@@ -121,6 +121,15 @@ class SecretLocationIntegrationTest {
             .isEqualTo(5);
         assertCode(ErrorCode.CONFLICT,()->inventory("security",filter("ALL"),first.get("snapshotId").toString()));
     }
+    @Test void explicitOccurrenceInvalidationDoesNotWaitForWallClocksToAgree() {
+        long conn=connection();grant(security,"SECURITY",conn);long key=key("CONFIRMED","a7");
+        occurrence(key,conn,scope(conn),"PRESENT");
+        long location=jdbc.queryForObject("SELECT occurrence_id FROM secret_occurrences WHERE credential_set_id=?",Long.class,key);
+        var first=inventory("security",filter("ALL"),null);String id=first.get("snapshotId").toString();
+        jdbc.update("UPDATE secret_query_snapshots SET created_at=clock_timestamp()+interval '1 minute' WHERE snapshot_id=?::uuid",id);
+        new SecretReadSnapshots(jdbc,JsonMapper.builder().build()).invalidateOccurrence(location);
+        assertCode(ErrorCode.CONFLICT,()->inventory("security",filter("ALL"),id));
+    }
     @Test void absentAndUnauthorizedKeysHaveTheSamePublicFailure() {
         long conn=connection(); grant(security,"SECURITY",conn);
         long other=connection(); long key=key("CONFIRMED","e1"); occurrence(key,other,scope(other),"PRESENT");

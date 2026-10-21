@@ -205,6 +205,8 @@ class SecretStoragePolicyIntegrationTest {
         var inventory=locations.inventory("policy-creator",filters,0,20,null);
         assertThat(inventory.get("expiresAt")).isEqualTo(until);
         String snapshot=inventory.get("snapshotId").toString();
+        // Explicit invalidation must not wait for database and application wall clocks to agree.
+        jdbc.update("UPDATE secret_query_snapshots SET created_at=clock_timestamp()+interval '1 minute' WHERE snapshot_id=?::uuid",snapshot);
         long secret=jdbc.queryForObject("SELECT credential_set_id FROM secret_occurrences WHERE occurrence_id=?",Long.class,occurrence);
         var detail=locations.locations("policy-creator",secret,filters,0,20,"ALL","ALL","ALL",null);
         String version=(String)detail.get("detailVersion");
