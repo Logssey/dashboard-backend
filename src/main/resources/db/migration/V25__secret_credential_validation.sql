@@ -110,7 +110,9 @@ CREATE VIEW secret_validation_context AS
   encode(sha256(convert_to(concat_ws(':',o.occurrence_id,k.credential_set_id,k.credential_revision,k.fingerprint_key_version,
    o.exposure_assessment_version,s.revision,s.validation_approval_revision,c.validation_revision,c.scope_version,
    c.status,s.enabled,c.validation_enabled,s.validation_approved,c.validation_profile_version,s.validation_profile_version,
-   s.synthetic_fixture,COALESCE(a.action_id,0),a.performed_at),'UTF8')),'hex') AS context_version,
+   s.synthetic_fixture,
+   EXISTS(SELECT 1 FROM secret_current_fixture_attestations fa WHERE fa.credential_set_id=k.credential_set_id AND fa.scope_id=s.scope_id),
+   COALESCE(a.action_id,0),a.performed_at),'UTF8')),'hex') AS context_version,
   (s.approved_ref ~* '^github://Logssey/test-find-key/' AND NOT s.synthetic_fixture AND NOT EXISTS(SELECT 1 FROM secret_current_fixture_attestations fa WHERE fa.credential_set_id=k.credential_set_id AND fa.scope_id=s.scope_id)) AS source_guard_blocked
  FROM secret_occurrences o JOIN secret_credential_sets k USING(credential_set_id)
  JOIN secret_connection_scopes s ON s.scope_id=o.scope_id JOIN secret_connections c ON c.connection_id=o.connection_id
