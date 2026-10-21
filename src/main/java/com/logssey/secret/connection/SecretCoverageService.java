@@ -63,6 +63,7 @@ public class SecretCoverageService {
             item.put("connectionStatus",c.get("status"));item.put("scopeRevision",c.get("scope_version"));item.put("approvedScopeCount",scopes.size());
             item.put("latestProbe",latestProbe(id));item.put("lastFullScanAttempt",fullRun(id,false));item.put("lastSuccessfulFullScan",fullRun(id,true));
             item.put("nextDueAt",time(c,"next_due_at"));item.put("activeJob",activeJob(id));
+            item.put("targetSummary",scopes.stream().limit(3).map(s->com.logssey.secret.query.SecretSourceDetails.scopeLabel((String)c.get("provider"),(String)s.get("approved_ref"),number(s,"scope_id"))).toList());
             Map<String,Long> counts=new LinkedHashMap<>();
             for(var scope:scopes) {
                 var cov=coverage(scope,c);var attempt=(Map<?,?>)cov.get("lastAttempt");
@@ -74,6 +75,8 @@ public class SecretCoverageService {
             boolean supported=Set.of("GITHUB","AWS").contains(c.get("provider"));
             item.put("capabilities",Map.of("canTest",operations&&supported&&"ACTIVE".equals(c.get("status")),
                 "canRun",operations&&supported&&"ACTIVE".equals(c.get("status"))&&!scopes.isEmpty()&&isExecutable(id,(String)c.get("provider"))));
+            item.put("testBlockedReasonCode",!operations?"OPERATIONS_ROLE_REQUIRED":!supported?"PROVIDER_UNSUPPORTED":!"ACTIVE".equals(c.get("status"))?"CONNECTION_PAUSED":null);
+            item.put("scanBlockedReasonCode",!operations?"OPERATIONS_ROLE_REQUIRED":!supported?"PROVIDER_UNSUPPORTED":!"ACTIVE".equals(c.get("status"))?"CONNECTION_PAUSED":scopes.isEmpty()?"NO_SCAN_TARGETS":!isExecutable(id,(String)c.get("provider"))?"INVALID_APPROVED_SCOPE":null);
             result.add(item);
         }
         return page(result,page,size,"Connection",Map.of("status",status,"origin",origin));
@@ -139,7 +142,7 @@ public class SecretCoverageService {
         Map<String,Object> item=new LinkedHashMap<>();long id=number(s,"scope_id");
         item.put("scopeId",id);item.put("connectionId",c.get("connection_id"));item.put("scopeRevision",s.get("revision"));
         item.put("source",c.get("provider"));item.put("contentType",safeType((String)s.get("content_type")));item.put("origin",s.get("response_origin"));
-        item.put("safeDisplayAlias",s.get("safe_display_alias")==null?"범위 #"+id:s.get("safe_display_alias"));
+        item.put("safeDisplayAlias",s.get("safe_display_alias")==null?com.logssey.secret.query.SecretSourceDetails.scopeLabel((String)c.get("provider"),(String)s.get("approved_ref"),id):s.get("safe_display_alias"));
         item.put("customSafeDisplayAlias",s.get("safe_display_alias"));item.put("aliasVersion",s.get("alias_version"));
         boolean canEditAlias=access.hasConnectionRole(actor,number(c,"connection_id"),SecretRole.OPERATIONS);
         boolean security=access.hasConnectionRole(actor,number(c,"connection_id"),SecretRole.SECURITY);

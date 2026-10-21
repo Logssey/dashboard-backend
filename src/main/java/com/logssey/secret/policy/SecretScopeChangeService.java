@@ -42,6 +42,41 @@ public class SecretScopeChangeService {
         return prepare(scope,request.origin(),request.storagePolicyId(),request.storagePolicyVersion(),actor);
     }
 
+    /** A source label is metadata, not permission to store a key or to close an incident. */
+    public Classification classifySource(long scopeId,SourceClassificationRequest request,String login) {
+        if(request==null||!Set.of("PRODUCTION","TEST").contains(Objects.toString(request.origin(),"")))invalid();
+        var actor=access.requirePrincipal(login);
+        var result=commands.execute(actor,SecretCommandExecutor.Kind.SCOPE_CLASSIFICATION,request.idempotencyKey(),
+            digest("source-label-v2",scopeId,request.origin(),request.expectedScopeVersion()),
+            ()->access.requireConnectionRole(actor,readable(scopeId,actor,false).connectionId(),SecretRole.SECURITY),()->{
+                policies.lockGovernance();var scope=readable(scopeId,actor,true);
+                access.requireConnectionRole(actor,scope.connectionId(),SecretRole.SECURITY);
+                SecretCommandExecutor.requireExpectedVersion(request.expectedScopeVersion(),scope.originVersion());
+                if(!scope.available())conflict("SCOPE_UNAVAILABLE");
+                policies.validateSupportedScope(scope);policies.preventFixtureMisclassification(scope,request.origin());
+                if(repository.pending(scopeId).isPresent())conflict("CLASSIFICATION_ALREADY_PENDING");
+                var approved=repository.approvedDecision(scopeId,scope.originVersion()).orElse(null);
+                if(scope.origin().equals(request.origin())&&approved!=null&&approved.proposalId()!=null) {
+                    var previous=repository.proposal(scopeId,approved.proposalId(),false).orElseThrow();
+                    return new SecretCommandResult(previous.id(),previous.version(),SecretCommandResult.Status.UNCHANGED);
+                }
+                var binding=repository.binding(scopeId).orElse(null);
+                String reason=binding==null?"POLICY_PENDING":"SOURCE_CORRECTION";
+                long id=jdbc.queryForObject("""
+                    INSERT INTO secret_scope_classification_proposals(scope_id,expected_scope_version,scope_revision,scope_fingerprint,
+                        proposed_origin,policy_id,policy_version,reason_code,evidence_ref,proposed_by_user_id,status,approval_mode,approval_rule_version)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,'PENDING_APPROVAL','DIRECT','source-label-v2') RETURNING proposal_id
+                    """,Long.class,scopeId,scope.originVersion(),scope.revision(),scope.fingerprint(),request.origin(),
+                    binding==null?null:binding.policyId(),binding==null?null:binding.policyVersion(),reason,"CHANGE:SCOPE-"+scopeId,actor.userId());
+                // Internal audit reference: no external ticket is fabricated or required.
+                jdbc.update("UPDATE secret_scope_classification_proposals SET evidence_ref=? WHERE proposal_id=?","CHANGE:SOURCE-"+id,id);
+                var proposal=repository.proposal(scopeId,id,true).orElseThrow();
+                policies.applyApprovedProposal(scope,proposal,actor);
+                return new SecretCommandResult(id,proposal.version()+1,SecretCommandResult.Status.APPROVED);
+            });
+        return changed(scopeId,actor,login,result);
+    }
+
     public Classification propose(long scopeId,ProposalRequest request,String login) {
         // Older clients retain their explicit independent proposal contract.
         if(request!=null && request.expectedApprovalMode()==null) return policies.propose(scopeId,request,login);

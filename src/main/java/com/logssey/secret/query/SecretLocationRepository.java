@@ -13,9 +13,23 @@ public class SecretLocationRepository {
     public SecretLocationRepository(JdbcTemplate jdbc) { this.jdbc = new NamedParameterJdbcTemplate(jdbc); }
 
     public String safeLocationLabel(Row row) {
+        var source=sourceDetails(row);
+        if("AVAILABLE".equals(source.get("status")))return source.get("label").toString();
         String alias=jdbc.queryForObject("SELECT safe_display_alias FROM secret_connection_scopes WHERE scope_id=:scope",
             Map.of("scope",row.scopeId()),String.class);
         return com.logssey.secret.connection.SecretDisplayLabels.location(alias,row.occurrenceId());
+    }
+
+    /** Called only with a row that passed the shared occurrence ACL. */
+    public Map<String,Object> sourceDetails(Row row) {
+        return jdbc.query("SELECT s.approved_ref,o.source_object_ref,o.location_key FROM secret_occurrences o JOIN secret_connection_scopes s USING(scope_id) WHERE o.occurrence_id=:id",
+            Map.of("id",row.occurrenceId()),(rs,n)->SecretSourceDetails.describe(row.source(),rs.getString(1),rs.getString(2),rs.getString(3))).stream().findFirst().orElse(Map.of());
+    }
+    public List<Map<String,Object>> detectionEvidence(Row row) {
+        return jdbc.query("SELECT rule_id,detected_at,run_id FROM secret_findings WHERE occurrence_id=:id ORDER BY detected_at DESC,finding_id DESC LIMIT 20",
+            Map.of("id",row.occurrenceId()),(rs,n)->com.logssey.secret.snapshot.SecretReadSnapshots.facts(
+                "ruleId",rs.getString(1)!=null&&rs.getString(1).matches("[a-z][a-z0-9-]{0,79}")?rs.getString(1):"unavailable",
+                "detectedAt",rs.getObject(2,OffsetDateTime.class),"runId",rs.getLong(3)));
     }
 
     // The ACL is applied before any grouping, count, timestamp, or validation projection.

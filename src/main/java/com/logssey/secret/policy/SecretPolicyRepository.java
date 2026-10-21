@@ -16,7 +16,7 @@ class SecretPolicyRepository {
 
     Optional<Scope> scope(long id, boolean lock) {
         return jdbc.query("""
-                SELECT s.*,c.status AS connection_status,
+                SELECT s.*,c.status AS connection_status,c.provider AS provider,
                     md5(jsonb_build_array(s.content_type,s.approved_ref,s.history_limit)::text) AS fingerprint,
                     COALESCE(NULLIF(to_jsonb(s)->>'safe_display_alias',''),'범위 #' || s.scope_id::text) AS safe_name
                 FROM secret_connection_scopes s JOIN secret_connections c ON c.connection_id=s.connection_id
@@ -25,7 +25,8 @@ class SecretPolicyRepository {
                 rs.getLong("scope_id"),rs.getLong("connection_id"),rs.getLong("revision"),
                 rs.getLong("response_origin_version"),rs.getString("response_origin"),rs.getString("content_type"),
                 rs.getString("approved_ref"),rs.getString("history_limit"),rs.getString("fingerprint"),
-                rs.getBoolean("enabled"),rs.getString("connection_status"),rs.getString("safe_name")),id).stream().findFirst();
+                rs.getBoolean("enabled"),rs.getString("connection_status"),
+                rs.getString("safe_display_alias")!=null?rs.getString("safe_display_alias"):com.logssey.secret.query.SecretSourceDetails.scopeLabel(rs.getString("provider"),rs.getString("approved_ref"),id)),id).stream().findFirst();
     }
 
     Optional<Policy> policy(long id,long version,boolean lock) {

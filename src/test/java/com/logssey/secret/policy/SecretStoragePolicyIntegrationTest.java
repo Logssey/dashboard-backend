@@ -238,7 +238,7 @@ class SecretStoragePolicyIntegrationTest {
         }
     }
 
-    @Test void protectedRulesAreBoundToExactBranchAndPrefixAndNeverReturnedInResponses() throws Exception {
+    @Test void protectedPolicyConditionsStayPrivateWhileOperatorsCanIdentifyApprovedTargets() throws Exception {
         grant(creator,"OPERATIONS",connection);
         var request=new DraftRequest(null,null,"AUTHORIZED_STORAGE","TICKET:SEC-123",now().minusHours(1),null,
                 List.of(new RuleRequest(connection,scope,"GITHUB_REPOSITORY_FILES","ALLOW","PREFIX","main","fixtures/private/")));
@@ -249,8 +249,8 @@ class SecretStoragePolicyIntegrationTest {
         assertThat(service.evaluateOccurrence(occurrence,"policy-creator").policyResult()).isEqualTo("UNKNOWN");
         String json=mvc().perform(get("/api/v1/secrets/scopes/"+scope+"/classification").with(user("policy-operator")))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
-        assertThat(json).doesNotContain("github://","Example","fixtures/private/","protectedPathCondition","branchCondition","private-source");
-        assertThat(json).contains("PREFIX");
+        assertThat(json).doesNotContain("github://","fixtures/private/","protectedPathCondition","branchCondition","private-source");
+        assertThat(json).contains("PREFIX","Example/project");
     }
 
     @Test void correctionsAndRejectionsPreservePriorCaseOriginAndRecordImpacts() {
@@ -357,6 +357,18 @@ class SecretStoragePolicyIntegrationTest {
         assertThat(result.requiresSnapshotRefresh()).isTrue();
         assertThat(result.history().getFirst().approvalMode()).isEqualTo("DIRECT");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM secret_response_cases",Long.class)).isZero();
+    }
+
+    @Test void sourceLabelCanBeSavedWithoutTicketsOrAnotherReviewerButCannotGrantStorage() {
+        var result=changes.classifySource(scope,new SourceClassificationRequest("TEST",0L,"simple-source"),"policy-creator");
+        assertThat(result.origin()).isEqualTo("TEST");
+        assertThat(result.pendingProposal()).isNull();
+        assertThat(result.storagePolicyId()).isNull();
+        assertThat(result.changeResult().effect()).isEqualTo("APPLIED");
+        assertThat(result.history().getFirst().evidenceRef()).startsWith("CHANGE:SOURCE-");
+        assertThat(jdbc.queryForObject("SELECT exposure_status FROM secret_occurrences WHERE occurrence_id=?",String.class,occurrence)).isEqualTo("UNKNOWN");
+        assertCode(ErrorCode.FORBIDDEN,()->changes.classifySource(scope,new SourceClassificationRequest("PRODUCTION",1L,"operator-source"),"policy-operator"));
+        assertCode(ErrorCode.CONFLICT,()->changes.classifySource(scope,new SourceClassificationRequest("PRODUCTION",0L,"stale-source"),"policy-creator"));
     }
 
     @Test void operationsCannotClaimDirectAuthorityAndTestSourceStillNeedsIndependentReview() {
