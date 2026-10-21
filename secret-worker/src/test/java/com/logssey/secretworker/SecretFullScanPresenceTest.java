@@ -90,14 +90,16 @@ class SecretFullScanPresenceTest {
   long run=jdbc.queryForObject("INSERT INTO secret_scan_runs(job_id,connection_id,trigger_type,scope_version,scheduled_at,requested_at,collection_status,detection_status,validation_status,result_status) SELECT ?,connection_id,'MANUAL',scope_version,clock_timestamp(),clock_timestamp(),'PENDING','PENDING','PENDING','PENDING' FROM secret_connections WHERE connection_id=? RETURNING run_id",Long.class,job,connection);
   long rs=jdbc.queryForObject("INSERT INTO secret_run_scopes(run_id,scope_id,collection_status) VALUES(?,?,'PENDING') RETURNING run_scope_id",Long.class,run,scope);
   var claim=execution.claimNextJob().orElseThrow();assertThat(claim.jobId()).isEqualTo(job);
-  jdbc.update("UPDATE secret_run_scopes SET collection_status='RUNNING',started_at=clock_timestamp() WHERE run_scope_id=?",rs);
+  jdbc.update("UPDATE secret_run_scopes SET collection_status='RUNNING',started_at=(SELECT requested_at FROM secret_scan_runs r WHERE r.run_id=secret_run_scopes.run_id) WHERE run_scope_id=?",rs);
   var repository=new SecretFindingRepository(jdbc,new TransactionTemplate(tm),new SecretFindingNormalizer(new byte[32],hmac));
   long tool=repository.beginGitleaksRun(rs,engine,config,Instant.now());
   return new Attempt(job,run,rs,tool,claim.leaseToken(),repository,engine,config);
  }
  private void finish(Attempt a,int objects,String collection,String detection){
+  // These fixtures model an observation strictly before the next request, using the DB clock.
+  jdbc.update("UPDATE secret_findings SET detected_at=clock_timestamp()-interval '1 second' WHERE run_id=?",a.run);
   a.repository.finishToolRun(a.tool,collection.equals("SUCCEEDED")?"SUCCEEDED":"PARTIAL",null,Instant.now());
-  jdbc.update("UPDATE secret_run_scopes SET collection_status=?,object_count=?,finished_at=clock_timestamp() WHERE run_scope_id=?",collection,objects,a.runScope);
+  jdbc.update("UPDATE secret_run_scopes SET collection_status=?,object_count=?,finished_at=GREATEST(clock_timestamp(),started_at) WHERE run_scope_id=?",collection,objects,a.runScope);
   jdbc.update("UPDATE secret_scan_runs SET collection_status=?,detection_status=?,validation_status='SKIPPED' WHERE run_id=?",collection,detection,a.run);
   assertThat(execution.recordScopeEvidence(a.job,a.token,a.runScope,false)).isTrue();assertThat(execution.complete(a.job,a.token)).isTrue();
  }

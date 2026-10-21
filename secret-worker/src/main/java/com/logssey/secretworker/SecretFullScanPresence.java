@@ -36,7 +36,7 @@ final class SecretFullScanPresence {
       JOIN secret_run_scopes old_scope ON old_scope.run_scope_id=old_tool.run_scope_id
       JOIN secret_scan_runs old_run ON old_run.run_id=f.run_id
       WHERE f.occurrence_id=o.occurrence_id AND f.run_id<>r.run_id
-      ORDER BY f.detected_at DESC,f.finding_id DESC LIMIT 1
+      ORDER BY f.finding_id DESC LIMIT 1
     )baseline ON true
     WHERE r.run_id=? AND NOT EXISTS(SELECT 1 FROM secret_findings f WHERE f.occurrence_id=o.occurrence_id AND f.run_id=r.run_id)
    )

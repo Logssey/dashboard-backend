@@ -6,6 +6,7 @@ import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.retry.RetryPolicy;
 import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.http.apache5.Apache5HttpClient;
 import software.amazon.awssdk.services.sts.StsClient;
 
 import java.net.URI;
@@ -37,6 +38,11 @@ final class AwsStsCaller implements AwsCredentialValidator.StsCaller {
                 .region(Region.US_EAST_1)
                 .endpointOverride(endpoint)
                 .credentialsProvider(StaticCredentialsProvider.create(credentials))
+                .httpClientBuilder(Apache5HttpClient.builder()
+                        .connectionTimeout(Duration.ofSeconds(3))
+                        .connectionAcquisitionTimeout(Duration.ofSeconds(3))
+                        .socketTimeout(CALL_TIMEOUT)
+                        .maxConnections(1))
                 .overrideConfiguration(config -> config.apiCallTimeout(CALL_TIMEOUT)
                                                 .apiCallAttemptTimeout(CALL_TIMEOUT)
                                                 .retryPolicy(RetryPolicy.none()))

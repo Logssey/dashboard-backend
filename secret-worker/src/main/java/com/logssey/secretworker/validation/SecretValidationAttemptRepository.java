@@ -28,6 +28,10 @@ public class SecretValidationAttemptRepository {
         this.jobs = jobs;
     }
 
+    public JdbcTemplate jdbcTemplate() {
+        return jdbc;
+    }
+
     public AwsValidationResult validateAws(
             ClaimedSecretJob job,
             SecretFindingNormalizer.Credential credential,
@@ -44,6 +48,19 @@ public class SecretValidationAttemptRepository {
             boolean fixture,
             AwsValidationService validator,
             Long sourceRunScopeId) {
+        return validateAws(
+                job, credential, material, fixture, validator, sourceRunScopeId, null, null);
+    }
+
+    public AwsValidationResult validateAws(
+            ClaimedSecretJob job,
+            SecretFindingNormalizer.Credential credential,
+            AwsKeyMaterial material,
+            boolean fixture,
+            AwsValidationService validator,
+            Long sourceRunScopeId,
+            String sourceRef,
+            String sourceVersion) {
         var result =
                 validate(
                         job,
@@ -62,7 +79,9 @@ public class SecretValidationAttemptRepository {
                                     null,
                                     null);
                         },
-                        sourceRunScopeId);
+                        sourceRunScopeId,
+                        sourceRef,
+                        sourceVersion);
         AwsValidationResult.Reason reason;
         try {
             reason = AwsValidationResult.Reason.valueOf(result.reasonCode());
@@ -76,6 +95,27 @@ public class SecretValidationAttemptRepository {
                 result.providerCheckedAt(),
                 AwsValidationResult.METHOD,
                 AwsValidationResult.VERSION);
+    }
+
+    public CredentialValidationResult validateGitHub(
+            ClaimedSecretJob job,
+            SecretFindingNormalizer.GitHubCandidate candidate,
+            GitHubPatValidator validator,
+            Long sourceRunScopeId,
+            String sourceRef,
+            String sourceVersion) {
+        return validate(
+                job,
+                candidate.credential(),
+                GitHubPatValidator.METHOD,
+                GitHubPatValidator.VERSION,
+                "GITHUB_USER",
+                false,
+                validator.enabled(),
+                () -> validator.validate(candidate.token()),
+                sourceRunScopeId,
+                sourceRef,
+                sourceVersion);
     }
 
     public CredentialValidationResult validate(
@@ -101,9 +141,41 @@ public class SecretValidationAttemptRepository {
             boolean enabled,
             Supplier<CredentialValidationResult> call,
             Long sourceRunScopeId) {
+        return validate(
+                job,
+                credential,
+                validator,
+                version,
+                endpoint,
+                fixture,
+                enabled,
+                call,
+                sourceRunScopeId,
+                null,
+                null);
+    }
+
+    public CredentialValidationResult validate(
+            ClaimedSecretJob job,
+            SecretFindingNormalizer.Credential credential,
+            String validator,
+            String version,
+            String endpoint,
+            boolean fixture,
+            boolean enabled,
+            Supplier<CredentialValidationResult> call,
+            Long sourceRunScopeId,
+            String sourceRef,
+            String sourceVersion) {
+        if (!registered(credential, validator, version, endpoint))
+            return recordUnsupported(job, credential, sourceRunScopeId);
         return safely(
                 () -> {
-                    var c = findContext(job, credential, sourceRunScopeId);
+                    var c = findContext(job, credential, sourceRunScopeId, sourceRef);
+                    if (c != null
+                            && sourceRef != null
+                            && !Objects.equals(sourceRef, c.get("source_object_ref")))
+                        return CredentialValidationResult.unchecked("CREDENTIAL_MISMATCH");
                     if (c == null)
                         return CredentialValidationResult.unchecked("CREDENTIAL_MISMATCH");
                     String reason = preflight(c, fixture, enabled);
@@ -116,6 +188,8 @@ public class SecretValidationAttemptRepository {
                     if (reservation.reused() != null) return reservation.reused();
                     if (reservation.id() == 0)
                         return CredentialValidationResult.unchecked("RATE_BUDGET_EXHAUSTED");
+                    if (sourceRef != null)
+                        captureSource(job, reservation, sourceRef, sourceVersion);
                     var permit = sendPermit(job, reservation);
                     if (permit != null) {
                         complete(job, reservation, permit);
@@ -127,6 +201,10 @@ public class SecretValidationAttemptRepository {
                     } catch (RuntimeException ignored) {
                         result = CredentialValidationResult.unknown("CLIENT_FAILURE");
                     }
+                    // SENT records the durable handoff boundary. A late client-side refusal is not
+                    // a no-send proof.
+                    if ("UNCHECKED".equals(result.result()))
+                        result = CredentialValidationResult.unknown("CLIENT_FAILURE");
                     if (result.retryable() && result.nextDueAt() == null)
                         result =
                                 new CredentialValidationResult(
@@ -150,6 +228,46 @@ public class SecretValidationAttemptRepository {
                                                                                 .hashCode(),
                                                                         10)));
                     complete(job, reservation, result);
+                    return result;
+                });
+    }
+
+    private static boolean registered(
+            SecretFindingNormalizer.Credential credential,
+            String validator,
+            String version,
+            String endpoint) {
+        if (credential == null || !"1".equals(version)) return false;
+        return ("AWS".equals(credential.issuer())
+                        && Set.of("AWS_ACCESS_KEY_PAIR", "AWS_TEMPORARY_CREDENTIALS")
+                                .contains(credential.credentialType())
+                        && AwsValidationResult.METHOD.equals(validator)
+                        && "AWS_STS".equals(endpoint))
+                || ("GITHUB".equals(credential.issuer())
+                        && Set.of("GITHUB_CLASSIC_PAT", "GITHUB_FINE_GRAINED_PAT")
+                                .contains(credential.credentialType())
+                        && GitHubPatValidator.METHOD.equals(validator)
+                        && "GITHUB_USER".equals(endpoint));
+    }
+
+    public CredentialValidationResult recordUnsupported(
+            ClaimedSecretJob job,
+            SecretFindingNormalizer.Credential credential,
+            Long sourceRunScopeId) {
+        return safely(
+                () -> {
+                    var c = findContext(job, credential, sourceRunScopeId);
+                    var result =
+                            CredentialValidationResult.unchecked(
+                                    c != null && Boolean.TRUE.equals(c.get("synthetic_fixture"))
+                                            ? "SYNTHETIC_FIXTURE"
+                                            : c != null
+                                                            && Boolean.TRUE.equals(
+                                                                    c.get("source_guard_blocked"))
+                                                    ? "SOURCE_GUARD_BLOCKED"
+                                                    : "UNSUPPORTED_TYPE");
+                    if (c != null)
+                        recordBlocked(job, c, "UNREGISTERED", "registry-v1", "NONE", result);
                     return result;
                 });
     }
@@ -206,7 +324,7 @@ VALUES(?,?,?,?,?,'AWS_STS',?,?,?,?,?,0,false,'LEGACY_UNAVAILABLE')
                 .queryForList(
                         """
 SELECT v.*,o.source_object_ref,o.location_key,k.fingerprint,k.candidate_locator,j.expected_context->>'contextVersion' AS expected_context_version,
- s.approved_ref,s.history_limit,s.content_type FROM secret_jobs j JOIN secret_validation_context v ON v.occurrence_id=j.target_occurrence_id
+ s.approved_ref,s.history_limit,s.content_type FROM secret_jobs j JOIN secret_validation_context v ON v.occurrence_id=j.target_occurrence_id AND v.connection_id=j.connection_id
  JOIN secret_occurrences o USING(occurrence_id) JOIN secret_credential_sets k ON k.credential_set_id=v.credential_set_id
  JOIN secret_connection_scopes s ON s.scope_id=v.scope_id WHERE j.job_id=? AND j.purpose='CREDENTIAL_VALIDITY'
 """,
@@ -275,8 +393,10 @@ SELECT v.*,o.source_object_ref,o.location_key,k.fingerprint,k.candidate_locator,
     public CredentialValidationResult prepareManual(
             ClaimedSecretJob job, Map<String, Object> target) {
         var r = reserve(job, target, method(target), "1", endpoint(target));
+        // A retry may reuse an observation only after the source has been fetched and HMAC-matched
+        // again.
         return r.reused() != null
-                ? r.reused()
+                ? Set.of("VALID", "INVALID").contains(r.reused().result()) ? null : r.reused()
                 : r.id() == 0
                         ? CredentialValidationResult.unchecked("RATE_BUDGET_EXHAUSTED")
                         : null;
@@ -313,32 +433,46 @@ SELECT v.*,o.source_object_ref,o.location_key,k.fingerprint,k.candidate_locator,
             ClaimedSecretJob job,
             SecretFindingNormalizer.Credential credential,
             Long sourceRunScopeId) {
+        return findContext(job, credential, sourceRunScopeId, null);
+    }
+
+    private Map<String, Object> findContext(
+            ClaimedSecretJob job,
+            SecretFindingNormalizer.Credential credential,
+            Long sourceRunScopeId,
+            String sourceRef) {
         if (credential == null) return null;
         boolean confirmed = "CONFIRMED".equals(credential.componentState());
         String identity = confirmed ? "k.fingerprint" : "k.candidate_locator";
         var rows =
                 jdbc.queryForList(
                         """
-SELECT v.*,f.finding_id FROM secret_validation_context v JOIN secret_credential_sets k USING(credential_set_id)
+SELECT v.*,o.source_object_ref,f.finding_id FROM secret_validation_context v JOIN secret_credential_sets k USING(credential_set_id)
 JOIN secret_occurrences o USING(occurrence_id) JOIN secret_jobs j ON j.job_id=?
 LEFT JOIN LATERAL(SELECT finding_id FROM secret_findings WHERE occurrence_id=v.occurrence_id ORDER BY detected_at DESC,finding_id DESC LIMIT 1) f ON true
-WHERE k.issuer=? AND k.credential_type=? AND k.component_state=? AND k.fingerprint_key_version=? AND
+WHERE v.connection_id=j.connection_id AND k.issuer=? AND k.credential_type=? AND k.component_state=? AND k.fingerprint_key_version=? AND
 """
                                 + identity
-                                + "=? AND ((j.purpose='CREDENTIAL_VALIDITY' AND"
+                                + "=? AND (?::text IS NULL OR o.source_object_ref=?) AND"
+                                + " ((j.purpose='CREDENTIAL_VALIDITY' AND"
                                 + " v.occurrence_id=j.target_occurrence_id) OR"
                                 + " (j.purpose<>'CREDENTIAL_VALIDITY' AND o.last_seen_run_id=?))"
-                                + " AND EXISTS(SELECT 1 FROM secret_run_scopes sr JOIN secret_scan_runs rr USING(run_id) WHERE sr.run_id=? AND sr.scope_id=v.scope_id AND sr.scope_revision=v.scope_revision AND rr.scope_version=v.scope_version)"
-                                + " AND (?::bigint IS NULL OR v.scope_id=(SELECT scope_id FROM"
-                                + " secret_run_scopes WHERE run_scope_id=? AND run_id=?)) ORDER BY"
-                                + " v.occurrence_id LIMIT 1",
+                                + " AND EXISTS(SELECT 1 FROM secret_run_scopes sr JOIN"
+                                + " secret_scan_runs rr USING(run_id) WHERE sr.run_id=? AND"
+                                + " sr.scope_id=v.scope_id AND sr.scope_revision=v.scope_revision"
+                                + " AND rr.scope_version=v.scope_version) AND (?::bigint IS NULL OR"
+                                + " v.scope_id=(SELECT scope_id FROM secret_run_scopes WHERE"
+                                + " run_scope_id=? AND run_id=?)) ORDER BY v.occurrence_id LIMIT 1",
                         job.jobId(),
                         credential.issuer(),
                         credential.credentialType(),
                         credential.componentState(),
                         credential.fingerprintKeyVersion(),
                         confirmed ? credential.fingerprint() : credential.candidateLocator(),
-                        job.runId(),job.runId(),
+                        sourceRef,
+                        sourceRef,
+                        job.runId(),
+                        job.runId(),
                         sourceRunScopeId,
                         sourceRunScopeId,
                         job.runId());
@@ -347,7 +481,14 @@ WHERE k.issuer=? AND k.credential_type=? AND k.component_state=? AND k.fingerpri
 
     private String preflight(Map<String, Object> c, boolean fixture, boolean enabled) {
         if (Boolean.TRUE.equals(c.get("synthetic_fixture"))) return "SYNTHETIC_FIXTURE";
-        if (fixture || Boolean.TRUE.equals(c.get("source_guard_blocked"))) return "SOURCE_GUARD_BLOCKED";
+        if (fixture || Boolean.TRUE.equals(c.get("source_guard_blocked")))
+            return "SOURCE_GUARD_BLOCKED";
+        if (!Set.of(
+                        "AWS_ACCESS_KEY_PAIR",
+                        "AWS_TEMPORARY_CREDENTIALS",
+                        "GITHUB_CLASSIC_PAT",
+                        "GITHUB_FINE_GRAINED_PAT")
+                .contains(c.get("credential_type"))) return "UNSUPPORTED_TYPE";
         if (!enabled || !Boolean.TRUE.equals(c.get("validation_enabled"))) return "DISABLED";
         if (!"CONFIRMED".equals(c.get("component_state")))
             return "AWS_TEMPORARY_CREDENTIALS".equals(c.get("credential_type"))
@@ -411,6 +552,29 @@ WHERE k.issuer=? AND k.credential_type=? AND k.component_state=? AND k.fingerpri
                             var fresh = current(c);
                             if (fresh == null) return;
                             String cycle = cycle(job);
+                            if (!Objects.equals(
+                                    c.get("context_version"), fresh.get("context_version"))) {
+                                var changed =
+                                        CredentialValidationResult.unchecked("APPROVAL_CHANGED");
+                                long stopped =
+                                        insert(
+                                                job,
+                                                c,
+                                                validator,
+                                                version,
+                                                endpoint,
+                                                cycle,
+                                                "COMPLETED",
+                                                changed,
+                                                UUID.randomUUID().toString());
+                                jdbc.update(
+                                        "UPDATE secret_validation_attempts SET"
+                                            + " current_eligible=false,ineligible_reason_code='APPROVAL_CHANGED'"
+                                            + " WHERE attempt_id=?",
+                                        stopped);
+                                out.set(new Reservation(0, c, null, changed));
+                                return;
+                            }
                             byte[] dedup = dedup(fresh, validator, version, cycle);
                             var done =
                                     jdbc.queryForList(
@@ -483,6 +647,48 @@ WHERE k.issuer=? AND k.credential_type=? AND k.component_state=? AND k.fingerpri
         return out.get();
     }
 
+    /** Persists only a digest of the exact re-fetched version and protected source basis. */
+    public void captureManualSource(ClaimedSecretJob job, String sourceRef, String sourceVersion) {
+        var c = manualTarget(job);
+        if (c == null || !Objects.equals(c.get("source_object_ref"), sourceRef))
+            throw new IllegalArgumentException("SOURCE_IDENTITY_MISMATCH");
+        var rows =
+                jdbc.queryForList(
+                        "SELECT attempt_id,reservation_token FROM secret_validation_attempts WHERE"
+                                + " job_id=? AND attempt_state='RESERVED' ORDER BY attempt_id DESC"
+                                + " LIMIT 1",
+                        job.jobId());
+        if (!rows.isEmpty()) {
+            var a = rows.getFirst();
+            captureSource(
+                    job,
+                    new Reservation(
+                            num(a, "attempt_id"), c, a.get("reservation_token").toString(), null),
+                    sourceRef,
+                    sourceVersion);
+        }
+    }
+
+    private void captureSource(
+            ClaimedSecretJob job, Reservation reservation, String sourceRef, String version) {
+        if (!jobs.persistIfLeased(
+                job.jobId(),
+                job.leaseToken(),
+                () ->
+                        jdbc.update(
+                                "UPDATE secret_validation_attempts SET"
+                                        + " source_object_version_digest=? WHERE attempt_id=? AND"
+                                        + " reservation_token=?::uuid AND attempt_state='RESERVED'",
+                                digest(
+                                        "source-v1",
+                                        sourceRef,
+                                        version == null ? "VERSION_UNAVAILABLE" : version,
+                                        reservation.context().get("scope_id"),
+                                        reservation.context().get("scope_revision")),
+                                reservation.id(),
+                                reservation.token()))) throw lease();
+    }
+
     private CredentialValidationResult sendPermit(ClaimedSecretJob job, Reservation reservation) {
         var reason = new AtomicReference<CredentialValidationResult>();
         boolean live =
@@ -498,7 +704,7 @@ WHERE k.issuer=? AND k.credential_type=? AND k.component_state=? AND k.fingerpri
                                             fresh.get("context_version"),
                                             reservation.context().get("context_version"))
                                     || !requesterAllowed(job)
-                                    || (isManual(job)&&!targetCurrent(manualTarget(job)))) {
+                                    || (isManual(job) && !targetCurrent(manualTarget(job)))) {
                                 reason.set(
                                         CredentialValidationResult.unchecked("APPROVAL_CHANGED"));
                                 return;
@@ -530,11 +736,14 @@ WHERE k.issuer=? AND k.credential_type=? AND k.component_state=? AND k.fingerpri
                                             job.runId());
                             long rejected =
                                     jdbc.queryForObject(
-                                            "SELECT count(*) FROM secret_validation_attempts WHERE"
-                                                + " endpoint_class='GITHUB_USER' AND"
+                                            "SELECT COALESCE(max(burst),0) FROM (SELECT count(*)"
+                                                + " OVER(ORDER BY provider_checked_at RANGE BETWEEN"
+                                                + " interval '60 seconds' PRECEDING AND CURRENT"
+                                                + " ROW) AS burst FROM secret_validation_attempts"
+                                                + " WHERE endpoint_class='GITHUB_USER' AND"
                                                 + " reason_code='AUTHENTICATION_REJECTED' AND"
                                                 + " provider_checked_at>clock_timestamp()-interval"
-                                                + " '15 minutes'",
+                                                + " '15 minutes') bursts",
                                             Long.class);
                             boolean deadline =
                                     Boolean.TRUE.equals(
@@ -555,12 +764,17 @@ WHERE k.issuer=? AND k.credential_type=? AND k.component_state=? AND k.fingerpri
                                                 "RATE_BUDGET_EXHAUSTED",
                                                 null,
                                                 null,
-                                                Instant.now().plusSeconds(60)));
+                                                Instant.now()
+                                                        .plusSeconds(
+                                                                "GITHUB_USER".equals(endpoint)
+                                                                                && rejected >= 5
+                                                                        ? 900
+                                                                        : 60)));
                                 return;
                             }
                             if (jdbc.update(
                                             "UPDATE secret_validation_attempts SET"
-                                                + " attempt_state='SENT',request_sent_at=clock_timestamp()"
+                                                + " attempt_state='SENT',request_sent_at=GREATEST(clock_timestamp(),requested_at)"
                                                 + " WHERE attempt_id=? AND"
                                                 + " reservation_token=?::uuid AND"
                                                 + " attempt_state='RESERVED'",
@@ -585,12 +799,12 @@ WHERE k.issuer=? AND k.credential_type=? AND k.component_state=? AND k.fingerpri
                                                     fresh.get("context_version"),
                                                     r.context().get("context_version"))
                                             && requesterAllowed(job)
-                                            && (!isManual(job)||targetCurrent(manualTarget(job)));
+                                            && (!isManual(job) || targetCurrent(manualTarget(job)));
                             jdbc.update(
                                     """
 UPDATE secret_validation_attempts SET attempt_state='COMPLETED',result=?,reason_code=?,
  provider_checked_at=CASE WHEN ?::timestamptz IS NULL THEN NULL ELSE GREATEST(?::timestamptz,request_sent_at) END,http_status=?,next_due_at=?,
- completed_at=greatest(clock_timestamp(),request_sent_at,COALESCE(?::timestamptz,clock_timestamp())),current_eligible=?,ineligible_reason_code=?
+ completed_at=greatest(clock_timestamp(),requested_at,request_sent_at,COALESCE(?::timestamptz,clock_timestamp())),current_eligible=?,ineligible_reason_code=?
 WHERE attempt_id=? AND reservation_token=?::uuid AND attempt_state IN('RESERVED','SENT')
 """,
                                     result.result(),
@@ -624,11 +838,12 @@ WHERE attempt_id=? AND reservation_token=?::uuid AND attempt_state IN('RESERVED'
                         && (!isManual(job) || targetCurrent(manualTarget(job)));
         return jdbc.queryForObject(
                 """
+WITH validation_clock AS (SELECT clock_timestamp() AS at)
 INSERT INTO secret_validation_attempts(evidence_version,credential_set_id,run_id,job_id,validator_id,validator_version,endpoint_class,requested_at,
  attempt_state,scope_id,occurrence_id,source_finding_id,source_object_version_digest,credential_revision,scope_revision,validation_revision,validation_approval_revision,
  validation_profile_version,action_context_digest,dedup_key,cycle_key,attempt_no,reservation_generation,reservation_token,
  result,reason_code,completed_at,current_eligible,ineligible_reason_code)
-VALUES(1,?,?,?,?,?,?,clock_timestamp(),?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::uuid,?,?,CASE WHEN ?='COMPLETED' THEN clock_timestamp() END,?,?) RETURNING attempt_id
+VALUES(1,?,?,?,?,?,?,(SELECT at FROM validation_clock),?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::uuid,?,?,CASE WHEN ?='COMPLETED' THEN (SELECT at FROM validation_clock) END,?,?) RETURNING attempt_id
 """,
                 Long.class,
                 num(c, "credential_set_id"),
@@ -641,7 +856,12 @@ VALUES(1,?,?,?,?,?,?,clock_timestamp(),?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::uuid,?,?
                 num(c, "scope_id"),
                 num(c, "occurrence_id"),
                 c.get("finding_id"),
-                digest("protected-source-v1", c.get("occurrence_id"),c.get("scope_id"),c.get("scope_revision"),c.get("finding_id")),
+                digest(
+                        "protected-source-v1",
+                        c.get("occurrence_id"),
+                        c.get("scope_id"),
+                        c.get("scope_revision"),
+                        c.get("finding_id")),
                 num(c, "credential_revision"),
                 num(c, "scope_revision"),
                 num(c, "validation_revision"),
@@ -663,7 +883,8 @@ VALUES(1,?,?,?,?,?,?,clock_timestamp(),?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::uuid,?,?
     private Map<String, Object> current(Map<String, Object> c) {
         var rows =
                 jdbc.queryForList(
-                        "SELECT v.*,f.finding_id FROM secret_validation_context v LEFT JOIN"
+                        "SELECT v.*,o.source_object_ref,f.finding_id FROM secret_validation_context"
+                            + " v JOIN secret_occurrences o USING(occurrence_id) LEFT JOIN"
                             + " LATERAL(SELECT finding_id FROM secret_findings WHERE"
                             + " occurrence_id=v.occurrence_id ORDER BY detected_at DESC,finding_id"
                             + " DESC LIMIT 1) f ON true WHERE v.occurrence_id=?",
@@ -675,7 +896,7 @@ VALUES(1,?,?,?,?,?,?,clock_timestamp(),?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::uuid,?,?
         return Boolean.TRUE.equals(
                 jdbc.queryForObject(
                         """
-SELECT (j.requested_by_user_id IS NULL OR EXISTS(SELECT 1 FROM secret_role_grants g WHERE g.user_id=j.requested_by_user_id AND g.revoked_at IS NULL AND (g.connection_id IS NULL OR g.connection_id=j.connection_id) AND (g.role='SECURITY' OR (g.role='OPERATIONS' AND j.kind='FULL_SCAN') OR (g.role='REMEDIATOR' AND EXISTS(SELECT 1 FROM secret_case_occurrences co JOIN secret_response_cases c USING(case_id) WHERE co.occurrence_id=j.target_occurrence_id AND c.is_current AND co.assigned_user_id=j.requested_by_user_id))))) FROM secret_jobs j WHERE j.job_id=?
+SELECT (j.requested_by_user_id IS NULL OR EXISTS(SELECT 1 FROM secret_role_grants g WHERE g.user_id=j.requested_by_user_id AND g.revoked_at IS NULL AND (g.connection_id IS NULL OR g.connection_id=j.connection_id) AND (g.role='SECURITY' OR (g.role='OPERATIONS' AND j.kind='FULL_SCAN') OR (g.role='REMEDIATOR' AND EXISTS(SELECT 1 FROM secret_case_occurrences co JOIN secret_response_cases c USING(case_id) WHERE co.occurrence_id=j.target_occurrence_id AND c.is_current AND (co.assigned_user_id=j.requested_by_user_id OR (co.assigned_user_id IS NULL AND EXISTS(SELECT 1 FROM secret_team_memberships tm WHERE tm.user_id=j.requested_by_user_id AND tm.removed_at IS NULL AND tm.team_name=co.assigned_team)))))))) FROM secret_jobs j WHERE j.job_id=?
 """,
                         Boolean.class,
                         job.jobId()));
@@ -693,7 +914,7 @@ SELECT (j.requested_by_user_id IS NULL OR EXISTS(SELECT 1 FROM secret_role_grant
     private void abandonExpired() {
         jdbc.update(
                 "UPDATE secret_validation_attempts a SET"
-                    + " attempt_state='ABANDONED',reason_code='LEASE_EXPIRED',completed_at=clock_timestamp(),ineligible_reason_code='LEASE_EXPIRED'"
+                    + " attempt_state='ABANDONED',reason_code='LEASE_EXPIRED',completed_at=GREATEST(clock_timestamp(),a.requested_at,a.request_sent_at),ineligible_reason_code='LEASE_EXPIRED'"
                     + " FROM secret_jobs j WHERE j.job_id=a.job_id AND a.attempt_state"
                     + " IN('RESERVED','SENT') AND (j.status<>'LEASED' OR"
                     + " j.lease_until<=clock_timestamp() OR"
@@ -714,6 +935,9 @@ SELECT (j.requested_by_user_id IS NULL OR EXISTS(SELECT 1 FROM secret_role_grant
             Map<String, Object> c, String validator, String version, String cycle) {
         return digest(
                 c.get("credential_set_id"),
+                c.get("occurrence_id"),
+                c.get("scope_id"),
+                c.get("connection_id"),
                 c.get("credential_revision"),
                 c.get("fingerprint_key_version"),
                 validator,

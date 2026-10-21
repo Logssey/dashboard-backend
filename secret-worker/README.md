@@ -147,3 +147,14 @@ profile 변경은 이전 scope 승인을 철회한다. 이후 해당 범위 SECU
 워커는 현재 원천을 재취득하고 같은 HMAC·키 revision을 확인한 뒤 DB 트랜잭션 밖에서 인증한다. 원문은 DB·큐·파일·로그에 남기지 않는다. 기본 한도는 공급자 분당 30회, 동시 2개, 실행당 500회/30분, 요청 8초, 최초 포함 3회다. backoff·다음 도래 시각은 DB에 남기고 장시간 sleep으로 worker를 점유하지 않는다. 전송 중 승인 철회의 응답은 이력에만 남으며 현재 인증 성공으로 사용하지 않는다.
 
 유효성 조회·이력은 최근 완료 시도, 마지막 인증 성공, 마지막 확정 응답, 현재 신선도를 분리한다. HTTP 오류·timeout·원문 삭제는 키 폐기나 위치 해결을 뜻하지 않는다. GitHub installation token·미등록 유형은 PAT capability로 보내지 않는다. provider wire logging과 APM의 HTTP header/body 캡처를 활성화하지 않는다.
+
+### GitHub PAT validation
+
+`SECRET_GITHUB_VALIDATION_ENABLED=false` remains the default in both API and worker.
+Enable the registered `credential-validation-v1` connection profile using the operator procedure above, then have SECURITY enable the exact source scope policy. The source connection credentials only reacquire approved content; each discovered Classic or Fine-grained PAT authenticates itself with `GET https://api.github.com/user`, API version `2026-03-10`. An installation token is a separate, unsupported capability. No permissions, expiry or revocation cause is inferred.
+
+The worker uses a 3-second connect bound and an 8-second total bound, no redirects, at most 64 KiB response, at most 2 concurrent provider requests, 30 requests/provider/minute, 500 requests/run and a 30-minute validation phase. API manual requests are limited to 10 new commands per actor/minute; idempotent replay is exempt. Retry-After is bounded to 15 minutes; retries otherwise use persisted exponential delay and jitter. Five GitHub authentication rejections within a 60-second window open a 15-minute safety pause. Only response metadata and safe result codes persist. A protected source-version digest records actual GitHub blob evidence; AWS value readers currently supply no provider version, so their digest explicitly records a version-unavailable protected scope/source basis.
+
+A repository-name safety guard produces `SOURCE_GUARD_BLOCKED`; only explicit synthetic scope configuration or a current exact manifest/fingerprint attestation produces `SYNTHETIC_FIXTURE`. A TEST environment label never establishes synthetic contents. The optional repository-access sink receives safe metadata after successful run-scope persistence inside the live-lease transaction. Missing, malformed or conflicting private/visibility fields produce UNKNOWN access scope. Repository metadata failures do not fail otherwise successful collection.
+
+SDK header/wire logging stays disabled. GitHub PAT validation also fails closed when the JVM `jdk.httpclient.HttpClient.log` diagnostic setting is nonempty. AWS uses the registered Apache5 transport with explicit connection bounds ([AWS SDK builder contract](https://docs.aws.amazon.com/java/api/latest/software/amazon/awssdk/http/apache5/Apache5HttpClient.Builder.html)).

@@ -26,6 +26,7 @@ public final class CredentialRevalidationProcessor {
     private final SecretContentDetector detector;
     private final SecretValidationAttemptRepository attempts;
     private final AwsValidationService aws;
+    private final GitHubPatValidator github;
 
     public CredentialRevalidationProcessor(
             JdbcTemplate jdbc,
@@ -33,6 +34,17 @@ public final class CredentialRevalidationProcessor {
             SecretContentDetector detector,
             SecretValidationAttemptRepository attempts,
             AwsValidationService aws) {
+        this(jdbc, normalizer, detector, attempts, aws, new GitHubPatValidator(false));
+    }
+
+    public CredentialRevalidationProcessor(
+            JdbcTemplate jdbc,
+            SecretFindingNormalizer normalizer,
+            SecretContentDetector detector,
+            SecretValidationAttemptRepository attempts,
+            AwsValidationService aws,
+            GitHubPatValidator github) {
+        this.github = github;
         this.jdbc = jdbc;
         this.normalizer = normalizer;
         this.detector = detector;
@@ -49,7 +61,11 @@ public final class CredentialRevalidationProcessor {
                 !attempts.targetCurrent(target)
                         ? "APPROVAL_CHANGED"
                         : attempts.manualBlockReason(
-                                job, target, "AWS".equals(target.get("issuer")) && aws.enabled());
+                                job,
+                                target,
+                                "AWS".equals(target.get("issuer"))
+                                        ? aws.enabled()
+                                        : github.enabled());
         if (blocked != null) {
             attempts.recordManualBlocked(job, blocked);
             finish(job, execution, false, CredentialValidationResult.unchecked(blocked));
@@ -79,6 +95,7 @@ public final class CredentialRevalidationProcessor {
                                                     "APPROVAL_CHANGED"));
                                     return;
                                 }
+                                attempts.captureManualSource(job, source, version);
                                 consumed.set(true);
                                 var scan = detector.scan(bytes);
                                 var inspected =
@@ -100,6 +117,14 @@ public final class CredentialRevalidationProcessor {
                                                         checked.checkedAt(),
                                                         null,
                                                         null));
+                                        break;
+                                    }
+                                for (var candidate : inspected.githubCandidates())
+                                    if (attempts.matchesTarget(target, candidate.credential())) {
+                                        outcome.set(
+                                                attempts.validateGitHub(
+                                                        job, candidate, github, null, source,
+                                                        version));
                                         break;
                                     }
                             });
