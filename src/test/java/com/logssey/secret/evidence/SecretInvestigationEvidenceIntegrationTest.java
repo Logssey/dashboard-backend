@@ -52,6 +52,14 @@ class SecretInvestigationEvidenceIntegrationTest {
  @Test void ownerEvidenceNeedsSecurityAcceptanceBeforeClosingAndDoesNotDecideExposure(){
   var f=fixture("CONFIRMED",true);long version=jdbc.queryForObject("SELECT exposure_assessment_version FROM secret_occurrences WHERE occurrence_id=?",Long.class,f.occurrence);
   long task=(Long)tasks.request("security",new SecretInvestigationRequests.Request("OCCURRENCE",f.occurrence,"OWNER_UNKNOWN",null,null,null,version,"owner-question")).get("taskId");
+  jdbc.update("UPDATE secret_occurrences SET exposure_status='ABNORMAL',exposure_assessment_version=1 WHERE occurrence_id=?",f.occurrence);
+  long unrelatedDecision=jdbc.queryForObject("""
+   INSERT INTO secret_exposure_assessments(occurrence_id,from_status,decision,reason_code,scope_origin,actor_user_id,version,scope_version,scope_revision,evidence_refs)
+   SELECT o.occurrence_id,'UNKNOWN','ABNORMAL','UNAPPROVED_SOURCE_LOCATION',s.response_origin,1,1,s.response_origin_version,s.revision,'["TICKET:SEC-1"]'::jsonb
+   FROM secret_occurrences o JOIN secret_connection_scopes s USING(scope_id) WHERE o.occurrence_id=? RETURNING assessment_id
+   """,Long.class,f.occurrence);
+  jdbc.update("UPDATE secret_occurrences o SET policy_assessed_origin_version=s.response_origin_version FROM secret_connection_scopes s WHERE s.scope_id=o.scope_id AND o.occurrence_id=?",f.occurrence);
+  assertCode(ErrorCode.EVIDENCE_REQUIRED,()->tasks.close("security",task,new SecretInvestigationRequests.Close(0L,unrelatedDecision,null,"unrelated-owner-proof")));
   tasks.evidence("security",task,new SecretInvestigationRequests.Evidence("TICKET:SEC-123","OWNER_CONFIRMATION",OffsetDateTime.now(),0L,"owner-evidence"));
   long evidence=one("SELECT history_id FROM secret_investigation_history WHERE event_type='EVIDENCE_ADDED'");
   assertCode(ErrorCode.EVIDENCE_REQUIRED,()->tasks.close("security",task,new SecretInvestigationRequests.Close(1L,null,null,"unaccepted",null,null,evidence)));
@@ -59,7 +67,7 @@ class SecretInvestigationEvidenceIntegrationTest {
   long accepted=one("SELECT history_id FROM secret_investigation_history WHERE event_type='EVIDENCE_ACCEPTED'");
   tasks.close("security",task,new SecretInvestigationRequests.Close(2L,null,null,"owner-close",null,null,accepted));
   assertThat(tasks.detail("security",task).get("status")).isEqualTo("CLOSED");
-  assertThat(jdbc.queryForObject("SELECT exposure_status FROM secret_occurrences WHERE occurrence_id=?",String.class,f.occurrence)).isEqualTo("UNKNOWN");
+  assertThat(jdbc.queryForObject("SELECT exposure_status FROM secret_occurrences WHERE occurrence_id=?",String.class,f.occurrence)).isEqualTo("ABNORMAL");
  }
  @Test void staleAndForeignHandoffInputsCannotCreateOrCloseTasks(){
   var f=fixture("CONFIRMED",true);long version=jdbc.queryForObject("SELECT exposure_assessment_version FROM secret_occurrences WHERE occurrence_id=?",Long.class,f.occurrence);
