@@ -219,7 +219,8 @@ public class SecretLocationService {
             facts("type","OCCURRENCE","id",representative.occurrenceId(),"secretId",first.secretId(),"caseId",representative.caseId()),
             true,null,null,text(representative.lastSeenAt()),null,null,List.of(),priorities));
         var relevant=rows.stream().filter(row->row.caseId()!=null?!"RESOLVED".equals(row.actionStatus()):
-            !"NORMAL".equals(row.exposure())||row.requiresReassessment()).map(Row::occurrenceId).distinct().toList();
+            !"NORMAL".equals(row.exposure())||row.requiresReassessment()
+                ||Boolean.TRUE.equals(riskRows.getOrDefault(row.occurrenceId(),Map.of()).get("unassessed"))).map(Row::occurrenceId).distinct().toList();
         boolean outside=rows.stream().allMatch(row->"METADATA_ONLY".equals(row.componentState()))||relevant.isEmpty();
         result.putAll(SecretRiskReadModel.summarize(relevant,riskRows,outside));
         return result;

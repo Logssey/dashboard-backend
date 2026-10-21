@@ -23,11 +23,11 @@ final class SecretRiskReadModel {
             var effective = block(risk, "effectiveAssessment");
             String status = text(automatic.get("assessmentStatus"));
             if (status == null) status = text(risk.get("assessmentStatus"));
-            if (!"NOT_APPLICABLE".equals(status)) applicable = true;
-            if (status == null || "UNASSESSED".equals(status)) unassessed++;
+            boolean pending=Boolean.TRUE.equals(risk.get("unassessed"));
+            if (!"NOT_APPLICABLE".equals(status) || pending) applicable = true;
+            if (status == null || "UNASSESSED".equals(status) || pending) unassessed++;
             String grade = text(effective.get("severity"));
             if (grade == null) grade = text(risk.get("effectiveSeverity"));
-            if (grade == null && "ASSESSED".equals(status)) grade = text(automatic.get("severity"));
             if (grade != null && GRADES.contains(grade)) {
                 applicable = true;
                 if (highest == null || GRADES.indexOf(grade) > GRADES.indexOf(highest)) highest = grade;
