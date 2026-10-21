@@ -66,7 +66,10 @@ public class SecretLocationWorkflow {
             var ready=readiness.capabilities(actor,caseId,occurrence);
             boolean actionable=current&&Set.of("OPEN","IN_PROGRESS").contains(o.get("response_status"));
             var observed=coverage.occurrenceCoverage(actor,occurrence);
-            return facts("occurrenceId",occurrence,"safeLocationLabel",com.logssey.secret.connection.SecretDisplayLabels.location((String)o.get("safe_display_alias"),occurrence),
+            var coordinates=sourceDetails(o);
+            String label="AVAILABLE".equals(coordinates.get("status"))?coordinates.get("label").toString():
+                com.logssey.secret.connection.SecretDisplayLabels.location((String)o.get("safe_display_alias"),occurrence);
+            return facts("occurrenceId",occurrence,"safeLocationLabel",label,"sourceDetails",coordinates,
                 "source",o.get("source"),"environment",o.get("environment"),"exposure",o.get("exposure_status"),
                 "presence",o.get("presence_status"),"responseStatus",o.get("response_status"),"version",o.get("version"),
                 "assignedTeam",o.get("assigned_team"),"assignedUserId",o.get("assigned_user_id"),
@@ -326,6 +329,38 @@ public class SecretLocationWorkflow {
             WHERE co.case_id=:case AND
             """+SecretOccurrenceAccessSql.predicate("o",":userId")+" ORDER BY co.occurrence_id",Map.of("case",caseId,"userId",actor.userId()));
     }
+    /**
+     * Only called for a location returned by visibleLocations; protected references stay in the
+     * mapper.
+     */
+    private Map<String, Object> sourceDetails(Map<String, Object> authorizedLocation) {
+        return jdbc
+                .query(
+                        """
+                        SELECT s.approved_ref,o.source_object_ref,o.location_key
+                        FROM secret_occurrences o JOIN secret_connection_scopes s USING(scope_id)
+                        WHERE o.occurrence_id=? AND o.connection_id=?
+                        """,
+                        (rs, n) ->
+                                com.logssey.secret.query.SecretSourceDetails.describe(
+                                        (String) authorizedLocation.get("source"),
+                                        rs.getString(1),
+                                        rs.getString(2),
+                                        rs.getString(3)),
+                        num(authorizedLocation, "occurrence_id"),
+                        num(authorizedLocation, "connection_id"))
+                .stream()
+                .findFirst()
+                .orElse(
+                        Map.of(
+                                "status",
+                                "UNAVAILABLE",
+                                "label",
+                                "발견 위치 확인 필요",
+                                "reasonCode",
+                                "SOURCE_COORDINATES_UNAVAILABLE"));
+    }
+
     private List<Map<String,Object>> checklist(long caseId,List<Map<String,Object>> locations) {
         return named.queryForList("SELECT item_id,occurrence_id,guide_version,item_code,status,evidence_ref FROM secret_checklist_items WHERE case_id=:case AND occurrence_id IN (:ids) ORDER BY occurrence_id,item_id",
             Map.of("case",caseId,"ids",locations.stream().map(o->num(o,"occurrence_id")).toList()))

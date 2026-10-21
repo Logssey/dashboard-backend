@@ -193,9 +193,13 @@ public class SecretDecisionService {
                 return new Correction(rs.getLong("disposition_id"),rs.getLong("finding_id"),rs.getLong("decision_id"),
                     rs.getString("decision_source"),rs.getObject("reuse_expires_at",OffsetDateTime.class),recheck==null,recheck);
             },id);
+        var coordinates=SecretSourceDetails.describe(text(row,"discovery_source"),text(row,"approved_ref"),
+            text(row,"source_object_ref"),text(row,"location_key"));
+        String label="AVAILABLE".equals(coordinates.get("status"))?coordinates.get("label").toString():
+            com.logssey.secret.connection.SecretDisplayLabels.location(text(row,"safe_display_alias"),id);
         return new ReviewContext(number(row,"credential_set_id"),id,number(row,"connection_id"),number(row,"scope_id"),
             number(row,"revision"),text(row,"response_origin"),text(row,"component_state"),text(row,"effective_presence"),
-            text(row,"exposure_status"),text(row,"masked_label"),text(row,"issuer"),text(row,"credential_type"),"위치 #"+id,findings,
+            text(row,"exposure_status"),text(row,"masked_label"),text(row,"issuer"),text(row,"credential_type"),label,findings,
             new StoragePolicy(text(row,"policy_result"),nullableNumber(row,"policy_id"),nullableNumber(row,"policy_version"),
                 nullableNumber(row,"binding_id"),text(row,"policy_reason"),Boolean.TRUE.equals(row.get("requires_reassessment"))),
             new Validity(validity==null?"UNCHECKED":validity,reason==null?"NO_VERIFICATION_ATTEMPT":
@@ -204,7 +208,7 @@ public class SecretDecisionService {
             List.copyOf(reasons.keySet()),reasons,MISSING_REASONS.stream().sorted().toList(),owners,
             new CaseLinkData(nullableNumber(row,"case_id"),nullableNumber(row,"case_version"),text(row,"case_origin"),
                 row.get("case_id")!=null?"LINKED":a!=null?"PENDING":"NOT_APPLICABLE",repair,
-                a==null?null:number(a,"assessment_id"),a==null?null:number(a,"version")),corrections,unavailableReasons(actor,row,reasons));
+                a==null?null:number(a,"assessment_id"),a==null?null:number(a,"version")),corrections,unavailableReasons(actor,row,reasons),coordinates);
     }
 
     private Map<String,String> unavailableReasons(SecretPrincipal actor,Map<String,Object> row,Map<String,List<String>> allowed) {
@@ -243,7 +247,8 @@ public class SecretDecisionService {
     private Map<String,Object> read(long id) {
         var row=jdbc.queryForList("""
             SELECT o.*,c.component_state,c.masked_label,c.issuer,c.credential_type,s.revision,s.response_origin,
-                s.response_origin_version,s.enabled,p.binding_id,p.policy_id,p.policy_version,p.policy_result,
+                s.response_origin_version,s.enabled,s.approved_ref,s.safe_display_alias,conn.provider AS discovery_source,
+                p.binding_id,p.policy_id,p.policy_version,p.policy_result,
                 EXISTS(SELECT 1 FROM secret_scope_origin_decisions source WHERE source.scope_id=s.scope_id
                     AND source.version=s.response_origin_version AND source.decision='APPROVED') AS source_approved,
                 p.reason_code AS policy_reason,p.requires_reassessment,
@@ -254,6 +259,7 @@ public class SecretDecisionService {
                 v.result AS validity_result,v.reason_code AS validity_reason,v.completed_at AS validity_at,
                 EXISTS(SELECT 1 FROM secret_confirmed_real_credentials real WHERE real.credential_set_id=c.credential_set_id) AS confirmed_real
             FROM secret_occurrences o JOIN secret_credential_sets c ON c.credential_set_id=o.credential_set_id
+            JOIN secret_connections conn ON conn.connection_id=o.connection_id
             JOIN secret_connection_scopes s ON s.scope_id=o.scope_id
             JOIN secret_occurrence_policy_results p ON p.occurrence_id=o.occurrence_id
             LEFT JOIN LATERAL(SELECT outcome.scope_outcome,outcome.requested_at FROM secret_scope_outcomes outcome

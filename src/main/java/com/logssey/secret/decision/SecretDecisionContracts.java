@@ -31,7 +31,7 @@ public final class SecretDecisionContracts {
         StoragePolicy storagePolicy,Validity validity,Versions versions,List<String> allowedDecisions,
         Map<String,List<String>> allowedReasonCodes,List<String> allowedMissingReasonCodes,
         List<Assignee> eligibleInvestigationAssignees,CaseLinkData caseLinkData,List<Correction> corrections,
-        Map<String,String> decisionUnavailableReasons) {
+        Map<String,String> decisionUnavailableReasons,Map<String,Object> sourceDetails) {
         @com.fasterxml.jackson.annotation.JsonProperty("taskGuidance")
         public Map<String,Object> taskGuidance(){
             boolean roleMissing=decisionUnavailableReasons.containsValue("SECURITY_ROLE_REQUIRED");
