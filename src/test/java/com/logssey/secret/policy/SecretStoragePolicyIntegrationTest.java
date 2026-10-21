@@ -48,6 +48,7 @@ class SecretStoragePolicyIntegrationTest {
     @AfterAll static void stop() { POSTGRES.stop(); }
     @Autowired JdbcTemplate jdbc;
     @Autowired SecretStoragePolicyService service;
+    @Autowired SecretScopeChangeService changes;
     @Autowired WebApplicationContext context;
     @Autowired com.logssey.secret.query.SecretLocationService locations;
     @Autowired com.logssey.secret.decision.SecretDecisionService decisions;
@@ -343,6 +344,88 @@ class SecretStoragePolicyIntegrationTest {
         try { service.approveProposal(scope,id,new ApproveProposalRequest(0L,1L),"policy-reviewer"); return "APPROVED"; }
         catch (ApiException e) { return e.errorCode().name(); }
     }
+    @Test void sourcePreviewIsReadOnlyAndSecurityCanSaveProductionWithoutAnotherAccount() {
+        var preview=changes.preview(scope,new PreviewRequest("PRODUCTION",null,null,0L),"policy-creator");
+        assertThat(preview.approvalMode()).isEqualTo("DIRECT");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM secret_scope_classification_proposals",Long.class)).isZero();
+        var result=changes.propose(scope,change("PRODUCTION","DIRECT",0L,"direct-source"),"policy-creator");
+        assertThat(result.origin()).isEqualTo("PRODUCTION");
+        assertThat(result.approvalStatus()).isEqualTo("APPROVED");
+        assertThat(result.pendingProposal()).isNull();
+        assertThat(result.setupReasonCodes()).containsExactly("POLICY_MISSING");
+        assertThat(result.changeResult().effect()).isEqualTo("APPLIED");
+        assertThat(result.requiresSnapshotRefresh()).isTrue();
+        assertThat(result.history().getFirst().approvalMode()).isEqualTo("DIRECT");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM secret_response_cases",Long.class)).isZero();
+    }
+
+    @Test void operationsCannotClaimDirectAuthorityAndTestSourceStillNeedsIndependentReview() {
+        assertThat(changes.preview(scope,new PreviewRequest("PRODUCTION",null,null,0L),"policy-operator").approvalMode()).isEqualTo("INDEPENDENT_REVIEW");
+        assertCode(ErrorCode.CONFLICT,()->changes.propose(scope,change("PRODUCTION","DIRECT",0L,"operator-spoof"),"policy-operator"));
+        var preview=changes.preview(scope,new PreviewRequest("TEST",null,null,0L),"policy-creator");
+        assertThat(preview.approvalReasonCodes()).contains("TEST_CLASSIFICATION_REQUIRES_REVIEW");
+        assertCode(ErrorCode.CONFLICT,()->changes.propose(scope,change("TEST","DIRECT",0L,"test-spoof"),"policy-creator"));
+        var proposal=changes.propose(scope,change("TEST","INDEPENDENT_REVIEW",0L,"test-source"),"policy-creator");
+        assertThat(proposal.origin()).isEqualTo("UNCLASSIFIED");
+        assertThat(proposal.pendingProposal().capabilities().canApprove()).isFalse();
+        assertCode(ErrorCode.FORBIDDEN,()->changes.approve(scope,proposal.pendingProposal().proposalId(),
+            new ApproveProposalRequest(0L,1L,"self-approval"),"policy-creator"));
+    }
+
+    @Test void assignedReviewerIsLiveIndependentAndVersioned() {
+        var result=changes.propose(scope,change("TEST","INDEPENDENT_REVIEW",0L,"review-assignment"),"policy-operator");
+        long id=result.pendingProposal().proposalId();
+        assertCode(ErrorCode.INVALID_INPUT,()->changes.assign(scope,id,new ReviewAssignmentRequest(operator,1L,"assign-self"),"policy-operator"));
+        changes.assign(scope,id,new ReviewAssignmentRequest(reviewer,1L,"assign-reviewer"),"policy-operator");
+        assertCode(ErrorCode.FORBIDDEN,()->changes.approve(scope,id,new ApproveProposalRequest(0L,2L,"wrong-reviewer"),"policy-creator"));
+        var approved=changes.approve(scope,id,new ApproveProposalRequest(0L,2L,"right-reviewer"),"policy-reviewer");
+        assertThat(approved.origin()).isEqualTo("TEST");
+        assertThat(approved.pendingProposal()).isNull();
+        assertThat(approved.history().getFirst().actorUserId()).isEqualTo(reviewer);
+    }
+
+    @Test void policyBindingChangeCannotUseDirectSourceShortcut() {
+        var policy=activate("ALLOW");
+        var preview=changes.preview(scope,new PreviewRequest("PRODUCTION",policy.policyId(),policy.version(),0L),"policy-creator");
+        assertThat(preview.approvalMode()).isEqualTo("INDEPENDENT_REVIEW");
+        assertThat(preview.approvalReasonCodes()).contains("POLICY_BINDING_CHANGE");
+        assertCode(ErrorCode.CONFLICT,()->changes.propose(scope,new ProposalRequest("PRODUCTION",policy.policyId(),policy.version(),
+            "SOURCE_CLASSIFICATION","TICKET:SEC-123",0L,"DIRECT",null,"policy-spoof"),"policy-creator"));
+    }
+
+    @Test void directCommandRetryAndNoopPreserveOneDecisionAndRecheckLiveAuthority() {
+        var request=change("PRODUCTION","DIRECT",0L,"direct-retry");
+        var first=changes.propose(scope,request,"policy-creator");
+        var replay=changes.propose(scope,request,"policy-creator");
+        assertThat(replay.changeResult().decisionId()).isEqualTo(first.changeResult().decisionId());
+        assertCode(ErrorCode.CONFLICT,()->changes.propose(scope,change("TEST","INDEPENDENT_REVIEW",0L,"direct-retry"),"policy-creator"));
+        var noop=changes.propose(scope,change("PRODUCTION","DIRECT",1L,"new-key-same-decision"),"policy-creator");
+        assertThat(noop.changeResult().effect()).isEqualTo("UNCHANGED");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM secret_scope_origin_decisions",Long.class)).isEqualTo(1);
+        jdbc.update("UPDATE secret_role_grants SET revoked_at=now() WHERE user_id=?",creator);
+        assertCode(ErrorCode.NOT_FOUND,()->changes.propose(scope,request,"policy-creator"));
+    }
+
+    @Test void legacyProductionWithoutFormalEvidenceIsNotTreatedAsNoop() {
+        jdbc.update("UPDATE secret_connection_scopes SET response_origin='PRODUCTION',response_origin_version=1,response_origin_set_by_user_id=?,response_origin_set_at=now() WHERE scope_id=?",creator,scope);
+        jdbc.update("INSERT INTO secret_scope_origin_decisions(scope_id,from_origin,to_origin,reason_code,actor_user_id,version) VALUES (?,'UNCLASSIFIED','PRODUCTION','APPROVED_PRODUCTION_SOURCE',?,1)",scope,creator);
+        assertThat(service.classification(scope,"policy-creator").setupReasonCodes()).contains("CLASSIFICATION_EVIDENCE_REQUIRED");
+        var result=changes.propose(scope,change("PRODUCTION","DIRECT",1L,"legacy-source"),"policy-creator");
+        assertThat(result.changeResult().effect()).isEqualTo("APPLIED");
+        assertThat(result.setupReasonCodes()).doesNotContain("CLASSIFICATION_EVIDENCE_REQUIRED");
+    }
+
+    @Test void previewAndWriteRejectStaleOrProtectedInputsWithoutMutation() {
+        assertCode(ErrorCode.CONFLICT,()->changes.preview(scope,new PreviewRequest("PRODUCTION",null,null,1L),"policy-creator"));
+        assertCode(ErrorCode.INVALID_INPUT,()->changes.propose(scope,new ProposalRequest("PRODUCTION",null,null,"POLICY_PENDING",
+            "https://untrusted.invalid/reference",0L,"DIRECT",null,"bad-reference"),"policy-creator"));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM secret_scope_classification_proposals",Long.class)).isZero();
+    }
+
+    private ProposalRequest change(String origin,String mode,long version,String key) {
+        return new ProposalRequest(origin,null,null,"POLICY_PENDING","TICKET:SEC-123",version,mode,null,key);
+    }
+
     private PolicySummary activate(String effect) {
         var draft=service.draft(draft(effect),"policy-creator");
         return service.approvePolicy(draft.policyId(),draft.version(),new VersionRequest(draft.version()),"policy-reviewer");

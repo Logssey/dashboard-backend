@@ -1,7 +1,7 @@
 package com.logssey.secret.command;
 /** Only controlled identifiers and status codes enter persisted command results or audit. */
 public record SecretCommandResult(long targetId, long version, Status status) {
-    public enum Status { PENDING, RUNNING, SUCCEEDED, PARTIAL, FAILED, SKIPPED, CANCELLED, OPEN, CLOSED, ATTESTED, IN_PROGRESS, REVALIDATION_PENDING, APPROVED, REJECTED, RESOLVED }
+    public enum Status { PENDING, RUNNING, SUCCEEDED, PARTIAL, FAILED, SKIPPED, CANCELLED, OPEN, CLOSED, ATTESTED, IN_PROGRESS, REVALIDATION_PENDING, APPROVED, REJECTED, RESOLVED, UNCHANGED }
     @com.fasterxml.jackson.annotation.JsonProperty("requiresSnapshotRefresh")
     public boolean requiresSnapshotRefresh() { return true; }
     public SecretCommandResult {
