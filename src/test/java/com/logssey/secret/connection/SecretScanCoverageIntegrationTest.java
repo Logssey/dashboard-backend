@@ -61,7 +61,7 @@ class SecretScanCoverageIntegrationTest {
         var cov=(Map<?,?>)items(service.scopes("operator",c,"ALL","ALL",false,0,20)).getFirst().get("coverage");
         assertThat(cov.get("lastSuccessfulScan")).isNull();assertThat(cov.get("gapReasonCodes").toString()).contains("REVISION_UNCHECKED");
         long rv=run(c,"SUCCEEDED");outcome(rv,scope,"SUCCEEDED","SKIPPED",false);
-        jdbc.update("UPDATE secret_jobs SET kind='REVALIDATE' WHERE job_id=(SELECT job_id FROM secret_scan_runs WHERE run_id=?)",rv);
+        jdbc.update("UPDATE secret_jobs SET kind='REVALIDATE',purpose='LOCATION_RECHECK' WHERE job_id=(SELECT job_id FROM secret_scan_runs WHERE run_id=?)",rv);
         cov=(Map<?,?>)items(service.scopes("operator",c,"ALL","ALL",false,0,20)).getFirst().get("coverage");assertThat(cov.get("lastSuccessfulScan")).isNull();
     }
 
