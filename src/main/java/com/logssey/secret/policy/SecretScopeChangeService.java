@@ -150,19 +150,22 @@ public class SecretScopeChangeService {
         if(!Set.of("PRODUCTION","TEST").contains(Objects.toString(origin,"")) || (policyId==null)!=(policyVersion==null))invalid();
         if(!scope.available())conflict("SCOPE_UNAVAILABLE");
         policies.validateSupportedScope(scope);policies.preventFixtureMisclassification(scope,origin);
-        if(policyId!=null) {
+        var binding=repository.binding(scope.id()).orElse(null);
+        boolean policyChanged=!Objects.equals(binding==null?null:binding.policyId(),policyId)
+            || !Objects.equals(binding==null?null:binding.policyVersion(),policyVersion);
+        if(policyId!=null && policyChanged) {
             var p=repository.policy(policyId,policyVersion,false).orElseThrow(()->new ApiException(ErrorCode.NOT_FOUND));
             if(!p.usable(repository.now()) || repository.rules(policyId,policyVersion).stream().noneMatch(r->r.scopeId()==scope.id()
                     && r.scopeRevision()==scope.revision() && r.fingerprint().equals(scope.fingerprint()) && r.contentType().equals(scope.contentType())))
                 conflict("POLICY_SCOPE_MISMATCH");
         }
-        var binding=repository.binding(scope.id()).orElse(null);var reasons=new ArrayList<String>();
+        var reasons=new ArrayList<String>();
         if(!access.hasConnectionRole(actor,scope.connectionId(),SecretRole.SECURITY))reasons.add("SECURITY_REVIEW_REQUIRED");
         if(origin.equals("TEST"))reasons.add("TEST_CLASSIFICATION_REQUIRES_REVIEW");
-        if(!Objects.equals(binding==null?null:binding.policyId(),policyId) || !Objects.equals(binding==null?null:binding.policyVersion(),policyVersion))
-            reasons.add("POLICY_BINDING_CHANGE");
+        if(policyChanged)reasons.add("POLICY_BINDING_CHANGE");
         String mode=reasons.isEmpty()?"DIRECT":"INDEPENDENT_REVIEW";
         var remaining=new ArrayList<String>();
+        if(!policyChanged && policyId!=null)repository.setupReasons(scope.id()).stream().filter(r->r.startsWith("POLICY_")).forEach(remaining::add);
         if(policyId==null && Set.of("GITHUB_REPOSITORY_FILES","AWS_SECRETS_MANAGER_VALUE","AWS_SSM_PARAMETER_VALUE","AWS_S3_OBJECT_CONTENT").contains(scope.contentType()))remaining.add("POLICY_MISSING");
         if(mode.equals("INDEPENDENT_REVIEW"))remaining.add("PENDING_REVIEW");
         return new Preview(mode,List.copyOf(reasons),RULE,mode.equals("DIRECT")?List.of():repository.reviewers(scope.connectionId(),actor.userId()),

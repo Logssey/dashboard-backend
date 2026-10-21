@@ -426,6 +426,29 @@ class SecretStoragePolicyIntegrationTest {
         return new ProposalRequest(origin,null,null,"POLICY_PENDING","TICKET:SEC-123",version,mode,null,key);
     }
 
+    @Test void sourceEvidenceCanBeRefreshedWhileTheRetiredPolicyRemainsUnresolved() {
+        var policy=activate("ALLOW");bind(policy);
+        service.retire(policy.policyId(),new RetireRequest(policy.version(),"POLICY_WITHDRAWN","TICKET:SEC-321"),"policy-reviewer");
+        var preview=changes.preview(scope,new PreviewRequest("PRODUCTION",policy.policyId(),policy.version(),1L),"policy-creator");
+        assertThat(preview.approvalMode()).isEqualTo("DIRECT");
+        assertThat(preview.remainingReasonCodes()).contains("POLICY_RETIRED");
+        var result=changes.propose(scope,new ProposalRequest("PRODUCTION",policy.policyId(),policy.version(),"SOURCE_CORRECTION","TICKET:SEC-456",1L,"DIRECT",null,"retain-retired-policy"),"policy-creator");
+        assertThat(result.changeResult().effect()).isEqualTo("APPLIED");
+        assertThat(result.setupReasonCodes()).contains("POLICY_RETIRED");
+        assertThat(service.evaluateOccurrence(occurrence,"policy-creator").policyResult()).isEqualTo("UNKNOWN");
+        assertThat(service.policy(policy.policyId(),policy.version(),"policy-creator").status()).isEqualTo("RETIRED");
+    }
+
+    @Test void independentlyReviewedSourceChangeCannotReactivateARetainedRetiredPolicy() {
+        var policy=activate("DENY");bind(policy);
+        service.retire(policy.policyId(),new RetireRequest(policy.version(),"POLICY_WITHDRAWN","TICKET:SEC-321"),"policy-reviewer");
+        var pending=changes.propose(scope,new ProposalRequest("TEST",policy.policyId(),policy.version(),"SOURCE_CORRECTION","TICKET:SEC-457",1L,"INDEPENDENT_REVIEW",reviewer,"retain-policy-review"),"policy-creator");
+        var result=changes.approve(scope,pending.pendingProposal().proposalId(),new ApproveProposalRequest(1L,1L,"review-retained-policy"),"policy-reviewer");
+        assertThat(result.origin()).isEqualTo("TEST");
+        assertThat(result.setupReasonCodes()).contains("POLICY_RETIRED");
+        assertThat(service.policy(policy.policyId(),policy.version(),"policy-creator").status()).isEqualTo("RETIRED");
+    }
+
     @Test void scopeHandoffClosesOnlyWithTheCurrentFormalSourceDecision() {
         var requested=investigations.request("policy-operator",new com.logssey.secret.investigation.SecretInvestigationRequests.Request(
             "SCOPE",scope,"SOURCE_CLASSIFICATION",null,null,null,0L,"source-handoff"));
