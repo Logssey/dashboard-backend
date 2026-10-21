@@ -70,6 +70,7 @@ Get-Content -Raw .\secret-worker\local\register-test-schedule.sql |
 
 설정:
 
+- `SECRET_SCHEDULING_POOL_SIZE`: 스케줄러 스레드 수, 기본 `3`. 예약, 외부 작업 실행, DB 전용 `ASSESS` 폴러가 함께 진행하므로 긴 수집 작업이 다른 두 폴러를 막지 않는다. 각 폴러의 반복 실행은 순차적이며 DB 리스·잠금 제약은 그대로 적용된다. [Spring Boot 스케줄러 설정](https://docs.spring.io/spring-boot/4.1/reference/features/task-execution-and-scheduling.html)을 사용하며 가상 스레드를 활성화하면 이 풀 크기 설정은 적용되지 않는다.
 - `SECRET_SCHEDULER_POLL_DELAY`: DB 확인 간격, 기본 `30s`.
 - `SECRET_SCAN_INTERVAL`: 예약 간격, 기본 `6h`. 테스트에서만 짧게 바꾼다.
 - `SECRET_SCHEDULER_BATCH_SIZE`: 한 번에 예약할 연결 수, 기본 `100`.

@@ -115,6 +115,10 @@ class SecretInventoryServiceTest {
         long[] run = run(connection);
         OffsetDateTime base = OffsetDateTime.now(ZoneOffset.UTC).truncatedTo(ChronoUnit.MICROS)
                 .minusMinutes(5);
+        legacyValidation(credential,run,"VALID","AUTHENTICATED",base.minusMinutes(1),base.minusMinutes(1).plusSeconds(2),base.minusMinutes(1).plusSeconds(1));
+        assertThat(service.detail(credential,"admin").validationStatus()).isEqualTo("UNCHECKED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_current_validation_attempts",Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_validation_attempts WHERE evidence_version=0",Long.class)).isEqualTo(1);
         validation(credential, run, "VALID", "AUTHENTICATED", base,
                 base.plusSeconds(2), base.plusSeconds(1));
         validation(credential, run, "UNKNOWN", "RATE_LIMITED", base.plusMinutes(1),
@@ -123,7 +127,7 @@ class SecretInventoryServiceTest {
         var latest = service.detail(credential, "admin");
         assertThat(latest.validationStatus()).isEqualTo("UNKNOWN");
         assertThat(latest.validationReasonCode()).isEqualTo("RATE_LIMITED");
-        assertThat(latest.validatedAt()).isEqualTo(base.plusMinutes(1).plusSeconds(2));
+        assertThat(latest.validatedAt()).isEqualTo(base.plusMinutes(1).plusSeconds(1));
         assertThat(latest.validationCheckedAt()).isEqualTo(base.plusMinutes(1).plusSeconds(1));
         assertThat(service.list(0, 20, "AWS", "CONFIRMED", "admin").items())
                 .singleElement()
@@ -145,6 +149,9 @@ class SecretInventoryServiceTest {
                 base.plusMinutes(3), base.plusMinutes(3).plusSeconds(1), null);
         assertThat(service.detail(credential, "admin").validationReasonCode())
                 .isEqualTo("SYNTHETIC_FIXTURE");
+        validation(credential,run,"UNCHECKED","SOURCE_GUARD_BLOCKED",base.plusMinutes(4),base.plusMinutes(4).plusSeconds(1),null);
+        assertThat(service.detail(credential,"admin").validationReasonCode()).isEqualTo("SOURCE_GUARD_BLOCKED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_validation_attempts WHERE evidence_version=0",Long.class)).isEqualTo(1);
     }
 
     @Test
@@ -315,6 +322,13 @@ class SecretInventoryServiceTest {
     }
 
     private void validation(long credential, long[] run, String result, String reason,
+                            OffsetDateTime requested, OffsetDateTime completed,
+                            OffsetDateTime checked) {
+        long occurrence=jdbc.queryForObject("SELECT occurrence_id FROM secret_occurrences WHERE credential_set_id=? ORDER BY occurrence_id LIMIT 1",Long.class,credential);
+        com.logssey.secret.validation.SecretValidationTestFixtures.completed(jdbc,occurrence,run[0],run[1],result,reason,requested,completed,checked);
+    }
+
+    private void legacyValidation(long credential, long[] run, String result, String reason,
                             OffsetDateTime requested, OffsetDateTime completed,
                             OffsetDateTime checked) {
         jdbc.update("""

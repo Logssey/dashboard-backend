@@ -63,7 +63,8 @@ class SecretRevalidationRepository {
     boolean activeJob(long connectionId) {
         return Boolean.TRUE.equals(jdbc.queryForObject("""
                 SELECT EXISTS (SELECT 1 FROM secret_jobs
-                    WHERE connection_id = ? AND status IN ('PENDING', 'LEASED'))
+                    WHERE connection_id = ? AND kind IN ('FULL_SCAN','REVALIDATE')
+                      AND status IN ('PENDING', 'LEASED'))
                 """, Boolean.class, connectionId));
     }
 

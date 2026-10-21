@@ -269,11 +269,16 @@ public class SecretStoragePolicyService {
                 WHERE scope_id=? AND response_origin_version=?
                 """,proposal.origin(),next,actor.userId(),scopeId,scope.originVersion());
         jdbc.update("UPDATE secret_scope_classification_proposals SET status='APPROVED',version=version+1 WHERE proposal_id=?",proposalId);
-        jdbc.update("UPDATE secret_scope_policy_bindings SET effective_until=now() WHERE scope_id=? AND effective_until IS NULL",scopeId);
+        // One boundary for both intervals; a clock rollback must not close before prior history.
+        var bindingBoundary=jdbc.queryForObject("""
+                SELECT GREATEST(clock_timestamp(),COALESCE(MAX(COALESCE(effective_until,effective_from)),'-infinity'::timestamptz))
+                FROM secret_scope_policy_bindings WHERE scope_id=?
+                """,OffsetDateTime.class,scopeId);
+        jdbc.update("UPDATE secret_scope_policy_bindings SET effective_until=? WHERE scope_id=? AND effective_until IS NULL",bindingBoundary,scopeId);
         if (proposal.policyId()!=null) jdbc.update("""
                 INSERT INTO secret_scope_policy_bindings(scope_id,scope_revision,scope_origin_version,scope_fingerprint,
-                    policy_id,policy_version,classification_decision_id) VALUES (?,?,?,?,?,?,?)
-                """,scopeId,scope.revision(),next,scope.fingerprint(),proposal.policyId(),proposal.policyVersion(),decisionId);
+                    policy_id,policy_version,classification_decision_id,effective_from) VALUES (?,?,?,?,?,?,?,?)
+                """,scopeId,scope.revision(),next,scope.fingerprint(),proposal.policyId(),proposal.policyVersion(),decisionId,bindingBoundary);
         jdbc.update("""
                 INSERT INTO secret_scope_classification_impacts(decision_id,occurrence_id,case_id,previous_origin,new_origin)
                 SELECT ?,o.occurrence_id,c.case_id,?,? FROM secret_occurrences o

@@ -73,6 +73,10 @@ class RetiredHistoryIntegrationTest {
         assertThat(rows().getFirst().validity()).isEqualTo("INVALID");
         assertThat(repository.retiredHistory(rows())).isFalse();
         assertThat(inventory(filters("ALL","NORMAL_INVENTORY")).get("total")).isEqualTo(0L);
+        validation(occurrence,"UNCHECKED","SOURCE_GUARD_BLOCKED");
+        var locations=tx.execute(status->service.locations("security",key,filters("ALL","ALL"),0,20,"ALL","ALL","ALL",null));
+        var validity=(Map<?,?>)items(locations).getFirst().get("validity");
+        assertThat(validity.get("reasonCode")).isEqualTo("SOURCE_GUARD_BLOCKED");
     }
     @Test void independentlyApprovedManualEvidenceStaysLimitedAndDoesNotQualify() {
         long evidence=jdbc.queryForObject("""
@@ -170,10 +174,7 @@ class RetiredHistoryIntegrationTest {
         long runScope=jdbc.queryForObject("INSERT INTO secret_run_scopes(run_id,scope_id,collection_status) VALUES(?,?,'SUCCEEDED') RETURNING run_scope_id",Long.class,run,location.get("scope_id"));
         long tool=jdbc.queryForObject("INSERT INTO secret_tool_runs(run_scope_id,engine,engine_version,config_hash,status) VALUES(?,'GITLEAKS','1','test','SUCCEEDED') RETURNING tool_run_id",Long.class,runScope);
         jdbc.update("INSERT INTO secret_findings(occurrence_id,run_id,tool_run_id,finding_key,rule_id,rule_version,detected_at) VALUES(?,?,?,'test','aws-key','1',now())",source,run,tool);
-        jdbc.update("""
-            INSERT INTO secret_validation_attempts(credential_set_id,run_id,job_id,validator_id,validator_version,endpoint_class,
-                requested_at,completed_at,provider_checked_at,result,reason_code)
-            VALUES(?,?,?,'AWS_STS_GET_CALLER_IDENTITY','1','AWS_STS',now(),now(),now(),?,?)
-            """,key,run,job,result,reason);
+        var observed=jdbc.queryForObject("SELECT clock_timestamp()",java.time.OffsetDateTime.class);
+        com.logssey.secret.validation.SecretValidationTestFixtures.completed(jdbc,source,job,run,result,reason,observed,observed, "UNCHECKED".equals(result)?null:observed);
     }
 }

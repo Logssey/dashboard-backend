@@ -180,6 +180,20 @@ class SecretRevalidationServiceIntegrationTest {
     }
 
     @Test
+    void databaseOnlyAssessmentDoesNotBlockAnExternalLocationRecheck() {
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_jobs WHERE kind='ASSESS' AND status='PENDING'", Long.class))
+                .isPositive();
+        var accepted = service.request(caseId,
+                new SecretRevalidationRequest(occurrenceId, 0L, 0L, "assessment-does-not-block"),
+                "revalidation-admin");
+        assertThat(accepted.jobStatus()).isEqualTo("PENDING");
+        // The newly queued external recheck still excludes a second external request.
+        assertThatThrownBy(() -> service.request(caseId,
+                new SecretRevalidationRequest(occurrenceId, 1L, 1L, "external-still-exclusive"),
+                "revalidation-admin")).isInstanceOf(ApiException.class);
+    }
+
+    @Test
     void requestIsSingleScopeAndIdempotentButUnfinishedRunCannotResolve() {
         var request = new SecretRevalidationRequest(occurrenceId, 0L, 0L, "test-recheck-1");
         var accepted = service.request(caseId, request, "revalidation-admin");
@@ -333,21 +347,23 @@ class SecretRevalidationServiceIntegrationTest {
 
     @Test void validationBeforeMaterialActionIsHistoryUntilAFreshProviderObservationArrives(){
         long key=jdbc.queryForObject("SELECT credential_set_id FROM secret_response_cases WHERE case_id=?",Long.class,caseId);
-        jdbc.update("""
-          INSERT INTO secret_validation_attempts(credential_set_id,run_id,job_id,validator_id,validator_version,endpoint_class,requested_at,completed_at,provider_checked_at,result,reason_code)
-          SELECT credential_set_id,last_seen_run_id,(SELECT job_id FROM secret_scan_runs WHERE run_id=o.last_seen_run_id),'AWS_STS_GET_CALLER_IDENTITY','1','AWS_STS',
-            now()-INTERVAL '30 minutes',now()-INTERVAL '30 minutes',now()-INTERVAL '30 minutes','VALID','AUTHENTICATED'
-          FROM secret_occurrences o WHERE occurrence_id=?
-          """,occurrenceId);
+        var beforeAction=jdbc.queryForObject("SELECT clock_timestamp()-interval '30 minutes'",java.time.OffsetDateTime.class);
+        long previous=validation(beforeAction);
         var filter=new com.logssey.secret.query.SecretInventoryFilters("TEST","ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL");
         var before=locations.locations("revalidation-admin",key,filter,0,20,"ALL","ALL","ALL",null);
         var item=(java.util.Map<?,?>)((java.util.List<?>)before.get("items")).getFirst();var validity=(java.util.Map<?,?>)item.get("validity");
         assertThat(validity.get("result")).isEqualTo("UNCHECKED");assertThat(validity.get("reasonCode")).isEqualTo("POST_ACTION_VALIDATION_REQUIRED");
         assertThat(((java.util.Map<?,?>)validity.get("lastObservation")).get("result")).isEqualTo("VALID");assertThat(validity.get("observedAt")).isNull();
         assertThat(item.get("lastMaterialActionAt")).isNotNull();assertThat(item.get("fixtureStatus")).isEqualTo("NOT_APPLICABLE");
-        jdbc.update("UPDATE secret_validation_attempts SET provider_checked_at=clock_timestamp(),completed_at=clock_timestamp()");
+        validation(jdbc.queryForObject("SELECT clock_timestamp()",java.time.OffsetDateTime.class));
         var after=locations.locations("revalidation-admin",key,filter,0,20,"ALL","ALL","ALL",null);
         assertThat(((java.util.Map<?,?>)((java.util.Map<?,?>)((java.util.List<?>)after.get("items")).getFirst()).get("validity")).get("result")).isEqualTo("VALID");
+        assertThat(jdbc.queryForObject("SELECT provider_checked_at FROM secret_validation_attempts WHERE attempt_id=?",java.time.OffsetDateTime.class,previous)).isEqualTo(beforeAction);
+    }
+
+    private long validation(java.time.OffsetDateTime observed){
+        var source=jdbc.queryForMap("SELECT r.job_id,r.run_id FROM secret_occurrences o JOIN secret_scan_runs r ON r.run_id=o.last_seen_run_id WHERE o.occurrence_id=?",occurrenceId);
+        return com.logssey.secret.validation.SecretValidationTestFixtures.completed(jdbc,occurrenceId,((Number)source.get("job_id")).longValue(),((Number)source.get("run_id")).longValue(),"VALID","AUTHENTICATED",observed.minusSeconds(1),observed.plusSeconds(1),observed);
     }
 
     @Test void evidencedAlertClosureDoesNotReopenUntilAContradictoryProviderObservation(){

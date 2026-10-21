@@ -30,9 +30,13 @@ public class SecretLocationService {
     private final SecretCoverageService coverageService;
     private final com.logssey.secret.response.SecretLocationReadiness readiness;
     private final com.logssey.secret.lifecycle.SecretLifecycleService lifecycle;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.logssey.secret.risk.SecretRiskQueryService riskQueries;
     private static final Set<String> SAFE_REASONS=Set.of("AUTHENTICATED","INVALID_ACCESS_KEY","SIGNATURE_AMBIGUOUS",
         "EXPIRED_SESSION","DISABLED","INCOMPLETE_PAIR","MISSING_SESSION_TOKEN","ACCESS_AMBIGUOUS",
-        "POST_ACTION_VALIDATION_REQUIRED","RATE_LIMITED","PROVIDER_UNAVAILABLE","CLIENT_FAILURE","SYNTHETIC_FIXTURE","SOURCE_UNAVAILABLE");
+        "POST_ACTION_VALIDATION_REQUIRED","RATE_LIMITED","PROVIDER_UNAVAILABLE","CLIENT_FAILURE","SYNTHETIC_FIXTURE","SOURCE_GUARD_BLOCKED","SOURCE_UNAVAILABLE",
+        "AUTHENTICATION_REJECTED","RESPONSE_UNEXPECTED","UNSUPPORTED_TYPE","INCOMPLETE_CREDENTIAL","NOT_APPROVED",
+        "RATE_BUDGET_EXHAUSTED","SOURCE_VALUE_UNAVAILABLE","CREDENTIAL_MISMATCH","APPROVAL_CHANGED","PROFILE_UNCONFIGURED");
 
     public SecretLocationService(SecretLocationRepository repository,SecretReadSnapshots snapshots,SecretAccessService access,
             SecretCoverageService coverageService,com.logssey.secret.response.SecretLocationReadiness readiness,com.logssey.secret.lifecycle.SecretLifecycleService lifecycle) {
@@ -59,6 +63,7 @@ public class SecretLocationService {
             var runOccurrences=runId==null?null:repository.runOccurrenceIds(actor.userId(),runId);
             var base=new SecretInventoryFilters(filters.origin(),"ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL");
             var allVisible=repository.visible(actor.userId(),null,base).stream().collect(Collectors.groupingBy(Row::secretId));
+            var riskRows=risks(actor,allVisible.values().stream().flatMap(List::stream).toList());
             var grouped=repository.visible(actor.userId(),null,filters).stream().filter(r->runOccurrences==null||runOccurrences.contains(r.occurrenceId())).collect(Collectors.groupingBy(
                 Row::secretId,LinkedHashMap::new,Collectors.toList()));
             var subjects=new ArrayList<SecretReadSnapshots.Subject>();
@@ -69,10 +74,10 @@ public class SecretLocationService {
                 if("NORMAL_INVENTORY".equals(filters.workBucket()) ? subtype==null : !matchesWorkBucket(rows,filters.workBucket())) continue;
                 var matched=Set.of("ALL","NORMAL_INVENTORY").contains(filters.workBucket())?rows:rows.stream()
                     .filter(row->bucket(row).equals(filters.workBucket())).toList();
-                var item=inventoryItem(keyRows,actor,subtype);
+                var item=inventoryItem(keyRows,actor,subtype,riskRows);
                 item.put("matchedLocationCount",matched.size());
                 if(!"ALL".equals(filters.validity()) && !filters.validity().equals(item.get("validationStatus"))) continue;
-                if(!"ALL".equals(filters.severity()) && !"UNASSESSED".equals(filters.severity())) continue;
+                if(!"ALL".equals(filters.severity()) && !Objects.equals(filters.severity(),item.get("severity"))) continue;
                 subjects.add(new SecretReadSnapshots.Subject("CredentialSet",entry.getKey(),entry.getKey(),item,
                     keyRows.stream().map(Row::occurrenceId).distinct().toList()));
             }
@@ -91,11 +96,12 @@ public class SecretLocationService {
         var filter=new SecretInventoryFilters(origin,"ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL");
         var rows=repository.visible(actor.userId(),secretId,filter);
         if(rows.isEmpty()) throw new ApiException(ErrorCode.NOT_FOUND);
-        var result=inventoryItem(rows,actor);
+        var riskRows=risks(actor,rows);
+        var result=inventoryItem(rows,actor,inventorySubtype(rows),riskRows);
         result.put("expiryPolicy","UNKNOWN"); result.put("expiresAt",null); result.put("lifecycleStatus","UNKNOWN");
         // Compatibility field contains safe public locations, not original paths or line context.
         result.put("occurrences",rows.stream().map(row-> {
-            var value=location(row,actor,loginId); value.put("id",row.occurrenceId());
+            var value=location(row,actor,loginId,riskRows.getOrDefault(row.occurrenceId(),Map.of())); value.put("id",row.occurrenceId());
             value.put("sourceObjectRef","위치 #"+row.occurrenceId()); value.put("locationKey",null);
             value.put("presenceStatus",row.presence()); value.put("exposureStatus",row.exposure());
             return value;
@@ -118,12 +124,14 @@ public class SecretLocationService {
         var visible=repository.visible(actor.userId(),secretId,base);
         // A nonexistent key and a key with no readable relationship produce the same response.
         if(visible.isEmpty()) throw new ApiException(ErrorCode.NOT_FOUND);
+        var riskRows=risks(actor,visible);
         String detailVersion=SecretReadSnapshots.digest(visible.stream().map(row -> row.occurrenceId()+":"+
             row.occurrenceVersion()+":"+row.scopeRevision()+":"+row.presence()+":"+row.lastSeenAt()+":"+
             row.caseId()+":"+row.actionStatus()+":"+row.assignedUserId()+":"+row.validationAt()+":"+
             row.storageBindingId()+":"+row.storagePolicyVersion()+":"+row.storagePolicyResult()+":"+
             row.storagePolicyReason()+":"+row.requiresReassessment()+":"+row.allCurrentFindingsCorrected()+":"+
-            repository.operationalFacts(row.occurrenceId()).get("location_version")).collect(Collectors.joining("|")));
+            repository.operationalFacts(row.occurrenceId()).get("location_version")+":"+
+            SecretRiskReadModel.revision(riskRows.getOrDefault(row.occurrenceId(),Map.of()))).collect(Collectors.joining("|")));
         if(expectedDetailVersion!=null && !expectedDetailVersion.equals(detailVersion))
             throw new ApiException(ErrorCode.CONFLICT,"위치 정보가 변경되었어요. 다시 확인해 주세요.");
         var filtered=visible.stream().filter(row -> ("ALL".equals(filters.source())||row.source().equals(filters.source()))
@@ -131,8 +139,8 @@ public class SecretLocationService {
             &&("ALL".equals(presence)||row.presence().equals(presence))
             &&("ALL".equals(exposure)||row.exposure().equals(exposure))
             &&("ALL".equals(actionStatus)||Objects.equals(row.actionStatus()==null?"NO_CASE":row.actionStatus(),actionStatus))).toList();
-        var items=filtered.stream().skip((long)page*size).limit(size).map(row -> location(row,actor,loginId)).toList();
-        return facts("credentialSetId",secretId,"credential",inventoryItem(visible,actor),"detailVersion",detailVersion,
+        var items=filtered.stream().skip((long)page*size).limit(size).map(row -> location(row,actor,loginId,riskRows.getOrDefault(row.occurrenceId(),Map.of()))).toList();
+        return facts("credentialSetId",secretId,"credential",inventoryItem(visible,actor,inventorySubtype(visible),riskRows),"detailVersion",detailVersion,
             "items",items,"total",filtered.size(),"visibleLocationCount",filtered.size(),"page",page,"size",size,
             "origin",filters.origin(),"unit","Occurrence","restrictedCoverage",!globalSecurity(actor),
             "locationStateCounts",facts("presence",counts(filtered,Row::presence),"exposure",counts(filtered,Row::exposure)),
@@ -168,6 +176,14 @@ public class SecretLocationService {
     }
 
     private Map<String,Object> inventoryItem(List<Row> rows,SecretPrincipal actor,String subtype) {
+        return inventoryItem(rows,actor,subtype,risks(actor,rows));
+    }
+
+    private Map<Long,Map<String,Object>> risks(SecretPrincipal actor,List<Row> rows) {
+        return riskQueries==null?Map.of():riskQueries.occurrenceRisks(actor.userId(),rows.stream().map(Row::occurrenceId).distinct().toList());
+    }
+
+    private Map<String,Object> inventoryItem(List<Row> rows,SecretPrincipal actor,String subtype,Map<Long,Map<String,Object>> riskRows) {
         var first=rows.getFirst();
         var latest=rows.stream().filter(row->row.validationAt()!=null).max(Comparator.comparing(Row::validationAt)).orElse(first);
         var cases=rows.stream().filter(row->row.caseId()!=null).map(Row::caseId).distinct().toList();
@@ -202,6 +218,11 @@ public class SecretLocationService {
         result.put("taskGuidance",SecretTaskGuidance.build((String)result.get("whyHereCode"),(String)result.get("nextActionCode"),
             facts("type","OCCURRENCE","id",representative.occurrenceId(),"secretId",first.secretId(),"caseId",representative.caseId()),
             true,null,null,text(representative.lastSeenAt()),null,null,List.of(),priorities));
+        var relevant=rows.stream().filter(row->row.caseId()!=null?!"RESOLVED".equals(row.actionStatus()):
+            !"NORMAL".equals(row.exposure())||row.requiresReassessment()
+                ||Boolean.TRUE.equals(riskRows.getOrDefault(row.occurrenceId(),Map.of()).get("unassessed"))).map(Row::occurrenceId).distinct().toList();
+        boolean outside=rows.stream().allMatch(row->"METADATA_ONLY".equals(row.componentState()))||relevant.isEmpty();
+        result.putAll(SecretRiskReadModel.summarize(relevant,riskRows,outside));
         return result;
     }
 
@@ -221,7 +242,7 @@ public class SecretLocationService {
             "lastMaterialActionAt",operational.get("last_material_action_at"),"lastSeenAt",row.lastSeenAt());
     }
 
-    private Map<String,Object> location(Row row,SecretPrincipal actor,String loginId) {
+    private Map<String,Object> location(Row row,SecretPrincipal actor,String loginId,Map<String,Object> risk) {
         var operational=repository.operationalFacts(row.occurrenceId());
         boolean review=access.hasConnectionRole(actor,row.connectionId(),SecretRole.SECURITY);
         var coverage=coverageService.occurrenceCoverage(loginId,row.occurrenceId());
@@ -260,6 +281,7 @@ public class SecretLocationService {
             "capabilities",facts("canReview",review&&"CONFIRMED".equals(row.componentState()),"canViewCase",row.caseId()!=null,
                 "canRecordAction",row.caseId()!=null && lifecycle.assignedActionable(actor,row.caseId(),row.occurrenceId()),"canRequestRevalidation",ready.get("canRequestRevalidation"),"canViewCoverage",access.canReadConnectionFacts(actor,row.connectionId()),
                 "canRequestAssistance",true,"canOpenSafeSource",false));
+        SecretRiskReadModel.applyLocation(result,risk,"METADATA_ONLY".equals(row.componentState()));
         result.put("taskGuidance",SecretTaskGuidance.location(result));
         result.put("sourceDetails",repository.sourceDetails(row));
         result.put("detectionEvidence",repository.detectionEvidence(row));

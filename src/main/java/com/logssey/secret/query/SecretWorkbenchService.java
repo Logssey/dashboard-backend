@@ -33,6 +33,8 @@ public class SecretWorkbenchService {
     private record Metric(String key,String unit,String type,boolean allowed,List<String> ignored) {}
     private final JdbcTemplate jdbc;private final SecretAccessService access;private final SecretLocationRepository locations;
     private final SecretLocationWorkflow cases;private final SecretCoverageService coverage;private final SecretReadSnapshots snapshots;private final ObjectMapper json;private final SecretClosureService closure;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.logssey.secret.risk.SecretRiskQueryService riskQueries;
     @org.springframework.beans.factory.annotation.Autowired
     public SecretWorkbenchService(JdbcTemplate jdbc,SecretAccessService access,SecretLocationRepository locations,SecretLocationWorkflow cases,
             SecretCoverageService coverage,SecretReadSnapshots snapshots,ObjectMapper json,SecretClosureService closure) {
@@ -62,6 +64,8 @@ public class SecretWorkbenchService {
         var allCases=snapshots.page(h,"ResponseCase",0,Integer.MAX_VALUE);
         var counts=new LinkedHashMap<String,Long>();for(String stage:List.of("OPEN","IN_PROGRESS","REVALIDATION_PENDING","RESOLVED","RISK_ACCEPTED"))counts.put(stage,0L);
         allCases.forEach(c->counts.merge((String)c.get("stage"),1L,Long::sum));
+        var severityCounts=new LinkedHashMap<String,Long>();for(String grade:List.of("CRITICAL","HIGH","MEDIUM","LOW","UNASSESSED"))severityCounts.put(grade,0L);
+        allCases.forEach(c->{String grade=(String)c.get("severity");if(grade!=null&&severityCounts.containsKey(grade))severityCounts.merge(grade,1L,Long::sum);});
         boolean caseAccess=access.hasAnyRole(actor,Set.of(SecretRole.SECURITY,SecretRole.REMEDIATOR));
         boolean securityAccess=access.hasAnyRole(actor,Set.of(SecretRole.SECURITY));
         var gaps=metrics.stream().filter(m->m.get("key").equals("coverageGapScopes")).findFirst().orElseThrow();
@@ -70,8 +74,9 @@ public class SecretWorkbenchService {
             "accessScope",access.hasAnyRole(actor,Set.of(SecretRole.SECURITY))?"AUTHORIZED_LOCATIONS":"ASSIGNED_LOCATIONS",
             "metrics",metrics,"caseSummary",facts("scope","currentCases","unit","ResponseCase","total",caseAccess?allCases.size():null,
                 "status",caseAccess?"AVAILABLE":"NOT_AUTHORIZED","actionCounts",caseAccess?counts:null,
-                "severityCounts",caseAccess?Map.of("CRITICAL",0,"HIGH",0,"MEDIUM",0,"LOW",0,"UNASSESSED",allCases.size()):null,
-                "severityStatus","LEGACY_UNAVAILABLE","severityReasonCode","SEVERITY_EVIDENCE_REQUIRED"),
+                "severityCounts",caseAccess?severityCounts:null,
+                "notApplicableCaseCount",caseAccess?allCases.stream().filter(c->"NOT_APPLICABLE".equals(c.get("assessmentStatus"))).count():null,
+                "severityStatus",caseAccess?"AVAILABLE":"NOT_AUTHORIZED","severityReasonCode",caseAccess?null:"ROLE_REQUIRED"),
             "normalInventory",facts("unit","CredentialSet","status",securityAccess?"AVAILABLE":"NOT_AUTHORIZED","value",securityAccess?snapshots.count(h,"NormalCredentialSet"):null),
             "crossEnvironmentAlerts",facts("unit","CrossEnvironmentAlert","status",securityAccess?"AVAILABLE":"NOT_AUTHORIZED","value",securityAccess?snapshots.count(h,"CrossEnvironmentAlert"):null,"items",securityAccess?snapshots.page(h,"CrossEnvironmentAlert",0,20):List.of()),
             "partialCoverage","AVAILABLE".equals(gaps.get("status"))?((Number)gaps.get("value")).longValue()>0:null,
@@ -102,6 +107,7 @@ public class SecretWorkbenchService {
         String revision=snapshots.authorizationRevision(actor.userId());
         if(supplied!=null&&!supplied.isBlank())return snapshots.require(supplied,actor.userId(),"WORKBENCH",f.normalized(),revision);
         var allRows=locations.visible(actor.userId(),null,new SecretInventoryFilters(f.origin(),"ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL"));
+        var riskRows=riskQueries==null?Map.<Long,Map<String,Object>>of():riskQueries.occurrenceRisks(actor.userId(),allRows.stream().map(Row::occurrenceId).distinct().toList());
         var rows=allRows.stream().filter(r->(f.connectionId()==null||r.connectionId()==f.connectionId())
             &&(f.source().equals("ALL")||f.source().equals(r.source()))&&(f.provider().equals("ALL")||f.provider().equals(r.issuer()))
             &&(f.environment().equals("ALL")||f.environment().equals(r.environment()))).toList();
@@ -114,6 +120,7 @@ public class SecretWorkbenchService {
             var member=rows.stream().filter(r->Objects.equals(r.caseId(),id)).toList();
             if(f.assignee()!=null&&member.stream().noneMatch(r->assignmentMatches(actor,r,f.assignee())))continue;
             var c=cases.detail(id,login);c.remove("checklist");c.remove("occurrences");c.remove("capabilities");
+            c.putAll(SecretRiskReadModel.summarize(allRows.stream().filter(r->Objects.equals(r.caseId(),id)&&!"RESOLVED".equals(r.actionStatus())).map(Row::occurrenceId).distinct().toList(),riskRows,false));
             var deadline=closure==null?null:closure.riskAcceptanceDeadline(id,login);
             if(deadline!=null) {
                 c.put("underlyingActionStage",c.get("stage"));c.put("stage","RISK_ACCEPTED");
@@ -125,8 +132,8 @@ public class SecretWorkbenchService {
         }
         for(Row r:rows) {
             if(!access.hasConnectionRole(actor,r.connectionId(),SecretRole.SECURITY)||r.componentState().equals("METADATA_ONLY")||!valid.contains(r.occurrenceId()))continue;
-            if(r.exposure().equals("UNKNOWN")||r.requiresReassessment())subjects.add(subject("DecisionOccurrence",r,"NEEDS_REVIEW","OPEN_REVIEW"));
-            else if(r.exposure().equals("ABNORMAL")&&r.caseId()==null)subjects.add(subject("LinkOccurrence",r,"CASE_LINK_REQUIRED","OPEN_REVIEW"));
+            if(r.exposure().equals("UNKNOWN")||r.requiresReassessment())subjects.add(subject("DecisionOccurrence",r,"NEEDS_REVIEW","OPEN_REVIEW",riskRows.getOrDefault(r.occurrenceId(),Map.of())));
+            else if(r.exposure().equals("ABNORMAL")&&r.caseId()==null)subjects.add(subject("LinkOccurrence",r,"CASE_LINK_REQUIRED","OPEN_REVIEW",riskRows.getOrDefault(r.occurrenceId(),Map.of())));
         }
         for(var entry:byKey.entrySet()) {
             var keyRows=completeByKey.get(entry.getKey());Row first=keyRows.getFirst();
@@ -185,10 +192,11 @@ public class SecretWorkbenchService {
         }
         return h;
     }
-    private Subject subject(String type,Row r,String why,String next){var item=facts("credentialSetId",r.secretId(),"secretId",r.secretId(),"occurrenceId",r.occurrenceId(),
+    private Subject subject(String type,Row r,String why,String next,Map<String,Object> risk){var item=facts("credentialSetId",r.secretId(),"secretId",r.secretId(),"occurrenceId",r.occurrenceId(),
         "caseId",r.caseId(),"maskedLabel",r.maskedLabel(),"componentState",r.componentState(),"source",r.source(),"environment",r.environment(),"origin",r.origin(),
         "presence",r.presence(),"exposure",r.exposure(),"validationStatus",r.validity()==null?"UNCHECKED":r.validity(),"severity","UNASSESSED", "safeLocationLabel",locations.safeLocationLabel(r),
         "whyHereCode",why,"nextActionCode",next,"lastSeenAt",r.lastSeenAt(),"capabilities",Map.of("canReview",true));
+        SecretRiskReadModel.applyLocation(item,risk,"METADATA_ONLY".equals(r.componentState()));
         item.put("taskGuidance",SecretTaskGuidance.location(item));
         return new Subject(type,r.occurrenceId(),r.secretId(),item,List.of(r.occurrenceId()));}
     private static Set<String> stageFilter(String bucket,String stages) {

@@ -115,10 +115,20 @@ class SecretLocationIntegrationTest {
     @Test void onlyFiveActiveSnapshotsAreRetainedPerUser() {
         long conn=connection(); grant(security,"SECURITY",conn);
         var first=inventory("security",filter("ALL"),null);
+        jdbc.update("UPDATE secret_query_snapshots SET created_at=clock_timestamp()-interval '1 minute' WHERE snapshot_id=?::uuid",first.get("snapshotId").toString());
         for(int i=0;i<5;i++) inventory("security",filter("ALL"),null);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_query_snapshots WHERE owner_user_id=?",Long.class,security))
             .isEqualTo(5);
         assertCode(ErrorCode.CONFLICT,()->inventory("security",filter("ALL"),first.get("snapshotId").toString()));
+    }
+    @Test void explicitOccurrenceInvalidationDoesNotWaitForWallClocksToAgree() {
+        long conn=connection();grant(security,"SECURITY",conn);long key=key("CONFIRMED","a7");
+        occurrence(key,conn,scope(conn),"PRESENT");
+        long location=jdbc.queryForObject("SELECT occurrence_id FROM secret_occurrences WHERE credential_set_id=?",Long.class,key);
+        var first=inventory("security",filter("ALL"),null);String id=first.get("snapshotId").toString();
+        jdbc.update("UPDATE secret_query_snapshots SET created_at=clock_timestamp()+interval '1 minute' WHERE snapshot_id=?::uuid",id);
+        new SecretReadSnapshots(jdbc,JsonMapper.builder().build()).invalidateOccurrence(location);
+        assertCode(ErrorCode.CONFLICT,()->inventory("security",filter("ALL"),id));
     }
     @Test void absentAndUnauthorizedKeysHaveTheSamePublicFailure() {
         long conn=connection(); grant(security,"SECURITY",conn);
@@ -134,6 +144,54 @@ class SecretLocationIntegrationTest {
         assertThat(result.get("total")).isEqualTo(0);
         assertThat(result.get("items")).isEqualTo(List.of());
         assertThat(((Map<?,?>)result.get("credential")).get("id")).isEqualTo(key);
+    }
+    @Test void severityFilterUsesTheHighestAuthorizedAssessment() {
+        long conn=connection(),other=connection();grant(security,"SECURITY",conn);
+        long key=key("CONFIRMED","f2");occurrence(key,conn,scope(conn),"PRESENT");
+        occurrence(key,other,scope(other),"PRESENT");
+        long visible=jdbc.queryForObject("SELECT occurrence_id FROM secret_occurrences WHERE connection_id=?",Long.class,conn);
+        long hiddenId=jdbc.queryForObject("SELECT occurrence_id FROM secret_occurrences WHERE connection_id=?",Long.class,other);
+        var risk=org.mockito.Mockito.mock(com.logssey.secret.risk.SecretRiskQueryService.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"riskQueries",risk);
+        org.mockito.Mockito.when(risk.occurrenceRisks(org.mockito.ArgumentMatchers.eq(security),org.mockito.ArgumentMatchers.anyCollection()))
+            .thenReturn(Map.of(visible,risk("HIGH",1),hiddenId,risk("CRITICAL",1)));
+        var high=new SecretInventoryFilters("PRODUCTION","ALL","ALL","ALL","ALL","ALL","ALL","ALL","HIGH");
+        var result=inventory("security",high,null);
+        assertThat(result.get("total")).isEqualTo(1L);
+        assertThat(result.get("items").toString()).contains("severity=HIGH").doesNotContain("CRITICAL");
+        org.mockito.Mockito.verify(risk).occurrenceRisks(security,List.of(visible));
+    }
+    @Test void riskUpdatesDoNotRewriteAnExistingInventorySnapshot() {
+        long conn=connection();grant(security,"SECURITY",conn);long key=key("CONFIRMED","f3");
+        occurrence(key,conn,scope(conn),"PRESENT");
+        long id=jdbc.queryForObject("SELECT occurrence_id FROM secret_occurrences WHERE credential_set_id=?",Long.class,key);
+        var risk=org.mockito.Mockito.mock(com.logssey.secret.risk.SecretRiskQueryService.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"riskQueries",risk);
+        org.mockito.Mockito.when(risk.occurrenceRisks(org.mockito.ArgumentMatchers.eq(security),org.mockito.ArgumentMatchers.anyCollection()))
+            .thenReturn(Map.of(id,risk("HIGH",1)));
+        var first=inventory("security",filter("ALL"),null);
+        org.mockito.Mockito.when(risk.occurrenceRisks(org.mockito.ArgumentMatchers.eq(security),org.mockito.ArgumentMatchers.anyCollection()))
+            .thenReturn(Map.of(id,risk("CRITICAL",2)));
+        assertThat(inventory("security",filter("ALL"),first.get("snapshotId").toString()).get("items").toString()).contains("severity=HIGH");
+        assertThat(inventory("security",filter("ALL"),null).get("items").toString()).contains("severity=CRITICAL");
+    }
+    @Test void aChangedRiskRevisionInvalidatesAnOpenLocationContext() {
+        long conn=connection();grant(security,"SECURITY",conn);long key=key("CONFIRMED","f4");
+        occurrence(key,conn,scope(conn),"PRESENT");
+        long id=jdbc.queryForObject("SELECT occurrence_id FROM secret_occurrences WHERE credential_set_id=?",Long.class,key);
+        var risk=org.mockito.Mockito.mock(com.logssey.secret.risk.SecretRiskQueryService.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"riskQueries",risk);
+        org.mockito.Mockito.when(risk.occurrenceRisks(org.mockito.ArgumentMatchers.eq(security),org.mockito.ArgumentMatchers.anyCollection()))
+            .thenReturn(Map.of(id,risk("HIGH",1)));
+        var first=service.locations("security",key,filter("ALL"),0,20,"ALL","ALL","ALL",null);
+        org.mockito.Mockito.when(risk.occurrenceRisks(org.mockito.ArgumentMatchers.eq(security),org.mockito.ArgumentMatchers.anyCollection()))
+            .thenReturn(Map.of(id,risk("HIGH",2)));
+        assertCode(ErrorCode.CONFLICT,()->service.locations("security",key,filter("ALL"),0,20,"ALL","ALL","ALL",first.get("detailVersion").toString()));
+    }
+    private Map<String,Object> risk(String grade,long revision) {
+        return Map.of("latestAutomaticAssessment",Map.of("assessmentStatus","ASSESSED","severity",grade,"assessmentId",revision),
+            "effectiveAssessment",Map.of("assessmentStatus","ASSESSED","severity",grade,"held",false,"assessmentId",revision),
+            "evidenceRevision",revision);
     }
     private Map<String,Object> inventory(String login,SecretInventoryFilters f,String id) {
         return tx.execute(status->service.inventory(login,f,0,20,id));

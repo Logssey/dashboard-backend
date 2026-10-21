@@ -192,23 +192,27 @@ public class SecretReadSnapshots {
     @Transactional
     public void invalidateOccurrence(long occurrenceId) {
         jdbc.update("""
-                UPDATE secret_query_snapshots s SET expires_at=GREATEST(now(),s.created_at+interval '1 microsecond')
-                WHERE s.expires_at>now() AND EXISTS (
+                WITH retired AS (DELETE FROM secret_query_snapshots s WHERE EXISTS (
                     SELECT 1 FROM secret_snapshot_location_memberships m
                     WHERE m.snapshot_id=s.snapshot_id AND m.occurrence_id=?)
+                    RETURNING snapshot_id,owner_user_id)
+                INSERT INTO secret_snapshot_retirements(snapshot_id,owner_user_id)
+                    SELECT snapshot_id,owner_user_id FROM retired ON CONFLICT DO NOTHING
                 """,occurrenceId);
     }
 
     @Transactional
     public void invalidateScope(long scopeId) {
         jdbc.update("""
-                UPDATE secret_query_snapshots s SET expires_at=GREATEST(now(),s.created_at+interval '1 microsecond')
-                WHERE s.expires_at>now() AND (EXISTS (
+                WITH retired AS (DELETE FROM secret_query_snapshots s WHERE (EXISTS (
                     SELECT 1 FROM secret_snapshot_location_memberships m JOIN secret_occurrences o ON o.occurrence_id=m.occurrence_id
                     WHERE m.snapshot_id=s.snapshot_id AND o.scope_id=?) OR EXISTS (
                     SELECT 1 FROM secret_snapshot_subjects subject
                     WHERE subject.snapshot_id=s.snapshot_id AND subject.subject_type IN ('GapScope','UnclassifiedScope')
                       AND subject.subject_id=?))
+                    RETURNING snapshot_id,owner_user_id)
+                INSERT INTO secret_snapshot_retirements(snapshot_id,owner_user_id)
+                    SELECT snapshot_id,owner_user_id FROM retired ON CONFLICT DO NOTHING
                 """,scopeId,scopeId);
     }
 

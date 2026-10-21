@@ -46,3 +46,6 @@ tasks.named('processResources') {
 tasks.named('test') {
     useJUnitPlatform()
 }
+
+// Only the isolated DB/engine core is shared; the worker never imports API configuration.
+sourceSets.main.java.srcDir(rootProject.file('src/main/java/com/logssey/secret/risk/core'))

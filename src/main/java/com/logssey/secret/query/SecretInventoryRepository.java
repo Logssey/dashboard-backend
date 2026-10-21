@@ -18,7 +18,9 @@ class SecretInventoryRepository {
             "AUTHENTICATED", "INVALID_ACCESS_KEY", "SIGNATURE_AMBIGUOUS",
             "EXPIRED_SESSION", "DISABLED", "INCOMPLETE_PAIR", "MISSING_SESSION_TOKEN",
             "ACCESS_AMBIGUOUS", "RATE_LIMITED", "PROVIDER_UNAVAILABLE", "CLIENT_FAILURE",
-            "SYNTHETIC_FIXTURE");
+            "SYNTHETIC_FIXTURE", "SOURCE_GUARD_BLOCKED", "AUTHENTICATION_REJECTED", "RESPONSE_UNEXPECTED", "UNSUPPORTED_TYPE",
+            "INCOMPLETE_CREDENTIAL", "NOT_APPROVED", "RATE_BUDGET_EXHAUSTED", "SOURCE_VALUE_UNAVAILABLE",
+            "SOURCE_UNAVAILABLE", "CREDENTIAL_MISMATCH", "APPROVAL_CHANGED", "PROFILE_UNCONFIGURED");
     private final JdbcTemplate jdbc;
 
     SecretInventoryRepository(JdbcTemplate jdbc) {
@@ -43,14 +45,14 @@ class SecretInventoryRepository {
                 SELECT c.credential_set_id, c.issuer, c.credential_type, c.component_state,
                        c.masked_label, c.first_seen_at, c.last_seen_at,
                        latest.result AS validation_result, latest.reason_code AS validation_reason,
-                       latest.completed_at AS validated_at,
+                       latest.provider_checked_at AS validated_at,
                        latest.provider_checked_at AS validation_checked_at,
                        (SELECT COUNT(*) FROM secret_occurrences o
                         WHERE o.credential_set_id = c.credential_set_id) AS occurrence_count
                 FROM secret_credential_sets c
                 LEFT JOIN LATERAL (
                     SELECT v.result, v.reason_code, v.completed_at, v.provider_checked_at
-                    FROM secret_validation_attempts v
+                    FROM secret_current_validation_attempts v
                     WHERE v.credential_set_id = c.credential_set_id
                     ORDER BY v.completed_at DESC, v.attempt_id DESC LIMIT 1
                 ) latest ON TRUE
@@ -67,7 +69,7 @@ class SecretInventoryRepository {
                        c.masked_label, c.first_seen_at, c.last_seen_at,
                        c.expiry_policy, c.expires_at, c.lifecycle_status,
                        latest.result AS validation_result, latest.reason_code AS validation_reason,
-                       latest.completed_at AS validated_at,
+                       latest.provider_checked_at AS validated_at,
                        latest.provider_checked_at AS validation_checked_at,
                        iam.key_status AS iam_key_status, iam.issued_at AS iam_issued_at,
                        iam.last_used_at AS iam_last_used_at,
@@ -79,7 +81,7 @@ class SecretInventoryRepository {
                 FROM secret_credential_sets c
                 LEFT JOIN LATERAL (
                     SELECT v.result, v.reason_code, v.completed_at, v.provider_checked_at
-                    FROM secret_validation_attempts v
+                    FROM secret_current_validation_attempts v
                     WHERE v.credential_set_id = c.credential_set_id
                     ORDER BY v.completed_at DESC, v.attempt_id DESC LIMIT 1
                 ) latest ON TRUE

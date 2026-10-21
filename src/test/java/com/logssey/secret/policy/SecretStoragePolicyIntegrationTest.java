@@ -179,8 +179,25 @@ class SecretStoragePolicyIntegrationTest {
         assertThat(service.evaluateOccurrence(occurrence,"policy-creator").policyResult()).isEqualTo("UNKNOWN");
         var proposal=service.propose(scope,new ProposalRequest("PRODUCTION",first.policyId(),2L,"SOURCE_CORRECTION","CHANGE:OPS-2",1L),"policy-operator");
         service.approveProposal(scope,proposal.pendingProposal().proposalId(),new ApproveProposalRequest(1L,1L),"policy-reviewer");
+        awaitCurrentBinding();
         assertThat(service.evaluateOccurrence(occurrence,"policy-creator").policyResult()).isEqualTo("DENIED");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM secret_scope_policy_bindings WHERE scope_id=?",Long.class,scope)).isEqualTo(2);
+    }
+
+    @Test void rebindingUsesOneMonotonicBoundaryWhenTheDatabaseClockMovesBackwards() {
+        var first=activate("ALLOW");bind(first);
+        var floor=now().plusMinutes(1);
+        jdbc.update("UPDATE secret_scope_policy_bindings SET effective_from=? WHERE scope_id=? AND effective_until IS NULL",floor,scope);
+        var second=service.draft(new DraftRequest(first.policyId(),1L,"POLICY_UPDATE","POLICY:SECRET-12",now().minusHours(1),null,
+            List.of(new RuleRequest(connection,scope,"GITHUB_REPOSITORY_FILES","DENY","SCOPE",null,null))),"policy-creator");
+        service.approvePolicy(first.policyId(),second.version(),new VersionRequest(second.version()),"policy-reviewer");
+        var proposal=service.propose(scope,new ProposalRequest("PRODUCTION",first.policyId(),second.version(),"SOURCE_CORRECTION","CHANGE:OPS-2",1L),"policy-operator");
+        service.approveProposal(scope,proposal.pendingProposal().proposalId(),new ApproveProposalRequest(1L,1L),"policy-reviewer");
+        var bindings=jdbc.queryForList("SELECT effective_from,effective_until FROM secret_scope_policy_bindings WHERE scope_id=? ORDER BY binding_id",scope);
+        assertThat(bindings).hasSize(2);
+        assertThat(((java.sql.Timestamp)bindings.getFirst().get("effective_until")).toInstant()).isEqualTo(floor.toInstant());
+        assertThat(bindings.get(1).get("effective_from")).isEqualTo(bindings.getFirst().get("effective_until"));
+        assertThat(service.evaluateOccurrence(occurrence,"policy-creator").policyResult()).isEqualTo("UNKNOWN");
     }
 
     @Test void metadataSourceCanBeClassifiedButNeverReceivesAValueStorageAllow() {
@@ -205,6 +222,8 @@ class SecretStoragePolicyIntegrationTest {
         var inventory=locations.inventory("policy-creator",filters,0,20,null);
         assertThat(inventory.get("expiresAt")).isEqualTo(until);
         String snapshot=inventory.get("snapshotId").toString();
+        // Explicit invalidation must not wait for database and application wall clocks to agree.
+        jdbc.update("UPDATE secret_query_snapshots SET created_at=clock_timestamp()+interval '1 minute' WHERE snapshot_id=?::uuid",snapshot);
         long secret=jdbc.queryForObject("SELECT credential_set_id FROM secret_occurrences WHERE occurrence_id=?",Long.class,occurrence);
         var detail=locations.locations("policy-creator",secret,filters,0,20,"ALL","ALL","ALL",null);
         String version=(String)detail.get("detailVersion");
@@ -481,6 +500,15 @@ class SecretStoragePolicyIntegrationTest {
     private void bind(PolicySummary policy) {
         var proposal=service.propose(scope,new ProposalRequest("PRODUCTION",policy.policyId(),policy.version(),"SOURCE_CLASSIFICATION","TICKET:SEC-123",0L),"policy-operator");
         service.approveProposal(scope,proposal.pendingProposal().proposalId(),new ApproveProposalRequest(0L,1L),"policy-reviewer");
+        awaitCurrentBinding();
+    }
+    private void awaitCurrentBinding() {
+        long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(3);
+        while(!Boolean.TRUE.equals(jdbc.queryForObject("SELECT COALESCE(bool_and(effective_from<=clock_timestamp()),false) FROM secret_scope_policy_bindings WHERE scope_id=? AND effective_until IS NULL",Boolean.class,scope))) {
+            if(System.nanoTime()>=deadline) throw new AssertionError("The fixture binding did not reach its effective boundary within three seconds");
+            try { Thread.sleep(10); }
+            catch(InterruptedException interrupted) { Thread.currentThread().interrupt();throw new AssertionError("Interrupted while awaiting the fixture binding",interrupted); }
+        }
     }
     private DraftRequest draft(String effect) {
         return new DraftRequest(null,null,"AUTHORIZED_STORAGE","TICKET:SEC-123",now().minusHours(1),null,
