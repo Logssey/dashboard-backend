@@ -150,7 +150,7 @@ class GitHubSecretJobProcessorTest {
         assertThat(jdbc.queryForObject("SELECT result FROM secret_validation_attempts", String.class))
                 .isEqualTo("UNCHECKED");
         assertThat(jdbc.queryForObject("SELECT reason_code FROM secret_validation_attempts", String.class))
-                .isEqualTo("SYNTHETIC_FIXTURE");
+                .isEqualTo("SOURCE_GUARD_BLOCKED");
         String stored = jdbc.queryForObject("SELECT masked_label FROM secret_credential_sets", String.class);
         assertThat(stored).doesNotContain("aB3/").doesNotContain("ABCDEFGHIJKLMNOP");
     }
