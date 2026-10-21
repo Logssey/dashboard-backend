@@ -51,6 +51,13 @@ public class SecretRiskQueryService {
     }
     if (metadata) reasons.add("METADATA_ONLY");
     if (latest.isEmpty() && !metadata) reasons.add("INITIAL_ASSESSMENT_REQUIRED");
+    boolean reconfirmExposure =
+        result.get("legacyExposureAssessment") instanceof Map<?, ?> prior
+            && Boolean.TRUE.equals(prior.get("needsReconfirmation"));
+    if (reconfirmExposure
+        && result.get("legacyExposureAssessment") instanceof Map<?, ?> prior
+        && prior.get("reasonCodes") instanceof List<?> codes)
+      codes.forEach(code -> reasons.add(code.toString()));
     result.put("inputs", inputs);
     result.put("availableSourceRefs", new SecretRiskProvenance(jdbc).available(o));
     result.put("missingReasonCodes", reasons);
@@ -204,9 +211,11 @@ FROM secret_risk_evidence e WHERE e.occurrence_id=? AND e.record_kind='ASSERTION
         "nextAction",
         metadata
             ? "NONE"
-            : latest.isEmpty()
-                ? "REQUEST_ASSESSMENT"
-                : conflicts.isEmpty() ? "REVIEW_EVIDENCE" : "INVESTIGATE_CONFLICT");
+            : reconfirmExposure
+                ? "RECONFIRM_EXPOSURE_DECISION"
+                : latest.isEmpty()
+                    ? "REQUEST_ASSESSMENT"
+                    : conflicts.isEmpty() ? "REVIEW_EVIDENCE" : "INVESTIGATE_CONFLICT");
     result.put("readAt", OffsetDateTime.now(ZoneOffset.UTC));
     return result;
   }
@@ -311,6 +320,12 @@ WHERE o.occurrence_id IN(:ids) AND
       item.put("unassessed", !metadata && (!eligible || Boolean.TRUE.equals(r.get("unassessed"))));
       result.put(n(r, "occurrence_id"), item);
     }
+    var priorDecisions = new SecretLegacyExposureFacts(jdbc).read(result.keySet());
+    result.forEach(
+        (id, item) -> {
+          if (priorDecisions.containsKey(id))
+            item.put("legacyExposureAssessment", priorDecisions.get(id));
+        });
     return result;
   }
 

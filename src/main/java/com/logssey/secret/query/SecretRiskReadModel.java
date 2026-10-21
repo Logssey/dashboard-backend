@@ -52,7 +52,7 @@ final class SecretRiskReadModel {
     static void applyLocation(Map<String,Object> destination, Map<String,Object> risk, boolean metadata) {
         destination.putAll(summarize(List.of(1L), Map.of(1L, risk), metadata));
         for (String key : List.of("latestAutomaticAssessment", "effectiveAssessment", "lastConfirmedSeverity",
-                "missingReasonCodes", "conflictReasonCodes", "freshness", "evidenceRevision")) {
+                "missingReasonCodes", "conflictReasonCodes", "freshness", "evidenceRevision", "legacyExposureAssessment")) {
             if (risk.containsKey(key)) destination.put(key, risk.get(key));
         }
     }

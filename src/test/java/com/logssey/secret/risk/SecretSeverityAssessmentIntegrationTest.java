@@ -57,6 +57,49 @@ class SecretSeverityAssessmentIntegrationTest extends SecretRiskEvidenceIntegrat
         version);
   }
 
+  @Test
+  void legacyAbnormalDecisionRemainsVisibleWithoutInventingCurrentRiskEvidence() {
+    jdbc.update(
+        "INSERT INTO"
+            + " secret_exposure_assessments(occurrence_id,from_status,decision,reason_code,scope_origin,scope_revision,decision_source,evidence_refs,actor_user_id,version)"
+            + " VALUES(?,'UNKNOWN','ABNORMAL','UNAPPROVED_SOURCE_LOCATION','PRODUCTION',NULL,'HUMAN','[]',1,1)",
+        occurrence);
+    jdbc.update(
+        "UPDATE secret_occurrences SET exposure_status='ABNORMAL',policy_recheck_required=true"
+            + " WHERE occurrence_id=?",
+        occurrence);
+    long response =
+        jdbc.queryForObject(
+            "INSERT INTO"
+                + " secret_response_cases(credential_set_id,opening_occurrence_id,opened_by_user_id,opening_reason,case_origin)"
+                + " VALUES(1,?,1,'APPROVED_EVIDENCE','PRODUCTION') RETURNING case_id",
+            Long.class,
+            occurrence);
+    jdbc.update(
+        "INSERT INTO secret_case_occurrences(case_id,occurrence_id,credential_set_id)"
+            + " VALUES(?,?,1)",
+        response,
+        occurrence);
+    evaluate();
+    var risk = query.risk("security", occurrence);
+    assertThat(risk)
+        .containsEntry("assessmentStatus", "UNASSESSED")
+        .containsEntry("nextAction", "RECONFIRM_EXPOSURE_DECISION");
+    assertThat(((Map<?, ?>) risk.get("latestAutomaticAssessment")).get("ruleId")).isEqualTo("R99");
+    assertThat(risk.get("missingReasonCodes").toString())
+        .contains("LEGACY_EXPOSURE_SCOPE_UNVERSIONED", "EXPOSURE_RECONFIRMATION_REQUIRED");
+    var legacy = (Map<?, ?>) risk.get("legacyExposureAssessment");
+    assertThat(legacy.get("decision")).isEqualTo("ABNORMAL");
+    assertThat(legacy.get("needsReconfirmation")).isEqualTo(true);
+    assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_risk_evidence", Long.class))
+        .isZero();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT count(*) FROM secret_response_cases WHERE closed_at IS NULL", Long.class))
+        .isEqualTo(1L);
+    assertThat(query.occurrenceRisks(3L, List.of(occurrence))).isEmpty();
+  }
+
   long evaluate() {
     return new TransactionTemplate(manager)
         .execute(

@@ -48,6 +48,115 @@ class SecretLocationWorkflowIntegrationTest {
         assertThat(detail.get("restrictedCoverage")).isEqualTo(true);
         code(ErrorCode.FORBIDDEN,()->service.action(caseId,action(occ2,"ROTATED",1,0,"other"),"alice"));
     }
+    @Test
+    void assignedLocationUsesApprovedFileCoordinatesWithoutExposingOtherCaseMembers() {
+        coordinates(
+                occ1,
+                "github://Example/project/main/fixtures/",
+                "Example/project/fixtures/config.env",
+                "L4-7");
+        coordinates(
+                occ2,
+                "github://Hidden/repository/main/private/",
+                "Hidden/repository/private/other.env",
+                "L19");
+        code(ErrorCode.NOT_FOUND, () -> service.detail(caseId, "alice"));
+        assign(occ1, alice, 0, 0);
+        var detail = service.detail(caseId, "alice");
+        var own = items(detail).getFirst();
+        assertThat(own.get("safeLocationLabel")).isEqualTo("Example/project/fixtures/config.env");
+        assertThat(source(own))
+                .containsEntry("repository", "Example/project")
+                .containsEntry("branch", "main")
+                .containsEntry("path", "fixtures/config.env")
+                .containsEntry("line", "L4-7")
+                .containsEntry(
+                        "sourceUrl", "https://github.com/Example/project/blob/main/fixtures/config.env#L4-L7");
+        assertThat(items(detail)).hasSize(1);
+        String serialized = JsonMapper.builder().build().writeValueAsString(detail);
+        assertThat(serialized)
+                .doesNotContain(
+                        "Hidden/repository",
+                        "other.env",
+                        "github://",
+                        "auth-ref",
+                        "source_object_ref",
+                        "approved_ref");
+        assertThat(service.visibleLocations(caseId, new SecretPrincipal(alice)).getFirst())
+                .doesNotContainKeys("source_object_ref", "approved_ref", "location_key");
+        jdbc.update("UPDATE secret_role_grants SET revoked_at=now() WHERE user_id=?", alice);
+        code(ErrorCode.NOT_FOUND, () -> service.detail(caseId, "alice"));
+    }
+
+    @Test
+    void caseCoordinatesRejectWrongRepositoryTraversalAndChangedApprovalPrefix() {
+        String approved = "github://Example/project/main/fixtures/";
+        for (String path :
+                java.util.List.of(
+                        "Other/project/fixtures/wrong.env",
+                        "Example/project/outside/wrong.env",
+                        "Example/project/fixtures/../wrong.env")) {
+            coordinates(occ1, approved, path, "L1");
+            var location = items(service.detail(caseId, "security")).getFirst();
+            assertThat(source(location)).containsEntry("status", "UNAVAILABLE");
+            assertThat(location.get("safeLocationLabel")).isEqualTo("위치 #" + occ1);
+            assertThat(location.toString()).doesNotContain(path, "github://");
+        }
+        coordinates(occ1, approved, "Example/project/fixtures/config.env", "L1");
+        assertThat(source(items(service.detail(caseId, "security")).getFirst()))
+                .containsEntry("status", "AVAILABLE");
+        jdbc.update(
+                "UPDATE secret_connection_scopes SET"
+                        + " approved_ref='github://Example/project/main/new-scope/' WHERE scope_id=(SELECT"
+                        + " scope_id FROM secret_occurrences WHERE occurrence_id=?)",
+                occ1);
+        assertThat(source(items(service.detail(caseId, "security")).getFirst()))
+                .containsEntry("status", "UNAVAILABLE");
+    }
+
+    @Test
+    void credentialLikeFileNamesAreMaskedAndNeverBecomeNavigableLinks() {
+        String credentialLike = "ghp_" + "a".repeat(36);
+        coordinates(
+                occ1,
+                "github://Example/project/main/fixtures/",
+                "Example/project/fixtures/" + credentialLike + ".env",
+                "L1");
+        var location = items(service.detail(caseId, "security")).getFirst();
+        assertThat(source(location))
+                .containsEntry("status", "AVAILABLE")
+                .containsEntry("sourceUrl", null);
+        assertThat(location.get("safeLocationLabel").toString())
+                .contains("마스킹")
+                .doesNotContain(credentialLike);
+        assertThat(JsonMapper.builder().build().writeValueAsString(service.detail(caseId, "security")))
+                .doesNotContain(credentialLike);
+    }
+
+    private void coordinates(long occurrence, String approved, String path, String line) {
+        jdbc.update(
+                "UPDATE secret_connection_scopes SET"
+                        + " content_type='GITHUB_REPOSITORY_FILES',history_limit='CURRENT_COMMIT_ONLY',approved_ref=?"
+                        + " WHERE scope_id=(SELECT scope_id FROM secret_occurrences WHERE occurrence_id=?)",
+                approved,
+                occurrence);
+        jdbc.update(
+                "UPDATE secret_occurrences SET source_object_ref=?,location_key=? WHERE occurrence_id=?",
+                path,
+                line,
+                occurrence);
+    }
+
+    @SuppressWarnings("unchecked")
+    private java.util.List<Map<String, Object>> items(Map<String, Object> detail) {
+        return (java.util.List<Map<String, Object>>) detail.get("occurrences");
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> source(Map<String, Object> location) {
+        return (Map<String, Object>) location.get("sourceDetails");
+    }
+
     @Test void firstActionStartsWorkWithoutASecondReviewAndCompletionIsSeparate(){
         assign(occ1,alice,0,0);
         var req=action(occ1,"ROTATED",1,1,"first");var result=service.action(caseId,req,"alice");

@@ -148,9 +148,30 @@ class SecretDecisionIntegrationTest {
         assertCode(ErrorCode.INVALID_INPUT,()->service.decide("security",f.occurrence,new DecisionRequest(request.decision(),request.reasonCode(),
             request.findingId(),List.of("https://private/raw-key"),0L,1L,null,"unsafe",null,null,null,null)));
         String context=JsonMapper.builder().findAndAddModules().build().writeValueAsString(service.context("security",f.occurrence));
-        assertThat(context).doesNotContain("private/raw-key","fingerprint","protected_evidence","github://");
+        assertThat(context).doesNotContain("https://private/raw-key","fingerprint","protected_evidence","github://","source_object_ref","approved_ref");
         assertThat(count("secret_exposure_assessments")).isZero();
     }
+    @Test
+    void reviewCoordinatesUseCurrentApprovedPathOnlyAfterOccurrenceReadAuthority() {
+        var f = fixture("CONFIRMED", "PRODUCTION");
+        var context = service.context("security", f.occurrence);
+        assertThat(context.safeLocationLabel()).isEqualTo("Example/project/fixtures/private/raw-key");
+        assertThat(context.sourceDetails())
+                .containsEntry("status", "AVAILABLE")
+                .containsEntry("path", "fixtures/private/raw-key")
+                .containsEntry("line", "L1");
+        assertCode(ErrorCode.NOT_FOUND, () -> service.context("scoped", f.occurrence));
+        jdbc.update(
+                "UPDATE secret_connection_scopes SET approved_ref='github://Example/project/main/other/'"
+                        + " WHERE scope_id=?",
+                f.scope);
+        var changed = service.context("security", f.occurrence);
+        assertThat(changed.sourceDetails()).containsEntry("status", "UNAVAILABLE");
+        assertThat(changed.safeLocationLabel()).isEqualTo("위치 #" + f.occurrence);
+        assertThat(JsonMapper.builder().build().writeValueAsString(changed))
+                .doesNotContain("private/raw-key", "github://", "source_object_ref", "approved_ref");
+    }
+
     @Test void revokedFalsePositiveApprovalOrRealProofImmediatelyRestoresValidFinding() {
         var f=fixture("CONFIRMED","PRODUCTION");var corrected=service.decide("security",f.occurrence,request(f,"FALSE_POSITIVE","NOT_A_CREDENTIAL","fp"));
         assertThat(count("secret_current_valid_findings")).isZero();

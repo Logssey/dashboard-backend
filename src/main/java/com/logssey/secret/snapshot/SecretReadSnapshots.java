@@ -208,7 +208,7 @@ public class SecretReadSnapshots {
                     SELECT 1 FROM secret_snapshot_location_memberships m JOIN secret_occurrences o ON o.occurrence_id=m.occurrence_id
                     WHERE m.snapshot_id=s.snapshot_id AND o.scope_id=?) OR EXISTS (
                     SELECT 1 FROM secret_snapshot_subjects subject
-                    WHERE subject.snapshot_id=s.snapshot_id AND subject.subject_type IN ('GapScope','UnclassifiedScope')
+                    WHERE subject.snapshot_id=s.snapshot_id AND subject.subject_type IN ('GapScope','UnclassifiedScope','HealthScope','UnassignedSetupScope','PausedSetupScope')
                       AND subject.subject_id=?))
                     RETURNING snapshot_id,owner_user_id)
                 INSERT INTO secret_snapshot_retirements(snapshot_id,owner_user_id)

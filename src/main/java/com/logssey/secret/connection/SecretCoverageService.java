@@ -130,31 +130,134 @@ public class SecretCoverageService {
         return Boolean.TRUE.equals(provider.equals("AWS")?jdbc.queryForObject(sql,Boolean.class,connectionId,connectionId,connectionId):jdbc.queryForObject(sql,Boolean.class,connectionId,connectionId));
     }
 
-    private List<Map<String,Object>> currentScopes(long connectionId,String origin) {
-        return jdbc.queryForList("""
-            SELECT scope_id,connection_id,scope_key,revision,content_type,response_origin,safe_display_alias,alias_version,enabled,approved_ref
-            FROM secret_connection_scopes WHERE connection_id=? AND enabled
-              AND (?='ALL' OR response_origin=?) ORDER BY scope_id
-            """,connectionId,origin,origin);
+    private List<Map<String, Object>> currentScopes(long connectionId, String origin) {
+        return jdbc.queryForList(
+                """
+SELECT scope_id,connection_id,scope_key,revision,content_type,history_limit,response_origin,response_origin_version,safe_display_alias,alias_version,enabled,approved_ref,
+    md5(jsonb_build_array(content_type,approved_ref,history_limit)::text) AS scope_fingerprint
+FROM secret_connection_scopes WHERE connection_id=? AND enabled
+    AND (?='ALL' OR response_origin=?) ORDER BY scope_id
+""",
+                connectionId,
+                origin,
+                origin);
     }
 
-    private Map<String,Object> scopeItem(Map<String,Object> s,Map<String,Object> c,Map<String,Object> coverage,SecretPrincipal actor) {
-        Map<String,Object> item=new LinkedHashMap<>();long id=number(s,"scope_id");
-        item.put("scopeId",id);item.put("connectionId",c.get("connection_id"));item.put("scopeRevision",s.get("revision"));
-        item.put("source",c.get("provider"));item.put("contentType",safeType((String)s.get("content_type")));item.put("origin",s.get("response_origin"));
-        item.put("safeDisplayAlias",s.get("safe_display_alias")==null?com.logssey.secret.query.SecretSourceDetails.scopeLabel((String)c.get("provider"),(String)s.get("approved_ref"),id):s.get("safe_display_alias"));
-        item.put("customSafeDisplayAlias",s.get("safe_display_alias"));item.put("aliasVersion",s.get("alias_version"));
-        boolean canEditAlias=access.hasConnectionRole(actor,number(c,"connection_id"),SecretRole.OPERATIONS);
-        boolean security=access.hasConnectionRole(actor,number(c,"connection_id"),SecretRole.SECURITY);
-        item.put("capabilities",Map.of("canEditAlias",canEditAlias));
-        item.put("coverage",coverage);
-        var reasons=jdbc.query("SELECT unnest(setup_reason_codes) FROM secret_scope_governance_status WHERE scope_id=?",(rs,n)->rs.getString(1),id);
-        item.put("setupReasonCodes",reasons);
-        var pending=jdbc.queryForList("SELECT proposed_by_user_id,reviewer_user_id,created_at FROM secret_scope_classification_proposals WHERE scope_id=? AND status='PENDING_APPROVAL'",id);
-        var proposal=pending.isEmpty()?null:pending.getFirst();
-        boolean approve=security&&proposal!=null&&number(proposal,"proposed_by_user_id")!=actor.userId()
-            &&(proposal.get("reviewer_user_id")==null||number(proposal,"reviewer_user_id")==actor.userId());
-        item.put("taskGuidance",com.logssey.secret.query.SecretTaskGuidance.scope(id,number(c,"connection_id"),reasons,canEditAlias||security,approve,proposal==null?null:time(proposal,"created_at")));
+    private Map<String, Object> scopeItem(
+            Map<String, Object> s,
+            Map<String, Object> c,
+            Map<String, Object> coverage,
+            SecretPrincipal actor) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        long id = number(s, "scope_id");
+        item.put("scopeId", id);
+        item.put("connectionId", c.get("connection_id"));
+        item.put("scopeRevision", s.get("revision"));
+        item.put("source", c.get("provider"));
+        item.put("contentType", safeType((String) s.get("content_type")));
+        item.put("origin", s.get("response_origin"));
+        item.put("connectionStatus", c.get("status"));
+        item.put(
+                "safeDisplayAlias",
+                s.get("safe_display_alias") == null
+                        ? com.logssey.secret.query.SecretSourceDetails.scopeLabel(
+                                (String) c.get("provider"), (String) s.get("approved_ref"), id)
+                        : s.get("safe_display_alias"));
+        item.put("customSafeDisplayAlias", s.get("safe_display_alias"));
+        item.put("aliasVersion", s.get("alias_version"));
+        boolean canEditAlias =
+                access.hasConnectionRole(actor, number(c, "connection_id"), SecretRole.OPERATIONS);
+        boolean security =
+                access.hasConnectionRole(actor, number(c, "connection_id"), SecretRole.SECURITY);
+        item.put("coverage", coverage);
+        var reasons =
+                jdbc.query(
+                        "SELECT unnest(setup_reason_codes) FROM secret_scope_governance_status WHERE"
+                                + " scope_id=?",
+                        (rs, n) -> rs.getString(1),
+                        id);
+        item.put("setupReasonCodes", reasons);
+        var pending =
+                jdbc.queryForList(
+                        """
+SELECT q.*,q.policy_id IS NULL OR EXISTS(SELECT 1 FROM secret_storage_policies p
+    WHERE p.policy_id=q.policy_id AND p.version=q.policy_version AND p.status='ACTIVE'
+        AND p.valid_from<=now() AND (p.valid_until IS NULL OR p.valid_until>now())) AS policy_usable
+FROM secret_scope_classification_proposals q WHERE q.scope_id=? AND q.status='PENDING_APPROVAL'
+""",
+                        id);
+        var proposal = pending.isEmpty() ? null : pending.getFirst();
+        boolean proposalCurrent =
+                proposal != null
+                        && Objects.equals(proposal.get("scope_revision"), s.get("revision"))
+                        && Objects.equals(
+                                proposal.get("expected_scope_version"), s.get("response_origin_version"))
+                        && Objects.equals(proposal.get("scope_fingerprint"), s.get("scope_fingerprint"))
+                        && Boolean.TRUE.equals(proposal.get("policy_usable"));
+        boolean approve =
+                security
+                        && proposalCurrent
+                        && number(proposal, "proposed_by_user_id") != actor.userId()
+                        && (proposal.get("reviewer_user_id") == null
+                                || number(proposal, "reviewer_user_id") == actor.userId());
+        boolean available = "ACTIVE".equals(c.get("status")) && Boolean.TRUE.equals(s.get("enabled"));
+        boolean supported =
+                "GITHUB".equals(c.get("provider"))
+                        ? com.logssey.secret.response.SecretGithubScopePolicy.approved(
+                                        (String) s.get("content_type"),
+                                        (String) s.get("history_limit"),
+                                        (String) s.get("approved_ref"))
+                                && !s.get("approved_ref").toString().contains("..")
+                                && !s.get("approved_ref").toString().contains("\\")
+                        : "AWS".equals(c.get("provider"))
+                                && Boolean.TRUE.equals(
+                                        jdbc.queryForObject(
+                                                "SELECT "
+                                                        + com.logssey.secret.run.AwsScopeSql.predicate("s")
+                                                        + " FROM secret_connection_scopes s WHERE scope_id=?",
+                                                Boolean.class,
+                                                id));
+        boolean valueScope =
+                Set.of(
+                                "GITHUB_REPOSITORY_FILES",
+                                "AWS_SECRETS_MANAGER_VALUE",
+                                "AWS_SSM_PARAMETER_VALUE",
+                                "AWS_S3_OBJECT_CONTENT")
+                        .contains(s.get("content_type"));
+        String blocked =
+                !available
+                        ? "CONNECTION_PAUSED"
+                        : !supported ? "SOURCE_CONFIGURATION_UNSUPPORTED" : !security ? "ROLE_REQUIRED" : null;
+        item.put(
+                "setupState",
+                !available
+                        ? "PAUSED"
+                        : !supported ? "UNSUPPORTED" : proposal != null ? "PENDING_REVIEW" : "READY");
+        item.put("setupBlockedReasonCode", blocked);
+        item.put(
+                "capabilities",
+                Map.of(
+                        "canEditAlias",
+                        canEditAlias,
+                        "canClassifySource",
+                        security && available && supported && proposal == null,
+                        "canConfigureStoragePolicy",
+                        security && available && supported && valueScope,
+                        "canReviewClassification",
+                        approve && available && supported));
+        var task =
+                com.logssey.secret.query.SecretTaskGuidance.scope(
+                        id,
+                        number(c, "connection_id"),
+                        reasons,
+                        security && available && supported,
+                        approve && available && supported,
+                        proposal == null ? null : time(proposal, "created_at"));
+        if (blocked != null) {
+            task.put("canExecute", false);
+            task.put("blockedReasonCode", blocked);
+        }
+        item.put("taskGuidance", task);
         return item;
     }
 
