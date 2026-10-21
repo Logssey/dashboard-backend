@@ -74,7 +74,7 @@ class SecretScheduleServiceTest {
                 .containsEntry("validation_status", "PENDING").containsEntry("result_status", "PENDING")
                 .containsEntry("started_at", null).containsEntry("finished_at", null);
         assertThat(timestamp("SELECT scheduled_at FROM secret_jobs")).isEqualTo(due);
-        assertThat(nextDue(connectionId)).isEqualTo(due.plusHours(6));
+        assertThat(nextDue(connectionId)).isAfter(OffsetDateTime.now().plusHours(5)).isBefore(OffsetDateTime.now().plusHours(7));
         assertThat(timestamp("SELECT last_collection_success_at FROM secret_connections")).isEqualTo(previousSuccess);
         assertThat(jdbc.queryForObject("SELECT object_count FROM secret_run_scopes", Long.class)).isNull();
     }
@@ -203,7 +203,7 @@ class SecretScheduleServiceTest {
     }
 
     @Test
-    void outstandingOverdueJobPreventsAnUnboundedQueueAndPreservesOverdueTimestamp() {
+    void outstandingJobPreventsDuplicatesAndDowntimeDoesNotKeepScheduleOverdue() {
         long id = connection("ACTIVE", pastDue().minusHours(12), true);
         assertThat(service.reserveDueJobs()).isEqualTo(1);
         var due = nextDue(id);
@@ -211,20 +211,20 @@ class SecretScheduleServiceTest {
         assertThat(service.reserveDueJobs()).isZero();
         assertThat(count("secret_jobs")).isEqualTo(1);
         assertThat(nextDue(id)).isEqualTo(due);
-        assertThat(due).isBefore(OffsetDateTime.now());
+        assertThat(due).isAfter(OffsetDateTime.now());
     }
 
     @Test
-    void nextReservationUsesPriorDueTimeEvenAfterFailureRatherThanCompletionTime() {
+    void failedCatchupDoesNotReplayEveryMissedSlotAfterLongDowntime() {
         var firstDue = pastDue().minusHours(12);
         long id = connection("ACTIVE", firstDue, true);
         assertThat(service.reserveDueJobs()).isEqualTo(1);
         jdbc.update("UPDATE secret_jobs SET status = 'FAILED', finished_at = CURRENT_TIMESTAMP, last_error_code = 'TEST_ONLY'");
 
-        assertThat(newService(true, 100).reserveDueJobs()).isEqualTo(1);
+        assertThat(newService(true, 100).reserveDueJobs()).isZero();
         assertThat(jdbc.queryForList("SELECT scheduled_at FROM secret_jobs ORDER BY job_id", OffsetDateTime.class))
-                .containsExactly(firstDue, firstDue.plusHours(6));
-        assertThat(nextDue(id)).isEqualTo(firstDue.plusHours(12));
+                .containsExactly(firstDue);
+        assertThat(nextDue(id)).isAfter(OffsetDateTime.now().plusHours(5));
         assertThat(jdbc.queryForObject("SELECT last_collection_success_at FROM secret_connections", OffsetDateTime.class)).isNull();
     }
 
