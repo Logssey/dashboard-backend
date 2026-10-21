@@ -75,6 +75,17 @@ class SecretLocationIntegrationTest {
         result=service.locations("security",key,filter("ALL"),0,20,"ALL","ALL","ALL",null);
         assertThat(result.get("items").toString()).contains("위치 #").doesNotContain("ghp_123456");
     }
+    @Test void authorizedLocationsRestoreSourceCoordinatesButOtherConnectionsStayHidden() {
+        long conn=connection();grant(security,"SECURITY",conn);long scope=scope(conn),key=key("CONFIRMED","a4");
+        jdbc.update("UPDATE secret_connection_scopes SET approved_ref='github://Logssey/test-find-key/main/fixtures/' WHERE scope_id=?",scope);
+        occurrence(key,conn,scope,"PRESENT");
+        jdbc.update("UPDATE secret_occurrences SET source_object_ref='Logssey/test-find-key/fixtures/config/sample.env',location_key='L4' WHERE scope_id=?",scope);
+        var result=service.locations("security",key,filter("ALL"),0,20,"ALL","ALL","ALL",null);
+        assertThat(result.get("items").toString()).contains("fixtures/config/sample.env","branch=main","line=L4");
+        jdbc.update("UPDATE secret_role_grants SET revoked_at=now() WHERE user_id=?",security);
+        assertCode(ErrorCode.FORBIDDEN,()->service.locations("security",key,filter("ALL"),0,20,"ALL","ALL","ALL",null));
+    }
+
     @Test void operationsAndAdminDoNotGainCredentialReadRights() {
         long conn=connection(); grant(operations,"OPERATIONS",conn);
         assertCode(ErrorCode.FORBIDDEN,()->inventory("operations",filter("ALL"),null));

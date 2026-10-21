@@ -352,7 +352,8 @@ public class SecretStoragePolicyService {
                 scope.available() && security && current && pending.proposer()!=actor.userId()
                     && (pending.reviewerUserId()==null || pending.reviewerUserId()==actor.userId()),
                 security && pending!=null,scope.available() && security && CONTENT_TYPES.contains(scope.contentType()),
-                pending!=null && scope.available() && (security || pending.proposer()==actor.userId() && access.hasConnectionRole(actor,scope.connectionId(),SecretRole.OPERATIONS)));
+                pending!=null && scope.available() && (security || pending.proposer()==actor.userId() && access.hasConnectionRole(actor,scope.connectionId(),SecretRole.OPERATIONS)),
+                security && scope.available() && pending==null && SOURCE_TYPES.contains(scope.contentType()));
     }
 
     private PolicySummary summary(Policy policy,SecretPrincipal actor,boolean changed) {

@@ -27,6 +27,10 @@ public class SecretStoragePolicyController {
     public Classification propose(@PathVariable long scopeId,@RequestBody ProposalRequest request,Authentication authentication) {
         return changes.propose(scopeId,request,login(authentication));
     }
+    @PatchMapping("/scopes/{scopeId}/classification")
+    public Classification classifySource(@PathVariable long scopeId,@RequestBody SourceClassificationRequest request,Authentication authentication) {
+        return changes.classifySource(scopeId,request,login(authentication));
+    }
     @PostMapping("/scopes/{scopeId}/classification-preview")
     public Preview preview(@PathVariable long scopeId,@RequestBody PreviewRequest request,Authentication authentication) {
         return changes.preview(scopeId,request,login(authentication));

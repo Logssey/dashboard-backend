@@ -261,6 +261,8 @@ public class SecretLocationService {
                 "canRecordAction",row.caseId()!=null && lifecycle.assignedActionable(actor,row.caseId(),row.occurrenceId()),"canRequestRevalidation",ready.get("canRequestRevalidation"),"canViewCoverage",access.canReadConnectionFacts(actor,row.connectionId()),
                 "canRequestAssistance",true,"canOpenSafeSource",false));
         result.put("taskGuidance",SecretTaskGuidance.location(result));
+        result.put("sourceDetails",repository.sourceDetails(row));
+        result.put("detectionEvidence",repository.detectionEvidence(row));
         var summary=summaryFacts(row,operational,coverage,ready);
         result.put("requiredRemediation",summary.get("requiredRemediation"));
         result.put("remediationPresence",SecretRemediationSummary.state(summary));

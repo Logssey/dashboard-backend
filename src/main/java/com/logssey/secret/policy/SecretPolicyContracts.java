@@ -24,6 +24,7 @@ public final class SecretPolicyContracts {
         }
     }
     public record PreviewRequest(String origin, Long storagePolicyId, Long storagePolicyVersion, Long expectedScopeVersion) { }
+    public record SourceClassificationRequest(String origin, Long expectedScopeVersion, String idempotencyKey) { }
     public record Reviewer(long userId, String displayName) { }
     public record Preview(String approvalMode, List<String> approvalReasonCodes, String approvalRuleVersion,
                           List<Reviewer> eligibleReviewers, boolean canSubmit, List<String> remainingReasonCodes) { }
@@ -45,7 +46,7 @@ public final class SecretPolicyContracts {
                                  OffsetDateTime retiredAt, boolean usableNow, List<SafeRule> rules,
                                  PolicyCapabilities capabilities, boolean requiresSnapshotRefresh) { }
     public record ClassificationCapabilities(boolean canPropose, boolean canApprove, boolean canReject,
-                                             boolean canDraftPolicy, boolean canAssignReviewer) { }
+                                             boolean canDraftPolicy, boolean canAssignReviewer, boolean canClassifySource) { }
     public record Proposal(long proposalId, long scopeId, String origin, Long storagePolicyId,
                             Long storagePolicyVersion, String reasonCode, String evidenceRef,
                             long proposedByUserId, long expectedScopeVersion, long version,
