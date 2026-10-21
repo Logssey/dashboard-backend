@@ -15,9 +15,7 @@ ALTER TABLE secret_connection_scopes
  ADD COLUMN synthetic_fixture BOOLEAN NOT NULL DEFAULT false,
  ADD CONSTRAINT ck_secret_validation_scope_profile CHECK(NOT validation_approved OR
   (validation_profile_version IS NOT NULL AND validation_approved_by_user_id IS NOT NULL AND validation_approved_at IS NOT NULL));
--- Existing explicitly synthetic experiment source remains guarded independently of TEST labels.
-UPDATE secret_connection_scopes SET synthetic_fixture=true
- WHERE approved_ref ~* '^https://github[.]com/Logssey/test-find-key(/|$)';
+-- Synthetic status requires an explicit scope decision or exact current manifest/fingerprint evidence.
 ALTER TABLE secret_jobs DROP CONSTRAINT ck_secret_job_kind;
 ALTER TABLE secret_jobs ADD CONSTRAINT ck_secret_job_kind CHECK(kind IN('FULL_SCAN','REVALIDATE','ASSESS'));
 ALTER TABLE secret_jobs
@@ -106,13 +104,14 @@ CREATE VIEW secret_validation_context AS
   o.exposure_assessment_version AS occurrence_revision,s.revision AS scope_revision,
   s.validation_approval_revision,c.validation_revision,c.scope_version,c.status AS connection_status,
   s.enabled AS scope_enabled,c.validation_enabled,s.validation_approved,
-  (s.synthetic_fixture OR s.approved_ref ~* '^github://Logssey/test-find-key/' OR EXISTS(SELECT 1 FROM secret_current_fixture_attestations fa WHERE fa.credential_set_id=k.credential_set_id AND fa.scope_id=s.scope_id)) AS synthetic_fixture,
+  (s.synthetic_fixture OR EXISTS(SELECT 1 FROM secret_current_fixture_attestations fa WHERE fa.credential_set_id=k.credential_set_id AND fa.scope_id=s.scope_id)) AS synthetic_fixture,
   c.validation_profile_version AS connection_profile,s.validation_profile_version AS scope_profile,
   COALESCE(a.action_id,0) AS action_id,a.performed_at AS action_performed_at,
   encode(sha256(convert_to(concat_ws(':',o.occurrence_id,k.credential_set_id,k.credential_revision,k.fingerprint_key_version,
    o.exposure_assessment_version,s.revision,s.validation_approval_revision,c.validation_revision,c.scope_version,
    c.status,s.enabled,c.validation_enabled,s.validation_approved,c.validation_profile_version,s.validation_profile_version,
-   s.synthetic_fixture,COALESCE(a.action_id,0),a.performed_at),'UTF8')),'hex') AS context_version
+   s.synthetic_fixture,COALESCE(a.action_id,0),a.performed_at),'UTF8')),'hex') AS context_version,
+  (s.approved_ref ~* '^github://Logssey/test-find-key/' AND NOT s.synthetic_fixture AND NOT EXISTS(SELECT 1 FROM secret_current_fixture_attestations fa WHERE fa.credential_set_id=k.credential_set_id AND fa.scope_id=s.scope_id)) AS source_guard_blocked
  FROM secret_occurrences o JOIN secret_credential_sets k USING(credential_set_id)
  JOIN secret_connection_scopes s ON s.scope_id=o.scope_id JOIN secret_connections c ON c.connection_id=o.connection_id
  LEFT JOIN LATERAL(SELECT action_id,performed_at FROM secret_action_records WHERE occurrence_id=o.occurrence_id ORDER BY performed_at DESC,action_id DESC LIMIT 1) a ON true;
@@ -123,7 +122,7 @@ CREATE VIEW secret_current_validation_attempts AS
  AND a.credential_set_id=v.credential_set_id AND a.credential_revision=v.credential_revision AND a.scope_id=v.scope_id
  AND a.scope_revision=v.scope_revision AND a.validation_revision=v.validation_revision AND a.validation_approval_revision=v.validation_approval_revision
  AND (a.result='UNCHECKED' OR (v.connection_status='ACTIVE' AND v.scope_enabled AND v.validation_enabled AND v.validation_approved
-  AND a.validation_profile_version=v.connection_profile AND v.connection_profile=v.scope_profile AND NOT v.synthetic_fixture));
+  AND a.validation_profile_version=v.connection_profile AND v.connection_profile=v.scope_profile AND NOT v.synthetic_fixture AND NOT v.source_guard_blocked));
 
 CREATE FUNCTION secret_validation_job_defaults() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
  IF NEW.purpose IS NULL THEN NEW.purpose:=CASE NEW.kind WHEN 'FULL_SCAN' THEN 'COLLECTION_AND_DETECTION' WHEN 'REVALIDATE' THEN 'LOCATION_RECHECK' WHEN 'ASSESS' THEN 'SEVERITY_ASSESSMENT' END; END IF;
