@@ -4,4 +4,8 @@ package com.logssey.secretworker.validation;
 @FunctionalInterface
 public interface AwsValidationService {
     AwsValidationResult validate(AwsKeyMaterial key);
+
+    default boolean enabled() {
+        return true;
+}
 }

@@ -1,14 +1,15 @@
 package com.logssey.secretworker.validation;
 
-import java.net.URI;
-import java.time.Duration;
-
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentials;
 import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.core.retry.RetryPolicy;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.sts.StsClient;
+
+import java.net.URI;
+import java.time.Duration;
 
 /** Signs GetCallerIdentity with the supplied pair, never with the default credential chain. */
 final class AwsStsCaller implements AwsCredentialValidator.StsCaller {
@@ -36,7 +37,9 @@ final class AwsStsCaller implements AwsCredentialValidator.StsCaller {
                 .region(Region.US_EAST_1)
                 .endpointOverride(endpoint)
                 .credentialsProvider(StaticCredentialsProvider.create(credentials))
-                .overrideConfiguration(config -> config.apiCallTimeout(CALL_TIMEOUT))
+                .overrideConfiguration(config -> config.apiCallTimeout(CALL_TIMEOUT)
+                                                .apiCallAttemptTimeout(CALL_TIMEOUT)
+                                                .retryPolicy(RetryPolicy.none()))
                 .build()) {
             sts.getCallerIdentity();
         }

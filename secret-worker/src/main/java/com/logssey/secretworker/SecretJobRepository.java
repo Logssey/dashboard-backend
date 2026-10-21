@@ -1,12 +1,12 @@
 package com.logssey.secretworker;
 
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Repository;
+
 import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
-
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.stereotype.Repository;
 
 @Repository
 class SecretJobRepository {
@@ -22,63 +22,75 @@ class SecretJobRepository {
     }
 
     List<JobRow> lockAvailable(OffsetDateTime now, int limit, String provider) {
-        return jdbc.query("""
-                SELECT j.job_id, r.run_id, j.connection_id, j.attempt_no, j.max_attempts,
-                       j.status, j.lease_owner, j.lease_until
-                FROM secret_jobs j
-                JOIN secret_connections c ON c.connection_id = j.connection_id
-                JOIN secret_scan_runs r ON r.job_id = j.job_id
-                WHERE j.status = 'PENDING' AND j.available_at <= ? AND c.status = 'ACTIVE'
-                  AND c.provider = COALESCE(?, c.provider)
-                ORDER BY j.available_at, j.job_id
-                LIMIT ? FOR UPDATE OF j SKIP LOCKED
-                """, (rs, row) -> jobRow(rs), now, provider, limit);
+        return jdbc.query(
+                """
+SELECT j.job_id, r.run_id, j.connection_id, j.attempt_no, j.max_attempts,
+       j.status, j.lease_owner, j.lease_until,j.lease_token::text AS fence_token,j.lease_generation
+FROM secret_jobs j
+JOIN secret_connections c ON c.connection_id = j.connection_id
+JOIN secret_scan_runs r ON r.job_id = j.job_id
+WHERE j.status = 'PENDING' AND j.available_at <= ? AND c.status = 'ACTIVE'
+  AND c.provider = COALESCE(?, c.provider)
+ORDER BY j.available_at, j.job_id
+LIMIT ? FOR UPDATE OF j SKIP LOCKED
+""", (rs, row) -> jobRow(rs), now, provider, limit);
     }
 
     List<JobRow> lockExpired(OffsetDateTime now, int limit) {
-        return jdbc.query("""
-                SELECT j.job_id, r.run_id, j.connection_id, j.attempt_no, j.max_attempts,
-                       j.status, j.lease_owner, j.lease_until
-                FROM secret_jobs j
-                JOIN secret_scan_runs r ON r.job_id = j.job_id
-                WHERE j.status = 'LEASED' AND j.lease_until <= ?
-                ORDER BY j.lease_until, j.job_id
-                LIMIT ? FOR UPDATE OF j SKIP LOCKED
-                """, (rs, row) -> jobRow(rs), now, limit);
+        return jdbc.query(
+                """
+SELECT j.job_id, r.run_id, j.connection_id, j.attempt_no, j.max_attempts,
+       j.status, j.lease_owner, j.lease_until,j.lease_token::text AS fence_token,j.lease_generation
+FROM secret_jobs j
+JOIN secret_scan_runs r ON r.job_id = j.job_id
+WHERE j.status = 'LEASED' AND j.lease_until <= ?
+ORDER BY j.lease_until, j.job_id
+LIMIT ? FOR UPDATE OF j SKIP LOCKED
+""", (rs, row) -> jobRow(rs), now, limit);
     }
 
     Optional<JobRow> lockJob(long jobId) {
-        return jdbc.query("""
-                SELECT j.job_id, r.run_id, j.connection_id, j.attempt_no, j.max_attempts,
-                       j.status, j.lease_owner, j.lease_until
-                FROM secret_jobs j
-                JOIN secret_scan_runs r ON r.job_id = j.job_id
-                WHERE j.job_id = ? FOR UPDATE OF j
-                """, rs -> rs.next() ? Optional.of(jobRow(rs)) : Optional.empty(), jobId);
+        return jdbc.query(
+                """
+SELECT j.job_id, r.run_id, j.connection_id, j.attempt_no, j.max_attempts,
+       j.status, j.lease_owner, j.lease_until,j.lease_token::text AS fence_token,j.lease_generation
+FROM secret_jobs j
+JOIN secret_scan_runs r ON r.job_id = j.job_id
+WHERE j.job_id = ? FOR UPDATE OF j
+""", rs -> rs.next() ? Optional.of(jobRow(rs)) : Optional.empty(), jobId);
     }
 
     ClaimedSecretJob claim(JobRow row, OffsetDateTime now, OffsetDateTime leaseUntil, String token) {
-        jdbc.update("""
-                UPDATE secret_jobs
-                SET status = 'LEASED', lease_owner = ?, lease_until = ?, attempt_no = attempt_no + 1,
-                    last_error_code = NULL
-                WHERE job_id = ?
-                """, token, leaseUntil, row.jobId());
+        jdbc.update(
+                """
+UPDATE secret_jobs
+SET status = 'LEASED', lease_owner = ?, lease_until = ?, attempt_no = attempt_no + 1,
+    lease_token = ?::uuid, lease_generation = lease_generation + 1,
+    last_error_code = NULL
+WHERE job_id = ?
+""", token, leaseUntil,
+                token, row.jobId());
         jdbc.update("""
                 UPDATE secret_scan_runs
                 SET started_at = COALESCE(started_at, ?), result_status = 'RUNNING', failure_code = NULL
                 WHERE run_id = ?
                 """, now, row.runId());
         return new ClaimedSecretJob(row.jobId(), row.runId(), row.connectionId(),
-                row.attemptNo() + 1, token, leaseUntil);
+                row.attemptNo() + 1, token, leaseUntil,
+                jdbc.queryForObject(
+                        "SELECT lease_generation FROM secret_jobs WHERE job_id=?",
+                        Long.class,
+                        row.jobId()));
     }
 
     boolean renew(long jobId, String token, Duration leaseDuration) {
-        return jdbc.update("""
-                UPDATE secret_jobs SET lease_until = clock_timestamp() + (? * INTERVAL '1 millisecond')
-                WHERE job_id = ? AND status = 'LEASED' AND lease_owner = ?
-                  AND lease_until > clock_timestamp()
-                """, leaseDuration.toMillis(), jobId, token) == 1;
+        return jdbc.update(
+                        """
+UPDATE secret_jobs SET lease_until = clock_timestamp() + (? * INTERVAL '1 millisecond')
+WHERE job_id = ? AND status = 'LEASED' AND lease_owner = ?
+  AND lease_until > clock_timestamp() AND lease_token::text = ?
+""", leaseDuration.toMillis(), jobId,
+                        token, token) == 1;
     }
 
     RunState runState(long runId) {
@@ -129,7 +141,9 @@ class SecretJobRepository {
                 WHERE run_id = ?
                 """, resultStatus, resultStatus, now, row.runId());
         new SecretFullScanPresence(jdbc).reconcile(row.runId(),now);
-        if(Boolean.TRUE.equals(jdbc.queryForObject("SELECT to_regprocedure('secret_apply_storage_policy_defaults(bigint)') IS NOT NULL",Boolean.class))) {
+        if(Boolean.TRUE.equals(jdbc.queryForObject(
+                        "SELECT to_regprocedure('secret_apply_storage_policy_defaults(bigint)') IS"
+                            + " NOT NULL",Boolean.class))) {
             jdbc.queryForObject("SELECT secret_apply_storage_policy_defaults(?)",Object.class,row.runId());
         }
         new com.logssey.secretworker.evidence.TrustedFixtureComparator(jdbc).compareRun(row.runId(),now);
@@ -138,13 +152,38 @@ class SecretJobRepository {
         updateLastCollectionSuccess(row);
     }
 
+    boolean isCredentialValidation(long jobId) {
+        return Boolean.TRUE.equals(
+                jdbc.queryForObject(
+                        "SELECT purpose='CREDENTIAL_VALIDITY' FROM secret_jobs WHERE job_id=?",
+                        Boolean.class,
+                        jobId));
+    }
+
+    void finishValidation(JobRow row, OffsetDateTime now, String outcome) {
+        jdbc.update(
+                "UPDATE secret_jobs SET"
+                    + " status='SUCCEEDED',lease_owner=NULL,lease_until=NULL,lease_token=NULL,finished_at=?"
+                    + " WHERE job_id=?",
+                now,
+                row.jobId());
+        jdbc.update(
+                "UPDATE secret_scan_runs SET result_status=?,finished_at=? WHERE run_id=?",
+                outcome,
+                now,
+                row.runId());
+    }
+
     void retry(JobRow row, OffsetDateTime now, OffsetDateTime availableAt, String code) {
-        jdbc.update("""
-                UPDATE secret_jobs
-                SET status = 'PENDING', available_at = ?, lease_owner = NULL, lease_until = NULL,
-                    last_error_code = ?
-                WHERE job_id = ?
-                """, availableAt, code, row.jobId());
+        jdbc.update(
+                """
+UPDATE secret_jobs
+SET status = 'PENDING', available_at = GREATEST(?::timestamptz,COALESCE((SELECT max(next_due_at) FROM secret_validation_attempts WHERE run_id=?),?::timestamptz)), lease_owner = NULL, lease_until = NULL,
+    last_error_code = ?
+WHERE job_id = ?
+""",
+                availableAt,
+                row.runId(), availableAt, code, row.jobId());
         jdbc.update("""
                 UPDATE secret_scan_runs SET
                     collection_status = CASE WHEN collection_status IN ('RUNNING', 'PARTIAL', 'FAILED')
@@ -290,13 +329,40 @@ class SecretJobRepository {
     private JobRow jobRow(java.sql.ResultSet rs) throws java.sql.SQLException {
         return new JobRow(rs.getLong("job_id"), rs.getLong("run_id"), rs.getLong("connection_id"),
                 rs.getInt("attempt_no"), rs.getInt("max_attempts"), rs.getString("status"),
-                rs.getString("lease_owner"), rs.getObject("lease_until", OffsetDateTime.class));
+                rs.getString("lease_owner"), rs.getObject("lease_until", OffsetDateTime.class),
+                rs.getString("fence_token"),
+                rs.getLong("lease_generation"));
     }
 
     record JobRow(long jobId, long runId, long connectionId, int attemptNo, int maxAttempts,
-                  String status, String leaseOwner, OffsetDateTime leaseUntil) {
+                  String status, String leaseOwner, OffsetDateTime leaseUntil,
+            String fenceToken,
+            long leaseGeneration) {
+        JobRow(
+                long jobId,
+                long runId,
+                long connectionId,
+                int attemptNo,
+                int maxAttempts,
+                String status,
+                String owner,
+                OffsetDateTime until) {
+            this(
+                    jobId,
+                    runId,
+                    connectionId,
+                    attemptNo,
+                    maxAttempts,
+                    status,
+                    owner,
+                    until,
+                    owner,
+                    Math.max(1, attemptNo));
+        }
         boolean isLiveLease(String token, OffsetDateTime now) {
             return "LEASED".equals(status) && leaseOwner != null && leaseOwner.equals(token)
+                    && token.equals(fenceToken)
+                    && leaseGeneration > 0
                     && leaseUntil != null && leaseUntil.isAfter(now);
         }
     }

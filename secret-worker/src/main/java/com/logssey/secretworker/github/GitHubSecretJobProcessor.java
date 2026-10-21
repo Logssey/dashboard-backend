@@ -1,5 +1,21 @@
 package com.logssey.secretworker.github;
 
+import com.logssey.secretworker.ClaimedSecretJob;
+import com.logssey.secretworker.SecretJobExecutionService;
+import com.logssey.secretworker.SecretJobFailure;
+import com.logssey.secretworker.SecretJobFailureCode;
+import com.logssey.secretworker.SecretJobProcessor;
+import com.logssey.secretworker.SecretJobProperties;
+import com.logssey.secretworker.detection.SecretFindingNormalizer;
+import com.logssey.secretworker.detection.SecretFindingRepository;
+import com.logssey.secretworker.detector.DetectionFailure;
+import com.logssey.secretworker.detector.SecretContentDetector;
+import com.logssey.secretworker.validation.AwsValidationResult;
+import com.logssey.secretworker.validation.AwsValidationService;
+import com.logssey.secretworker.validation.SecretValidationAttemptRepository;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -12,22 +28,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-
-import org.springframework.jdbc.core.JdbcTemplate;
-
-import com.logssey.secretworker.ClaimedSecretJob;
-import com.logssey.secretworker.SecretJobExecutionService;
-import com.logssey.secretworker.SecretJobFailure;
-import com.logssey.secretworker.SecretJobFailureCode;
-import com.logssey.secretworker.SecretJobProcessor;
-import com.logssey.secretworker.SecretJobProperties;
-import com.logssey.secretworker.detection.SecretFindingRepository;
-import com.logssey.secretworker.detection.SecretFindingNormalizer;
-import com.logssey.secretworker.detector.DetectionFailure;
-import com.logssey.secretworker.detector.SecretContentDetector;
-import com.logssey.secretworker.validation.AwsValidationResult;
-import com.logssey.secretworker.validation.AwsValidationService;
-import com.logssey.secretworker.validation.SecretValidationAttemptRepository;
 
 /** Processes only approved GitHub scopes; bytes remain in the collector's synchronous callback. */
 public final class GitHubSecretJobProcessor implements SecretJobProcessor {
@@ -61,6 +61,39 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
 
     @Override
     public void process(ClaimedSecretJob job, SecretJobExecutionService execution) {
+        if (attempts.isManual(job)) {
+            new com.logssey.secretworker.validation.CredentialRevalidationProcessor(
+                            jdbc, normalizer, detector, attempts, validator)
+                    .process(
+                            job,
+                            execution,
+                            (target, sink) -> {
+                                var approved =
+                                        GitHubApprovedScope.fromApprovedRef(
+                                                (String) target.get("approved_ref"),
+                                                (String) target.get("history_limit"));
+                                String ref = (String) target.get("source_object_ref"),
+                                        prefix =
+                                                approved.owner()
+                                                        + "/"
+                                                        + approved.repository()
+                                                        + "/";
+                                if (!ref.startsWith(prefix)) return false;
+                                return collector
+                                                .collectFile(
+                                                        approved,
+                                                        ref.substring(prefix.length()),
+                                                        GitHubCollectionLimits.DEFAULT,
+                                                        (source, bytes) ->
+                                                                sink.accept(
+                                                                        ref,
+                                                                        source.blobSha(),
+                                                                        bytes))
+                                                .status()
+                                        == GitHubCollector.Status.SUCCEEDED;
+                            });
+            return;
+        }
         var heartbeat = Executors.newSingleThreadScheduledExecutor(
                 Thread.ofVirtual().name("secret-job-lease-heartbeat").factory());
         var leaseLost = new AtomicBoolean();
@@ -144,6 +177,8 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
         if (successfulScopes == 0) {
             throw new SecretJobFailure(retryCode(firstFailure), retryable(firstFailure));
         }
+        if (attempts.hasRetryable(job))
+            throw new SecretJobFailure(SecretJobFailureCode.VALIDATOR_TEMPORARY, true);
     }
 
     private ScopeResult processScope(ClaimedSecretJob job, Scope scope,
@@ -183,18 +218,17 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
                         for (var candidate : inspection.awsCandidates()) {
                             if (!validation.firstEncounter(candidate.credential(), syntheticFixture)) continue;
                             try {
-                                // Validation happens after the short persistence transaction has returned.
-                                AwsValidationResult validationResult = syntheticFixture ? syntheticFixtureResult()
-                                        : validator.validate(candidate.material());
-                                if (!attempts.recordIfLeased(job.jobId(), job.leaseToken(), job.runId(),
-                                        candidate.credential(), validationResult)) {
-                                    throw new SecretJobFailure(SecretJobFailureCode.LEASE_EXPIRED, true);
-                                }
+                                        // Validation happens after the short persistence
+                                        // transaction has returned.
+                                AwsValidationResult validationResult = attempts.validateAws(job,
+                                        candidate.credential(), candidate.material(), syntheticFixture,
+                                        validator, scope.id());
                                 validation.record(validationResult);
                             } catch (SecretJobFailure error) {
                                 throw error;
                             } catch (RuntimeException error) {
-                                // Provider and DB exception messages can contain credential material.
+                                        // Provider and DB exception messages can contain credential
+                                        // material.
                                 validation.failed();
                             }
                         }

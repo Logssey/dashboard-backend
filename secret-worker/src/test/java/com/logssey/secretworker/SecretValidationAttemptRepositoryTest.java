@@ -1,12 +1,16 @@
 package com.logssey.secretworker;
 
-import java.nio.charset.StandardCharsets;
-import java.time.Duration;
-import java.time.Instant;
-import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
-import java.time.temporal.ChronoUnit;
-import java.util.List;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import com.logssey.secretworker.detection.SecretFindingNormalizer;
+import com.logssey.secretworker.detection.SecretFindingRepository;
+import com.logssey.secretworker.detector.GitleaksFinding;
+import com.logssey.secretworker.detector.GitleaksScanResult;
+import com.logssey.secretworker.detector.SecretContentDetector;
+import com.logssey.secretworker.validation.AwsValidationResult;
+import com.logssey.secretworker.validation.AwsValidationService;
+import com.logssey.secretworker.validation.CredentialRevalidationProcessor;
+import com.logssey.secretworker.validation.SecretValidationAttemptRepository;
 
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterAll;
@@ -22,15 +26,14 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
-import com.logssey.secretworker.detection.SecretFindingNormalizer;
-import com.logssey.secretworker.detection.SecretFindingRepository;
-import com.logssey.secretworker.detector.GitleaksFinding;
-import com.logssey.secretworker.detector.GitleaksScanResult;
-import com.logssey.secretworker.validation.AwsValidationResult;
-import com.logssey.secretworker.validation.SecretValidationAttemptRepository;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import java.util.List;
 
 @ExtendWith(OutputCaptureExtension.class)
 class SecretValidationAttemptRepositoryTest {
@@ -173,7 +176,9 @@ class SecretValidationAttemptRepositoryTest {
                 AwsValidationResult.METHOD, AwsValidationResult.VERSION);
         assertThat(attempts.recordIfLeased(claim.jobId(), claim.leaseToken(), claim.runId(), candidate, unchecked))
                 .isTrue();
-        assertThat(jdbc.queryForMap("SELECT result, reason_code, provider_checked_at FROM secret_validation_attempts"))
+        assertThat(jdbc.queryForMap(
+                                "SELECT result, reason_code, provider_checked_at FROM"
+                                    + " secret_validation_attempts"))
                 .containsEntry("result", "UNCHECKED")
                 .containsEntry("reason_code", "MISSING_SESSION_TOKEN")
                 .containsEntry("provider_checked_at", null);
@@ -184,5 +189,326 @@ class SecretValidationAttemptRepositoryTest {
                 claim.runId(), candidate, inventedValid))
                 .isInstanceOf(IllegalArgumentException.class).hasMessage("INVALID_VALIDATION_RESULT");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_validation_attempts", Long.class)).isEqualTo(1);
+    }
+
+    @Test
+    void reservesAndFencesBeforeCallingAwsOutsideTheTransaction(CapturedOutput output) {
+        var candidate = discovered();
+        approve();
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        AwsValidationService provider =
+                material -> {
+                    calls.incrementAndGet();
+                    assertThat(
+                                    org.springframework.transaction.support
+                                            .TransactionSynchronizationManager
+                                            .isActualTransactionActive())
+                            .isFalse();
+                    assertThat(
+                                    jdbc.queryForObject(
+                                            "SELECT attempt_state FROM secret_validation_attempts",
+                                            String.class))
+                            .isEqualTo("SENT");
+                    return checked(
+                            AwsValidationResult.Status.VALID,
+                            AwsValidationResult.Reason.AUTHENTICATED,
+                            Instant.now());
+};
+        assertThat(
+                        attempts.validateAws(
+                                        claim,
+                                        candidate.credential(),
+                                        candidate.material(),
+                                        false,
+                                        provider)
+                                .status())
+                .isEqualTo(AwsValidationResult.Status.VALID);
+        attempts.validateAws(claim, candidate.credential(), candidate.material(), false, provider);
+        assertThat(calls).hasValue(1);
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT count(*) FROM secret_current_validation_attempts",
+                                Long.class))
+                .isEqualTo(1);
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT current_eligible FROM secret_validation_attempts",
+                                Boolean.class))
+                .isTrue();
+        assertThat(
+                        jdbc.queryForList(
+                                        "SELECT to_jsonb(a)::text FROM secret_validation_attempts"
+                                            + " a",
+                                        String.class)
+                                .toString())
+                .doesNotContain("AKIAABCDEFGHIJKLMNOP", "aB3/".repeat(10));
+        assertThat(output.getAll()).doesNotContain("AKIAABCDEFGHIJKLMNOP", "aB3/".repeat(10));
+    }
+
+    @Test
+    void approvalRevokedDuringProviderResponsePreservesOnlyHistoricalResult() {
+        var candidate = discovered();
+        approve();
+        attempts.validateAws(
+                claim,
+                candidate.credential(),
+                candidate.material(),
+                false,
+                material -> {
+                    jdbc.update(
+                            "UPDATE secret_connection_scopes SET"
+                                + " validation_approved=false,validation_approval_revision=validation_approval_revision+1");
+                    return checked(
+                            AwsValidationResult.Status.VALID,
+                            AwsValidationResult.Reason.AUTHENTICATED,
+                            Instant.now());
+                });
+        assertThat(
+                        jdbc.queryForMap(
+                                "SELECT result,current_eligible,ineligible_reason_code FROM"
+                                        + " secret_validation_attempts"))
+                .containsEntry("result", "VALID")
+                .containsEntry("current_eligible", false)
+                .containsEntry("ineligible_reason_code", "APPROVAL_CHANGED");
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT count(*) FROM secret_current_validation_attempts",
+                                Long.class))
+                .isZero();
+    }
+
+    @Test
+    void timeoutHasSentAndCompletionTimesButNoInventedProviderObservation() {
+        var candidate = discovered();
+        approve();
+        var result =
+                attempts.validateAws(
+                        claim,
+                        candidate.credential(),
+                        candidate.material(),
+                        false,
+                        material -> {
+                            throw new IllegalStateException("SENTINEL_PROVIDER_EXCEPTION");
+                        });
+        assertThat(result.status()).isEqualTo(AwsValidationResult.Status.UNKNOWN);
+        assertThat(
+                        jdbc.queryForMap(
+                                "SELECT request_sent_at IS NOT NULL AS sent,completed_at IS NOT"
+                                    + " NULL AS completed,provider_checked_at FROM"
+                                    + " secret_validation_attempts"))
+                .containsEntry("sent", true)
+                .containsEntry("completed", true)
+                .containsEntry("provider_checked_at", null);
+    }
+
+    @Test
+    void syntheticSourceAndDisabledProfileNeverInvokeProvider() {
+        var candidate = discovered();
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var result =
+                attempts.validateAws(
+                        claim,
+                        candidate.credential(),
+                        candidate.material(),
+                        true,
+                        material -> {
+                            calls.incrementAndGet();
+                            return checked(
+                                    AwsValidationResult.Status.VALID,
+                                    AwsValidationResult.Reason.AUTHENTICATED,
+                                    Instant.now());
+                        });
+        assertThat(result.reason()).isEqualTo(AwsValidationResult.Reason.SYNTHETIC_FIXTURE);
+        assertThat(calls).hasValue(0);
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT request_sent_at FROM secret_validation_attempts",
+                                OffsetDateTime.class))
+                .isNull();
+    }
+
+    @Test
+    void manualReacquisitionReservesBeforeReadAndNeverChangesPresence() {
+        discovered();
+        approve();
+        manual();
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var processor =
+                new CredentialRevalidationProcessor(
+                        jdbc,
+                        normalizer,
+                        testDetector(),
+                        attempts,
+                        material -> {
+                            calls.incrementAndGet();
+                            return checked(
+                                    AwsValidationResult.Status.VALID,
+                                    AwsValidationResult.Reason.AUTHENTICATED,
+                                    Instant.now());
+                        });
+        processor.process(
+                claim,
+                jobs,
+                (target, sink) -> {
+                    assertThat(
+                                    jdbc.queryForObject(
+                                            "SELECT attempt_state FROM secret_validation_attempts",
+                                            String.class))
+                            .isEqualTo("RESERVED");
+                    sink.accept("repo/aws.txt", "current-blob", source("aB3/".repeat(10)));
+                    return true;
+                });
+        assertThat(calls).hasValue(1);
+        assertThat(jobs.complete(claim.jobId(), claim.leaseToken())).isTrue();
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT presence_status FROM secret_occurrences", String.class))
+                .isEqualTo("PRESENT");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_findings", Long.class))
+                .isEqualTo(2);
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT result FROM secret_current_validation_attempts",
+                                String.class))
+                .isEqualTo("VALID");
+    }
+
+    @Test
+    void replacedSourceValueCannotValidateTheOldCredential() {
+        discovered();
+        approve();
+        manual();
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var processor =
+                new CredentialRevalidationProcessor(
+                        jdbc,
+                        normalizer,
+                        testDetector(),
+                        attempts,
+                        material -> {
+                            calls.incrementAndGet();
+                            return checked(
+                                    AwsValidationResult.Status.VALID,
+                                    AwsValidationResult.Reason.AUTHENTICATED,
+                                    Instant.now());
+                        });
+        processor.process(
+                claim,
+                jobs,
+                (target, sink) -> {
+                    sink.accept("repo/aws.txt", "changed-blob", source("zB3/".repeat(10)));
+                    return true;
+                });
+        assertThat(calls).hasValue(0);
+        assertThat(
+                        jdbc.queryForMap(
+                                "SELECT result,reason_code,request_sent_at,provider_checked_at FROM"
+                                        + " secret_validation_attempts"))
+                .containsEntry("result", "UNKNOWN")
+                .containsEntry("reason_code", "CREDENTIAL_MISMATCH")
+                .containsEntry("request_sent_at", null)
+                .containsEntry("provider_checked_at", null);
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT presence_status FROM secret_occurrences", String.class))
+                .isEqualTo("PRESENT");
+    }
+
+    private void manual() {
+        long actor =
+                jdbc.queryForObject(
+                        "SELECT user_id FROM dashboard_users WHERE login_id='validation-approver'",
+                        Long.class);
+        jdbc.update(
+                "INSERT INTO"
+                    + " secret_role_grants(user_id,role,connection_id,granted_by_user_id,grant_source)"
+                    + " VALUES(?,'SECURITY',?,?,'MANUAL') ON CONFLICT DO NOTHING",
+                actor,
+                claim.connectionId(),
+                actor);
+        jdbc.update(
+                "UPDATE secret_jobs SET"
+                    + " kind='REVALIDATE',purpose='CREDENTIAL_VALIDITY',requested_by_user_id=?,target_occurrence_id=(SELECT"
+                    + " occurrence_id FROM secret_occurrences LIMIT"
+                    + " 1),expected_context=jsonb_build_object('contextVersion',(SELECT"
+                    + " context_version FROM secret_validation_context LIMIT 1)) WHERE job_id=?",
+                actor,
+                claim.jobId());
+    }
+
+    private static byte[] source(String secret) {
+        return ("AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\nAWS_SECRET_ACCESS_KEY=" + secret + "\n")
+                .getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static SecretContentDetector testDetector() {
+        return new SecretContentDetector() {
+            public String engineVersion() {
+                return "8.30.1";
+            }
+
+            public String configHash() {
+                return CONFIG_HASH;
+            }
+
+            public GitleaksScanResult scan(byte[] bytes) {
+                return new GitleaksScanResult(
+                        engineVersion(),
+                        configHash(),
+                        List.of(
+                                new GitleaksFinding("aws-access-token", 1, 1, 19, 38),
+                                new GitleaksFinding("generic-api-key", 2, 2, 1, 60)));
+            }
+        };
+    }
+
+    private SecretFindingNormalizer.AwsCandidate discovered() {
+        byte[] content =
+                ("AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\nAWS_SECRET_ACCESS_KEY="
+                                + "aB3/".repeat(10)
+                                + "\n")
+                        .getBytes(StandardCharsets.UTF_8);
+        var scan =
+                new GitleaksScanResult(
+                        "8.30.1",
+                        CONFIG_HASH,
+                        List.of(
+                                new GitleaksFinding("aws-access-token", 1, 1, 19, 38),
+                                new GitleaksFinding("generic-api-key", 2, 2, 1, 60)));
+        var inspected =
+                normalizer.inspect(claim.connectionId(), "repo/aws.txt", content, scan.findings());
+        long tool =
+                findings.beginGitleaksRun(
+                        runScopeId, scan.engineVersion(), scan.configHash(), Instant.now());
+        findings.recordInspection(tool, "repo/aws.txt", "sha-1", inspected, scan, Instant.now());
+        return inspected.awsCandidates().getFirst();
+    }
+
+    private void approve() {
+        long actor =
+                jdbc.queryForObject(
+                        "INSERT INTO dashboard_users(login_id,password_hash,display_name,role)"
+                            + " VALUES('validation-approver','h','Approver','ADMIN') ON"
+                            + " CONFLICT(login_id) DO UPDATE SET display_name='Approver' RETURNING"
+                            + " user_id",
+                        Long.class);
+        jdbc.update(
+                "UPDATE secret_connections SET"
+                    + " validation_enabled=true,validation_profile_version='credential-validation-v1'");
+        jdbc.update(
+                "UPDATE secret_connection_scopes SET"
+                    + " validation_approved=true,validation_profile_version='credential-validation-v1',validation_approved_by_user_id=?,validation_approved_at=now()",
+                actor);
+    }
+
+    private static AwsValidationResult checked(
+            AwsValidationResult.Status status, AwsValidationResult.Reason reason, Instant time) {
+        return new AwsValidationResult(
+                status,
+                reason,
+                time,
+                time,
+                AwsValidationResult.METHOD,
+                AwsValidationResult.VERSION);
     }
 }
