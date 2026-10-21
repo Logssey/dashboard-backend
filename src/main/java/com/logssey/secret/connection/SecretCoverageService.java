@@ -35,7 +35,9 @@ public class SecretCoverageService {
 
     /** Location readers receive only that location's scope coverage, without management access. */
     public Map<String,Object> occurrenceCoverage(String login,long occurrenceId) {
-        var principal=access.requirePrincipal(login);
+        return occurrenceCoverage(access.requirePrincipal(login),occurrenceId);
+    }
+    public Map<String,Object> occurrenceCoverage(SecretPrincipal principal,long occurrenceId) {
         access.requireOccurrenceRead(principal,occurrenceId);
         var row=jdbc.queryForList("""
             SELECT s.scope_id,s.connection_id,s.scope_key,s.revision,s.content_type,s.response_origin,
@@ -102,7 +104,15 @@ public class SecretCoverageService {
             if(connectionId!=null&&connectionId!=id||!source.equals("ALL")&&!source.equals(c.get("provider"))||!access.canReadConnectionFacts(a,id))continue;
             for(var s:currentScopes(id,origin)) {
                 var cov=coverage(s,c);
-                if(!((List<?>)cov.get("gapReasonCodes")).isEmpty())rows.add(scopeItem(s,c,cov,a));
+                if(!((List<?>)cov.get("gapReasonCodes")).isEmpty()) {
+                    var item=scopeItem(s,c,cov,a);
+                    item.put("whyHereCode","COVERAGE_GAP");item.put("nextActionCode","RESTORE_SCAN");
+                    item.put("taskGuidance",com.logssey.secret.query.SecretTaskGuidance.build("COVERAGE_GAP","RESTORE_SCAN",
+                        Map.of("type","SCOPE","id",number(s,"scope_id"),"connectionId",id),access.hasConnectionRole(a,id,SecretRole.OPERATIONS),
+                        "ROLE_REQUIRED","OPERATIONS",cov.get("lastSuccessfulScan")==null?null:((Map<?,?>)cov.get("lastSuccessfulScan")).get("finishedAt"),
+                        null,null,(List<String>)cov.get("gapReasonCodes"),List.of("COVERAGE_BLOCKED")));
+                    rows.add(item);
+                }
             }
         }
         return page(rows,page,size,"Scope",Map.of("origin",origin,"source",source));

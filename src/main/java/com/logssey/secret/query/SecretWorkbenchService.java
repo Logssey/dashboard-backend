@@ -120,7 +120,7 @@ public class SecretWorkbenchService {
                 c.put("riskAcceptanceExpiresAt",deadline);
                 if(acceptanceDeadline==null||deadline.isBefore(acceptanceDeadline))acceptanceDeadline=deadline;
             }
-            c.put("credentialSetId",c.get("secretId"));c.put("whyHereCode","ACTIVE_RESPONSE");c.put("nextActionCode","OPEN_CASE");
+            c.put("credentialSetId",c.get("secretId"));
             subjects.add(new Subject("ResponseCase",id,member.getFirst().secretId(),c,member.stream().map(Row::occurrenceId).toList()));
         }
         for(Row r:rows) {
@@ -163,6 +163,7 @@ public class SecretWorkbenchService {
                     facts("alertId",id,"status",alert.get("status"),"nextActionCode","OPEN_ALERT"),ids));
             }
         }
+        subjects.sort(Comparator.comparing(Subject::type).thenComparingInt(s->SecretRemediationSummary.priority(s.facts())).thenComparingLong(Subject::id));
         Header h=snapshots.create(actor.userId(),"WORKBENCH",f.normalized(),revision,!access.hasGlobalRole(actor,SecretRole.SECURITY),subjects);
         if(acceptanceDeadline!=null&&acceptanceDeadline.isBefore(h.expiresAt())) {
             if(!acceptanceDeadline.isAfter(OffsetDateTime.now()))throw new SecretReadConflict(SecretReadConflict.Reason.SNAPSHOT_EXPIRED);

@@ -76,6 +76,7 @@ public class SecretLocationService {
                 subjects.add(new SecretReadSnapshots.Subject("CredentialSet",entry.getKey(),entry.getKey(),item,
                     keyRows.stream().map(Row::occurrenceId).distinct().toList()));
             }
+            subjects.sort(Comparator.comparingInt((SecretReadSnapshots.Subject s)->SecretRemediationSummary.priority(s.facts())).thenComparingLong(SecretReadSnapshots.Subject::id));
             header=snapshots.create(actor.userId(),"INVENTORY",normalized,revision,restricted,subjects);
         }
         return facts("items",snapshots.page(header,"CredentialSet",page,size),"total",snapshots.count(header,"CredentialSet"),
@@ -135,6 +136,9 @@ public class SecretLocationService {
             "items",items,"total",filtered.size(),"visibleLocationCount",filtered.size(),"page",page,"size",size,
             "origin",filters.origin(),"unit","Occurrence","restrictedCoverage",!globalSecurity(actor),
             "locationStateCounts",facts("presence",counts(filtered,Row::presence),"exposure",counts(filtered,Row::exposure)),
+            "sourceGroups",filtered.stream().collect(Collectors.groupingBy(Row::source,java.util.TreeMap::new,Collectors.toList())).entrySet().stream()
+                .map(entry->facts("source",entry.getKey(),"locationCount",entry.getValue().size(),"scopeCount",entry.getValue().stream().map(Row::scopeId).distinct().count(),
+                    "presenceCounts",counts(entry.getValue(),Row::presence))).toList(),
             "filters",facts("source",filters.source(),"environment",filters.environment(),"presence",presence,
                 "exposure",exposure,"actionStatus",actionStatus),"readAt",OffsetDateTime.now());
     }
@@ -174,7 +178,8 @@ public class SecretLocationService {
         OffsetDateTime lastMaterial=rows.stream().map(row->repository.operationalFacts(row.occurrenceId()).get("validation_after_action_at"))
             .filter(Objects::nonNull).map(v->((java.sql.Timestamp)v).toInstant().atOffset(java.time.ZoneOffset.UTC)).max(Comparator.naturalOrder()).orElse(null);
         boolean needsPostAction=lastMaterial!=null&&(latest.validationCheckedAt()==null||!latest.validationCheckedAt().isAfter(lastMaterial));
-        return facts("id",first.secretId(),"issuer",first.issuer(),"provider",first.issuer(),
+        var summary=SecretRemediationSummary.summarize(rows.stream().map(row->summaryFacts(row,actor)).toList(),!globalSecurity(actor));
+        var result=facts("id",first.secretId(),"issuer",first.issuer(),"provider",first.issuer(),
             "credentialType",first.credentialType(),"componentState",first.componentState(),"maskedLabel",first.maskedLabel(),
             "severity","UNASSESSED","validationStatus",needsPostAction?"UNCHECKED":latest.validity()==null?"UNCHECKED":latest.validity(),
             "validationReasonCode",needsPostAction?"POST_ACTION_VALIDATION_REQUIRED":safeReason(latest.validationReason()),"validatedAt",needsPostAction?null:text(latest.validationAt()),
@@ -189,7 +194,31 @@ public class SecretLocationService {
             "requiresReassessment",rows.stream().anyMatch(Row::requiresReassessment),
             "safeLocationLabel",repository.safeLocationLabel(representative),"currentCaseId",representative.caseId(),
             "casesByOrigin",cases.stream().map(id->facts("origin",first.origin(),"caseId",id)).toList(),
-            "restrictedCoverage",!globalSecurity(actor));
+            "remediationSummary",summary,"restrictedCoverage",!globalSecurity(actor));
+        var priorities=new ArrayList<String>();
+        if(((Number)summary.get("postActionRedetectedCount")).longValue()>0)priorities.add("POST_ACTION_REDETECTED");
+        if(rows.stream().anyMatch(r->r.exposure().equals("ABNORMAL")))priorities.add("CONFIRMED_EXPOSURE");
+        if(rows.stream().anyMatch(r->"VALID".equals(r.validity())&&"DENIED".equals(r.storagePolicyResult())))priorities.add("VALID_AND_POLICY_DENIED");
+        result.put("taskGuidance",SecretTaskGuidance.build((String)result.get("whyHereCode"),(String)result.get("nextActionCode"),
+            facts("type","OCCURRENCE","id",representative.occurrenceId(),"secretId",first.secretId(),"caseId",representative.caseId()),
+            true,null,null,text(representative.lastSeenAt()),null,null,List.of(),priorities));
+        return result;
+    }
+
+    private Map<String,Object> summaryFacts(Row row,SecretPrincipal actor) {
+        var operational=repository.operationalFacts(row.occurrenceId());
+        var coverage=coverageService.occurrenceCoverage(actor,row.occurrenceId());
+        var ready=row.caseId()==null?Map.<String,Object>of():readiness.capabilities(actor,row.caseId(),row.occurrenceId());
+        return summaryFacts(row,operational,coverage,ready);
+    }
+    private Map<String,Object> summaryFacts(Row row,Map<String,Object> operational,Map<String,Object> coverage,Map<String,Object> ready) {
+        boolean required=row.caseId()!=null&&!"RESOLVED".equals(row.actionStatus())&&!"METADATA_ONLY".equals(row.componentState());
+        return facts("requiredRemediation",required,"approvedStorage",!required&&"NORMAL".equals(row.exposure())&&"ALLOWED".equals(row.storagePolicyResult())&&!row.requiresReassessment(),
+            "metadataOnly","METADATA_ONLY".equals(row.componentState()),"actionStatus",row.actionStatus(),"presence",row.presence(),
+            "currentCoverage",coverage.get("lastSuccessfulScan")!=null&&((List<?>)coverage.get("gapReasonCodes")).isEmpty(),
+            "locationAbsenceCheck",ready.getOrDefault("locationAbsenceCheck",Map.of()),
+            "lastCheckedAt",coverage.get("lastSuccessfulScan")==null?null:((Map<?,?>)coverage.get("lastSuccessfulScan")).get("finishedAt"),
+            "lastMaterialActionAt",operational.get("last_material_action_at"),"lastSeenAt",row.lastSeenAt());
     }
 
     private Map<String,Object> location(Row row,SecretPrincipal actor,String loginId) {
@@ -232,6 +261,10 @@ public class SecretLocationService {
                 "canRecordAction",row.caseId()!=null && lifecycle.assignedActionable(actor,row.caseId(),row.occurrenceId()),"canRequestRevalidation",ready.get("canRequestRevalidation"),"canViewCoverage",access.canReadConnectionFacts(actor,row.connectionId()),
                 "canRequestAssistance",true,"canOpenSafeSource",false));
         result.put("taskGuidance",SecretTaskGuidance.location(result));
+        var summary=summaryFacts(row,operational,coverage,ready);
+        result.put("requiredRemediation",summary.get("requiredRemediation"));
+        result.put("remediationPresence",SecretRemediationSummary.state(summary));
+        result.put("postActionRedetected",SecretRemediationSummary.redetected(summary));
         return result;
     }
 
