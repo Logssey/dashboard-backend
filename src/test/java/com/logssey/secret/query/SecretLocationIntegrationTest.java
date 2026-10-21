@@ -115,6 +115,7 @@ class SecretLocationIntegrationTest {
     @Test void onlyFiveActiveSnapshotsAreRetainedPerUser() {
         long conn=connection(); grant(security,"SECURITY",conn);
         var first=inventory("security",filter("ALL"),null);
+        jdbc.update("UPDATE secret_query_snapshots SET created_at=clock_timestamp()-interval '1 minute' WHERE snapshot_id=?::uuid",first.get("snapshotId").toString());
         for(int i=0;i<5;i++) inventory("security",filter("ALL"),null);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_query_snapshots WHERE owner_user_id=?",Long.class,security))
             .isEqualTo(5);
