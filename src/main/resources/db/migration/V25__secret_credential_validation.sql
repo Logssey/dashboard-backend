@@ -142,3 +142,48 @@ DO $$ DECLARE prior TEXT; BEGIN
  ALTER TABLE secret_audit_events DROP CONSTRAINT ck_secret_audit_event_type;
  EXECUTE 'ALTER TABLE secret_audit_events ADD CONSTRAINT ck_secret_audit_event_type CHECK (('||prior||') OR event_type IN (''CREDENTIAL_VALIDATION_REQUESTED'',''VALIDATION_POLICY_CHANGED'',''VALIDATION_PROFILE_CHANGED''))';
 END $$;
+
+-- Preserve safe source-guard skips in scope coverage; reservations are never completed observations.
+CREATE OR REPLACE FUNCTION secret_record_scope_evidence(target BIGINT, validation_failed BOOLEAN)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+    s secret_run_scopes%ROWTYPE;
+    t secret_tool_runs%ROWTYPE;
+    a RECORD;
+    candidates BIGINT;
+BEGIN
+    SELECT * INTO STRICT s FROM secret_run_scopes WHERE run_scope_id=target;
+    IF s.evidence_version IS NULL THEN RETURN; END IF;
+    IF right(s.snapshot_content_type,9)='_METADATA' THEN
+        UPDATE secret_run_scopes SET detection_stage_status='SKIPPED', detection_reason_code='NOT_APPLICABLE_METADATA',
+            validation_stage_status='SKIPPED', validation_reason_code='NOT_APPLICABLE_METADATA', validation_required=false
+        WHERE run_scope_id=target;
+        RETURN;
+    END IF;
+    SELECT * INTO t FROM secret_tool_runs WHERE run_scope_id=target AND engine='GITLEAKS';
+    SELECT count(*) INTO candidates FROM secret_findings WHERE tool_run_id=t.tool_run_id;
+    SELECT count(*) AS total,
+        count(*) FILTER(WHERE v.result IN ('VALID','INVALID')) AS checked,
+        count(*) FILTER(WHERE v.result='UNKNOWN' OR v.result='UNCHECKED' AND v.reason_code NOT IN ('DISABLED','SYNTHETIC_FIXTURE','SOURCE_GUARD_BLOCKED')) AS incomplete,
+        count(*) FILTER(WHERE v.reason_code='DISABLED') AS disabled,
+        count(*) FILTER(WHERE v.reason_code='SYNTHETIC_FIXTURE') AS fixture,
+        count(*) FILTER(WHERE v.reason_code='SOURCE_GUARD_BLOCKED') AS guarded
+    INTO a FROM secret_validation_attempts v
+    WHERE v.run_id=s.run_id AND v.attempt_state='COMPLETED' AND
+        (v.evidence_version=0 OR v.scope_id=s.scope_id) AND EXISTS (
+        SELECT 1 FROM secret_findings f JOIN secret_occurrences o ON o.occurrence_id=f.occurrence_id
+        WHERE f.tool_run_id=t.tool_run_id AND o.credential_set_id=v.credential_set_id);
+    UPDATE secret_run_scopes SET
+        detection_stage_status=COALESCE(t.status, CASE WHEN collection_status='SUCCEEDED' AND object_count=0 THEN 'SKIPPED' END),
+        detection_reason_code=CASE WHEN t.tool_run_id IS NOT NULL THEN t.failure_code
+             WHEN collection_status='SUCCEEDED' AND object_count=0 THEN 'NO_OBJECTS' ELSE 'DETECTION_NOT_RUN' END,
+        validation_stage_status=CASE WHEN validation_failed OR a.incomplete>0 THEN 'PARTIAL'
+             WHEN a.checked>0 THEN 'SUCCEEDED' ELSE 'SKIPPED' END,
+        validation_reason_code=CASE WHEN validation_failed THEN 'VALIDATION_ATTEMPT_FAILED'
+             WHEN a.incomplete>0 THEN 'VALIDATION_INCONCLUSIVE' WHEN a.checked>0 THEN NULL
+             WHEN a.disabled>0 THEN 'VALIDATION_DISABLED' WHEN a.fixture>0 THEN 'SYNTHETIC_FIXTURE'
+             WHEN a.guarded>0 THEN 'SOURCE_GUARD_BLOCKED'
+             WHEN candidates=0 THEN 'NO_CANDIDATES' ELSE 'NO_SUPPORTED_VALIDATOR' END,
+        validation_required=(validation_failed OR a.checked>0 OR a.incomplete>0)
+    WHERE run_scope_id=target;
+END $$;
