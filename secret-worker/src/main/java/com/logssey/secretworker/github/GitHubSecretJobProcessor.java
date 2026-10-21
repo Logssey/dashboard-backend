@@ -12,6 +12,8 @@ import com.logssey.secretworker.detector.DetectionFailure;
 import com.logssey.secretworker.detector.SecretContentDetector;
 import com.logssey.secretworker.validation.AwsValidationResult;
 import com.logssey.secretworker.validation.AwsValidationService;
+import com.logssey.secretworker.validation.CredentialValidationResult;
+import com.logssey.secretworker.validation.GitHubPatValidator;
 import com.logssey.secretworker.validation.SecretValidationAttemptRepository;
 
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -39,11 +41,39 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
     private final AwsValidationService validator;
     private final SecretValidationAttemptRepository attempts;
     private final SecretJobProperties jobs;
+    private final GitHubPatValidator githubValidator;
+    private final List<GitHubRepositoryAccessSink> accessSinks;
 
     GitHubSecretJobProcessor(JdbcTemplate jdbc, GitHubCollector collector,
                              SecretContentDetector detector, SecretFindingRepository findings,
                              SecretFindingNormalizer normalizer, AwsValidationService validator,
                              SecretValidationAttemptRepository attempts, SecretJobProperties jobs) {
+        this(
+                jdbc,
+                collector,
+                detector,
+                findings,
+                normalizer,
+                validator,
+                attempts,
+                jobs,
+                new GitHubPatValidator(false),
+                List.of());
+    }
+
+    GitHubSecretJobProcessor(
+            JdbcTemplate jdbc,
+            GitHubCollector collector,
+            SecretContentDetector detector,
+            SecretFindingRepository findings,
+            SecretFindingNormalizer normalizer,
+            AwsValidationService validator,
+            SecretValidationAttemptRepository attempts,
+            SecretJobProperties jobs,
+            GitHubPatValidator githubValidator,
+            List<GitHubRepositoryAccessSink> accessSinks) {
+        this.githubValidator = githubValidator;
+        this.accessSinks = List.copyOf(accessSinks);
         this.jdbc = jdbc;
         this.collector = collector;
         this.detector = detector;
@@ -63,7 +93,7 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
     public void process(ClaimedSecretJob job, SecretJobExecutionService execution) {
         if (attempts.isManual(job)) {
             new com.logssey.secretworker.validation.CredentialRevalidationProcessor(
-                            jdbc, normalizer, detector, attempts, validator)
+                            jdbc, normalizer, detector, attempts, validator, githubValidator)
                     .process(
                             job,
                             execution,
@@ -115,30 +145,49 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
 
     private void processScopes(ClaimedSecretJob job, SecretJobExecutionService execution,
                                AtomicBoolean leaseLost) {
-        List<Scope> scopes = jdbc.query("""
-                SELECT rs.run_scope_id, s.approved_ref, s.history_limit, s.enabled,
-                       c.scope_version, r.scope_version AS run_scope_version, c.status, s.revision, rs.scope_revision AS captured_revision
-                FROM secret_scan_runs r
-                JOIN secret_connections c ON c.connection_id = r.connection_id
-                JOIN secret_run_scopes rs ON rs.run_id = r.run_id
-                JOIN secret_connection_scopes s ON s.scope_id = rs.scope_id
-                    AND s.connection_id = c.connection_id
-                WHERE r.run_id = ? AND r.job_id = ? AND r.connection_id = ? AND c.provider = 'GITHUB'
-                ORDER BY rs.run_scope_id
-                """, (rs, row) -> new Scope(rs.getLong("run_scope_id"), rs.getString("approved_ref"),
-                rs.getString("history_limit"), rs.getBoolean("enabled"),
-                rs.getLong("scope_version"), rs.getLong("run_scope_version"), rs.getString("status"), rs.getLong("revision"), rs.getObject("captured_revision",Long.class)),
-                job.runId(), job.jobId(), job.connectionId());
+        List<Scope> scopes =
+                jdbc.query(
+                        """
+SELECT rs.run_scope_id, s.approved_ref, s.history_limit, s.enabled,
+       c.scope_version, r.scope_version AS run_scope_version, c.status, s.revision, rs.scope_revision AS captured_revision
+FROM secret_scan_runs r
+JOIN secret_connections c ON c.connection_id = r.connection_id
+JOIN secret_run_scopes rs ON rs.run_id = r.run_id
+JOIN secret_connection_scopes s ON s.scope_id = rs.scope_id
+    AND s.connection_id = c.connection_id
+WHERE r.run_id = ? AND r.job_id = ? AND r.connection_id = ? AND c.provider = 'GITHUB'
+ORDER BY rs.run_scope_id
+""",
+                        (rs, row) ->
+                                new Scope(
+                                        rs.getLong("run_scope_id"),
+                                        rs.getString("approved_ref"),
+                                        rs.getString("history_limit"),
+                                        rs.getBoolean("enabled"),
+                                        rs.getLong("scope_version"),
+                                        rs.getLong("run_scope_version"),
+                                        rs.getString("status"),
+                                        rs.getLong("revision"),
+                                        rs.getObject("captured_revision", Long.class)),
+                        job.runId(),
+                        job.jobId(),
+                        job.connectionId());
         if (scopes.isEmpty() || scopes.stream().anyMatch(scope -> !scope.enabled()
                 || !"ACTIVE".equals(scope.connectionStatus())
                 || scope.connectionVersion() != scope.runVersion() || !java.util.Objects.equals(scope.capturedRevision(),scope.revision()))) {
             throw new SecretJobFailure(SecretJobFailureCode.SOURCE_ACCESS_DENIED, false);
         }
-        withLease(job, execution, () -> jdbc.update("""
-                UPDATE secret_scan_runs SET collection_status = 'RUNNING',
-                    detection_status = 'RUNNING', validation_status = 'RUNNING'
-                WHERE run_id = ?
-                """, job.runId()));
+        withLease(
+                job,
+                execution,
+                () ->
+                        jdbc.update(
+                                """
+                                UPDATE secret_scan_runs SET collection_status = 'RUNNING',
+                                    detection_status = 'RUNNING', validation_status = 'RUNNING'
+                                WHERE run_id = ?
+                                """,
+                                job.runId()));
 
         ValidationProgress validation = new ValidationProgress();
         int successfulScopes = 0;
@@ -158,22 +207,40 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
             if (firstFailure == null) firstFailure = result.failureCode();
         }
         boolean allSucceeded = successfulScopes == scopes.size() && totalGaps == 0;
-        String collectionStatus = successfulScopes == 0 ? "FAILED" : allSucceeded ? "SUCCEEDED" : "PARTIAL";
+        String collectionStatus =
+                successfulScopes == 0 ? "FAILED" : allSucceeded ? "SUCCEEDED" : "PARTIAL";
         String detectionStatus = acceptedObjects == 0 ? allSucceeded ? "SKIPPED" : "FAILED"
                 : totalGaps == 0 ? "SUCCEEDED" : "PARTIAL";
         String validationStatus = validation.status();
         String failureCode = !allSucceeded
                 ? firstFailure == null ? "COLLECTION_PARTIAL" : firstFailure
                 : "PARTIAL".equals(validationStatus) ? validation.failureCode() : null;
-        withLease(job, execution, () -> jdbc.update("""
-                UPDATE secret_scan_runs SET collection_status = ?, detection_status = ?,
-                    validation_status = ?, failure_code = ?
-                WHERE run_id = ?
-                """, collectionStatus, detectionStatus, validationStatus, failureCode, job.runId()));
-        withLease(job, execution, () -> jdbc.update("""
-                UPDATE secret_case_revalidations SET runtime_fingerprint_version = ?
-                WHERE job_id = ?
-                """, normalizer.keyVersion(), job.jobId()));
+        withLease(
+                job,
+                execution,
+                () ->
+                        jdbc.update(
+                                """
+UPDATE secret_scan_runs SET collection_status = ?, detection_status = ?,
+    validation_status = ?, failure_code = ?
+WHERE run_id = ?
+""",
+                                collectionStatus,
+                                detectionStatus,
+                                validationStatus,
+                                failureCode,
+                                job.runId()));
+        withLease(
+                job,
+                execution,
+                () ->
+                        jdbc.update(
+                                """
+UPDATE secret_case_revalidations SET runtime_fingerprint_version = ?
+WHERE job_id = ?
+""",
+                                normalizer.keyVersion(),
+                                job.jobId()));
         if (successfulScopes == 0) {
             throw new SecretJobFailure(retryCode(firstFailure), retryable(firstFailure));
         }
@@ -190,61 +257,166 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
             finishScope(job, scope.id(), "FAILED", 0, "INVALID_APPROVED_SCOPE", execution);
             return new ScopeResult(false, 0, 1, "INVALID_APPROVED_SCOPE");
         }
-        // This public experiment repository contains deliberately synthetic credentials.
-        // Never send them to STS even if live validation was enabled accidentally.
-        boolean syntheticFixture = "Logssey".equalsIgnoreCase(approved.owner())
-                && "test-find-key".equalsIgnoreCase(approved.repository());
-        withLease(job, execution, () -> jdbc.update("""
-                UPDATE secret_run_scopes SET collection_status = 'RUNNING', started_at = COALESCE(started_at, ?),
-                    finished_at = NULL, object_count = NULL, failure_code = NULL
-                WHERE run_scope_id = ?
-                """, utcNow(), scope.id()));
+        // This name guard blocks outbound authentication; it does not attest synthetic contents.
+        boolean syntheticFixture =
+                "Logssey".equalsIgnoreCase(approved.owner())
+                        && "test-find-key".equalsIgnoreCase(approved.repository());
+        withLease(
+                job,
+                execution,
+                () ->
+                        jdbc.update(
+                                """
+UPDATE secret_run_scopes SET collection_status = 'RUNNING', started_at = COALESCE(started_at, ?),
+    finished_at = NULL, object_count = NULL, failure_code = NULL
+WHERE run_scope_id = ?
+""",
+                                utcNow(),
+                                scope.id()));
         AtomicLong toolRunId = new AtomicLong();
         withLease(job, execution, () -> toolRunId.set(findings.beginGitleaksRun(scope.id(),
                 detector.engineVersion(), detector.configHash(), Instant.now())));
         AtomicReference<String> consumerFailure = new AtomicReference<>();
-        GitHubCollector.Result result = collector.collect(approved, GitHubCollectionLimits.DEFAULT,
-                (source, bytes) -> {
-                    if (!execution.renewLease(job.jobId(), job.leaseToken())) {
-                        consumerFailure.set("LEASE_EXPIRED");
-                        throw new SecretJobFailure(SecretJobFailureCode.LEASE_EXPIRED, true);
-                    }
-                    try {
-                        var scan = detector.scan(bytes);
-                        String sourceRef = source.owner() + "/" + source.repository() + "/" + source.path();
-                        var inspection = normalizer.inspect(job.connectionId(), sourceRef, bytes, scan.findings());
-                        withLease(job, execution, () -> findings.recordInspection(toolRunId.get(),
-                                sourceRef, source.blobSha(), inspection, scan, Instant.now()));
-                        for (var candidate : inspection.awsCandidates()) {
-                            if (!validation.firstEncounter(candidate.credential(), syntheticFixture)) continue;
+        GitHubCollector.Result result =
+                collector.collect(
+                        approved,
+                        GitHubCollectionLimits.DEFAULT,
+                        (source, bytes) -> {
+                            if (!execution.renewLease(job.jobId(), job.leaseToken())) {
+                                consumerFailure.set("LEASE_EXPIRED");
+                                throw new SecretJobFailure(
+                                        SecretJobFailureCode.LEASE_EXPIRED, true);
+                            }
                             try {
+                                var scan = detector.scan(bytes);
+                                String sourceRef =
+                                        source.owner()
+                                                + "/"
+                                                + source.repository()
+                                                + "/"
+                                                + source.path();
+                                var inspection =
+                                        normalizer.inspect(
+                                                job.connectionId(),
+                                                sourceRef,
+                                                bytes,
+                                                scan.findings());
+                                withLease(
+                                        job,
+                                        execution,
+                                        () ->
+                                                findings.recordInspection(
+                                                        toolRunId.get(),
+                                                        sourceRef,
+                                                        source.blobSha(),
+                                                        inspection,
+                                                        scan,
+                                                        Instant.now()));
+                                for (var candidate : inspection.awsCandidates()) {
+                                    if (!validation.firstEncounter(
+                                            candidate.credential(), syntheticFixture)) continue;
+                                    try {
                                         // Validation happens after the short persistence
                                         // transaction has returned.
-                                AwsValidationResult validationResult = attempts.validateAws(job,
-                                        candidate.credential(), candidate.material(), syntheticFixture,
-                                        validator, scope.id());
-                                validation.record(validationResult);
-                            } catch (SecretJobFailure error) {
-                                throw error;
-                            } catch (RuntimeException error) {
+                                        AwsValidationResult validationResult =
+                                                attempts.validateAws(
+                                                        job,
+                                                        candidate.credential(),
+                                                        candidate.material(),
+                                                        syntheticFixture,
+                                                        validator,
+                                                        scope.id(),
+                                                        sourceRef,
+                                                        source.blobSha());
+                                        validation.record(validationResult);
+                                    } catch (SecretJobFailure error) {
+                                        throw error;
+                                    } catch (RuntimeException error) {
                                         // Provider and DB exception messages can contain credential
                                         // material.
-                                validation.failed();
+                                        validation.failed();
+                                    }
+                                }
+                                for (var candidate : inspection.githubCandidates()) {
+                                    if (!validation.firstEncounter(
+                                            candidate.credential(), syntheticFixture)) continue;
+                                    try {
+                                        validation.record(
+                                                attempts.validateGitHub(
+                                                        job,
+                                                        candidate,
+                                                        githubValidator,
+                                                        scope.id(),
+                                                        sourceRef,
+                                                        source.blobSha()));
+                                    } catch (SecretJobFailure error) {
+                                        throw error;
+                                    } catch (RuntimeException ignored) {
+                                        validation.failed();
+                                    }
+                                }
+                                for (var credential : inspection.credentials()) {
+                                    if (Set.of("AWS", "GITHUB").contains(credential.issuer()))
+                                        continue;
+                                    if (!validation.firstEncounter(credential, syntheticFixture))
+                                        continue;
+                                    validation.record(
+                                            attempts.recordUnsupported(
+                                                    job, credential, scope.id()));
+                                }
+                            } catch (DetectionFailure error) {
+                                consumerFailure.set("DETECTOR_" + error.code().name());
+                                throw error;
+                            } catch (RuntimeException error) {
+                                consumerFailure.compareAndSet(null, "RESULT_PERSISTENCE_FAILED");
+                                throw error;
                             }
-                        }
-                    } catch (DetectionFailure error) {
-                        consumerFailure.set("DETECTOR_" + error.code().name());
-                        throw error;
-                    } catch (RuntimeException error) {
-                        consumerFailure.compareAndSet(null, "RESULT_PERSISTENCE_FAILED");
-                        throw error;
+                        });
+        String status = result.status().name();
+        String code =
+                consumerFailure.get() != null
+                        ? consumerFailure.get()
+                        : result.gaps().isEmpty()
+                                ? null
+                                : "GITHUB_" + result.gaps().getFirst().code().name();
+        withLease(job, execution, () -> findings.finishToolRun(toolRunId.get(), status, code, Instant.now()));
+        GitHubCollector.RepositoryAccess access =
+                result.status() == GitHubCollector.Status.SUCCEEDED && !accessSinks.isEmpty()
+                        ? collector.repositoryAccess(approved)
+                        : null;
+        withLease(
+                job,
+                execution,
+                () -> {
+                    jdbc.update(
+                            "UPDATE secret_run_scopes SET"
+                                + " collection_status=?,object_count=?,failure_code=?,finished_at=?"
+                                + " WHERE run_scope_id=?",
+                            status,
+                            result.objectCount(),
+                            code,
+                            utcNow(),
+                            scope.id());
+                    if (access != null) {
+                        List<Long> occurrenceIds =
+                                jdbc.queryForList(
+                                        "SELECT DISTINCT f.occurrence_id FROM secret_findings f"
+                                            + " JOIN secret_tool_runs t USING(tool_run_id) WHERE"
+                                            + " t.run_scope_id=? AND f.occurrence_id IS NOT NULL"
+                                            + " ORDER BY f.occurrence_id",
+                                        Long.class,
+                                        scope.id());
+                        var observation =
+                                new GitHubRepositoryAccessObservation(
+                                        scope.id(),
+                                        occurrenceIds,
+                                        access.publicRepository(),
+                                        access.metadataComplete(),
+                                        access.observedAt(),
+                                        access.reasonCode());
+                        for (var sink : accessSinks) sink.observe(observation);
                     }
                 });
-        String status = result.status().name();
-        String code = consumerFailure.get() != null ? consumerFailure.get()
-                : result.gaps().isEmpty() ? null : "GITHUB_" + result.gaps().getFirst().code().name();
-        withLease(job, execution, () -> findings.finishToolRun(toolRunId.get(), status, code, Instant.now()));
-        finishScope(job, scope.id(), status, result.objectCount(), code, execution);
         return new ScopeResult(result.status() == GitHubCollector.Status.SUCCEEDED
                 || result.status() == GitHubCollector.Status.PARTIAL && result.objectCount() > 0,
                 result.objectCount(), result.gaps().size(), code);
@@ -252,11 +424,21 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
 
     private void finishScope(ClaimedSecretJob job, long scopeId, String status, int objectCount,
                              String code, SecretJobExecutionService execution) {
-        withLease(job, execution, () -> jdbc.update("""
-                UPDATE secret_run_scopes SET collection_status = ?, object_count = ?,
-                    failure_code = ?, finished_at = ?
-                WHERE run_scope_id = ?
-                """, status, objectCount, code, utcNow(), scopeId));
+        withLease(
+                job,
+                execution,
+                () ->
+                        jdbc.update(
+                                """
+UPDATE secret_run_scopes SET collection_status = ?, object_count = ?,
+    failure_code = ?, finished_at = ?
+WHERE run_scope_id = ?
+""",
+                                status,
+                                objectCount,
+                                code,
+                                utcNow(),
+                                scopeId));
     }
 
     private static void withLease(ClaimedSecretJob job, SecretJobExecutionService execution,
@@ -268,12 +450,6 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
 
     private static OffsetDateTime utcNow() {
         return Instant.now().atOffset(ZoneOffset.UTC);
-    }
-
-    private static AwsValidationResult syntheticFixtureResult() {
-        return new AwsValidationResult(AwsValidationResult.Status.UNCHECKED,
-                AwsValidationResult.Reason.SYNTHETIC_FIXTURE, Instant.now(), null,
-                AwsValidationResult.METHOD, AwsValidationResult.VERSION);
     }
 
     private static final class ValidationProgress {
@@ -299,12 +475,20 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
             if (result.status() == AwsValidationResult.Status.UNCHECKED) {
                 if (result.reason() != AwsValidationResult.Reason.DISABLED
                         && result.reason() != AwsValidationResult.Reason.SYNTHETIC_FIXTURE
-                        && result.reason() != AwsValidationResult.Reason.SOURCE_GUARD_BLOCKED) inconclusive++;
+                        && result.reason() != AwsValidationResult.Reason.SOURCE_GUARD_BLOCKED)
+                    inconclusive++;
             } else if (result.status() == AwsValidationResult.Status.UNKNOWN) {
                 inconclusive++;
             } else {
                 checked++;
             }
+        }
+
+        void record(CredentialValidationResult result) {
+            if (Set.of("VALID", "INVALID").contains(result.result())) checked++;
+            else if (!("UNCHECKED".equals(result.result())
+                    && Set.of("DISABLED", "SYNTHETIC_FIXTURE", "SOURCE_GUARD_BLOCKED")
+                            .contains(result.reasonCode()))) inconclusive++;
         }
 
         void failed() { failed++; }

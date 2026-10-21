@@ -93,6 +93,46 @@ class SecretValidationIntegrationTest {
     }
 
     @Test
+    void manualRequestBudgetIsExplicitAndDoesNotConsumeProviderCalls() {
+        for (int i = 0; i < 10; i++)
+            db.update(
+                    "INSERT INTO"
+                        + " secret_jobs(kind,purpose,connection_id,target_occurrence_id,requested_by_user_id,scheduled_at,available_at,attempt_no,max_attempts,status,finished_at)"
+                        + " VALUES('REVALIDATE','CREDENTIAL_VALIDITY',?,?,?,now(),now(),1,3,'SUCCEEDED',now())",
+                    conn,
+                    occurrence,
+                    user);
+        var read = service.read(key, occurrence, "security");
+        assertThat(((Map<?, ?>) read.get("capabilities")).get("blockedReasonCodes").toString())
+                .contains("RATE_BUDGET_EXHAUSTED");
+        assertThatThrownBy(
+                        () ->
+                                service.request(
+                                        key,
+                                        Map.of(
+                                                "occurrenceId",
+                                                occurrence,
+                                                "expectedContextVersion",
+                                                read.get("contextVersion"),
+                                                "idempotencyKey",
+                                                "over-budget"),
+                                        "security"))
+                .isInstanceOf(ValidationRateLimitException.class);
+    }
+
+    @Test
+    void githubSupportIsVisibleWhileGlobalActivationRemainsOff() {
+        db.update(
+                "UPDATE secret_credential_sets SET"
+                        + " issuer='GITHUB',credential_type='GITHUB_CLASSIC_PAT'");
+        var read = service.read(key, occurrence, "security");
+        assertThat(((Map<?, ?>) read.get("support")).get("status")).isEqualTo("SUPPORTED");
+        assertThat(((Map<?, ?>) read.get("capabilities")).get("blockedReasonCodes").toString())
+                .contains("DISABLED");
+        assertThat(read.get("lastConclusiveValidation")).isNull();
+    }
+
+    @Test
     void registersOneRequestAndReplaysAfterCompletionWithoutCreatingNewObservation() {
         var read = service.read(key, occurrence, "security");
         assertThat(read.get("latestAttempt")).isNull();
@@ -113,7 +153,7 @@ class SecretValidationIntegrationTest {
                 .containsEntry("requestId", first.get("requestId"));
         db.update(
                 "UPDATE secret_jobs SET status='SUCCEEDED',finished_at=clock_timestamp() WHERE"
-                    + " job_id=?",
+                        + " job_id=?",
                 first.get("jobId"));
         assertThat(service.request(key, body, "security"))
                 .containsEntry("reused", true)
@@ -246,7 +286,7 @@ class SecretValidationIntegrationTest {
         assertThat(
                         db.queryForObject(
                                 "SELECT credential_revision FROM secret_credential_sets WHERE"
-                                    + " credential_set_id=?",
+                                        + " credential_set_id=?",
                                 Long.class,
                                 key))
                 .isEqualTo(2);

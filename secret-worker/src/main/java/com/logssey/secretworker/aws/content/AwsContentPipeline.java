@@ -27,10 +27,30 @@ public final class AwsContentPipeline {
     private final SecretFindingRepository findings;
     private final AwsValidationService validator;
     private final SecretValidationAttemptRepository attempts;
+    private final com.logssey.secretworker.validation.GitHubPatValidator githubValidator;
 
     public AwsContentPipeline(AwsContentCollector collector, SecretContentDetector detector,
                               SecretFindingNormalizer normalizer, SecretFindingRepository findings,
                               AwsValidationService validator, SecretValidationAttemptRepository attempts) {
+        this(
+                collector,
+                detector,
+                normalizer,
+                findings,
+                validator,
+                attempts,
+                new com.logssey.secretworker.validation.GitHubPatValidator(false));
+    }
+
+    public AwsContentPipeline(
+            AwsContentCollector collector,
+            SecretContentDetector detector,
+            SecretFindingNormalizer normalizer,
+            SecretFindingRepository findings,
+            AwsValidationService validator,
+            SecretValidationAttemptRepository attempts,
+            com.logssey.secretworker.validation.GitHubPatValidator githubValidator) {
+        this.githubValidator = githubValidator;
         this.collector = collector;
         this.detector = detector;
         this.normalizer = normalizer;
@@ -53,7 +73,13 @@ public final class AwsContentPipeline {
             ClaimedSecretJob job,
             SecretJobExecutionService execution,
             java.util.function.Predicate<AwsContentScope> accountAllowed) {
-        attempts.processor(normalizer, detector, validator)
+        new com.logssey.secretworker.validation.CredentialRevalidationProcessor(
+                        attempts.jdbcTemplate(),
+                        normalizer,
+                        detector,
+                        attempts,
+                        validator,
+                        githubValidator)
                 .process(
                         job,
                         execution,
@@ -75,7 +101,8 @@ public final class AwsContentPipeline {
                                                             sink.accept(ref, null, bytes))
                                             .status()
                                     == AwsContentCollector.Status.SUCCEEDED;
-                        }); }
+                        });
+    }
 
     /** Kept for one run only. The set contains keyed digests, never raw credentials. */
     public static final class RunValidation {
@@ -97,12 +124,20 @@ public final class AwsContentPipeline {
             if (result.status() == AwsValidationResult.Status.UNCHECKED) {
                 if (result.reason() != AwsValidationResult.Reason.DISABLED
                         && result.reason() != AwsValidationResult.Reason.SYNTHETIC_FIXTURE
-                        && result.reason() != AwsValidationResult.Reason.SOURCE_GUARD_BLOCKED) inconclusive++;
+                        && result.reason() != AwsValidationResult.Reason.SOURCE_GUARD_BLOCKED)
+                    inconclusive++;
             } else if (result.status() == AwsValidationResult.Status.UNKNOWN) {
                 inconclusive++;
             } else {
                 checked++;
             }
+        }
+
+        void record(com.logssey.secretworker.validation.CredentialValidationResult result) {
+            if (Set.of("VALID", "INVALID").contains(result.result())) checked++;
+            else if (!("UNCHECKED".equals(result.result())
+                    && Set.of("DISABLED", "SYNTHETIC_FIXTURE", "SOURCE_GUARD_BLOCKED")
+                            .contains(result.reasonCode()))) inconclusive++;
         }
 
         void failed() { failed++; }
@@ -127,43 +162,96 @@ public final class AwsContentPipeline {
         withLease(job, execution, () -> toolRunId.set(findings.beginGitleaksRun(runScopeId,
                 detector.engineVersion(), detector.configHash(), Instant.now())));
         AtomicReference<String> consumerGap = new AtomicReference<>();
-        AwsContentCollector.Result result = collector.collect(approved, true,
-                AwsContentCollector.DEFAULT_MAX_BYTES, (source, bytes) -> {
-                    if (!execution.renewLease(job.jobId(), job.leaseToken())) {
-                        consumerGap.set("LEASE_EXPIRED");
-                        throw new SecretJobFailure(SecretJobFailureCode.LEASE_EXPIRED, true);
-                    }
-                    try {
-                        var scan = detector.scan(bytes);
-                        var inspection = normalizer.inspect(job.connectionId(), sourceRef,
-                                bytes, scan.findings());
-                        withLease(job, execution, () -> findings.recordInspection(toolRunId.get(),
-                                sourceRef, null, inspection, scan, Instant.now()));
-                        for (var candidate : inspection.awsCandidates()) {
-                            if (!validation.firstEncounter(candidate.credential())) continue;
+        AwsContentCollector.Result result =
+                collector.collect(
+                        approved,
+                        true,
+                        AwsContentCollector.DEFAULT_MAX_BYTES,
+                        (source, bytes) -> {
+                            if (!execution.renewLease(job.jobId(), job.leaseToken())) {
+                                consumerGap.set("LEASE_EXPIRED");
+                                throw new SecretJobFailure(
+                                        SecretJobFailureCode.LEASE_EXPIRED, true);
+                            }
                             try {
-                                AwsValidationResult checked = attempts.validateAws(job,
-                                        candidate.credential(),candidate.material(),false,validator,runScopeId);
-                                validation.record(checked);
-                            } catch (SecretJobFailure error) {
-                                throw error;
-                            } catch (RuntimeException error) {
+                                var scan = detector.scan(bytes);
+                                var inspection =
+                                        normalizer.inspect(
+                                                job.connectionId(),
+                                                sourceRef,
+                                                bytes,
+                                                scan.findings());
+                                withLease(
+                                        job,
+                                        execution,
+                                        () ->
+                                                findings.recordInspection(
+                                                        toolRunId.get(),
+                                                        sourceRef,
+                                                        null,
+                                                        inspection,
+                                                        scan,
+                                                        Instant.now()));
+                                for (var candidate : inspection.awsCandidates()) {
+                                    if (!validation.firstEncounter(candidate.credential()))
+                                        continue;
+                                    try {
+                                        AwsValidationResult checked =
+                                                attempts.validateAws(
+                                                        job,
+                                                        candidate.credential(),
+                                                        candidate.material(),
+                                                        false,
+                                                        validator,
+                                                        runScopeId,
+                                                        sourceRef,
+                                                        null);
+                                        validation.record(checked);
+                                    } catch (SecretJobFailure error) {
+                                        throw error;
+                                    } catch (RuntimeException error) {
                                         // Provider and DB messages may contain raw credential
                                         // material.
-                                validation.failed();
+                                        validation.failed();
+                                    }
+                                }
+                                for (var candidate : inspection.githubCandidates()) {
+                                    if (!validation.firstEncounter(candidate.credential()))
+                                        continue;
+                                    try {
+                                        validation.record(
+                                                attempts.validateGitHub(
+                                                        job,
+                                                        candidate,
+                                                        githubValidator,
+                                                        runScopeId,
+                                                        sourceRef,
+                                                        null));
+                                    } catch (SecretJobFailure error) {
+                                        throw error;
+                                    } catch (RuntimeException ignored) {
+                                        validation.failed();
+                                    }
+                                }
+                                for (var credential : inspection.credentials()) {
+                                    if (Set.of("AWS", "GITHUB").contains(credential.issuer()))
+                                        continue;
+                                    if (!validation.firstEncounter(credential)) continue;
+                                    validation.record(
+                                            attempts.recordUnsupported(
+                                                    job, credential, runScopeId));
+                                }
+                            } catch (DetectionFailure error) {
+                                consumerGap.set("DETECTOR_" + error.code().name());
+                                throw error;
+                            } catch (SecretJobFailure error) {
+                                consumerGap.set("LEASE_EXPIRED");
+                                throw error;
+                            } catch (RuntimeException error) {
+                                consumerGap.compareAndSet(null, "RESULT_PERSISTENCE_FAILED");
+                                throw error;
                             }
-                        }
-                    } catch (DetectionFailure error) {
-                        consumerGap.set("DETECTOR_" + error.code().name());
-                        throw error;
-                    } catch (SecretJobFailure error) {
-                        consumerGap.set("LEASE_EXPIRED");
-                        throw error;
-                    } catch (RuntimeException error) {
-                        consumerGap.compareAndSet(null, "RESULT_PERSISTENCE_FAILED");
-                        throw error;
-                    }
-                });
+                        });
         String gap = consumerGap.get() != null ? consumerGap.get()
                 : result.gaps().isEmpty() ? null : "AWS_CONTENT_" + result.gaps().getFirst().name();
         withLease(job, execution, () -> findings.finishToolRun(toolRunId.get(),

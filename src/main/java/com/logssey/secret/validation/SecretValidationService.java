@@ -21,7 +21,7 @@ public class SecretValidationService {
     private final JdbcTemplate jdbc;
     private final SecretAccessService access;
     private final SecretCommandExecutor commands;
-    private final boolean awsEnabled, githubEnabled;
+    private final boolean awsEnabled, githubEnabled, githubSourceEnabled, awsSourceEnabled;
 
     public SecretValidationService(
             JdbcTemplate jdbc,
@@ -29,6 +29,20 @@ public class SecretValidationService {
             SecretCommandExecutor commands,
             @Value("${logssey.secret.validation.aws.enabled:false}") boolean awsEnabled,
             @Value("${logssey.secret.validation.github.enabled:false}") boolean githubEnabled) {
+        this(jdbc, access, commands, awsEnabled, githubEnabled, true, true);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public SecretValidationService(
+            JdbcTemplate jdbc,
+            SecretAccessService access,
+            SecretCommandExecutor commands,
+            @Value("${logssey.secret.validation.aws.enabled:false}") boolean awsEnabled,
+            @Value("${logssey.secret.validation.github.enabled:false}") boolean githubEnabled,
+            @Value("${logssey.secret.github.enabled:false}") boolean githubSourceEnabled,
+            @Value("${logssey.secret.aws.content.enabled:false}") boolean awsSourceEnabled) {
+        this.githubSourceEnabled = githubSourceEnabled;
+        this.awsSourceEnabled = awsSourceEnabled;
         this.jdbc = jdbc;
         this.access = access;
         this.commands = commands;
@@ -55,6 +69,8 @@ public class SecretValidationService {
         boolean post = action != null && (observed == null || !observed.isAfter(action));
         var blocked = blocked(c);
         if (!canRequest(actor, c)) blocked.add("NOT_AUTHORIZED");
+        if (hasActiveJob(c)) blocked.add("ACTIVE_JOB_EXISTS");
+        if (requestBudgetExceeded(actor)) blocked.add("RATE_BUDGET_EXHAUSTED");
         String freshness =
                 observed == null
                         ? "UNAVAILABLE"
@@ -95,7 +111,9 @@ public class SecretValidationService {
                                                         : "NO_CURRENT_CONCLUSIVE_RESULT"),
                         "checkDueAt",
                         due));
-        result.put("nextDueAt", due);
+        result.put(
+                "nextDueAt",
+                latest != null && latest.get("nextDueAt") != null ? latest.get("nextDueAt") : due);
         result.put("postActionValidationPending", post);
         result.put(
                 "capabilities",
@@ -161,12 +179,26 @@ public class SecretValidationService {
                             var reasons = blocked(c);
                             if (!reasons.isEmpty())
                                 throw fail(ErrorCode.UNPROCESSABLE, reasons.getFirst());
+                            jdbc.queryForObject(
+                                    "SELECT pg_advisory_xact_lock(72525002,?::int)",
+                                    Object.class,
+                                    Math.floorMod(actor.userId(), Integer.MAX_VALUE));
+                            long requests =
+                                    jdbc.queryForObject(
+                                            "SELECT count(*) FROM secret_jobs WHERE"
+                                                    + " purpose='CREDENTIAL_VALIDITY' AND"
+                                                    + " requested_by_user_id=? AND"
+                                                    + " created_at>clock_timestamp()-interval '1"
+                                                    + " minute'",
+                                            Long.class,
+                                            actor.userId());
+                            if (requests >= 10) throw new ValidationRateLimitException();
                             long job =
                                     jdbc.queryForObject(
                                             """
 INSERT INTO secret_jobs(kind,purpose,connection_id,target_occurrence_id,requested_by_user_id,idempotency_key,expected_context,
  scheduled_at,available_at,attempt_no,max_attempts,status)
-VALUES('REVALIDATE','CREDENTIAL_VALIDITY',?,?,?, ?,jsonb_build_object('contextVersion',?::text,'credentialRevision',?::bigint),clock_timestamp(),clock_timestamp(),0,3,'PENDING') RETURNING job_id
+VALUES('REVALIDATE','CREDENTIAL_VALIDITY',?,?,?, ?,jsonb_build_object('contextVersion',?::text,'credentialRevision',?::bigint,'scopeId',?::bigint,'scopeRevision',?::bigint,'validationRevision',?::bigint,'validationApprovalRevision',?::bigint,'profileVersion',?::text,'actionId',?::bigint,'occurrenceRevision',?::bigint,'validatorVersion','1'),clock_timestamp(),clock_timestamp(),0,3,'PENDING') RETURNING job_id
 """,
                                             Long.class,
                                             num(c, "connection_id"),
@@ -174,7 +206,14 @@ VALUES('REVALIDATE','CREDENTIAL_VALIDITY',?,?,?, ?,jsonb_build_object('contextVe
                                             actor.userId(),
                                             "validation:" + UUID.randomUUID(),
                                             expected,
-                                            num(c, "credential_revision"));
+                                            num(c, "credential_revision"),
+                                            num(c, "scope_id"),
+                                            num(c, "scope_revision"),
+                                            num(c, "validation_revision"),
+                                            num(c, "validation_approval_revision"),
+                                            c.get("connection_profile"),
+                                            num(c, "action_id"),
+                                            num(c, "occurrence_revision"));
                             long run =
                                     jdbc.queryForObject(
                                             """
@@ -348,8 +387,10 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
         if (key <= 0 || oid != null && oid <= 0) throw new ApiException(ErrorCode.NOT_FOUND);
         var rows =
                 jdbc.queryForList(
-                        "SELECT * FROM secret_validation_context WHERE credential_set_id=? AND"
-                                + " (?::bigint IS NULL OR occurrence_id=?) ORDER BY occurrence_id",
+                        "SELECT v.*,s.content_type FROM secret_validation_context v JOIN"
+                                + " secret_connection_scopes s USING(scope_id) WHERE"
+                                + " credential_set_id=? AND (?::bigint IS NULL OR occurrence_id=?)"
+                                + " ORDER BY occurrence_id",
                         key,
                         oid,
                         oid);
@@ -362,8 +403,10 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
     private List<String> blocked(Map<String, Object> c) {
         var reasons = new ArrayList<String>();
         if (!supported(c)) reasons.add("UNSUPPORTED_TYPE");
-        if (!Set.of("AWS", "GITHUB").contains(c.get("source_provider")))
-            reasons.add("UNSUPPORTED_SOURCE");
+        if (!sourceSupported(c)) reasons.add("UNSUPPORTED_SOURCE");
+        else if (!("GITHUB".equals(c.get("source_provider"))
+                ? githubSourceEnabled
+                : awsSourceEnabled)) reasons.add("SOURCE_UNAVAILABLE");
         if (!"CONFIRMED".equals(c.get("component_state"))) reasons.add("INCOMPLETE_PAIR");
         if (Boolean.TRUE.equals(c.get("synthetic_fixture"))) reasons.add("SYNTHETIC_FIXTURE");
         if (Boolean.TRUE.equals(c.get("source_guard_blocked"))) reasons.add("SOURCE_GUARD_BLOCKED");
@@ -378,6 +421,45 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
         return reasons;
     }
 
+    private List<String> policyBlocks(Map<String, Object> c, boolean configure) {
+        var reasons = new ArrayList<String>();
+        if (!configure) reasons.add("SECURITY_REQUIRED");
+        if (!PROFILE.equals(c.get("connection_profile"))) reasons.add("PROFILE_UNCONFIGURED");
+        if (!Boolean.TRUE.equals(c.get("validation_enabled")) || !(awsEnabled || githubEnabled))
+            reasons.add("DISABLED");
+        return reasons;
+    }
+
+    private boolean sourceSupported(Map<String, Object> c) {
+        return "GITHUB".equals(c.get("source_provider"))
+                ? "GITHUB_REPOSITORY_FILES".equals(c.get("content_type"))
+                : "AWS".equals(c.get("source_provider"))
+                        && Set.of(
+                                        "AWS_SECRETS_MANAGER_VALUE",
+                                        "AWS_SSM_PARAMETER_VALUE",
+                                        "AWS_S3_OBJECT_CONTENT")
+                                .contains(c.get("content_type"));
+    }
+
+    private boolean hasActiveJob(Map<String, Object> c) {
+        return Boolean.TRUE.equals(
+                jdbc.queryForObject(
+                        "SELECT EXISTS(SELECT 1 FROM secret_jobs WHERE connection_id=? AND kind"
+                            + " IN('FULL_SCAN','REVALIDATE') AND status IN('PENDING','LEASED'))",
+                        Boolean.class,
+                        num(c, "connection_id")));
+    }
+
+    private boolean requestBudgetExceeded(SecretPrincipal actor) {
+        return jdbc.queryForObject(
+                        "SELECT count(*) FROM secret_jobs WHERE purpose='CREDENTIAL_VALIDITY' AND"
+                            + " requested_by_user_id=? AND created_at>clock_timestamp()-interval '1"
+                            + " minute'",
+                        Long.class,
+                        actor.userId())
+                >= 10;
+    }
+
     private boolean global(Map<String, Object> c) {
         return "AWS".equals(c.get("issuer")) ? awsEnabled : githubEnabled;
     }
@@ -389,7 +471,11 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
     }
 
     private boolean supported(Map<String, Object> c) {
-        return Set.of("AWS_ACCESS_KEY_PAIR", "AWS_TEMPORARY_CREDENTIALS")
+        return Set.of(
+                        "AWS_ACCESS_KEY_PAIR",
+                        "AWS_TEMPORARY_CREDENTIALS",
+                        "GITHUB_CLASSIC_PAT",
+                        "GITHUB_FINE_GRAINED_PAT")
                 .contains(c.get("credential_type"));
     }
 
@@ -408,13 +494,16 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
                 "enabled",
                 Boolean.TRUE.equals(c.get("validation_approved")),
                 "profileStatus",
-                c.get("connection_profile") == null
+                !PROFILE.equals(c.get("connection_profile"))
                         ? "UNCONFIGURED"
-                        : Boolean.TRUE.equals(c.get("validation_enabled")) ? "ENABLED" : "DISABLED",
+                        : Boolean.TRUE.equals(c.get("validation_enabled"))
+                                        && (awsEnabled || githubEnabled)
+                                ? "ENABLED"
+                                : "DISABLED",
                 "canConfigure",
                 configure,
                 "blockedReasonCodes",
-                configure ? List.of() : List.of("SECURITY_REQUIRED"));
+                policyBlocks(c, configure));
     }
 
     private Map<String, Object> latestRequest(long oid) {
@@ -489,7 +578,9 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
                                 "state",
                                 rs.getString("attempt_state"),
                                 "purpose",
-                                rs.getString("purpose")),
+                                rs.getString("purpose"),
+                                "nextDueAt",
+                                rs.getObject("next_due_at")),
                 num(c, "credential_set_id"),
                 num(c, "occurrence_id"),
                 limit,
