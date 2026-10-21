@@ -16,7 +16,7 @@ public class SecretLocationReadiness {
     o.connection_id,o.presence_status,o.last_seen_at,(k.fingerprint=v.baseline_identity AND k.fingerprint_key_version=v.baseline_fingerprint_version) AS same_identity,k.component_state,k.fingerprint_key_version,cn.provider,cn.status AS connection_status,
     s.enabled,s.content_type,s.history_limit,s.approved_ref,s.response_origin,s.revision,s.response_origin_version,v.scope_origin_version AS revalidation_origin_version,
     v.scope_revision AS revalidation_revision,v.occurrence_version AS revalidation_occurrence_version,co.version AS location_version,
-    EXISTS(SELECT 1 FROM secret_jobs j WHERE j.connection_id=o.connection_id AND j.status IN ('PENDING','LEASED')) AS busy,
+    EXISTS(SELECT 1 FROM secret_jobs j WHERE j.connection_id=o.connection_id AND j.kind IN ('FULL_SCAN','REVALIDATE') AND j.status IN ('PENDING','LEASED')) AS busy,
     v.revalidation_id,v.status AS revalidation_status,v.action_cycle AS revalidation_cycle,
     v.last_material_action_at AS revalidation_action_at,v.actions_completed_at AS revalidation_completed_at,v.finished_at AS revalidation_finished_at,
     vr.scope_version AS revalidation_connection_version,cn.scope_version,

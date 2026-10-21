@@ -180,6 +180,20 @@ class SecretRevalidationServiceIntegrationTest {
     }
 
     @Test
+    void databaseOnlyAssessmentDoesNotBlockAnExternalLocationRecheck() {
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_jobs WHERE kind='ASSESS' AND status='PENDING'", Long.class))
+                .isPositive();
+        var accepted = service.request(caseId,
+                new SecretRevalidationRequest(occurrenceId, 0L, 0L, "assessment-does-not-block"),
+                "revalidation-admin");
+        assertThat(accepted.jobStatus()).isEqualTo("PENDING");
+        // The newly queued external recheck still excludes a second external request.
+        assertThatThrownBy(() -> service.request(caseId,
+                new SecretRevalidationRequest(occurrenceId, 1L, 1L, "external-still-exclusive"),
+                "revalidation-admin")).isInstanceOf(ApiException.class);
+    }
+
+    @Test
     void requestIsSingleScopeAndIdempotentButUnfinishedRunCannotResolve() {
         var request = new SecretRevalidationRequest(occurrenceId, 0L, 0L, "test-recheck-1");
         var accepted = service.request(caseId, request, "revalidation-admin");
