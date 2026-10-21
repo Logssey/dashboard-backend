@@ -1,12 +1,5 @@
 package com.logssey.secretworker.aws.content;
 
-import java.time.Instant;
-import java.util.HashSet;
-import java.util.HexFormat;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
-
 import com.logssey.secretworker.ClaimedSecretJob;
 import com.logssey.secretworker.SecretJobExecutionService;
 import com.logssey.secretworker.SecretJobFailure;
@@ -18,6 +11,13 @@ import com.logssey.secretworker.detector.SecretContentDetector;
 import com.logssey.secretworker.validation.AwsValidationResult;
 import com.logssey.secretworker.validation.AwsValidationService;
 import com.logssey.secretworker.validation.SecretValidationAttemptRepository;
+
+import java.time.Instant;
+import java.util.HashSet;
+import java.util.HexFormat;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Detects and records one exact AWS value while the collector still owns its content buffer. */
 public final class AwsContentPipeline {
@@ -39,7 +39,43 @@ public final class AwsContentPipeline {
         this.attempts = attempts;
     }
 
-    public record Result(AwsContentCollector.Status status, int objectCount, String gapCode) { }
+    public record Result(AwsContentCollector.Status status, int objectCount, String gapCode) {}
+
+    public boolean isValidationJob(ClaimedSecretJob job) {
+        return attempts.isManual(job);
+    }
+
+    public boolean hasRetryableValidation(ClaimedSecretJob job) {
+        return attempts.hasRetryable(job);
+    }
+
+    public void processValidation(
+            ClaimedSecretJob job,
+            SecretJobExecutionService execution,
+            java.util.function.Predicate<AwsContentScope> accountAllowed) {
+        attempts.processor(normalizer, detector, validator)
+                .process(
+                        job,
+                        execution,
+                        (target, sink) -> {
+                            var approved =
+                                    AwsContentScope.fromApprovedRef(
+                                            (String) target.get("content_type"),
+                                            (String) target.get("approved_ref"),
+                                            (String) target.get("history_limit"));
+                            if (!accountAllowed.test(approved)) return false;
+                            String ref = "aws-content-scope:" + target.get("scope_id");
+                            if (!ref.equals(target.get("source_object_ref"))) return false;
+                            return collector
+                                            .collect(
+                                                    approved,
+                                                    true,
+                                                    AwsContentCollector.DEFAULT_MAX_BYTES,
+                                                    (source, bytes) ->
+                                                            sink.accept(ref, null, bytes))
+                                            .status()
+                                    == AwsContentCollector.Status.SUCCEEDED;
+                        }); }
 
     /** Kept for one run only. The set contains keyed digests, never raw credentials. */
     public static final class RunValidation {
@@ -59,7 +95,9 @@ public final class AwsContentPipeline {
 
         void record(AwsValidationResult result) {
             if (result.status() == AwsValidationResult.Status.UNCHECKED) {
-                if (result.reason() != AwsValidationResult.Reason.DISABLED) inconclusive++;
+                if (result.reason() != AwsValidationResult.Reason.DISABLED
+                        && result.reason() != AwsValidationResult.Reason.SYNTHETIC_FIXTURE
+                        && result.reason() != AwsValidationResult.Reason.SOURCE_GUARD_BLOCKED) inconclusive++;
             } else if (result.status() == AwsValidationResult.Status.UNKNOWN) {
                 inconclusive++;
             } else {
@@ -104,16 +142,14 @@ public final class AwsContentPipeline {
                         for (var candidate : inspection.awsCandidates()) {
                             if (!validation.firstEncounter(candidate.credential())) continue;
                             try {
-                                AwsValidationResult checked = validator.validate(candidate.material());
-                                if (!attempts.recordIfLeased(job.jobId(), job.leaseToken(),
-                                        job.runId(), candidate.credential(), checked)) {
-                                    throw new SecretJobFailure(SecretJobFailureCode.LEASE_EXPIRED, true);
-                                }
+                                AwsValidationResult checked = attempts.validateAws(job,
+                                        candidate.credential(),candidate.material(),false,validator,runScopeId);
                                 validation.record(checked);
                             } catch (SecretJobFailure error) {
                                 throw error;
                             } catch (RuntimeException error) {
-                                // Provider and DB messages may contain raw credential material.
+                                        // Provider and DB messages may contain raw credential
+                                        // material.
                                 validation.failed();
                             }
                         }

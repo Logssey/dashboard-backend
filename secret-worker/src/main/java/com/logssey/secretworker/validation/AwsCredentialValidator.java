@@ -1,15 +1,15 @@
 package com.logssey.secretworker.validation;
 
-import java.time.Clock;
-import java.time.Instant;
-import java.util.Objects;
-
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import software.amazon.awssdk.awscore.exception.AwsErrorDetails;
 import software.amazon.awssdk.services.sts.model.StsException;
+
+import java.time.Clock;
+import java.time.Instant;
+import java.util.Objects;
 
 /** A single in-memory attempt. Scheduling, deduplication, and persistence belong to the worker. */
 @Component
@@ -32,6 +32,11 @@ public final class AwsCredentialValidator implements AwsValidationService {
         this.enabled = enabled;
         this.clock = Objects.requireNonNull(clock);
         this.sts = Objects.requireNonNull(sts);
+    }
+
+    @Override
+    public boolean enabled() {
+        return enabled;
     }
 
     @Override
@@ -59,7 +64,8 @@ public final class AwsCredentialValidator implements AwsValidationService {
         } catch (RuntimeException exception) {
             // SDK client, network, configuration, and unexpected failures cannot prove invalidity.
             return result(AwsValidationResult.Status.UNKNOWN, AwsValidationResult.Reason.CLIENT_FAILURE,
-                    evaluatedAt, clock.instant());
+                    evaluatedAt,
+                    null);
         }
     }
 
@@ -71,7 +77,8 @@ public final class AwsCredentialValidator implements AwsValidationService {
                     evaluatedAt, checkedAt);
         }
         if ("SignatureDoesNotMatch".equals(code)) {
-            // A wrong secret is one cause, but proxy/signing/region problems can produce the same code.
+            // A wrong secret is one cause, but proxy/signing/region problems can produce the same
+            // code.
             return result(AwsValidationResult.Status.UNKNOWN, AwsValidationResult.Reason.SIGNATURE_AMBIGUOUS,
                     evaluatedAt, checkedAt);
         }

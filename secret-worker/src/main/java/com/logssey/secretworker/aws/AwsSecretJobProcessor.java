@@ -1,5 +1,19 @@
 package com.logssey.secretworker.aws;
 
+import com.logssey.secretworker.ClaimedSecretJob;
+import com.logssey.secretworker.SecretJobExecutionService;
+import com.logssey.secretworker.SecretJobFailure;
+import com.logssey.secretworker.SecretJobFailureCode;
+import com.logssey.secretworker.SecretJobProcessor;
+import com.logssey.secretworker.SecretJobProperties;
+import com.logssey.secretworker.aws.content.AwsContentCollector;
+import com.logssey.secretworker.aws.content.AwsContentPipeline;
+import com.logssey.secretworker.aws.content.AwsContentScope;
+import com.logssey.secretworker.aws.metadata.AwsMetadataApprovedScope;
+import com.logssey.secretworker.aws.metadata.AwsMetadataCollector;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -7,20 +21,6 @@ import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-
-import org.springframework.jdbc.core.JdbcTemplate;
-
-import com.logssey.secretworker.ClaimedSecretJob;
-import com.logssey.secretworker.SecretJobExecutionService;
-import com.logssey.secretworker.SecretJobFailure;
-import com.logssey.secretworker.SecretJobFailureCode;
-import com.logssey.secretworker.SecretJobProcessor;
-import com.logssey.secretworker.SecretJobProperties;
-import com.logssey.secretworker.aws.content.AwsContentPipeline;
-import com.logssey.secretworker.aws.content.AwsContentCollector;
-import com.logssey.secretworker.aws.content.AwsContentScope;
-import com.logssey.secretworker.aws.metadata.AwsMetadataApprovedScope;
-import com.logssey.secretworker.aws.metadata.AwsMetadataCollector;
 
 /** Runs approved AWS metadata scopes and separately opted-in exact value scopes. */
 public final class AwsSecretJobProcessor implements SecretJobProcessor {
@@ -61,6 +61,20 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
 
     @Override
     public void process(ClaimedSecretJob job, SecretJobExecutionService execution) {
+        if (content != null && content.isValidationJob(job)) {
+            if (!Boolean.TRUE.equals(
+                    jdbc.queryForObject(
+                            "SELECT auth_ref=? AND status='ACTIVE' FROM secret_connections WHERE"
+                                + " connection_id=?",
+                            Boolean.class,
+                            expectedAuthRef,
+                            job.connectionId())))
+                throw new SecretJobFailure(SecretJobFailureCode.SOURCE_ACCESS_DENIED, false);
+            AccountCheck account = new AccountCheck();
+            content.processValidation(
+                    job, execution, approved -> account.check(approved.accountId()) == null);
+            return;
+        }
         var heartbeat = Executors.newSingleThreadScheduledExecutor(
                 Thread.ofVirtual().name("aws-job-lease-heartbeat").factory());
         var leaseLost = new AtomicBoolean();
@@ -143,6 +157,8 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
         if (succeeded == 0) {
             throw new SecretJobFailure(retryCode(firstGap), retryable(firstGap));
         }
+        if (content != null && content.hasRetryableValidation(job))
+            throw new SecretJobFailure(SecretJobFailureCode.VALIDATOR_TEMPORARY, true);
     }
 
     private ScopeResult processScope(ClaimedSecretJob job, Scope scope,

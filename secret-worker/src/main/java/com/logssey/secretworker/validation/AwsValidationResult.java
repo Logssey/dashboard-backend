@@ -14,12 +14,18 @@ public record AwsValidationResult(Status status, Reason reason, Instant evaluate
         EXPIRED_SESSION,
         DISABLED,
         SYNTHETIC_FIXTURE,
+        SOURCE_GUARD_BLOCKED,
         INCOMPLETE_PAIR,
         MISSING_SESSION_TOKEN,
         ACCESS_AMBIGUOUS,
         RATE_LIMITED,
         PROVIDER_UNAVAILABLE,
-        CLIENT_FAILURE
+        CLIENT_FAILURE,
+        NOT_APPROVED,
+        RATE_BUDGET_EXHAUSTED,
+        APPROVAL_CHANGED,
+        SOURCE_UNAVAILABLE,
+        CREDENTIAL_MISMATCH
     }
 
     public static final String METHOD = "AWS_STS_GET_CALLER_IDENTITY";

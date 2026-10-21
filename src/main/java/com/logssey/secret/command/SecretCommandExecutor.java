@@ -1,13 +1,5 @@
 package com.logssey.secret.command;
 
-import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
-import java.util.Objects;
-import java.util.function.Supplier;
-
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
 import com.logssey.secret.access.SecretPrincipal;
@@ -17,11 +9,21 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
+import java.util.Objects;
+import java.util.function.Supplier;
+
 /** Serializes retries and commits the mutation, controlled result and audit atomically. */
 @Service
 public class SecretCommandExecutor {
     public enum Kind {
         MANUAL_SCAN("RUN", "MANUAL_SCAN_REGISTERED"),
+        CREDENTIAL_VALIDATION("VALIDATION_REQUEST", "CREDENTIAL_VALIDATION_REQUESTED"),
+        VALIDATION_POLICY("SCOPE", "VALIDATION_POLICY_CHANGED"),
         SCOPE_CLASSIFICATION("SCOPE_PROPOSAL", "CLASSIFICATION_PROPOSED"),
         SCOPE_CLASSIFICATION_APPROVE("SCOPE_PROPOSAL", "CLASSIFICATION_APPROVED"),
         SCOPE_CLASSIFICATION_REJECT("SCOPE_PROPOSAL", "CLASSIFICATION_REJECTED"),

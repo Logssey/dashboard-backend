@@ -1,35 +1,7 @@
 package com.logssey.secretworker.github;
 
-import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.nio.charset.StandardCharsets;
-import java.security.KeyPairGenerator;
-import java.time.Clock;
-import java.time.Duration;
-import java.time.Instant;
-import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
-import java.util.Base64;
-import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
-
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
-import org.flywaydb.core.Flyway;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.DataSourceTransactionManager;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
-import org.springframework.transaction.support.TransactionTemplate;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
-import org.testcontainers.postgresql.PostgreSQLContainer;
-
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.logssey.secretworker.SecretJobExecutionService;
 import com.logssey.secretworker.SecretJobFailure;
 import com.logssey.secretworker.SecretJobProperties;
@@ -43,8 +15,36 @@ import com.logssey.secretworker.validation.AwsValidationResult;
 import com.logssey.secretworker.validation.AwsValidationService;
 import com.logssey.secretworker.validation.SecretValidationAttemptRepository;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+import org.flywaydb.core.Flyway;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
+import org.testcontainers.postgresql.PostgreSQLContainer;
+
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.nio.charset.StandardCharsets;
+import java.security.KeyPairGenerator;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.util.Base64;
+
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 class GitHubSecretJobProcessorTest {
     private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:18.6");
@@ -135,7 +135,10 @@ class GitHubSecretJobProcessorTest {
         assertThat(jdbc.queryForObject("SELECT result_status FROM secret_scan_runs", String.class))
                 .isEqualTo("SUCCEEDED");
         assertThat(jdbc.queryForObject("SELECT object_count FROM secret_run_scopes", Long.class)).isEqualTo(1L);
-        assertThat(jdbc.queryForMap("SELECT scope_revision,scope_outcome,detection_stage_status,validation_stage_status,validation_required FROM secret_scope_outcomes"))
+        assertThat(jdbc.queryForMap(
+                                "SELECT"
+                                    + " scope_revision,scope_outcome,detection_stage_status,validation_stage_status,validation_required"
+                                    + " FROM secret_scope_outcomes"))
                 .containsEntry("scope_revision",1L).containsEntry("scope_outcome","SUCCEEDED")
                 .containsEntry("detection_stage_status","SUCCEEDED").containsEntry("validation_stage_status","SKIPPED")
                 .containsEntry("validation_required",false);
@@ -147,7 +150,7 @@ class GitHubSecretJobProcessorTest {
         assertThat(jdbc.queryForObject("SELECT result FROM secret_validation_attempts", String.class))
                 .isEqualTo("UNCHECKED");
         assertThat(jdbc.queryForObject("SELECT reason_code FROM secret_validation_attempts", String.class))
-                .isEqualTo("SYNTHETIC_FIXTURE");
+                .isEqualTo("SOURCE_GUARD_BLOCKED");
         String stored = jdbc.queryForObject("SELECT masked_label FROM secret_credential_sets", String.class);
         assertThat(stored).doesNotContain("aB3/").doesNotContain("ABCDEFGHIJKLMNOP");
     }
@@ -249,30 +252,41 @@ class GitHubSecretJobProcessorTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_occurrences", Long.class)).isEqualTo(2L);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_validation_attempts", Long.class))
                 .isEqualTo(2L);
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_validation_attempts WHERE result = 'VALID'",
+        assertThat(jdbc.queryForObject(
+                                "SELECT count(*) FROM secret_validation_attempts WHERE result ="
+                                    + " 'VALID'",
                 Long.class)).isEqualTo(1L);
     }
 
     @Test
-    void validationFailureLeavesDetectionEvidenceAndMarksRunPartialWithoutProviderMessage() {
+    void validationFailureLeavesDetectionEvidenceAndSchedulesBoundedRetryWithoutProviderMessage() {
         repository = "candidate-app";
         processor = processorWith(key -> { throw new IllegalStateException("raw " + new String(CONTENT)); });
         insertRun();
 
         var job = execution.claimNextJob("GITHUB").orElseThrow();
-        processor.process(job, execution);
-        assertThat(execution.complete(job.jobId(), job.leaseToken())).isTrue();
+        assertThatThrownBy(() ->
+        processor.process(job, execution)).isInstanceOf(SecretJobFailure.class);
 
         assertThat(jdbc.queryForObject("SELECT collection_status FROM secret_scan_runs", String.class))
                 .isEqualTo("SUCCEEDED");
         assertThat(jdbc.queryForObject("SELECT validation_status FROM secret_scan_runs", String.class))
                 .isEqualTo("PARTIAL");
-        assertThat(jdbc.queryForObject("SELECT result_status FROM secret_scan_runs", String.class))
-                .isEqualTo("PARTIAL");
         assertThat(jdbc.queryForObject("SELECT failure_code FROM secret_scan_runs", String.class))
-                .isEqualTo("VALIDATION_ATTEMPT_FAILED");
+                .isEqualTo("VALIDATION_INCONCLUSIVE");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_occurrences", Long.class)).isEqualTo(1L);
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_validation_attempts", Long.class)).isZero();
+        assertThat(jdbc.queryForObject(
+                                "SELECT count(*) FROM secret_validation_attempts WHERE"
+                                    + " result='UNKNOWN' AND provider_checked_at IS NULL", Long.class)).isEqualTo(1);
+        assertThat(
+                        execution.fail(
+                                job.jobId(),
+                                job.leaseToken(),
+                                com.logssey.secretworker.SecretJobFailureCode.VALIDATOR_TEMPORARY,
+                                true))
+                .isTrue();
+        assertThat(jdbc.queryForObject("SELECT status FROM secret_jobs", String.class))
+                .isEqualTo("PENDING");
     }
 
     private GitHubSecretJobProcessor processorWith(AwsValidationService validator) {
@@ -327,7 +341,9 @@ class GitHubSecretJobProcessorTest {
                 VALUES (?, ?, 'MANUAL', 1, ?, ?, 'PENDING', 'PENDING', 'PENDING', 'PENDING')
                 RETURNING run_id
                 """, Long.class, job, connection, now, now);
-        jdbc.update("INSERT INTO secret_run_scopes (run_id, scope_id, collection_status) VALUES (?, ?, 'PENDING')",
+        jdbc.update(
+                "INSERT INTO secret_run_scopes (run_id, scope_id, collection_status) VALUES (?, ?,"
+                        + " 'PENDING')",
                 run, scope);
         if (secondScope) {
             long otherScope = jdbc.queryForObject("""
@@ -337,9 +353,29 @@ class GitHubSecretJobProcessorTest {
                         'github://Logssey/candidate-app/main/fixtures/', 'CURRENT_COMMIT_ONLY', true)
                     RETURNING scope_id
                     """, Long.class, connection);
-            jdbc.update("INSERT INTO secret_run_scopes (run_id, scope_id, collection_status) VALUES (?, ?, 'PENDING')",
+            jdbc.update(
+                    "INSERT INTO secret_run_scopes (run_id, scope_id, collection_status) VALUES (?,"
+                        + " ?, 'PENDING')",
                     run, otherScope);
         }
+        long approver =
+                jdbc.queryForObject(
+                        "INSERT INTO dashboard_users(login_id,password_hash,display_name,role)"
+                            + " VALUES('worker-approver','h','Approver','ADMIN') ON"
+                            + " CONFLICT(login_id) DO UPDATE SET display_name='Approver' RETURNING"
+                            + " user_id",
+                        Long.class);
+        jdbc.update(
+                "UPDATE secret_connections SET"
+                    + " validation_enabled=true,validation_profile_version='credential-validation-v1'"
+                    + " WHERE connection_id=?",
+                connection);
+        jdbc.update(
+                "UPDATE secret_connection_scopes SET"
+                    + " validation_approved=true,validation_profile_version='credential-validation-v1',validation_approved_by_user_id=?,validation_approved_at=now()"
+                    + " WHERE connection_id=?",
+                approver,
+                connection);
     }
 
     private void respond(HttpExchange exchange) throws IOException {
