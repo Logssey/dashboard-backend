@@ -17,10 +17,15 @@ final class SecretRiskReadModel {
         long unassessed = 0, held = 0;
         boolean applicable = false;
         for (Long id : occurrenceIds.stream().distinct().toList()) {
-            if (outsideAssessment) continue;
             Map<String,Object> risk = risks.getOrDefault(id, Map.of());
             var automatic = block(risk, "latestAutomaticAssessment");
             var effective = block(risk, "effectiveAssessment");
+            // Exclusion from new evaluations cannot erase an actual, held prior application.
+            // A bare grade without its stored assessment ID is never sufficient evidence.
+            boolean historicalHold = Boolean.TRUE.equals(effective.get("held"))
+                    && effective.get("assessmentId") instanceof Number assessmentId
+                    && assessmentId.longValue() > 0;
+            if (outsideAssessment && !historicalHold) continue;
             String status = text(automatic.get("assessmentStatus"));
             if (status == null) status = text(risk.get("assessmentStatus"));
             boolean pending=Boolean.TRUE.equals(risk.get("unassessed"));

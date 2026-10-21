@@ -44,6 +44,13 @@ class SecretRiskReadModelTest {
         assertThat(SecretRiskReadModel.summarize(List.of(1L),Map.of(1L,stale),false))
                 .containsEntry("severity","UNASSESSED").containsEntry("unassessedOccurrenceCount",1L);
     }
+    @Test void metadataCorrectionDoesNotEraseAStoredHeldApplication() {
+        var historical = new LinkedHashMap<>(risk("NOT_APPLICABLE", "HIGH", true));
+        historical.put("effectiveAssessment", Map.of("severity", "HIGH", "held", true, "assessmentId", 42L));
+        assertThat(SecretRiskReadModel.summarize(List.of(1L), Map.of(1L, historical), true))
+                .containsEntry("severity", "HIGH").containsEntry("heldOccurrenceCount", 1L)
+                .containsEntry("unassessedOccurrenceCount", 0L);
+    }
     private static Map<String,Object> risk(String status,String grade,boolean held) {
         var automatic=new LinkedHashMap<String,Object>();automatic.put("assessmentStatus",status);
         automatic.put("severity","ASSESSED".equals(status)?grade:null);
