@@ -179,6 +179,7 @@ class SecretStoragePolicyIntegrationTest {
         assertThat(service.evaluateOccurrence(occurrence,"policy-creator").policyResult()).isEqualTo("UNKNOWN");
         var proposal=service.propose(scope,new ProposalRequest("PRODUCTION",first.policyId(),2L,"SOURCE_CORRECTION","CHANGE:OPS-2",1L),"policy-operator");
         service.approveProposal(scope,proposal.pendingProposal().proposalId(),new ApproveProposalRequest(1L,1L),"policy-reviewer");
+        awaitCurrentBinding();
         assertThat(service.evaluateOccurrence(occurrence,"policy-creator").policyResult()).isEqualTo("DENIED");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM secret_scope_policy_bindings WHERE scope_id=?",Long.class,scope)).isEqualTo(2);
     }
@@ -499,6 +500,15 @@ class SecretStoragePolicyIntegrationTest {
     private void bind(PolicySummary policy) {
         var proposal=service.propose(scope,new ProposalRequest("PRODUCTION",policy.policyId(),policy.version(),"SOURCE_CLASSIFICATION","TICKET:SEC-123",0L),"policy-operator");
         service.approveProposal(scope,proposal.pendingProposal().proposalId(),new ApproveProposalRequest(0L,1L),"policy-reviewer");
+        awaitCurrentBinding();
+    }
+    private void awaitCurrentBinding() {
+        long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(3);
+        while(!Boolean.TRUE.equals(jdbc.queryForObject("SELECT COALESCE(bool_and(effective_from<=clock_timestamp()),false) FROM secret_scope_policy_bindings WHERE scope_id=? AND effective_until IS NULL",Boolean.class,scope))) {
+            if(System.nanoTime()>=deadline) throw new AssertionError("The fixture binding did not reach its effective boundary within three seconds");
+            try { Thread.sleep(10); }
+            catch(InterruptedException interrupted) { Thread.currentThread().interrupt();throw new AssertionError("Interrupted while awaiting the fixture binding",interrupted); }
+        }
     }
     private DraftRequest draft(String effect) {
         return new DraftRequest(null,null,"AUTHORIZED_STORAGE","TICKET:SEC-123",now().minusHours(1),null,
