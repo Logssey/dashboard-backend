@@ -23,6 +23,15 @@ class SecretScanCoverageIntegrationTest {
         jdbc.update("INSERT INTO dashboard_users(login_id,password_hash,display_name,role) VALUES('operator','unused','Operator','ADMIN'),('stranger','unused','Other','ADMIN')");
         service=new SecretCoverageService(jdbc,new SecretAccessService(jdbc));facts=new SecretScanFactsRepository(jdbc);}
 
+    @Test void operatorsSeeTheRegisteredTargetWithoutRawAuthenticationOrApprovalUris(){
+        long c=connection(),s=scope(c,"GITHUB_REPOSITORY_FILES");
+        jdbc.update("UPDATE secret_connection_scopes SET approved_ref='github://Logssey/test-find-key/main/fixtures/' WHERE scope_id=?",s);
+        var row=items(service.scopes("operator",c,"ALL","ALL",false,0,20)).getFirst();
+        assertThat(row.get("safeDisplayAlias")).isEqualTo("Logssey/test-find-key · main · fixtures/");
+        var connection=items(service.connections("operator","ALL","ALL",0,20)).getFirst();
+        assertThat(connection.get("targetSummary").toString()).contains("Logssey/test-find-key");
+        assertThat(connection.toString()).doesNotContain("github://","secret-value","approved_ref");
+    }
     @Test void exclusiveOutcomesCountSuccessfulSeparatelyFromFinishedAndUseStageEvidence(){
         long c=connection();List<Long> scopes=new ArrayList<>();for(int i=0;i<12;i++)scopes.add(scope(c,"GITHUB_REPOSITORY_FILES"));
         long run=run(c,"SUCCEEDED");

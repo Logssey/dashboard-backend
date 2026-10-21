@@ -132,7 +132,7 @@ public class SecretCoverageService {
 
     private List<Map<String,Object>> currentScopes(long connectionId,String origin) {
         return jdbc.queryForList("""
-            SELECT scope_id,connection_id,scope_key,revision,content_type,response_origin,safe_display_alias,alias_version,enabled
+            SELECT scope_id,connection_id,scope_key,revision,content_type,response_origin,safe_display_alias,alias_version,enabled,approved_ref
             FROM secret_connection_scopes WHERE connection_id=? AND enabled
               AND (?='ALL' OR response_origin=?) ORDER BY scope_id
             """,connectionId,origin,origin);
