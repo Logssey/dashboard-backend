@@ -625,10 +625,10 @@ WHERE attempt_id=? AND reservation_token=?::uuid AND attempt_state IN('RESERVED'
         return jdbc.queryForObject(
                 """
 INSERT INTO secret_validation_attempts(evidence_version,credential_set_id,run_id,job_id,validator_id,validator_version,endpoint_class,requested_at,
- attempt_state,scope_id,occurrence_id,source_finding_id,credential_revision,scope_revision,validation_revision,validation_approval_revision,
+ attempt_state,scope_id,occurrence_id,source_finding_id,source_object_version_digest,credential_revision,scope_revision,validation_revision,validation_approval_revision,
  validation_profile_version,action_context_digest,dedup_key,cycle_key,attempt_no,reservation_generation,reservation_token,
  result,reason_code,completed_at,current_eligible,ineligible_reason_code)
-VALUES(1,?,?,?,?,?,?,clock_timestamp(),?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::uuid,?,?,CASE WHEN ?='COMPLETED' THEN clock_timestamp() END,?,?) RETURNING attempt_id
+VALUES(1,?,?,?,?,?,?,clock_timestamp(),?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::uuid,?,?,CASE WHEN ?='COMPLETED' THEN clock_timestamp() END,?,?) RETURNING attempt_id
 """,
                 Long.class,
                 num(c, "credential_set_id"),
@@ -641,6 +641,7 @@ VALUES(1,?,?,?,?,?,?,clock_timestamp(),?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::uuid,?,?,C
                 num(c, "scope_id"),
                 num(c, "occurrence_id"),
                 c.get("finding_id"),
+                digest("protected-source-v1", c.get("occurrence_id"),c.get("scope_id"),c.get("scope_revision"),c.get("finding_id")),
                 num(c, "credential_revision"),
                 num(c, "scope_revision"),
                 num(c, "validation_revision"),

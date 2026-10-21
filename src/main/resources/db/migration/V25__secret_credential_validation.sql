@@ -46,7 +46,7 @@ ALTER TABLE secret_validation_attempts
  ADD COLUMN request_sent_at TIMESTAMPTZ,
  ADD COLUMN scope_id BIGINT REFERENCES secret_connection_scopes(scope_id),
  ADD COLUMN occurrence_id BIGINT REFERENCES secret_occurrences(occurrence_id),
- ADD COLUMN source_finding_id BIGINT REFERENCES secret_findings(finding_id),
+ ADD COLUMN source_finding_id BIGINT REFERENCES secret_findings(finding_id) ON DELETE SET NULL,
  ADD COLUMN source_object_version_digest BYTEA CHECK(source_object_version_digest IS NULL OR octet_length(source_object_version_digest)=32),
  ADD COLUMN credential_revision BIGINT,
  ADD COLUMN scope_revision BIGINT,
@@ -81,7 +81,7 @@ ALTER TABLE secret_validation_attempts ADD CONSTRAINT ck_secret_validation_evide
  AND validation_approval_revision>0 AND octet_length(action_context_digest)=32 AND octet_length(dedup_key)=32
  AND cycle_key IS NOT NULL AND attempt_no>0 AND reservation_generation>0 AND reservation_token IS NOT NULL
  AND (validation_profile_version IS NOT NULL OR (attempt_state='COMPLETED' AND result='UNCHECKED' AND request_sent_at IS NULL AND provider_checked_at IS NULL))
- AND (result NOT IN('VALID','INVALID') OR source_finding_id IS NOT NULL)));
+ AND (result NOT IN('VALID','INVALID') OR source_finding_id IS NOT NULL OR source_object_version_digest IS NOT NULL)));
 ALTER TABLE secret_validation_attempts ADD CONSTRAINT ck_secret_validation_times CHECK(
  (completed_at IS NULL OR completed_at>=requested_at) AND
  (request_sent_at IS NULL OR (request_sent_at>=requested_at AND (completed_at IS NULL OR request_sent_at<=completed_at))) AND
