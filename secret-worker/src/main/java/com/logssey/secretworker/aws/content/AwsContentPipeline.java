@@ -95,7 +95,9 @@ public final class AwsContentPipeline {
 
         void record(AwsValidationResult result) {
             if (result.status() == AwsValidationResult.Status.UNCHECKED) {
-                if (result.reason() != AwsValidationResult.Reason.DISABLED) inconclusive++;
+                if (result.reason() != AwsValidationResult.Reason.DISABLED
+                        && result.reason() != AwsValidationResult.Reason.SYNTHETIC_FIXTURE
+                        && result.reason() != AwsValidationResult.Reason.SOURCE_GUARD_BLOCKED) inconclusive++;
             } else if (result.status() == AwsValidationResult.Status.UNKNOWN) {
                 inconclusive++;
             } else {
