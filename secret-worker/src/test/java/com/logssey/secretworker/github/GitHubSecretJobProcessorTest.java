@@ -348,7 +348,11 @@ class GitHubSecretJobProcessorTest {
                                 com.logssey.secretworker.SecretJobFailureCode.VALIDATOR_TEMPORARY,
                                 true))
                 .isTrue();
-        assertThat(jdbc.queryForObject("SELECT status FROM secret_jobs", String.class))
+        assertThat(jdbc.queryForObject(
+                        "SELECT status FROM secret_jobs WHERE job_id=? AND kind='FULL_SCAN'"
+                                + " AND purpose='COLLECTION_AND_DETECTION'",
+                        String.class,
+                        job.jobId()))
                 .isEqualTo("PENDING");
     }
 
