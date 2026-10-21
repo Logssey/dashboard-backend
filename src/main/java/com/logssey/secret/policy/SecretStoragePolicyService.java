@@ -250,7 +250,10 @@ public class SecretStoragePolicyService {
                 || proposal.expectedScopeVersion()!=scope.originVersion() || proposal.scopeRevision()!=scope.revision()
                 || !proposal.fingerprint().equals(scope.fingerprint())) conflict();
         preventFixtureMisclassification(scope,proposal.origin());
-        if (proposal.policyId()!=null) applicablePolicy(proposal.policyId(),proposal.policyVersion(),scope);
+        var binding=repository.binding(scopeId).orElse(null);
+        boolean retained=binding!=null && java.util.Objects.equals(binding.policyId(),proposal.policyId())
+            && java.util.Objects.equals(binding.policyVersion(),proposal.policyVersion());
+        if (proposal.policyId()!=null && !retained) applicablePolicy(proposal.policyId(),proposal.policyVersion(),scope);
         if (proposal.reviewerUserId()!=null && proposal.reviewerUserId()!=actor.userId()) forbidden();
         return applyApprovedProposal(scope,proposal,actor);
     }
