@@ -646,6 +646,28 @@ SELECT max(provider_checked_at) FROM secret_validation_attempts WHERE result = '
             .containsEntry("ordered",true).containsEntry("provider_checked_at",null).containsEntry("request_sent_at",null);
     }
 
+    @Test
+    void expiredOneSecondPermitRechecksApprovalBeforeProviderHandoff() {
+        var candidate=discovered();approve();
+        var delayed=org.mockito.Mockito.spy(jobs);
+        var pause=new java.util.concurrent.atomic.AtomicBoolean();
+        org.mockito.Mockito.doAnswer(invocation->{
+            Object result=invocation.callRealMethod();
+            if(jdbc.queryForObject("SELECT count(*) FROM secret_validation_attempts WHERE attempt_state='SENT'",Long.class)>0 && pause.compareAndSet(false,true)) {
+                jdbc.update("UPDATE secret_connection_scopes SET validation_approved=false,validation_approval_revision=validation_approval_revision+1");
+                Thread.sleep(1100);
+            }
+            return result;
+        }).when(delayed).persistIfLeased(org.mockito.ArgumentMatchers.anyLong(),org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.any(Runnable.class));
+        var fenced=new SecretValidationAttemptRepository(jdbc,delayed);
+        var calls=new java.util.concurrent.atomic.AtomicInteger();
+        var result=fenced.validateAws(claim,candidate.credential(),candidate.material(),false,material->{calls.incrementAndGet();return checked(AwsValidationResult.Status.VALID,AwsValidationResult.Reason.AUTHENTICATED,Instant.now());});
+        assertThat(calls).hasValue(0);
+        assertThat(result.status()).isEqualTo(AwsValidationResult.Status.UNKNOWN);
+        assertThat(jdbc.queryForMap("SELECT reason_code,provider_checked_at,current_eligible FROM secret_validation_attempts"))
+            .containsEntry("reason_code","APPROVAL_CHANGED").containsEntry("provider_checked_at",null).containsEntry("current_eligible",false);
+    }
+
     private void manual() {
         long actor =
                 jdbc.queryForObject(

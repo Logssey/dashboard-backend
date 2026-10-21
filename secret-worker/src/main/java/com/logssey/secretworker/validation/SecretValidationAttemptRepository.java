@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.*;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
@@ -190,10 +191,34 @@ public class SecretValidationAttemptRepository {
                         return CredentialValidationResult.unchecked("RATE_BUDGET_EXHAUSTED");
                     if (sourceRef != null)
                         captureSource(job, reservation, sourceRef, sourceVersion);
-                    var permit = sendPermit(job, reservation);
-                    if (permit != null) {
-                        complete(job, reservation, permit);
-                        return permit;
+                    boolean ready = false, sentBoundaryRecorded = false;
+                    for (int refresh = 0; refresh < 3; refresh++) {
+                        var permit = sendPermit(job, reservation);
+                        if (permit.blocked() != null) {
+                            var stopped =
+                                    sentBoundaryRecorded
+                                                    && "UNCHECKED".equals(permit.blocked().result())
+                                            ? new CredentialValidationResult(
+                                                    "UNKNOWN",
+                                                    permit.blocked().reasonCode(),
+                                                    null,
+                                                    null,
+                                                    permit.blocked().nextDueAt())
+                                            : permit.blocked();
+                            complete(job, reservation, stopped);
+                            return stopped;
+                        }
+                        sentBoundaryRecorded = true;
+                        if (System.nanoTime() - permit.issuedAtNanos()
+                                <= Duration.ofSeconds(1).toNanos()) {
+                            ready = true;
+                            break;
+                        }
+                    }
+                    if (!ready) {
+                        var expired = CredentialValidationResult.unknown("CLIENT_FAILURE");
+                        complete(job, reservation, expired);
+                        return expired;
                     }
                     CredentialValidationResult result;
                     try {
@@ -689,7 +714,8 @@ WHERE v.connection_id=j.connection_id AND k.issuer=? AND k.credential_type=? AND
                                 reservation.token()))) throw lease();
     }
 
-    private CredentialValidationResult sendPermit(ClaimedSecretJob job, Reservation reservation) {
+    private SendPermit sendPermit(ClaimedSecretJob job, Reservation reservation) {
+        var issuedAt = new AtomicLong();
         var reason = new AtomicReference<CredentialValidationResult>();
         boolean live =
                 jobs.persistIfLeased(
@@ -720,20 +746,24 @@ WHERE v.connection_id=j.connection_id AND k.issuer=? AND k.credential_type=? AND
                                             "SELECT count(*) FROM secret_validation_attempts WHERE"
                                                 + " endpoint_class=? AND"
                                                 + " request_sent_at>clock_timestamp()-interval '1"
-                                                + " minute'",
+                                                + " minute' AND attempt_id<>?",
                                             Long.class,
-                                            endpoint);
+                                            endpoint,
+                                            reservation.id());
                             long active =
                                     jdbc.queryForObject(
                                             "SELECT count(*) FROM secret_validation_attempts WHERE"
-                                                    + " attempt_state='SENT'",
-                                            Long.class);
+                                                    + " attempt_state='SENT' AND attempt_id<>?",
+                                            Long.class,
+                                            reservation.id());
                             long run =
                                     jdbc.queryForObject(
                                             "SELECT count(*) FROM secret_validation_attempts WHERE"
-                                                    + " run_id=? AND request_sent_at IS NOT NULL",
+                                                + " run_id=? AND request_sent_at IS NOT NULL AND"
+                                                + " attempt_id<>?",
                                             Long.class,
-                                            job.runId());
+                                            job.runId(),
+                                            reservation.id());
                             long rejected =
                                     jdbc.queryForObject(
                                             "SELECT COALESCE(max(burst),0) FROM (SELECT count(*)"
@@ -776,14 +806,15 @@ WHERE v.connection_id=j.connection_id AND k.issuer=? AND k.credential_type=? AND
                                             "UPDATE secret_validation_attempts SET"
                                                 + " attempt_state='SENT',request_sent_at=GREATEST(clock_timestamp(),requested_at)"
                                                 + " WHERE attempt_id=? AND"
-                                                + " reservation_token=?::uuid AND"
-                                                + " attempt_state='RESERVED'",
+                                                + " reservation_token=?::uuid AND attempt_state"
+                                                + " IN('RESERVED','SENT')",
                                             reservation.id(),
                                             reservation.token())
                                     != 1) throw lease();
+                            issuedAt.set(System.nanoTime());
                         });
         if (!live) throw lease();
-        return reason.get();
+        return new SendPermit(reason.get(), issuedAt.get());
     }
 
     private void complete(ClaimedSecretJob job, Reservation r, CredentialValidationResult result) {
@@ -997,6 +1028,8 @@ SELECT (j.requested_by_user_id IS NULL OR EXISTS(SELECT 1 FROM secret_role_grant
             throw new IllegalStateException("VALIDATION_PERSISTENCE_FAILED_" + state + constraint);
         }
     }
+
+    private record SendPermit(CredentialValidationResult blocked, long issuedAtNanos) {}
 
     private record Reservation(
             long id,
