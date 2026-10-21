@@ -53,7 +53,7 @@ public class SecretLocationRepository {
                          THEN 'UNCHECKED' ELSE latest.result END AS validation_result,
                        CASE WHEN current_case.validation_after_action_at IS NOT NULL AND (latest.provider_checked_at IS NULL OR latest.provider_checked_at<=current_case.validation_after_action_at)
                          THEN 'POST_ACTION_VALIDATION_REQUIRED' ELSE latest.reason_code END AS validation_reason,
-                       CASE WHEN current_case.validation_after_action_at IS NULL OR latest.provider_checked_at>current_case.validation_after_action_at THEN latest.completed_at END AS validation_at,
+                       CASE WHEN current_case.validation_after_action_at IS NULL OR latest.provider_checked_at>current_case.validation_after_action_at THEN latest.provider_checked_at END AS validation_at,
                        CASE WHEN current_case.validation_after_action_at IS NULL OR latest.provider_checked_at>current_case.validation_after_action_at THEN latest.provider_checked_at END AS validation_checked_at,
                        policy.policy_result AS storage_policy_result,policy.reason_code AS storage_policy_reason,
                        policy.binding_id AS storage_binding_id,policy.policy_id AS storage_policy_id,
@@ -86,8 +86,8 @@ public class SecretLocationRepository {
                 ) current_case ON TRUE
                 LEFT JOIN LATERAL (
                     SELECT v.result,v.reason_code,v.completed_at,v.provider_checked_at
-                    FROM secret_validation_attempts v JOIN secret_scan_runs r ON r.run_id=v.run_id
-                    WHERE v.credential_set_id=c.credential_set_id AND r.connection_id=o.connection_id
+                    FROM secret_current_validation_attempts v JOIN secret_scan_runs r ON r.run_id=v.run_id
+                    WHERE v.credential_set_id=c.credential_set_id AND v.occurrence_id=o.occurrence_id AND r.connection_id=o.connection_id
                       AND EXISTS (SELECT 1 FROM secret_run_scopes rs WHERE rs.run_id=r.run_id AND rs.scope_id=o.scope_id)
                       AND EXISTS (SELECT 1 FROM secret_findings f WHERE f.occurrence_id=o.occurrence_id AND f.run_id=v.run_id)
                     ORDER BY v.completed_at DESC,v.attempt_id DESC LIMIT 1
