@@ -132,6 +132,310 @@ class SecretWorkbenchIntegrationTest {
             assertThat(((Map<?,?>)summary("security",f,null).get("crossEnvironmentAlerts")).get("value")).isEqualTo(0L);
         assertThat(((Map<?,?>)summary("security",new SecretWorkbenchService.Filters("PRODUCTION","GITHUB","AWS","UNKNOWN",other,null),null).get("crossEnvironmentAlerts")).get("value")).isEqualTo(1L);
     }
+    @Test
+    void setupCountsSeparateSelectedOriginUnclassifiedAndPausedScopesWithinTheLiveAcl() {
+        jdbc.update(
+                "UPDATE secret_connection_scopes SET response_origin='TEST' WHERE scope_id=?", scope);
+        long unclassifiedConnection = connection(), unclassified = scope(unclassifiedConnection);
+        grant(security, "SECURITY", unclassifiedConnection);
+        jdbc.update(
+                "UPDATE secret_connection_scopes SET"
+                        + " response_origin='UNCLASSIFIED',response_origin_set_by_user_id=NULL,response_origin_set_at=NULL"
+                        + " WHERE scope_id=?",
+                unclassified);
+        long pausedConnection = connection(), paused = scope(pausedConnection);
+        grant(security, "SECURITY", pausedConnection);
+        jdbc.update(
+                "UPDATE secret_connections SET status='PAUSED' WHERE connection_id=?", pausedConnection);
+        jdbc.update(
+                "UPDATE secret_connection_scopes SET"
+                        + " response_origin='UNCLASSIFIED',response_origin_set_by_user_id=NULL,response_origin_set_at=NULL"
+                        + " WHERE scope_id=?",
+                paused);
+        scope(connection()); // Hidden setup must never contribute to any group.
+
+        var production = summary("security", filters(), null);
+        var setup = block(production.get("setupSummary"));
+        assertThat(metric(production, "unclassifiedScopes").get("value")).isEqualTo(0L);
+        assertThat(setup)
+                .containsEntry("selectedOriginScopeCount", 0)
+                .containsEntry("unclassifiedScopeCount", 1)
+                .containsEntry("pausedScopeCount", 1);
+        assertThat(items(setup.get("unclassifiedItems")))
+                .extracting(row -> row.get("scopeId"))
+                .containsExactly((int) unclassified);
+        assertThat(items(setup.get("pausedItems")))
+                .extracting(row -> row.get("scopeId"))
+                .containsExactly((int) paused);
+        assertThat(block(setup.get("reasonCounts")))
+                .containsEntry("SOURCE_UNCLASSIFIED", 2L)
+                .containsEntry("CONNECTION_PAUSED", 1L);
+        assertThat(items(setup.get("pausedItems")).getFirst())
+                .containsEntry("setupState", "PAUSED")
+                .containsEntry("setupBlockedReasonCode", "CONNECTION_PAUSED");
+        assertThat(block(items(setup.get("pausedItems")).getFirst().get("taskGuidance")))
+                .containsEntry("canExecute", false);
+
+        var testFilters = new SecretWorkbenchService.Filters("TEST", "ALL", "ALL", "ALL", null, null);
+        var test = summary("security", testFilters, null);
+        assertThat(metric(test, "unclassifiedScopes").get("value")).isEqualTo(1L);
+        var queue =
+                tx.execute(
+                        status ->
+                                service.queue(
+                                        "security",
+                                        testFilters,
+                                        "UNCLASSIFIED",
+                                        null,
+                                        0,
+                                        20,
+                                        test.get("snapshotId").toString()));
+        assertThat(queue.get("items")).isEqualTo(block(test.get("setupSummary")).get("items"));
+        var restricted =
+                summary(
+                        "security",
+                        new SecretWorkbenchService.Filters("TEST", "ALL", "ALL", "ALL", connection, null),
+                        null);
+        assertThat(block(restricted.get("setupSummary")))
+                .containsEntry("unclassifiedScopeCount", 0)
+                .containsEntry("pausedScopeCount", 0);
+        var awsOnly =
+                summary(
+                        "security",
+                        new SecretWorkbenchService.Filters("TEST", "AWS", "ALL", "ALL", null, null),
+                        null);
+        assertThat(block(awsOnly.get("setupSummary")))
+                .containsEntry("selectedOriginScopeCount", 0)
+                .containsEntry("unclassifiedScopeCount", 0)
+                .containsEntry("pausedScopeCount", 0);
+        new SecretReadSnapshots(jdbc, JsonMapper.builder().build()).invalidateScope(unclassified);
+        code(
+                ErrorCode.CONFLICT,
+                () -> summary("security", filters(), production.get("snapshotId").toString()));
+    }
+
+    @Test
+    void setupActionsMatchActualSecurityAuthorityAndSupportedActiveScope() {
+        jdbc.update(
+                "UPDATE secret_connection_scopes SET"
+                        + " content_type='GITHUB_REPOSITORY_FILES',history_limit='CURRENT_COMMIT_ONLY',approved_ref='github://Logssey/test-find-key/main/fixtures/',response_origin='UNCLASSIFIED',response_origin_set_by_user_id=NULL,response_origin_set_at=NULL"
+                        + " WHERE scope_id=?",
+                scope);
+        var coverage = new SecretCoverageService(jdbc, new SecretAccessService(jdbc));
+        var securityScope =
+                items(
+                                coverage
+                                        .scopes("security", connection, "ALL", "NEEDS_REVIEW", false, 0, 20)
+                                        .get("items"))
+                        .getFirst();
+        assertThat(block(securityScope.get("capabilities")))
+                .containsEntry("canClassifySource", true)
+                .containsEntry("canConfigureStoragePolicy", true);
+        assertThat(block(securityScope.get("taskGuidance"))).containsEntry("canExecute", true);
+        var operationsScope =
+                items(
+                                coverage
+                                        .scopes("operations", connection, "ALL", "NEEDS_REVIEW", false, 0, 20)
+                                        .get("items"))
+                        .getFirst();
+        assertThat(block(operationsScope.get("capabilities")))
+                .containsEntry("canEditAlias", true)
+                .containsEntry("canClassifySource", false)
+                .containsEntry("canConfigureStoragePolicy", false);
+        assertThat(block(operationsScope.get("taskGuidance")))
+                .containsEntry("canExecute", false)
+                .containsEntry("blockedReasonCode", "ROLE_REQUIRED");
+        long reviewer = user("reviewer");
+        grant(reviewer, "SECURITY", connection);
+        jdbc.update(
+                "INSERT INTO"
+                        + " secret_scope_classification_proposals(scope_id,expected_scope_version,scope_revision,scope_fingerprint,proposed_origin,reason_code,evidence_ref,proposed_by_user_id,status)"
+                        + " SELECT"
+                        + " scope_id,response_origin_version,revision,md5(jsonb_build_array(content_type,approved_ref,history_limit)::text),'TEST','POLICY_PENDING','CHANGE:SEC-123',?,'PENDING_APPROVAL'"
+                        + " FROM secret_connection_scopes WHERE scope_id=?",
+                security,
+                scope);
+        var reviewable =
+                items(
+                                coverage
+                                        .scopes("reviewer", connection, "ALL", "NEEDS_REVIEW", false, 0, 20)
+                                        .get("items"))
+                        .getFirst();
+        assertThat(block(reviewable.get("capabilities")))
+                .containsEntry("canReviewClassification", true);
+        jdbc.update("UPDATE secret_connection_scopes SET revision=revision+1 WHERE scope_id=?", scope);
+        var stale =
+                items(
+                                coverage
+                                        .scopes("reviewer", connection, "ALL", "NEEDS_REVIEW", false, 0, 20)
+                                        .get("items"))
+                        .getFirst();
+        assertThat(block(stale.get("capabilities"))).containsEntry("canReviewClassification", false);
+        assertThat(block(stale.get("taskGuidance"))).containsEntry("canExecute", false);
+        jdbc.update("UPDATE secret_connections SET status='PAUSED' WHERE connection_id=?", connection);
+        var paused =
+                items(
+                                coverage
+                                        .scopes("security", connection, "ALL", "NEEDS_REVIEW", false, 0, 20)
+                                        .get("items"))
+                        .getFirst();
+        assertThat(block(paused.get("capabilities")))
+                .containsEntry("canClassifySource", false)
+                .containsEntry("canConfigureStoragePolicy", false);
+        jdbc.update("UPDATE secret_connections SET status='ACTIVE' WHERE connection_id=?", connection);
+        jdbc.update(
+                "UPDATE secret_connection_scopes SET approved_ref='unsupported' WHERE scope_id=?", scope);
+        var unsupported =
+                items(
+                                coverage
+                                        .scopes("security", connection, "ALL", "NEEDS_REVIEW", false, 0, 20)
+                                        .get("items"))
+                        .getFirst();
+        assertThat(unsupported)
+                .containsEntry("setupBlockedReasonCode", "SOURCE_CONFIGURATION_UNSUPPORTED");
+        assertThat(block(unsupported.get("taskGuidance"))).containsEntry("canExecute", false);
+    }
+
+    @Test
+    void responsePreviewsAreRealFrozenCaseRowsAndPreserveUnassessedCases() {
+        for (int i = 0; i < 7; i++) caseFixture(connection, scope);
+        jdbc.update("UPDATE secret_response_cases SET action_status='IN_PROGRESS' WHERE case_id=2");
+        jdbc.update(
+                "UPDATE secret_response_cases SET action_status='REVALIDATION_PENDING' WHERE case_id=7");
+        jdbc.update(
+                "UPDATE secret_case_occurrences SET response_status='REVALIDATION_PENDING' WHERE"
+                        + " case_id=7");
+        var result = summary("security", filters(), null);
+        var previews = block(result.get("workPreviews"));
+        var response = block(previews.get("response"));
+        assertThat(response)
+                .containsEntry("total", 6)
+                .containsEntry("unit", "ResponseCase")
+                .containsEntry("snapshotId", result.get("snapshotId"));
+        assertThat(items(response.get("items")))
+                .hasSize(5)
+                .allSatisfy(row -> assertThat(row.get("severity")).isEqualTo("UNASSESSED"));
+        assertThat(block(previews.get("revalidation"))).containsEntry("total", 1);
+        var queue =
+                tx.execute(
+                        status ->
+                                service.queue(
+                                        "security",
+                                        filters(),
+                                        "ACTION_REQUIRED",
+                                        "OPEN,IN_PROGRESS",
+                                        0,
+                                        5,
+                                        result.get("snapshotId").toString()));
+        assertThat(response.get("items")).isEqualTo(queue.get("items"));
+        caseFixture(connection, scope);
+        assertThat(summary("security", filters(), result.get("snapshotId").toString()))
+                .isEqualTo(result);
+        var operator =
+                block(block(summary("operations", filters(), null).get("workPreviews")).get("response"));
+        assertThat(operator).containsEntry("status", "NOT_AUTHORIZED").containsEntry("total", null);
+        assertThat(items(operator.get("items"))).isEmpty();
+    }
+
+    @Test
+    void collectionHealthRequiresCurrentRevisionAndOneActuallyCompleteRun() {
+        long second =
+                jdbc.queryForObject(
+                        "INSERT INTO"
+                                + " secret_connection_scopes(connection_id,scope_key,revision,content_type,approved_ref,enabled,response_origin,response_origin_set_by_user_id,response_origin_set_at)"
+                                + " VALUES(?,'second',1,'TEXT','private-second',true,'PRODUCTION',?,now())"
+                                + " RETURNING scope_id",
+                        Long.class,
+                        connection,
+                        security);
+        long firstRun = scan(connection, List.of(scope), true);
+        long secondRun = scan(connection, List.of(second), true);
+        var separated = block(summary("security", filters(), null).get("collectionHealth"));
+        assertThat(block(separated.get("counts"))).containsEntry("success", 2L);
+        assertThat(separated.get("lastScopeSuccess")).isNotNull();
+        assertThat(separated.get("lastCompleteSuccess")).isNull();
+        long incomplete = scan(connection, List.of(scope, second), false);
+        jdbc.update(
+                "UPDATE secret_run_scopes SET detection_stage_status='SUCCEEDED' WHERE run_id=? AND"
+                        + " scope_id=?",
+                incomplete,
+                scope);
+        var partial = block(summary("security", filters(), null).get("collectionHealth"));
+        assertThat(partial.get("lastCompleteSuccess")).isNull();
+        assertThat(block(partial.get("counts")))
+                .containsEntry("partial", 1L)
+                .containsEntry("success", 1L);
+        assertThat(((Number) items(partial.get("items")).getFirst().get("scopeId")).longValue())
+                .isEqualTo(second);
+        jdbc.update(
+                "UPDATE secret_run_scopes SET detection_stage_status=NULL WHERE run_id=?", incomplete);
+        var unknown = block(summary("security", filters(), null).get("collectionHealth"));
+        assertThat(block(unknown.get("counts")))
+                .containsEntry("incomplete", 2L)
+                .containsEntry("failed", 0L);
+        jdbc.update(
+                "UPDATE secret_run_scopes SET collection_status='SKIPPED' WHERE run_id=?", incomplete);
+        assertThat(
+                        block(
+                                block(summary("security", filters(), null).get("collectionHealth")).get("counts")))
+                .containsEntry("notRun", 2L)
+                .containsEntry("failed", 0L);
+        long complete = scan(connection, List.of(scope, second), true);
+        var healthy = block(summary("security", filters(), null).get("collectionHealth"));
+        assertThat(block(healthy.get("lastCompleteSuccess")).get("runId")).isEqualTo((int) complete);
+        jdbc.update("UPDATE secret_connection_scopes SET revision=2 WHERE scope_id=?", scope);
+        var changed = block(summary("security", filters(), null).get("collectionHealth"));
+        assertThat(changed.get("lastCompleteSuccess")).isNull();
+        assertThat(block(changed.get("counts")))
+                .containsEntry("notRun", 1L)
+                .containsEntry("success", 1L);
+        var changedScope =
+                items(changed.get("items")).stream()
+                        .filter(item -> ((Number) item.get("scopeId")).longValue() == scope)
+                        .findFirst()
+                        .orElseThrow();
+        assertThat(block(changedScope.get("coverage")).get("lastSuccessfulScan")).isNull();
+    }
+
+    private long scan(long connection, List<Long> scopes, boolean complete) {
+        long job =
+                jdbc.queryForObject(
+                        "INSERT INTO"
+                                + " secret_jobs(kind,connection_id,scheduled_at,available_at,attempt_no,max_attempts,status,finished_at)"
+                                + " VALUES('FULL_SCAN',?,clock_timestamp(),now(),0,3,'SUCCEEDED',now()) RETURNING"
+                                + " job_id",
+                        Long.class,
+                        connection);
+        long run =
+                jdbc.queryForObject(
+                        "INSERT INTO"
+                                + " secret_scan_runs(job_id,connection_id,trigger_type,scope_version,scheduled_at,requested_at,collection_status,detection_status,validation_status,result_status,finished_at)"
+                                + " VALUES(?,?,'MANUAL',1,now(),clock_timestamp(),'SUCCEEDED','SUCCEEDED','SKIPPED','SUCCEEDED',now())"
+                                + " RETURNING run_id",
+                        Long.class,
+                        job,
+                        connection);
+        for (long id : scopes)
+            jdbc.update(
+                    "INSERT INTO"
+                            + " secret_run_scopes(run_id,scope_id,collection_status,object_count,finished_at,detection_stage_status,validation_required,validation_stage_status)"
+                            + " VALUES(?,?,'SUCCEEDED',0,clock_timestamp(),?,false,'SKIPPED')",
+                    run,
+                    id,
+                    complete ? "SUCCEEDED" : "FAILED");
+        return run;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> block(Object value) {
+        return (Map<String, Object>) value;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> items(Object value) {
+        return (List<Map<String, Object>>) value;
+    }
+
     private Map<String,Object> summary(String login,SecretWorkbenchService.Filters f,String id){return tx.execute(s->service.summary(login,f,id));}
     @SuppressWarnings("unchecked") private Map<String,Object> metric(Map<String,Object> summary,String key){return ((List<Map<String,Object>>)summary.get("metrics")).stream().filter(m->m.get("key").equals(key)).findFirst().orElseThrow();}
     private SecretWorkbenchService.Filters filters(){return new SecretWorkbenchService.Filters("PRODUCTION","ALL","ALL","ALL",null,null);}

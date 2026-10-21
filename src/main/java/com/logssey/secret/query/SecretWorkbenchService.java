@@ -33,12 +33,14 @@ public class SecretWorkbenchService {
     private record Metric(String key,String unit,String type,boolean allowed,List<String> ignored) {}
     private final JdbcTemplate jdbc;private final SecretAccessService access;private final SecretLocationRepository locations;
     private final SecretLocationWorkflow cases;private final SecretCoverageService coverage;private final SecretReadSnapshots snapshots;private final ObjectMapper json;private final SecretClosureService closure;
+    private final SecretWorkbenchRecoveryFacts recovery;
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     private com.logssey.secret.risk.SecretRiskQueryService riskQueries;
     @org.springframework.beans.factory.annotation.Autowired
     public SecretWorkbenchService(JdbcTemplate jdbc,SecretAccessService access,SecretLocationRepository locations,SecretLocationWorkflow cases,
             SecretCoverageService coverage,SecretReadSnapshots snapshots,ObjectMapper json,SecretClosureService closure) {
         this.jdbc=jdbc;this.access=access;this.locations=locations;this.cases=cases;this.coverage=coverage;this.snapshots=snapshots;this.json=json;this.closure=closure;
+        this.recovery=new SecretWorkbenchRecoveryFacts(jdbc,access,coverage,snapshots);
     }
     public SecretWorkbenchService(JdbcTemplate jdbc,SecretAccessService access,SecretLocationRepository locations,SecretLocationWorkflow cases,
             SecretCoverageService coverage,SecretReadSnapshots snapshots,ObjectMapper json) {
@@ -80,7 +82,10 @@ public class SecretWorkbenchService {
             "normalInventory",facts("unit","CredentialSet","status",securityAccess?"AVAILABLE":"NOT_AUTHORIZED","value",securityAccess?snapshots.count(h,"NormalCredentialSet"):null),
             "crossEnvironmentAlerts",facts("unit","CrossEnvironmentAlert","status",securityAccess?"AVAILABLE":"NOT_AUTHORIZED","value",securityAccess?snapshots.count(h,"CrossEnvironmentAlert"):null,"items",securityAccess?snapshots.page(h,"CrossEnvironmentAlert",0,20):List.of()),
             "partialCoverage","AVAILABLE".equals(gaps.get("status"))?((Number)gaps.get("value")).longValue()>0:null,
-            "coverageStatus",gaps.get("status"));
+            "coverageStatus",gaps.get("status"),
+            "workPreviews",recovery.previews(h,caseAccess,securityAccess),
+            "setupSummary",recovery.setup(h,f.origin(),access.hasAnyRole(actor,Set.of(SecretRole.SECURITY,SecretRole.OPERATIONS))),
+            "collectionHealth",recovery.health(h,f.origin(),access.hasAnyRole(actor,Set.of(SecretRole.SECURITY,SecretRole.OPERATIONS))));
     }
     @Transactional(isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> queue(String login,Filters f,String bucket,String stages,int page,int size,String snapshotId) {
@@ -145,10 +150,7 @@ public class SecretWorkbenchService {
         boolean operations=access.hasAnyRole(actor,Set.of(SecretRole.OPERATIONS,SecretRole.SECURITY));
         if(operations) {
             for(var item:allPages(p->coverage.gaps(login,f.origin(),f.source(),f.connectionId(),null,p,100)))subjects.add(new Subject("GapScope",((Number)item.get("scopeId")).longValue(),null,item));
-            for(var conn:jdbc.queryForList("SELECT connection_id,provider FROM secret_connections")) {
-                long id=((Number)conn.get("connection_id")).longValue();if(!access.canReadConnectionFacts(actor,id)||f.connectionId()!=null&&f.connectionId()!=id||!f.source().equals("ALL")&&!f.source().equals(conn.get("provider")))continue;
-                for(var item:allPages(p->coverage.scopes(login,id,"ALL","NEEDS_REVIEW",false,p,100)))subjects.add(new Subject("UnclassifiedScope",((Number)item.get("scopeId")).longValue(),null,item));
-            }
+            recovery.addScopes(login,actor,f,subjects);
         }
         if(access.hasAnyRole(actor,Set.of(SecretRole.SECURITY))) {
             // Alert source is TEST; it is intentionally independent of the selected production origin.
