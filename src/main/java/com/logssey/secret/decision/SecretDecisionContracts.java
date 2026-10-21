@@ -31,7 +31,18 @@ public final class SecretDecisionContracts {
         StoragePolicy storagePolicy,Validity validity,Versions versions,List<String> allowedDecisions,
         Map<String,List<String>> allowedReasonCodes,List<String> allowedMissingReasonCodes,
         List<Assignee> eligibleInvestigationAssignees,CaseLinkData caseLinkData,List<Correction> corrections,
-        Map<String,String> decisionUnavailableReasons) { }
+        Map<String,String> decisionUnavailableReasons) {
+        @com.fasterxml.jackson.annotation.JsonProperty("taskGuidance")
+        public Map<String,Object> taskGuidance(){
+            boolean roleMissing=decisionUnavailableReasons.containsValue("SECURITY_ROLE_REQUIRED");
+            return com.logssey.secret.query.SecretTaskGuidance.build("LOCATION_EVIDENCE_REVIEW","REVIEW_EVIDENCE",
+                com.logssey.secret.snapshot.SecretReadSnapshots.facts("type","OCCURRENCE","id",occurrenceId,"secretId",credentialSetId),
+                !allowedDecisions.isEmpty(),roleMissing?"ROLE_REQUIRED":"EVIDENCE_REQUIRED","SECURITY",validity.observedAt(),null,null,List.of(),
+                "VALID".equals(validity.result())&&"DENIED".equals(storagePolicy.result())?List.of("VALID_AND_POLICY_DENIED"):List.of("EVIDENCE_REQUIRED"));
+        }
+        @com.fasterxml.jackson.annotation.JsonProperty("canRequestAssistance")
+        public boolean canRequestAssistance(){return true;}
+    }
     public record QueueItem(long credentialSetId,long occurrenceId,Long caseId,String origin,String maskedLabel,
         String componentState,String presence,String exposureStatus,String whyHere,String nextAction) { }
     public record QueuePage(List<QueueItem> items,long total,int page,int size,String unit,OffsetDateTime asOf,

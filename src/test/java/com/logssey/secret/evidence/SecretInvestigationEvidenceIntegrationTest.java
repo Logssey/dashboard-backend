@@ -35,6 +35,38 @@ class SecretInvestigationEvidenceIntegrationTest {
   var candidate=fixture("CANDIDATE",true);reconcile(candidate.run);var metadata=fixture("METADATA_ONLY",true);reconcile(metadata.run);var noFinding=fixture("CONFIRMED",false);reconcile(noFinding.run);
   assertThat(count("secret_cross_environment_alerts")).isEqualTo(1);
  }
+ @Test void internalRequestsReuseOpenQuestionsAndNeverGrantTargetAccess(){
+  var f=fixture("CONFIRMED",true);
+  jdbc.update("INSERT INTO secret_role_grants(user_id,role,connection_id,granted_by_user_id,grant_source) VALUES(3,'OPERATIONS',?,1,'MANUAL')",f.connection);
+  long version=jdbc.queryForObject("SELECT response_origin_version FROM secret_connection_scopes WHERE scope_id=?",Long.class,f.scope);
+  var request=new SecretInvestigationRequests.Request("SCOPE",f.scope,"SOURCE_CLASSIFICATION",null,null,"TICKET:SEC-123",version,"handoff-first");
+  var first=tasks.request("operations",request);
+  var replay=tasks.request("operations",request);
+  var repeat=tasks.request("operations",new SecretInvestigationRequests.Request("SCOPE",f.scope,"SOURCE_CLASSIFICATION",null,null,null,version,"handoff-second"));
+  assertThat(first.get("taskId")).isEqualTo(replay.get("taskId")).isEqualTo(repeat.get("taskId"));
+  assertThat(count("secret_investigation_tasks")).isEqualTo(1);
+  assertThat(tasks.detail("operations",(Long)first.get("taskId")).get("creationSource")).isEqualTo("HUMAN_HANDOFF");
+  assertCode(ErrorCode.NOT_FOUND,()->tasks.request("scoped",request));
+  assertCode(ErrorCode.NOT_FOUND,()->tasks.request("operations",new SecretInvestigationRequests.Request("OCCURRENCE",f.occurrence,"OWNER_UNKNOWN",null,null,null,0L,"no-values")));
+ }
+ @Test void ownerEvidenceNeedsSecurityAcceptanceBeforeClosingAndDoesNotDecideExposure(){
+  var f=fixture("CONFIRMED",true);long version=jdbc.queryForObject("SELECT exposure_assessment_version FROM secret_occurrences WHERE occurrence_id=?",Long.class,f.occurrence);
+  long task=(Long)tasks.request("security",new SecretInvestigationRequests.Request("OCCURRENCE",f.occurrence,"OWNER_UNKNOWN",null,null,null,version,"owner-question")).get("taskId");
+  tasks.evidence("security",task,new SecretInvestigationRequests.Evidence("TICKET:SEC-123","OWNER_CONFIRMATION",OffsetDateTime.now(),0L,"owner-evidence"));
+  long evidence=one("SELECT history_id FROM secret_investigation_history WHERE event_type='EVIDENCE_ADDED'");
+  assertCode(ErrorCode.EVIDENCE_REQUIRED,()->tasks.close("security",task,new SecretInvestigationRequests.Close(1L,null,null,"unaccepted",null,null,evidence)));
+  tasks.acceptEvidence("security",task,new SecretInvestigationRequests.AcceptEvidence(evidence,1L,"owner-accept"));
+  long accepted=one("SELECT history_id FROM secret_investigation_history WHERE event_type='EVIDENCE_ACCEPTED'");
+  tasks.close("security",task,new SecretInvestigationRequests.Close(2L,null,null,"owner-close",null,null,accepted));
+  assertThat(tasks.detail("security",task).get("status")).isEqualTo("CLOSED");
+  assertThat(jdbc.queryForObject("SELECT exposure_status FROM secret_occurrences WHERE occurrence_id=?",String.class,f.occurrence)).isEqualTo("UNKNOWN");
+ }
+ @Test void staleAndForeignHandoffInputsCannotCreateOrCloseTasks(){
+  var f=fixture("CONFIRMED",true);long version=jdbc.queryForObject("SELECT exposure_assessment_version FROM secret_occurrences WHERE occurrence_id=?",Long.class,f.occurrence);
+  assertCode(ErrorCode.CONFLICT,()->tasks.request("security",new SecretInvestigationRequests.Request("OCCURRENCE",f.occurrence,"OWNER_UNKNOWN",null,null,null,version+1,"stale-target")));
+  assertThat(count("secret_investigation_tasks")).isZero();
+  assertCode(ErrorCode.INVALID_INPUT,()->tasks.request("security",new SecretInvestigationRequests.Request("OCCURRENCE",f.occurrence,"OWNER_UNKNOWN",null,null,"https://example.invalid/raw",version,"bad-ref")));
+ }
  @Test void providerProofPromotesTheExistingAlertAndAcknowledgementCannotCloseIt(){
   var f=fixture("CONFIRMED",true);reconcile(f.run);long alert=one("SELECT alert_id FROM secret_cross_environment_alerts");
   realProof(f);reconcile(f.run);assertThat(count("secret_cross_environment_alerts")).isEqualTo(1);

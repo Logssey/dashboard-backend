@@ -204,7 +204,7 @@ public class SecretLocationService {
         if("UNKNOWN".equals(row.presence())) visibleFacts.add("COVERAGE_UNKNOWN");
         var ready=row.caseId()==null?facts("canRequestRevalidation",false):readiness.capabilities(actor,row.caseId(),row.occurrenceId());
         String validity=row.validity()==null?"UNCHECKED":row.validity();
-        return facts("occurrenceId",row.occurrenceId(),"connectionId",row.connectionId(),"scopeId",row.scopeId(),
+        var result=facts("credentialSetId",row.secretId(),"occurrenceId",row.occurrenceId(),"connectionId",row.connectionId(),"scopeId",row.scopeId(),
             "source",row.source(),"environment",row.environment(),"origin",row.origin(),"scopeRevision",row.scopeRevision(),
             "safeLocationLabel",repository.safeLocationLabel(row),"presence",row.presence(),"exposure",row.exposure(),
             "storagePolicy",facts("result",row.storagePolicyResult(),"reasonCode",row.storagePolicyReason(),
@@ -230,7 +230,9 @@ public class SecretLocationService {
             "firstSeenAt",text(row.firstSeenAt()),"lastSeenAt",text(row.lastSeenAt()),
             "capabilities",facts("canReview",review&&"CONFIRMED".equals(row.componentState()),"canViewCase",row.caseId()!=null,
                 "canRecordAction",row.caseId()!=null && lifecycle.assignedActionable(actor,row.caseId(),row.occurrenceId()),"canRequestRevalidation",ready.get("canRequestRevalidation"),"canViewCoverage",access.canReadConnectionFacts(actor,row.connectionId()),
-                "canOpenSafeSource",false));
+                "canRequestAssistance",true,"canOpenSafeSource",false));
+        result.put("taskGuidance",SecretTaskGuidance.location(result));
+        return result;
     }
 
     private String next(Row row,SecretPrincipal actor) {

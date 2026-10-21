@@ -62,6 +62,11 @@ public final class SecretPolicyContracts {
                                    Proposal pendingProposal, List<OriginDecision> history,
                                    ClassificationCapabilities capabilities, boolean requiresSnapshotRefresh,
                                    List<String> setupReasonCodes, List<Reviewer> eligibleReviewers, ChangeResult changeResult) {
+        @com.fasterxml.jackson.annotation.JsonProperty("taskGuidance")
+        public java.util.Map<String,Object> taskGuidance() {
+            return com.logssey.secret.query.SecretTaskGuidance.scope(scopeId,connectionId,setupReasonCodes,
+                capabilities.canPropose(),capabilities.canApprove(),pendingProposal==null?null:pendingProposal.createdAt());
+        }
         public Classification withChange(ChangeResult result) {
             return new Classification(scopeId,connectionId,displayName,contentType,scopeRevision,scopeVersion,origin,originVersion,
                 storagePolicyId,storagePolicyVersion,approvalStatus,policyStatus,approvedByUserId,approvedAt,storagePolicy,
