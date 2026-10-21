@@ -183,6 +183,22 @@ class SecretStoragePolicyIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM secret_scope_policy_bindings WHERE scope_id=?",Long.class,scope)).isEqualTo(2);
     }
 
+    @Test void rebindingUsesOneMonotonicBoundaryWhenTheDatabaseClockMovesBackwards() {
+        var first=activate("ALLOW");bind(first);
+        var floor=now().plusMinutes(1);
+        jdbc.update("UPDATE secret_scope_policy_bindings SET effective_from=? WHERE scope_id=? AND effective_until IS NULL",floor,scope);
+        var second=service.draft(new DraftRequest(first.policyId(),1L,"POLICY_UPDATE","POLICY:SECRET-12",now().minusHours(1),null,
+            List.of(new RuleRequest(connection,scope,"GITHUB_REPOSITORY_FILES","DENY","SCOPE",null,null))),"policy-creator");
+        service.approvePolicy(first.policyId(),second.version(),new VersionRequest(second.version()),"policy-reviewer");
+        var proposal=service.propose(scope,new ProposalRequest("PRODUCTION",first.policyId(),second.version(),"SOURCE_CORRECTION","CHANGE:OPS-2",1L),"policy-operator");
+        service.approveProposal(scope,proposal.pendingProposal().proposalId(),new ApproveProposalRequest(1L,1L),"policy-reviewer");
+        var bindings=jdbc.queryForList("SELECT effective_from,effective_until FROM secret_scope_policy_bindings WHERE scope_id=? ORDER BY binding_id",scope);
+        assertThat(bindings).hasSize(2);
+        assertThat(((java.sql.Timestamp)bindings.getFirst().get("effective_until")).toInstant()).isEqualTo(floor.toInstant());
+        assertThat(bindings.get(1).get("effective_from")).isEqualTo(bindings.getFirst().get("effective_until"));
+        assertThat(service.evaluateOccurrence(occurrence,"policy-creator").policyResult()).isEqualTo("UNKNOWN");
+    }
+
     @Test void metadataSourceCanBeClassifiedButNeverReceivesAValueStorageAllow() {
         jdbc.update("UPDATE secret_connections SET provider='AWS' WHERE connection_id=?",connection);
         jdbc.update("""
