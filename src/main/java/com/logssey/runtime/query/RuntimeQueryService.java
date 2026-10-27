@@ -58,7 +58,8 @@ public class RuntimeQueryService {
                 : "HEALTHY";
         return new RuntimeOverviewResponse(
                 new Period(from.toString(), to.toString()),
-                new Summary(counts.eventCount(), counts.unreviewedCount(), counts.workloadCount(), counts.unresolvedCount()),
+                new Summary(counts.eventCount(), counts.suppressedCount(), counts.rateLimitedCount(),
+                        counts.unreviewedCount(), counts.workloadCount(), counts.unresolvedCount()),
                 repository.countsByRule(clusterId, from, to),
                 new SensorSummary(healthy, degraded, offline, unknown + missing),
                 collectionState,

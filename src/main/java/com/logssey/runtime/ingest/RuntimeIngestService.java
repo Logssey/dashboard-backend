@@ -1,5 +1,6 @@
 package com.logssey.runtime.ingest;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Objects;
 
@@ -14,6 +15,7 @@ import com.logssey.runtime.ingest.RuntimePayloadMasker.MaskedPayload;
 import com.logssey.runtime.ingest.dto.FalcoEventEnvelope;
 import com.logssey.runtime.ingest.dto.RuntimeIngestResponse;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -27,17 +29,24 @@ public class RuntimeIngestService {
     private final RuntimeIngestRepository repository;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
+    private final int maxPayloadBytes;
+    private final int maxEventsPerRuleNodeMinute;
 
     public RuntimeIngestService(RuntimePayloadMasker payloadMasker,
                                 FalcoRuntimeEventNormalizer normalizer,
                                 RuntimeIngestRepository repository,
                                 ObjectMapper objectMapper,
-                                TransactionTemplate transactionTemplate) {
+                                TransactionTemplate transactionTemplate,
+                                @Value("${logssey.runtime.max-payload-bytes:262144}") int maxPayloadBytes,
+                                @Value("${logssey.runtime.max-events-per-rule-node-minute:300}")
+                                int maxEventsPerRuleNodeMinute) {
         this.payloadMasker = payloadMasker;
         this.normalizer = normalizer;
         this.repository = repository;
         this.objectMapper = objectMapper;
         this.transactionTemplate = transactionTemplate;
+        this.maxPayloadBytes = Math.max(1024, maxPayloadBytes);
+        this.maxEventsPerRuleNodeMinute = Math.max(1, maxEventsPerRuleNodeMinute);
     }
 
     public RuntimeIngestResponse ingestFalco(FalcoEventEnvelope envelope, String requestedIdempotencyKey) {
@@ -47,6 +56,9 @@ public class RuntimeIngestService {
             throw new ApiException(ErrorCode.INVALID_INPUT, "clusterId, schemaVersion, event는 필수입니다.");
         }
         Instant receivedAt = Instant.now();
+        if (json(envelope.event()).getBytes(StandardCharsets.UTF_8).length > maxPayloadBytes) {
+            throw new ApiException(ErrorCode.PAYLOAD_TOO_LARGE, "런타임 이벤트 본문이 허용 크기를 초과했습니다.");
+        }
         MaskedPayload masked = payloadMasker.mask(envelope.event());
         String payload = json(masked.payload());
         String sourceEventId = sourceEventId(masked.payload(), payload);
@@ -85,6 +97,11 @@ public class RuntimeIngestService {
                         envelope.clusterId(), event.asset().nodeName(), event.occurredAt());
                 repository.attachSensor(rawEventId, sensorId);
             }
+            if (!repository.acquireRateLimitSlot(event, receivedAt, maxEventsPerRuleNodeMinute)) {
+                repository.updateRawStatus(rawEventId, "RATE_LIMITED", null);
+                repository.touchSensor(sensorId, event.occurredAt());
+                return response(rawEventId, null, null, false, "RATE_LIMITED", receivedAt);
+            }
             Long commonAssetId = null;
             Long runtimeAssetId = null;
             if (event.asset().resolvable()) {
@@ -94,9 +111,15 @@ public class RuntimeIngestService {
                 runtimeAssetId = repository.upsertRuntimeAsset(commonAssetId, event.asset(), event.occurredAt());
             }
 
+            Long suppressionId = repository.findMatchingSuppression(event).orElse(null);
             long runtimeEventId = repository.insertRuntimeEvent(
-                    rawEventId, runtimeAssetId, event,
+                    rawEventId, runtimeAssetId, suppressionId, event,
                     json(event.process().arguments()), json(event.missingFields()), receivedAt);
+            if (suppressionId != null) {
+                repository.updateRawStatus(rawEventId, "SUPPRESSED", null);
+                repository.touchSensor(sensorId, event.occurredAt());
+                return response(rawEventId, runtimeEventId, null, false, "SUPPRESSED", receivedAt);
+            }
             String fingerprint = fingerprint(event);
             long findingId = repository.upsertFinding(fingerprint, runtimeAssetId, commonAssetId, event);
             repository.linkFindingEvent(findingId, runtimeEventId);

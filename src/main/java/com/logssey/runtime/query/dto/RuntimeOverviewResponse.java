@@ -13,8 +13,9 @@ public record RuntimeOverviewResponse(
     public record Period(String from, String to) {
     }
 
-    public record Summary(long runtimeEventCount, long unreviewedFindingCount,
-                          long affectedWorkloadCount, long unresolvedAssetEventCount) {
+    public record Summary(long runtimeEventCount, long suppressedEventCount, long rateLimitedEventCount,
+                          long unreviewedFindingCount, long affectedWorkloadCount,
+                          long unresolvedAssetEventCount) {
     }
 
     public record RuleCount(String ruleKey, String title, long count) {

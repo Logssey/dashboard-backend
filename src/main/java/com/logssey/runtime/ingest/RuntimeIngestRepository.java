@@ -128,21 +128,85 @@ public class RuntimeIngestRepository {
                 .single();
     }
 
-    public long insertRuntimeEvent(long rawEventId, Long runtimeAssetId, NormalizedRuntimeEvent event,
-                                   String arguments, String missingFields, Instant receivedAt) {
+    public Optional<Long> findMatchingSuppression(NormalizedRuntimeEvent event) {
+        return jdbcClient.sql("""
+                        SELECT suppression_id
+                        FROM runtime_suppressions
+                        WHERE rule_key = :ruleKey
+                          AND cluster_id = :clusterId
+                          AND created_at <= :occurredAt
+                          AND expires_at > :occurredAt
+                          AND (revoked_at IS NULL OR revoked_at > :occurredAt)
+                          AND (namespace IS NULL OR namespace = :namespace)
+                          AND (workload_name IS NULL OR workload_name = :workloadName)
+                          AND (process_executable IS NULL OR process_executable = :processExecutable)
+                          AND (target_name_prefix IS NULL
+                               OR left(:targetName, length(target_name_prefix)) = target_name_prefix)
+                          AND (operation IS NULL OR operation = :operation)
+                        ORDER BY
+                          ((namespace IS NOT NULL)::int + (workload_name IS NOT NULL)::int
+                           + (process_executable IS NOT NULL)::int + (target_name_prefix IS NOT NULL)::int
+                           + (operation IS NOT NULL)::int) DESC,
+                          created_at DESC,
+                          suppression_id DESC
+                        LIMIT 1
+                        """)
+                .param("ruleKey", event.ruleKey())
+                .param("clusterId", event.asset().clusterId())
+                .param("occurredAt", utc(event.occurredAt()))
+                .param("namespace", event.asset().namespace())
+                .param("workloadName", event.asset().workloadName())
+                .param("processExecutable", event.process().executable())
+                .param("targetName", event.target().name())
+                .param("operation", event.target().operation())
+                .query(Long.class)
+                .optional();
+    }
+
+    public boolean acquireRateLimitSlot(NormalizedRuntimeEvent event, Instant receivedAt, int limit) {
+        return jdbcClient.sql("""
+                        INSERT INTO runtime_ingest_rate_windows
+                            (cluster_id, node_name, rule_key, window_started_at,
+                             received_count, processed_count, rate_limited_count)
+                        VALUES
+                            (:clusterId, :nodeName, :ruleKey, :windowStartedAt, 1, 1, 0)
+                        ON CONFLICT (cluster_id, node_name, rule_key, window_started_at)
+                        DO UPDATE SET
+                            received_count = runtime_ingest_rate_windows.received_count + 1,
+                            processed_count = runtime_ingest_rate_windows.processed_count
+                                + CASE WHEN runtime_ingest_rate_windows.received_count < :eventLimit THEN 1 ELSE 0 END,
+                            rate_limited_count = runtime_ingest_rate_windows.rate_limited_count
+                                + CASE WHEN runtime_ingest_rate_windows.received_count >= :eventLimit THEN 1 ELSE 0 END,
+                            updated_at = CURRENT_TIMESTAMP
+                        RETURNING received_count <= :eventLimit
+                        """)
+                .param("clusterId", event.asset().clusterId())
+                .param("nodeName", event.asset().nodeName() == null ? "unknown" : event.asset().nodeName())
+                .param("ruleKey", event.ruleKey())
+                .param("windowStartedAt", utc(receivedAt.truncatedTo(java.time.temporal.ChronoUnit.MINUTES)))
+                .param("eventLimit", limit)
+                .query(Boolean.class)
+                .single();
+    }
+
+    public long insertRuntimeEvent(long rawEventId, Long runtimeAssetId, Long suppressionId,
+                                   NormalizedRuntimeEvent event, String arguments,
+                                   String missingFields, Instant receivedAt) {
         return jdbcClient.sql("""
                         INSERT INTO runtime_events
                             (raw_event_id, runtime_asset_id, source, source_event_id, event_type, rule_key,
                              rule_version, source_priority, occurred_at, received_at, process_id,
                              parent_process_id, process_executable, process_arguments, parent_executable,
                              user_id, target_type, target_name, operation,
-                             normalization_status, missing_fields, asset_resolution_status)
+                             normalization_status, missing_fields, asset_resolution_status,
+                             handling_status, suppression_id)
                         VALUES
                             (:rawEventId, :runtimeAssetId, 'FALCO', :sourceEventId, :eventType, :ruleKey,
                              :ruleVersion, :sourcePriority, :occurredAt, :receivedAt, :processId,
                              :parentProcessId, :processExecutable, CAST(:arguments AS jsonb), :parentExecutable,
                              :userId, :targetType, :targetName, :operation,
-                             :normalizationStatus, CAST(:missingFields AS jsonb), :assetResolutionStatus)
+                             :normalizationStatus, CAST(:missingFields AS jsonb), :assetResolutionStatus,
+                             :handlingStatus, :suppressionId)
                         RETURNING runtime_event_id
                         """)
                 .param("rawEventId", rawEventId)
@@ -166,6 +230,8 @@ public class RuntimeIngestRepository {
                 .param("normalizationStatus", event.normalizationStatus())
                 .param("missingFields", missingFields)
                 .param("assetResolutionStatus", runtimeAssetId == null ? "UNRESOLVED" : "RESOLVED")
+                .param("handlingStatus", suppressionId == null ? "GROUPED" : "SUPPRESSED")
+                .param("suppressionId", suppressionId)
                 .query(Long.class)
                 .single();
     }

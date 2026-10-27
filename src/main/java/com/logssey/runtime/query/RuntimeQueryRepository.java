@@ -36,6 +36,14 @@ public class RuntimeQueryRepository {
                     (SELECT count(*) FROM runtime_events e
                      LEFT JOIN runtime_assets ea ON ea.runtime_asset_id = e.runtime_asset_id
                      WHERE e.occurred_at >= :from AND e.occurred_at < :to %s) AS event_count,
+                    (SELECT count(*) FROM runtime_events se
+                     LEFT JOIN runtime_assets sa ON sa.runtime_asset_id = se.runtime_asset_id
+                     WHERE se.occurred_at >= :from AND se.occurred_at < :to
+                       AND se.handling_status = 'SUPPRESSED' %s) AS suppressed_count,
+                    (SELECT count(*) FROM runtime_raw_events re
+                     WHERE re.received_at >= :from AND re.received_at < :to
+                       AND re.processing_status = 'RATE_LIMITED'
+                       AND (:allClusters OR re.cluster_id = :clusterId)) AS rate_limited_count,
                     count(*) FILTER (WHERE f.review_status = 'UNREVIEWED') AS unreviewed_count,
                     count(DISTINCT a.workload_name) FILTER (WHERE a.workload_name IS NOT NULL) AS workload_count,
                     (SELECT count(*) FROM runtime_events ue
@@ -47,11 +55,14 @@ public class RuntimeQueryRepository {
                 WHERE f.last_seen_at >= :from AND f.last_seen_at < :to %s
                 """.formatted(
                 clusterCondition(clusterId, "ea.cluster_id"),
+                clusterCondition(clusterId, "sa.cluster_id"),
                 clusterCondition(clusterId, "ua.cluster_id"),
                 clusterCondition);
         return withRangeAndCluster(jdbcClient.sql(sql), clusterId, from, to)
                 .query((rs, rowNum) -> new RuntimeCounts(
                         rs.getLong("event_count"),
+                        rs.getLong("suppressed_count"),
+                        rs.getLong("rate_limited_count"),
                         rs.getLong("unreviewed_count"),
                         rs.getLong("workload_count"),
                         rs.getLong("unresolved_count")))
@@ -322,7 +333,8 @@ public class RuntimeQueryRepository {
         return rs.wasNull() ? null : value;
     }
 
-    public record RuntimeCounts(long eventCount, long unreviewedCount, long workloadCount, long unresolvedCount) {
+    public record RuntimeCounts(long eventCount, long suppressedCount, long rateLimitedCount,
+                                long unreviewedCount, long workloadCount, long unresolvedCount) {
     }
 
     public record SensorCounts(long total, long healthy, long degraded, long offline, long unknown) {
