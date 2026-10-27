@@ -90,6 +90,85 @@ VALUES
      E'이미지: logssey/reused-api:demo\n패키지: 가상 예시\n업데이트: 검토 필요',
      '수정 버전의 호환성을 검증한 뒤 새 이미지를 빌드하고 배포합니다.');
 
+-- 런타임 보안 샘플. Falco RUN-001 한 건을 수집·정규화·Finding으로 묶은 상태를 재현한다.
+DELETE FROM runtime_finding_events
+WHERE runtime_event_id IN (
+    SELECT runtime_event_id FROM runtime_events WHERE source_event_id = 'sample-falco-run-001');
+DELETE FROM runtime_findings WHERE fingerprint = repeat('a', 64);
+DELETE FROM runtime_events WHERE source_event_id = 'sample-falco-run-001';
+DELETE FROM runtime_raw_events WHERE source_event_id = 'sample-falco-run-001';
+DELETE FROM runtime_assets
+WHERE cluster_id = 'logssey-prod' AND container_id = 'sample-container-reused-api';
+DELETE FROM runtime_sensors
+WHERE cluster_id = 'logssey-prod' AND node_name IN ('worker-a', 'worker-c', 'worker-d') AND sensor_type = 'FALCO';
+
+INSERT INTO assets (name, provider, asset_type, environment)
+VALUES ('reused-api', 'KUBERNETES', 'Deployment', 'PROD')
+ON CONFLICT (provider, name, environment) DO NOTHING;
+
+INSERT INTO runtime_sensors
+    (cluster_id, node_name, sensor_type, version, driver, rule_set_version, status,
+     last_heartbeat_at, last_event_at, queue_depth)
+VALUES
+    ('logssey-prod', 'worker-a', 'FALCO', '0.45.0', 'modern_ebpf', 'logssey-0.1.0', 'HEALTHY', now(), now() - interval '8 minutes', 0),
+    ('logssey-prod', 'worker-c', 'FALCO', '0.45.0', 'modern_ebpf', 'logssey-0.1.0', 'HEALTHY', now(), now() - interval '21 minutes', 0),
+    ('logssey-prod', 'worker-d', 'FALCO', '0.45.0', 'modern_ebpf', 'logssey-0.1.0', 'HEALTHY', now(), NULL, 0);
+
+INSERT INTO runtime_assets
+    (asset_id, cluster_id, namespace, workload_kind, workload_name, pod_uid, pod_name,
+     container_id, container_name, image, image_digest, node_name, service_account_name,
+     valid_from, snapshot_at)
+VALUES
+    ((SELECT asset_id FROM assets
+      WHERE provider = 'KUBERNETES' AND name = 'reused-api' AND environment = 'PROD'),
+     'logssey-prod', 'reused', 'Deployment', 'reused-api', 'sample-pod-uid-reused-api',
+     'reused-api-7d9df64b9f-k2j9p', 'sample-container-reused-api', 'api',
+     'logssey/reused-api:demo', 'sha256:sample', 'worker-a', 'reused-api',
+     now() - interval '38 minutes', now() - interval '8 minutes');
+
+INSERT INTO runtime_raw_events
+    (cluster_id, sensor_type, sensor_id, source_event_id, idempotency_key, schema_version,
+     payload, masked_fields, processing_status, received_at)
+VALUES
+    ('logssey-prod', 'FALCO',
+     (SELECT sensor_id FROM runtime_sensors
+      WHERE cluster_id = 'logssey-prod' AND node_name = 'worker-a' AND sensor_type = 'FALCO'),
+     'sample-falco-run-001', 'sample-falco-run-001', 'falco-json-0.1',
+     '{"uuid":"sample-falco-run-001","priority":"Warning","output_fields":{"proc.name":"bash","proc.exepath":"/usr/bin/bash","proc.cmdline":"bash -c whoami","proc.pexepath":"/usr/bin/containerd-shim-runc-v2","user.uid":"1000","container.id":"sample-container-reused-api","k8s.ns.name":"reused","k8s.pod.name":"reused-api-7d9df64b9f-k2j9p"}}'::jsonb,
+     '[]'::jsonb, 'GROUPED', now() - interval '8 minutes');
+
+INSERT INTO runtime_events
+    (raw_event_id, runtime_asset_id, source, source_event_id, event_type, rule_key, rule_version,
+     source_priority, occurred_at, received_at, process_id, parent_process_id, process_executable,
+     process_arguments, parent_executable, user_id, normalization_status, missing_fields,
+     asset_resolution_status)
+VALUES
+    ((SELECT raw_event_id FROM runtime_raw_events WHERE source_event_id = 'sample-falco-run-001'),
+     (SELECT runtime_asset_id FROM runtime_assets
+      WHERE cluster_id = 'logssey-prod' AND container_id = 'sample-container-reused-api'),
+     'FALCO', 'sample-falco-run-001', 'PROCESS_EXEC', 'RUN-001', '0.1.0', 'WARNING',
+     now() - interval '8 minutes', now() - interval '8 minutes', 121, 87, '/usr/bin/bash',
+     '["bash", "-c", "whoami"]'::jsonb, '/usr/bin/containerd-shim-runc-v2', '1000',
+     'COMPLETE', '[]'::jsonb, 'RESOLVED');
+
+INSERT INTO runtime_findings
+    (fingerprint, rule_key, rule_title, rule_version, runtime_asset_id, asset_id, source_priority,
+     evaluation_status, first_seen_at, last_seen_at, occurrence_count, process_executable,
+     parent_executable, user_id)
+VALUES
+    (repeat('a', 64), 'RUN-001', '컨테이너 셸 실행', '0.1.0',
+     (SELECT runtime_asset_id FROM runtime_assets
+      WHERE cluster_id = 'logssey-prod' AND container_id = 'sample-container-reused-api'),
+     (SELECT asset_id FROM assets
+      WHERE provider = 'KUBERNETES' AND name = 'reused-api' AND environment = 'PROD'),
+     'WARNING', 'PENDING_CONTEXT', now() - interval '38 minutes', now() - interval '8 minutes', 3,
+     '/usr/bin/bash', '/usr/bin/containerd-shim-runc-v2', '1000');
+
+INSERT INTO runtime_finding_events (finding_id, runtime_event_id)
+VALUES
+    ((SELECT finding_id FROM runtime_findings WHERE fingerprint = repeat('a', 64)),
+     (SELECT runtime_event_id FROM runtime_events WHERE source_event_id = 'sample-falco-run-001'));
+
 
 -- 키 샘플 5개 (Notion PAT. Notion Admin API 응답 형식을 본뜬 가상 데이터)
 -- 발급처 목록 정보일 뿐이라 위험 등급을 매기지 않는다. 만료·미사용은 목록에 보여주는 정보다.
