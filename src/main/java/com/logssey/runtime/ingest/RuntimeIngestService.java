@@ -1,6 +1,7 @@
 package com.logssey.runtime.ingest;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
 
@@ -31,6 +32,7 @@ public class RuntimeIngestService {
     private final TransactionTemplate transactionTemplate;
     private final int maxPayloadBytes;
     private final int maxEventsPerRuleNodeMinute;
+    private final Duration rawPayloadRetention;
 
     public RuntimeIngestService(RuntimePayloadMasker payloadMasker,
                                 FalcoRuntimeEventNormalizer normalizer,
@@ -39,7 +41,8 @@ public class RuntimeIngestService {
                                 TransactionTemplate transactionTemplate,
                                 @Value("${logssey.runtime.max-payload-bytes:262144}") int maxPayloadBytes,
                                 @Value("${logssey.runtime.max-events-per-rule-node-minute:300}")
-                                int maxEventsPerRuleNodeMinute) {
+                                int maxEventsPerRuleNodeMinute,
+                                @Value("${logssey.runtime.raw-payload-retention:P30D}") Duration rawPayloadRetention) {
         this.payloadMasker = payloadMasker;
         this.normalizer = normalizer;
         this.repository = repository;
@@ -47,6 +50,8 @@ public class RuntimeIngestService {
         this.transactionTemplate = transactionTemplate;
         this.maxPayloadBytes = Math.max(1024, maxPayloadBytes);
         this.maxEventsPerRuleNodeMinute = Math.max(1, maxEventsPerRuleNodeMinute);
+        this.rawPayloadRetention = rawPayloadRetention.isNegative() || rawPayloadRetention.isZero()
+                ? Duration.ofDays(30) : rawPayloadRetention;
     }
 
     public RuntimeIngestResponse ingestFalco(FalcoEventEnvelope envelope, String requestedIdempotencyKey) {
@@ -66,7 +71,8 @@ public class RuntimeIngestService {
 
         RawEventInsert raw = repository.insertRawEvent(
                 envelope.clusterId(), envelope.sensorId(), sourceEventId, idempotencyKey,
-                envelope.schemaVersion(), payload, json(masked.maskedFields()), receivedAt);
+                envelope.schemaVersion(), payload, RuntimeHashing.sha256(payload),
+                json(masked.maskedFields()), receivedAt, receivedAt.plus(rawPayloadRetention));
         if (raw.duplicate()) {
             ExistingOutcome existing = repository.findOutcome(raw.rawEventId());
             return response(raw.rawEventId(), existing.runtimeEventId(), existing.findingId(), true,

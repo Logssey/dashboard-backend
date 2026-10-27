@@ -19,15 +19,17 @@ public class RuntimeIngestRepository {
 
     public RawEventInsert insertRawEvent(String clusterId, Long sensorId, String sourceEventId,
                                          String idempotencyKey, String schemaVersion, String payload,
-                                         String maskedFields, Instant receivedAt) {
+                                         String payloadSha256, String maskedFields,
+                                         Instant receivedAt, Instant payloadRetentionUntil) {
         Optional<Long> inserted = jdbcClient.sql("""
                         INSERT INTO runtime_raw_events
                             (cluster_id, sensor_type, sensor_id, source_event_id, idempotency_key,
-                             schema_version, payload, masked_fields, processing_status, received_at)
+                             schema_version, payload, payload_sha256, masked_fields, processing_status,
+                             received_at, payload_retention_until)
                         VALUES
                             (:clusterId, 'FALCO', :sensorId, :sourceEventId, :idempotencyKey,
-                             :schemaVersion, CAST(:payload AS jsonb), CAST(:maskedFields AS jsonb),
-                             'RECEIVED', :receivedAt)
+                             :schemaVersion, CAST(:payload AS jsonb), :payloadSha256,
+                             CAST(:maskedFields AS jsonb), 'RECEIVED', :receivedAt, :payloadRetentionUntil)
                         ON CONFLICT (cluster_id, sensor_type, idempotency_key) DO NOTHING
                         RETURNING raw_event_id
                         """)
@@ -37,8 +39,10 @@ public class RuntimeIngestRepository {
                 .param("idempotencyKey", idempotencyKey)
                 .param("schemaVersion", schemaVersion)
                 .param("payload", payload)
+                .param("payloadSha256", payloadSha256)
                 .param("maskedFields", maskedFields)
                 .param("receivedAt", utc(receivedAt))
+                .param("payloadRetentionUntil", utc(payloadRetentionUntil))
                 .query(Long.class)
                 .optional();
         if (inserted.isPresent()) {
