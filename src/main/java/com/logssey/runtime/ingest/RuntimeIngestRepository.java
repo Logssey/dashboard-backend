@@ -135,12 +135,14 @@ public class RuntimeIngestRepository {
                             (raw_event_id, runtime_asset_id, source, source_event_id, event_type, rule_key,
                              rule_version, source_priority, occurred_at, received_at, process_id,
                              parent_process_id, process_executable, process_arguments, parent_executable,
-                             user_id, normalization_status, missing_fields, asset_resolution_status)
+                             user_id, target_type, target_name, operation,
+                             normalization_status, missing_fields, asset_resolution_status)
                         VALUES
                             (:rawEventId, :runtimeAssetId, 'FALCO', :sourceEventId, :eventType, :ruleKey,
                              :ruleVersion, :sourcePriority, :occurredAt, :receivedAt, :processId,
                              :parentProcessId, :processExecutable, CAST(:arguments AS jsonb), :parentExecutable,
-                             :userId, :normalizationStatus, CAST(:missingFields AS jsonb), :assetResolutionStatus)
+                             :userId, :targetType, :targetName, :operation,
+                             :normalizationStatus, CAST(:missingFields AS jsonb), :assetResolutionStatus)
                         RETURNING runtime_event_id
                         """)
                 .param("rawEventId", rawEventId)
@@ -158,6 +160,9 @@ public class RuntimeIngestRepository {
                 .param("arguments", arguments)
                 .param("parentExecutable", event.process().parentExecutable())
                 .param("userId", event.process().userId())
+                .param("targetType", event.target().type())
+                .param("targetName", event.target().name())
+                .param("operation", event.target().operation())
                 .param("normalizationStatus", event.normalizationStatus())
                 .param("missingFields", missingFields)
                 .param("assetResolutionStatus", runtimeAssetId == null ? "UNRESOLVED" : "RESOLVED")
@@ -171,11 +176,13 @@ public class RuntimeIngestRepository {
                         INSERT INTO runtime_findings
                             (fingerprint, rule_key, rule_title, rule_version, runtime_asset_id, asset_id,
                              source_priority, evaluation_status, first_seen_at, last_seen_at,
-                             process_executable, parent_executable, user_id)
+                             process_executable, parent_executable, user_id,
+                             target_type, target_name, operation)
                         VALUES
                             (:fingerprint, :ruleKey, :ruleTitle, :ruleVersion, :runtimeAssetId, :assetId,
                              :sourcePriority, 'PENDING_CONTEXT', :occurredAt, :occurredAt,
-                             :processExecutable, :parentExecutable, :userId)
+                             :processExecutable, :parentExecutable, :userId,
+                             :targetType, :targetName, :operation)
                         ON CONFLICT (fingerprint)
                         DO UPDATE SET
                             first_seen_at = LEAST(runtime_findings.first_seen_at, EXCLUDED.first_seen_at),
@@ -195,6 +202,9 @@ public class RuntimeIngestRepository {
                 .param("processExecutable", event.process().executable())
                 .param("parentExecutable", event.process().parentExecutable())
                 .param("userId", event.process().userId())
+                .param("targetType", event.target().type())
+                .param("targetName", event.target().name())
+                .param("operation", event.target().operation())
                 .query(Long.class)
                 .single();
     }

@@ -18,6 +18,7 @@ public record RuntimeFindingResponse(
         List<String> sensors,
         AssetSummary asset,
         ProcessSummary process,
+        TargetSummary target,
         Long assigneeUserId,
         String assigneeDisplayName,
         String note,
@@ -42,5 +43,8 @@ public record RuntimeFindingResponse(
     }
 
     public record ProcessSummary(String executable, String parentExecutable, String userId) {
+    }
+
+    public record TargetSummary(String type, String name, String operation) {
     }
 }

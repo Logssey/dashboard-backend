@@ -5,7 +5,7 @@
     "uuid": "local-falco-run-001",
     "time": "2026-10-14T06:35:00Z",
     "priority": "Warning",
-    "rule": "Terminal shell in container",
+    "rule": "Logssey RUN-001 Container Shell",
     "output": "Shell spawned in a container",
     "output_fields": {
       "proc.name": "bash",

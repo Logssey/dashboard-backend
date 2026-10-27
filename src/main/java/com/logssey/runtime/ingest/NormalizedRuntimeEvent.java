@@ -13,6 +13,7 @@ public record NormalizedRuntimeEvent(
         String eventType,
         AssetSnapshot asset,
         ProcessSnapshot process,
+        TargetSnapshot target,
         String normalizationStatus,
         List<String> missingFields) {
 
@@ -42,5 +43,11 @@ public record NormalizedRuntimeEvent(
             List<String> arguments,
             String parentExecutable,
             String userId) {
+    }
+
+    public record TargetSnapshot(
+            String type,
+            String name,
+            String operation) {
     }
 }

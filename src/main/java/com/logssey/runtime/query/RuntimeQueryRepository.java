@@ -12,6 +12,7 @@ import com.logssey.runtime.query.dto.RuntimeFindingResponse;
 import com.logssey.runtime.query.dto.RuntimeFindingResponse.AssetSummary;
 import com.logssey.runtime.query.dto.RuntimeFindingResponse.ProcessSummary;
 import com.logssey.runtime.query.dto.RuntimeFindingResponse.Rule;
+import com.logssey.runtime.query.dto.RuntimeFindingResponse.TargetSummary;
 import com.logssey.runtime.query.dto.RuntimeFindingUpdateRequest;
 import com.logssey.runtime.query.dto.RuntimeOverviewResponse;
 import com.logssey.runtime.query.dto.RuntimeSensorListResponse.SensorItem;
@@ -287,6 +288,7 @@ public class RuntimeQueryRepository {
                 format(instant(rs, "first_seen_at")), format(instant(rs, "last_seen_at")),
                 rs.getLong("occurrence_count"), sensors, asset,
                 new ProcessSummary(rs.getString("process_executable"), rs.getString("parent_executable"), rs.getString("user_id")),
+                new TargetSummary(rs.getString("target_type"), rs.getString("target_name"), rs.getString("operation")),
                 nullableLong(rs, "assignee_user_id"), rs.getString("assignee_display_name"),
                 rs.getString("note"), rs.getLong("version"));
     }

@@ -2,7 +2,6 @@ package com.logssey.runtime.ingest;
 
 import java.time.Instant;
 import java.util.Objects;
-import java.util.Optional;
 
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
@@ -72,14 +71,14 @@ public class RuntimeIngestService {
 
     private RuntimeIngestResponse process(FalcoEventEnvelope envelope, MaskedPayload masked,
                                           long rawEventId, Instant receivedAt) {
-            Optional<NormalizedRuntimeEvent> normalized = normalizer.normalize(
+            RuntimeNormalizationResult normalization = normalizer.normalize(
                     envelope.clusterId(), masked.payload(), receivedAt);
-            if (normalized.isEmpty()) {
-                repository.updateRawStatus(rawEventId, "IGNORED", null);
+            if (normalization.normalizedEvent().isEmpty()) {
+                repository.updateRawStatus(rawEventId, "IGNORED", normalization.ignoredReason());
                 return response(rawEventId, null, null, false, "IGNORED", receivedAt);
             }
 
-            NormalizedRuntimeEvent event = normalized.get();
+            NormalizedRuntimeEvent event = normalization.normalizedEvent().orElseThrow();
             Long sensorId = envelope.sensorId();
             if (sensorId == null && event.asset().nodeName() != null) {
                 sensorId = repository.upsertFalcoSensorFromEvent(
@@ -135,6 +134,9 @@ public class RuntimeIngestService {
                 value(process.executable()),
                 value(process.parentExecutable()),
                 value(process.userId()),
+                value(event.target().type()),
+                value(event.target().name()),
+                value(event.target().operation()),
                 Long.toString(bucket)));
     }
 
