@@ -8,6 +8,7 @@ import com.logssey.runtime.query.dto.RuntimeFindingListResponse;
 import com.logssey.runtime.query.dto.RuntimeFindingResponse;
 import com.logssey.runtime.query.dto.RuntimeFindingUpdateRequest;
 import com.logssey.runtime.query.dto.RuntimeOverviewResponse;
+import com.logssey.runtime.query.dto.RuntimeRuleCatalogResponse;
 import com.logssey.runtime.query.dto.RuntimeSensorListResponse;
 
 import jakarta.validation.Valid;
@@ -38,6 +39,11 @@ public class RuntimeQueryController {
         Instant rangeTo = to == null ? Instant.now() : to;
         Instant rangeFrom = from == null ? rangeTo.minus(24, ChronoUnit.HOURS) : from;
         return service.overview(clusterId, rangeFrom, rangeTo);
+    }
+
+    @GetMapping("/rules")
+    public RuntimeRuleCatalogResponse rules() {
+        return service.rules();
     }
 
     @GetMapping("/findings")

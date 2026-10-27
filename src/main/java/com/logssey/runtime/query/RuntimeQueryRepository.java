@@ -44,6 +44,10 @@ public class RuntimeQueryRepository {
                      WHERE re.received_at >= :from AND re.received_at < :to
                        AND re.processing_status = 'RATE_LIMITED'
                        AND (:allClusters OR re.cluster_id = :clusterId)) AS rate_limited_count,
+                    (SELECT count(*) FROM runtime_events oe
+                     LEFT JOIN runtime_assets oa ON oa.runtime_asset_id = oe.runtime_asset_id
+                     WHERE oe.occurred_at >= :from AND oe.occurred_at < :to
+                       AND oe.handling_status = 'OBSERVED' %s) AS observed_count,
                     count(*) FILTER (WHERE f.review_status = 'UNREVIEWED') AS unreviewed_count,
                     count(DISTINCT a.workload_name) FILTER (WHERE a.workload_name IS NOT NULL) AS workload_count,
                     (SELECT count(*) FROM runtime_events ue
@@ -56,6 +60,7 @@ public class RuntimeQueryRepository {
                 """.formatted(
                 clusterCondition(clusterId, "ea.cluster_id"),
                 clusterCondition(clusterId, "sa.cluster_id"),
+                clusterCondition(clusterId, "oa.cluster_id"),
                 clusterCondition(clusterId, "ua.cluster_id"),
                 clusterCondition);
         return withRangeAndCluster(jdbcClient.sql(sql), clusterId, from, to)
@@ -63,6 +68,7 @@ public class RuntimeQueryRepository {
                         rs.getLong("event_count"),
                         rs.getLong("suppressed_count"),
                         rs.getLong("rate_limited_count"),
+                        rs.getLong("observed_count"),
                         rs.getLong("unreviewed_count"),
                         rs.getLong("workload_count"),
                         rs.getLong("unresolved_count")))
@@ -334,6 +340,7 @@ public class RuntimeQueryRepository {
     }
 
     public record RuntimeCounts(long eventCount, long suppressedCount, long rateLimitedCount,
+                                long observedCount,
                                 long unreviewedCount, long workloadCount, long unresolvedCount) {
     }
 

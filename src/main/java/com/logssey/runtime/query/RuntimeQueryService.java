@@ -13,10 +13,13 @@ import com.logssey.runtime.query.dto.RuntimeFindingListResponse;
 import com.logssey.runtime.query.dto.RuntimeFindingResponse;
 import com.logssey.runtime.query.dto.RuntimeFindingUpdateRequest;
 import com.logssey.runtime.query.dto.RuntimeOverviewResponse;
+import com.logssey.runtime.query.dto.RuntimeRuleCatalogResponse;
+import com.logssey.runtime.query.dto.RuntimeRuleCatalogResponse.RuleItem;
 import com.logssey.runtime.query.dto.RuntimeOverviewResponse.Period;
 import com.logssey.runtime.query.dto.RuntimeOverviewResponse.SensorSummary;
 import com.logssey.runtime.query.dto.RuntimeOverviewResponse.Summary;
 import com.logssey.runtime.query.dto.RuntimeSensorListResponse;
+import com.logssey.runtime.ingest.RuntimeRulePack;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -32,13 +35,16 @@ public class RuntimeQueryService {
 
     private final RuntimeQueryRepository repository;
     private final RuntimeSensorHealthEvaluator sensorHealthEvaluator;
+    private final RuntimeRulePack rulePack;
     private final int expectedWorkerCount;
 
     public RuntimeQueryService(RuntimeQueryRepository repository,
                                RuntimeSensorHealthEvaluator sensorHealthEvaluator,
+                               RuntimeRulePack rulePack,
                                @Value("${logssey.runtime.expected-worker-count:3}") int expectedWorkerCount) {
         this.repository = repository;
         this.sensorHealthEvaluator = sensorHealthEvaluator;
+        this.rulePack = rulePack;
         this.expectedWorkerCount = Math.max(0, expectedWorkerCount);
     }
 
@@ -59,11 +65,22 @@ public class RuntimeQueryService {
         return new RuntimeOverviewResponse(
                 new Period(from.toString(), to.toString()),
                 new Summary(counts.eventCount(), counts.suppressedCount(), counts.rateLimitedCount(),
-                        counts.unreviewedCount(), counts.workloadCount(), counts.unresolvedCount()),
+                        counts.observedCount(), counts.unreviewedCount(), counts.workloadCount(),
+                        counts.unresolvedCount()),
                 repository.countsByRule(clusterId, from, to),
                 new SensorSummary(healthy, degraded, offline, unknown + missing),
                 collectionState,
                 Instant.now().toString());
+    }
+
+    public RuntimeRuleCatalogResponse rules() {
+        List<RuleItem> rules = rulePack.rules().stream()
+                .map(rule -> new RuleItem(
+                        rule.ruleKey(), rule.title(), rule.version(), rule.eventType(), rule.targetType(),
+                        rule.operation(), rule.mode().name(), rule.maturity().name(), rule.sensors(),
+                        rule.mitreTechniques(), rule.noiseBudgetPerMinute(), rule.owner()))
+                .toList();
+        return new RuntimeRuleCatalogResponse(rulePack.packVersion(), rules);
     }
 
     public RuntimeFindingListResponse findings(String clusterId, String namespace,

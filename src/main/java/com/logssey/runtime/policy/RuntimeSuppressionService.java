@@ -27,7 +27,9 @@ public class RuntimeSuppressionService {
     private static final Duration MAX_DURATION = Duration.ofDays(30);
     private static final Set<String> REASONS = Set.of(
             "APPROVED_OPERATION", "PLATFORM_COMPONENT", "TEMPORARY_MAINTENANCE");
-    private static final Set<String> OPERATIONS = Set.of("EXEC", "OPEN", "WRITE");
+    private static final Set<String> OPERATIONS = Set.of(
+            "EXEC", "OPEN", "WRITE", "CONNECT", "START", "ACCESS", "DELETE", "DISCOVER",
+            "NAMESPACE_ENTER", "PRIVILEGE_CHANGE");
     private static final Pattern EVIDENCE = Pattern.compile(
             "^(TICKET|CHANGE):[A-Z][A-Z0-9]{1,15}-[1-9][0-9]{0,12}$");
 
@@ -116,7 +118,7 @@ public class RuntimeSuppressionService {
             throw new ApiException(ErrorCode.INVALID_INPUT, "예외에는 하나 이상의 구체적인 범위가 필요합니다.");
         }
         if (operation != null && !OPERATIONS.contains(operation)) {
-            throw new ApiException(ErrorCode.INVALID_INPUT, "operation은 EXEC, OPEN, WRITE 중 하나여야 합니다.");
+            throw new ApiException(ErrorCode.INVALID_INPUT, "지원하지 않는 런타임 operation입니다.");
         }
         if (targetPrefix != null && !targetPrefix.startsWith("/")) {
             throw new ApiException(ErrorCode.INVALID_INPUT, "대상 경로는 절대 경로여야 합니다.");

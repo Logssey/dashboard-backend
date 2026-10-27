@@ -199,14 +199,14 @@ public class RuntimeIngestRepository {
         return jdbcClient.sql("""
                         INSERT INTO runtime_events
                             (raw_event_id, runtime_asset_id, source, source_event_id, event_type, rule_key,
-                             rule_version, source_priority, occurred_at, received_at, process_id,
+                             rule_version, rule_mode, source_priority, occurred_at, received_at, process_id,
                              parent_process_id, process_executable, process_arguments, parent_executable,
                              user_id, target_type, target_name, operation,
                              normalization_status, missing_fields, asset_resolution_status,
                              handling_status, suppression_id)
                         VALUES
                             (:rawEventId, :runtimeAssetId, 'FALCO', :sourceEventId, :eventType, :ruleKey,
-                             :ruleVersion, :sourcePriority, :occurredAt, :receivedAt, :processId,
+                             :ruleVersion, :ruleMode, :sourcePriority, :occurredAt, :receivedAt, :processId,
                              :parentProcessId, :processExecutable, CAST(:arguments AS jsonb), :parentExecutable,
                              :userId, :targetType, :targetName, :operation,
                              :normalizationStatus, CAST(:missingFields AS jsonb), :assetResolutionStatus,
@@ -219,6 +219,7 @@ public class RuntimeIngestRepository {
                 .param("eventType", event.eventType())
                 .param("ruleKey", event.ruleKey())
                 .param("ruleVersion", event.ruleVersion())
+                .param("ruleMode", event.ruleMode().name())
                 .param("sourcePriority", event.sourcePriority())
                 .param("occurredAt", utc(event.occurredAt()))
                 .param("receivedAt", utc(receivedAt))
@@ -234,7 +235,8 @@ public class RuntimeIngestRepository {
                 .param("normalizationStatus", event.normalizationStatus())
                 .param("missingFields", missingFields)
                 .param("assetResolutionStatus", runtimeAssetId == null ? "UNRESOLVED" : "RESOLVED")
-                .param("handlingStatus", suppressionId == null ? "GROUPED" : "SUPPRESSED")
+                .param("handlingStatus", suppressionId != null ? "SUPPRESSED"
+                        : event.ruleMode() == RuntimeRuleDefinition.Mode.OBSERVE ? "OBSERVED" : "GROUPED")
                 .param("suppressionId", suppressionId)
                 .query(Long.class)
                 .single();

@@ -1,0 +1,380 @@
+schemaVersion: runtime-rule-pack/v1
+packVersion: 1.0.0
+rules:
+  - key: RUN-001
+    title: 컨테이너 셸 실행
+    version: 1.0.0
+    mode: DETECT
+    maturity: STABLE
+    eventType: PROCESS_EXEC
+    targetType: PROCESS
+    operation: EXEC
+    validationProfile: CONTAINER_SHELL
+    sensors: [FALCO]
+    mitre: [T1059]
+    noiseBudgetPerMinute: 60
+    owner: Runtime Security
+    sourceRules:
+      FALCO: [Logssey RUN-001 Container Shell, Terminal shell in container]
+
+  - key: RUN-002
+    title: 서비스 프로세스의 셸 실행
+    version: 1.0.0
+    mode: DETECT
+    maturity: STABLE
+    eventType: PROCESS_EXEC
+    targetType: PROCESS
+    operation: EXEC
+    validationProfile: SERVICE_PROCESS_SHELL
+    sensors: [FALCO, TETRAGON]
+    mitre: [T1059, T1505.003]
+    noiseBudgetPerMinute: 20
+    owner: Runtime Security
+    sourceRules:
+      FALCO: [Logssey RUN-002 Service Process Shell]
+
+  - key: RUN-003
+    title: ServiceAccount 토큰 접근
+    version: 1.0.0
+    mode: DETECT
+    maturity: STABLE
+    eventType: FILE_ACCESS
+    targetType: FILE
+    operation: OPEN
+    validationProfile: SERVICE_ACCOUNT_TOKEN_ACCESS
+    sensors: [FALCO]
+    mitre: [T1552.007]
+    noiseBudgetPerMinute: 30
+    owner: Runtime Security
+    sourceRules:
+      FALCO: [Logssey RUN-003 ServiceAccount Token Access]
+
+  - key: RUN-004
+    title: 실행 중인 컨테이너의 패키지 관리자 실행
+    version: 1.0.0
+    mode: DETECT
+    maturity: STABLE
+    eventType: PROCESS_EXEC
+    targetType: PROCESS
+    operation: EXEC
+    validationProfile: PACKAGE_MANAGER_EXECUTION
+    sensors: [FALCO]
+    mitre: [T1105]
+    noiseBudgetPerMinute: 20
+    owner: Runtime Security
+    sourceRules:
+      FALCO: [Logssey RUN-004 Package Manager Execution]
+
+  - key: RUN-005
+    title: Pod의 IMDS 접근
+    version: 0.1.0
+    mode: DRAFT
+    maturity: EXPERIMENTAL
+    eventType: NETWORK_CONNECT
+    targetType: NETWORK
+    operation: CONNECT
+    validationProfile: NETWORK_EVENT
+    sensors: [TETRAGON, FALCO]
+    mitre: [T1552.005]
+    noiseBudgetPerMinute: 30
+    owner: Runtime Security
+    sourceRules: {}
+
+  - key: RUN-006
+    title: 다른 프로세스의 메모리 접근
+    version: 0.2.0
+    mode: DETECT
+    maturity: STABLE
+    eventType: PROCESS_ACCESS
+    targetType: PROCESS
+    operation: ACCESS
+    validationProfile: PROCESS_MEMORY_ACCESS
+    sensors: [FALCO]
+    mitre: [T1055]
+    noiseBudgetPerMinute: 20
+    owner: Runtime Security
+    sourceRules:
+      FALCO: [PTRACE attached to process]
+
+  - key: RUN-007
+    title: 컨테이너 중요 경로 변경
+    version: 1.0.0
+    mode: DETECT
+    maturity: STABLE
+    eventType: FILE_WRITE
+    targetType: FILE
+    operation: WRITE
+    validationProfile: SENSITIVE_PATH_WRITE
+    sensors: [FALCO]
+    mitre: [T1562.001]
+    noiseBudgetPerMinute: 100
+    owner: Runtime Security
+    sourceRules:
+      FALCO: [Logssey RUN-007 Sensitive Path Write]
+
+  - key: RUN-008
+    title: 예상하지 않은 외부 연결
+    version: 0.1.0
+    mode: DRAFT
+    maturity: EXPERIMENTAL
+    eventType: NETWORK_CONNECT
+    targetType: NETWORK
+    operation: CONNECT
+    validationProfile: NETWORK_EVENT
+    sensors: [TETRAGON, FALCO]
+    mitre: [T1041]
+    noiseBudgetPerMinute: 300
+    owner: Runtime Security
+    sourceRules: {}
+
+  - key: RUN-009
+    title: Privileged 컨테이너 실행
+    version: 0.1.0
+    mode: DRAFT
+    maturity: EXPERIMENTAL
+    eventType: CONTAINER_START
+    targetType: CONTAINER
+    operation: START
+    validationProfile: CONTAINER_LIFECYCLE_EVENT
+    sensors: [FALCO, K8S_AUDIT]
+    mitre: [T1610]
+    noiseBudgetPerMinute: 10
+    owner: Runtime Security
+    sourceRules: {}
+
+  - key: RUN-010
+    title: 위험 Linux Capability 보유
+    version: 0.1.0
+    mode: DRAFT
+    maturity: EXPERIMENTAL
+    eventType: CONTAINER_START
+    targetType: CONTAINER
+    operation: START
+    validationProfile: CONTAINER_LIFECYCLE_EVENT
+    sensors: [FALCO, K8S_AUDIT]
+    mitre: [T1610]
+    noiseBudgetPerMinute: 10
+    owner: Runtime Security
+    sourceRules: {}
+
+  - key: RUN-011
+    title: Host Namespace 진입
+    version: 0.1.0
+    mode: DRAFT
+    maturity: EXPERIMENTAL
+    eventType: PROCESS_PRIVILEGE
+    targetType: PROCESS
+    operation: NAMESPACE_ENTER
+    validationProfile: GENERIC_CONTAINER_PROCESS
+    sensors: [FALCO, TETRAGON]
+    mitre: [T1611]
+    noiseBudgetPerMinute: 10
+    owner: Runtime Security
+    sourceRules: {}
+
+  - key: RUN-012
+    title: 민감 Host Mount 또는 Device 접근
+    version: 0.1.0
+    mode: DRAFT
+    maturity: EXPERIMENTAL
+    eventType: FILE_ACCESS
+    targetType: FILE
+    operation: OPEN
+    validationProfile: GENERIC_CONTAINER_FILE
+    sensors: [FALCO, K8S_AUDIT]
+    mitre: [T1611]
+    noiseBudgetPerMinute: 20
+    owner: Runtime Security
+    sourceRules: {}
+
+  - key: RUN-013
+    title: Container Escape 징후
+    version: 1.0.0
+    mode: DETECT
+    maturity: STABLE
+    eventType: FILE_WRITE
+    targetType: FILE
+    operation: WRITE
+    validationProfile: GENERIC_CONTAINER_FILE
+    sensors: [FALCO]
+    mitre: [T1611]
+    noiseBudgetPerMinute: 10
+    owner: Runtime Security
+    sourceRules:
+      FALCO: [Detect release_agent File Container Escapes]
+
+  - key: RUN-014
+    title: 신규 Binary 생성 후 실행
+    version: 1.0.0
+    mode: DETECT
+    maturity: STABLE
+    eventType: PROCESS_EXEC
+    targetType: PROCESS
+    operation: EXEC
+    validationProfile: GENERIC_CONTAINER_PROCESS
+    sensors: [FALCO]
+    mitre: [T1105, T1059]
+    noiseBudgetPerMinute: 30
+    owner: Runtime Security
+    sourceRules:
+      FALCO: [Drop and execute new binary in container]
+
+  - key: RUN-015
+    title: 쓰기 가능한 임시 경로에서 실행
+    version: 0.5.0
+    mode: OBSERVE
+    maturity: INCUBATING
+    eventType: PROCESS_EXEC
+    targetType: PROCESS
+    operation: EXEC
+    validationProfile: TEMP_EXECUTION
+    sensors: [FALCO]
+    mitre: [T1059]
+    noiseBudgetPerMinute: 100
+    owner: Runtime Security
+    sourceRules:
+      FALCO: [Logssey RUN-015 Writable Path Execution]
+
+  - key: RUN-016
+    title: Reverse Shell 징후
+    version: 1.0.0
+    mode: DETECT
+    maturity: STABLE
+    eventType: NETWORK_ACTIVITY
+    targetType: PROCESS
+    operation: CONNECT
+    validationProfile: GENERIC_CONTAINER_PROCESS
+    sensors: [FALCO]
+    mitre: [T1059, T1059.004]
+    noiseBudgetPerMinute: 20
+    owner: Runtime Security
+    sourceRules:
+      FALCO: [Netcat Remote Code Execution in Container, Redirect STDOUT/STDIN to Network Connection in Container]
+
+  - key: RUN-017
+    title: 다운로드 도구 실행
+    version: 0.5.0
+    mode: OBSERVE
+    maturity: INCUBATING
+    eventType: PROCESS_EXEC
+    targetType: PROCESS
+    operation: EXEC
+    validationProfile: DOWNLOADER_EXECUTION
+    sensors: [FALCO]
+    mitre: [T1105]
+    noiseBudgetPerMinute: 100
+    owner: Runtime Security
+    sourceRules:
+      FALCO: [Logssey RUN-017 Downloader Execution]
+
+  - key: RUN-018
+    title: 비표준 Port의 SSH 연결
+    version: 0.5.0
+    mode: OBSERVE
+    maturity: INCUBATING
+    eventType: NETWORK_ACTIVITY
+    targetType: PROCESS
+    operation: CONNECT
+    validationProfile: GENERIC_CONTAINER_PROCESS
+    sensors: [FALCO]
+    mitre: [T1021.004]
+    noiseBudgetPerMinute: 30
+    owner: Runtime Security
+    sourceRules:
+      FALCO: [Disallowed SSH Connection Non Standard Port]
+
+  - key: RUN-019
+    title: Cloud Credential 탐색
+    version: 1.0.0
+    mode: DETECT
+    maturity: STABLE
+    eventType: PROCESS_EXEC
+    targetType: PROCESS
+    operation: DISCOVER
+    validationProfile: GENERIC_CONTAINER_PROCESS
+    sensors: [FALCO]
+    mitre: [T1552.001]
+    noiseBudgetPerMinute: 20
+    owner: Runtime Security
+    sourceRules:
+      FALCO: [Find AWS Credentials]
+
+  - key: RUN-020
+    title: 사용자·권한 파일 변경
+    version: 0.5.0
+    mode: OBSERVE
+    maturity: INCUBATING
+    eventType: FILE_WRITE
+    targetType: FILE
+    operation: WRITE
+    validationProfile: IDENTITY_FILE_CHANGE
+    sensors: [FALCO]
+    mitre: [T1136, T1098]
+    noiseBudgetPerMinute: 30
+    owner: Runtime Security
+    sourceRules:
+      FALCO: [Logssey RUN-020 Identity File Change]
+
+  - key: RUN-021
+    title: Cron·서비스 지속성 등록
+    version: 0.5.0
+    mode: OBSERVE
+    maturity: INCUBATING
+    eventType: FILE_WRITE
+    targetType: FILE
+    operation: WRITE
+    validationProfile: PERSISTENCE_FILE_CHANGE
+    sensors: [FALCO]
+    mitre: [T1053.003, T1543.002]
+    noiseBudgetPerMinute: 30
+    owner: Runtime Security
+    sourceRules:
+      FALCO: [Logssey RUN-021 Persistence File Change]
+
+  - key: RUN-022
+    title: SSH authorized_keys 변경
+    version: 1.0.0
+    mode: DETECT
+    maturity: STABLE
+    eventType: FILE_WRITE
+    targetType: FILE
+    operation: WRITE
+    validationProfile: SSH_AUTHORIZED_KEYS_CHANGE
+    sensors: [FALCO]
+    mitre: [T1098.004]
+    noiseBudgetPerMinute: 10
+    owner: Runtime Security
+    sourceRules:
+      FALCO: [Logssey RUN-022 Authorized Keys Change]
+
+  - key: RUN-023
+    title: 로그 삭제 또는 흔적 제거
+    version: 1.0.0
+    mode: DETECT
+    maturity: STABLE
+    eventType: FILE_WRITE
+    targetType: FILE
+    operation: DELETE
+    validationProfile: GENERIC_CONTAINER_FILE
+    sensors: [FALCO]
+    mitre: [T1070.002]
+    noiseBudgetPerMinute: 30
+    owner: Runtime Security
+    sourceRules:
+      FALCO: [Clear Log Activities]
+
+  - key: RUN-024
+    title: setuid·Capability 변경
+    version: 0.5.0
+    mode: OBSERVE
+    maturity: INCUBATING
+    eventType: PROCESS_PRIVILEGE
+    targetType: PROCESS
+    operation: PRIVILEGE_CHANGE
+    validationProfile: PRIVILEGE_CHANGE
+    sensors: [FALCO]
+    mitre: [T1548.001]
+    noiseBudgetPerMinute: 30
+    owner: Runtime Security
+    sourceRules:
+      FALCO: [Logssey RUN-024 Privilege Change]

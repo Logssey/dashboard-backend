@@ -9,6 +9,8 @@ public record NormalizedRuntimeEvent(
         String ruleKey,
         String ruleTitle,
         String ruleVersion,
+        RuntimeRuleDefinition.Mode ruleMode,
+        int noiseBudgetPerMinute,
         String sourcePriority,
         String eventType,
         AssetSnapshot asset,

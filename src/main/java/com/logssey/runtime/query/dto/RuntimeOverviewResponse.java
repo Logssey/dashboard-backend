@@ -14,6 +14,7 @@ public record RuntimeOverviewResponse(
     }
 
     public record Summary(long runtimeEventCount, long suppressedEventCount, long rateLimitedEventCount,
+                          long observedEventCount,
                           long unreviewedFindingCount, long affectedWorkloadCount,
                           long unresolvedAssetEventCount) {
     }

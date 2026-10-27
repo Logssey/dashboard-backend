@@ -12,8 +12,9 @@ import org.junit.jupiter.api.Test;
 class FalcoRuntimeEventNormalizerTest {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final RuntimeRulePack rulePack = new RuntimeRulePack();
     private final FalcoRuntimeEventNormalizer normalizer =
-            new FalcoRuntimeEventNormalizer(new FalcoRuleRegistry());
+            new FalcoRuntimeEventNormalizer(new FalcoRuleRegistry(rulePack));
 
     @Test
     void normalizesContainerShellExecution() throws Exception {
@@ -97,6 +98,84 @@ class FalcoRuntimeEventNormalizerTest {
         assertThat(result.eventType()).isEqualTo("FILE_WRITE");
         assertThat(result.target()).isEqualTo(
                 new NormalizedRuntimeEvent.TargetSnapshot("FILE", "/etc/cron.d/persistence", "WRITE"));
+    }
+
+    @Test
+    void separatesGeneralAndServiceProcessShells() throws Exception {
+        NormalizedRuntimeEvent serviceShell = normalized("""
+                {
+                  "rule": "Logssey RUN-002 Service Process Shell",
+                  "output_fields": {
+                    "proc.name": "sh",
+                    "proc.exepath": "/bin/sh",
+                    "proc.pexepath": "/usr/bin/java",
+                    "container.id": "container-1",
+                    "k8s.ns.name": "reused",
+                    "k8s.pod.name": "reused-api-7d9df64b9f-k2j9p"
+                  }
+                }
+                """);
+        RuntimeNormalizationResult incorrectlyClassified = normalize("""
+                {
+                  "rule": "Logssey RUN-001 Container Shell",
+                  "output_fields": {
+                    "proc.name": "sh",
+                    "proc.exepath": "/bin/sh",
+                    "proc.pexepath": "/usr/bin/java",
+                    "container.id": "container-1"
+                  }
+                }
+                """);
+
+        assertThat(serviceShell.ruleKey()).isEqualTo("RUN-002");
+        assertThat(serviceShell.ruleMode()).isEqualTo(RuntimeRuleDefinition.Mode.DETECT);
+        assertThat(incorrectlyClassified.ignoredReason())
+                .isEqualTo(FalcoRuntimeEventNormalizer.RULE_VALIDATION_FAILED);
+    }
+
+    @Test
+    void normalizesObserveOnlyWritablePathExecution() throws Exception {
+        NormalizedRuntimeEvent result = normalized("""
+                {
+                  "rule": "Logssey RUN-015 Writable Path Execution",
+                  "output_fields": {
+                    "proc.name": "payload",
+                    "proc.exepath": "/dev/shm/payload",
+                    "container.id": "container-1",
+                    "k8s.ns.name": "reused",
+                    "k8s.pod.name": "reused-api-7d9df64b9f-k2j9p"
+                  }
+                }
+                """);
+
+        assertThat(result.ruleKey()).isEqualTo("RUN-015");
+        assertThat(result.ruleMode()).isEqualTo(RuntimeRuleDefinition.Mode.OBSERVE);
+        assertThat(result.noiseBudgetPerMinute()).isEqualTo(100);
+    }
+
+    @Test
+    void normalizesOfficialFalcoRuleAliases() throws Exception {
+        NormalizedRuntimeEvent ptrace = normalized("""
+                {
+                  "rule": "PTRACE attached to process",
+                  "output_fields": {
+                    "proc.name": "gdb",
+                    "proc.exepath": "/usr/bin/gdb",
+                    "evt.arg.pid": "2481",
+                    "container.id": "container-1",
+                    "k8s.ns.name": "reused",
+                    "k8s.pod.name": "reused-api-7d9df64b9f-k2j9p"
+                  }
+                }
+                """);
+        NormalizedRuntimeEvent logClear = normalized(
+                fileEvent("Clear Log Activities", "/var/log/application.log"));
+
+        assertThat(ptrace.ruleKey()).isEqualTo("RUN-006");
+        assertThat(ptrace.target()).isEqualTo(
+                new NormalizedRuntimeEvent.TargetSnapshot("PROCESS", "2481", "ACCESS"));
+        assertThat(logClear.ruleKey()).isEqualTo("RUN-023");
+        assertThat(logClear.target().operation()).isEqualTo("DELETE");
     }
 
     @Test

@@ -103,7 +103,8 @@ public class RuntimeIngestService {
                         envelope.clusterId(), event.asset().nodeName(), event.occurredAt());
                 repository.attachSensor(rawEventId, sensorId);
             }
-            if (!repository.acquireRateLimitSlot(event, receivedAt, maxEventsPerRuleNodeMinute)) {
+            int effectiveRateLimit = Math.min(maxEventsPerRuleNodeMinute, event.noiseBudgetPerMinute());
+            if (!repository.acquireRateLimitSlot(event, receivedAt, effectiveRateLimit)) {
                 repository.updateRawStatus(rawEventId, "RATE_LIMITED", null);
                 repository.touchSensor(sensorId, event.occurredAt());
                 return response(rawEventId, null, null, false, "RATE_LIMITED", receivedAt);
@@ -125,6 +126,11 @@ public class RuntimeIngestService {
                 repository.updateRawStatus(rawEventId, "SUPPRESSED", null);
                 repository.touchSensor(sensorId, event.occurredAt());
                 return response(rawEventId, runtimeEventId, null, false, "SUPPRESSED", receivedAt);
+            }
+            if (event.ruleMode() == RuntimeRuleDefinition.Mode.OBSERVE) {
+                repository.updateRawStatus(rawEventId, "OBSERVED", null);
+                repository.touchSensor(sensorId, event.occurredAt());
+                return response(rawEventId, runtimeEventId, null, false, "OBSERVED", receivedAt);
             }
             String fingerprint = fingerprint(event);
             long findingId = repository.upsertFinding(fingerprint, runtimeAssetId, commonAssetId, event);
