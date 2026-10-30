@@ -5,6 +5,9 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
+import java.util.ArrayList;
+import java.util.HashMap;
 
 import com.logssey.reach.query.dto.ReachFindingResponse;
 
@@ -32,8 +35,9 @@ public class ReachQueryRepository {
                    r.review_state, r.status AS review_status, r.proposal::text AS proposal, r.reset_reason,
                    CASE v.status WHEN 'REACHABLE' THEN 0 WHEN 'UNKNOWN' THEN 1 WHEN 'UNREACHABLE' THEN 2 ELSE 3 END AS status_rank,
                    CASE f.severity WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 WHEN 'LOW' THEN 3 ELSE 4 END AS severity_rank,
-                   CASE WHEN f.vulnerability_id ~ '^CVE-\\d+-\\d+$' THEN split_part(f.vulnerability_id, '-', 2)::int END AS cve_year,
-                   CASE WHEN f.vulnerability_id ~ '^CVE-\\d+-\\d+$' THEN split_part(f.vulnerability_id, '-', 3)::int END AS cve_number
+                   -- CVE가 아닌 ID(GHSA 등)는 맨 뒤로. NULL이면 커서의 행 비교가 깨져서 큰 값으로 채운다
+                   COALESCE(CASE WHEN f.vulnerability_id ~ '^CVE-\\d+-\\d+$' THEN split_part(f.vulnerability_id, '-', 2)::int END, 2147483647) AS cve_year,
+                   COALESCE(CASE WHEN f.vulnerability_id ~ '^CVE-\\d+-\\d+$' THEN split_part(f.vulnerability_id, '-', 3)::int END, 2147483647) AS cve_number
             FROM reach_findings f
             JOIN latest l ON l.scan_id = f.last_scan_id
             JOIN reach_verdicts v ON v.finding_id = f.finding_id AND v.is_current
@@ -42,7 +46,7 @@ public class ReachQueryRepository {
 
     /** 기본 정렬: 상태 -> 심각도 -> CVE(연도·번호를 숫자로) -> id (Reach API 명세 2-5). */
     private static final String DEFAULT_ORDER = 
-    " ORDER BY status_rank, severity_rank, cve_year NULLS LAST, cve_number NULLS LAST, finding_id";
+    " ORDER BY status_rank, severity_rank, cve_year, cve_number, finding_id";
 
     private final JdbcClient jdbcClient;
     private final JsonMapper mapper = JsonMapper.builder().build();
@@ -58,12 +62,6 @@ public class ReachQueryRepository {
             .query(Boolean.class)
             .single());
 
-    }
-
-    List<ReachFindingResponse> findings(){
-        return jdbcClient.sql("SELECT * FROM ("+ CURRENT_FINDINGS + ") c" + DEFAULT_ORDER)
-            .query(this::finding)
-            .list();
     }
 
     private ReachFindingResponse finding(ResultSet rs, int rowNum) throws SQLException {
@@ -93,5 +91,63 @@ public class ReachQueryRepository {
 
     private JsonNode json(String value) {
         return value == null ? null : mapper.readTree(value);
+    }
+    /** 목록 한 행 + 커서용 정렬 키 */
+    record Row(ReachFindingResponse item, int statusRank, int severityRank, int cveYear, int cveNumber) {}
+
+    private record Where(String sql, Map<String, Object> params) {}
+
+    List<Row> findings(ReachFindingFilter filter, ReachFindingCursor after, int limit) {
+        var where = where(filter, after);
+        var params = new HashMap<>(where.params());
+        params.put("limit", limit);
+        return jdbcClient.sql("SELECT * FROM (" + CURRENT_FINDINGS + ") c" + where.sql() + DEFAULT_ORDER + " LIMIT :limit")
+                .params(params)
+                .query(this::row)
+                .list();
+    }
+
+    long countFindings(ReachFindingFilter filter) {
+        var where = where(filter, null);   // 개수는 커서와 무관하게 필터 전체
+        return jdbcClient.sql("SELECT count(*) FROM (" + CURRENT_FINDINGS + ") c" + where.sql())
+                .params(where.params())
+                .query(Long.class)
+                .single();
+    }
+
+    private Where where(ReachFindingFilter filter, ReachFindingCursor after) {
+        var conditions = new ArrayList<String>();
+        var params = new HashMap<String, Object>();
+        in(conditions, params, "status", filter.status());
+        in(conditions, params, "severity", filter.severity());
+        in(conditions, params, "review_state", filter.reviewState());
+        in(conditions, params, "deployment", filter.deployment());
+        if (filter.cveContains() != null) {
+            // ILIKE 대신 strpos: 입력의 % _ 를 와일드카드로 해석하지 않는다
+            conditions.add("strpos(lower(vulnerability_id), lower(:cveContains)) > 0");
+            params.put("cveContains", filter.cveContains());
+        }
+        if (after != null) {
+            conditions.add("(status_rank, severity_rank, cve_year, cve_number, finding_id)"
+                    + " > (:afterStatus, :afterSeverity, :afterYear, :afterNumber, :afterId)");
+            params.put("afterStatus", after.statusRank());
+            params.put("afterSeverity", after.severityRank());
+            params.put("afterYear", after.cveYear());
+            params.put("afterNumber", after.cveNumber());
+            params.put("afterId", after.findingId());
+        }
+        return new Where(conditions.isEmpty() ? "" : " WHERE " + String.join(" AND ", conditions), params);
+    }
+
+    /** 값이 있을 때만 "열 IN (...)"을 붙인다. 빈 IN ()은 SQL 오류다 */
+    private static void in(List<String> conditions, Map<String, Object> params, String column, List<String> values) {
+        if (values.isEmpty()) return;
+        conditions.add(column + " IN (:" + column + ")");
+        params.put(column, values);
+    }
+
+    private Row row(ResultSet rs, int rowNum) throws SQLException {
+        return new Row(finding(rs, rowNum), rs.getInt("status_rank"), rs.getInt("severity_rank"),
+                rs.getInt("cve_year"), rs.getInt("cve_number"));
     }
 }
