@@ -36,9 +36,24 @@ def verify(base: str) -> None:
             raise RuntimeError("API_NOT_READY")
         time.sleep(1)
     assert request("/api/v1/secrets/summary")[0] == 401
-    assert request("/api/v1/auth/login", {"loginId": "secret-ci", "password": "isolated-ci-login"})[0] == 200
+    # Tomcat can accept requests before the bootstrap ApplicationRunner finishes.
+    # Wait for the actual account, rather than mistaking an early 401 for bad config.
+    for attempt in range(30):
+        status, _ = request("/api/v1/auth/login", {"loginId": "secret-ci", "password": "isolated-ci-login"})
+        if status == 200:
+            break
+        if status not in (401, 403) or attempt == 29:
+            raise RuntimeError("ISOLATED_LOGIN_NOT_READY")
+        request("/api/v1/auth/me")
+        time.sleep(1)
     assert request("/api/v1/auth/me")[0] == 200
-    status, summary = request("/api/v1/secrets/summary")
+    for attempt in range(30):
+        status, summary = request("/api/v1/secrets/summary")
+        if status == 200:
+            break
+        if status != 403 or attempt == 29:
+            raise RuntimeError("ISOLATED_SECRET_BOOTSTRAP_NOT_READY")
+        time.sleep(1)
     assert status == 200
     matrix = summary["caseSummary"]["severityValidityMatrix"]
     assert matrix["status"] == "AVAILABLE" and sum(c["value"] for c in matrix["cells"]) == matrix["total"]
