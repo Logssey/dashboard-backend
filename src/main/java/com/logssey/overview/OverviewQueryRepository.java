@@ -20,7 +20,7 @@ public class OverviewQueryRepository {
      * 결정: 조치 완료·위험 수용 건도 전부 포함한다.
      * 나중에 기준이 바뀌면 이 한 줄만 고친다. 예: "action_status NOT IN ('RESOLVED', 'RISK_ACCEPTED')"
      */
-    static final String COUNTED_EVENTS = "TRUE";
+    static final String COUNTED_EVENTS = "domain IS DISTINCT FROM 'SECRETS'";
 
     private final JdbcClient jdbcClient;
 
@@ -55,6 +55,16 @@ public class OverviewQueryRepository {
     public long countAssets(EnvironmentFilter environment) {
         String sql = "SELECT count(*) FROM assets WHERE TRUE" + environmentCondition(environment, "environment");
         return withEnvironment(jdbcClient.sql(sql), environment).query(Long.class).single();
+    }
+
+    public Instant latestDetection(EnvironmentFilter environment) {
+        String sql = "SELECT max(detected_at) FROM detection_events WHERE " + COUNTED_EVENTS
+                + environmentCondition(environment, "environment");
+        return withEnvironment(jdbcClient.sql(sql),environment)
+                .query((rs,n) -> {
+                    OffsetDateTime value=rs.getObject(1,OffsetDateTime.class);
+                    return value==null?null:value.toInstant();
+                }).list().getFirst();
     }
 
     public record ProviderAssetCount(String provider, long count) {
@@ -92,7 +102,7 @@ public class OverviewQueryRepository {
     }
 
     public long countUnreviewed(EnvironmentFilter environment) {
-        String sql = "SELECT count(*) FROM detection_events WHERE review_status = 'UNREVIEWED'"
+        String sql = "SELECT count(*) FROM detection_events WHERE review_status = 'UNREVIEWED' AND " + COUNTED_EVENTS
                 + environmentCondition(environment, "environment");
         return withEnvironment(jdbcClient.sql(sql), environment).query(Long.class).single();
     }
@@ -105,7 +115,7 @@ public class OverviewQueryRepository {
                        a.asset_id, a.name AS asset_name, a.provider, a.asset_type
                 FROM detection_events e
                 LEFT JOIN assets a ON a.asset_id = e.asset_id
-                WHERE e.review_status = 'UNREVIEWED'
+                WHERE e.review_status = 'UNREVIEWED' AND e.domain IS DISTINCT FROM 'SECRETS'
                 """
                 + environmentCondition(environment, "e.environment")
                 + """

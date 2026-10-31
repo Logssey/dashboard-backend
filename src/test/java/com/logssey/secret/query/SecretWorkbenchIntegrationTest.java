@@ -6,7 +6,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.*;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.testcontainers.postgresql.PostgreSQLContainer;
+import com.logssey.secret.testing.SecretTestPostgres;
 import tools.jackson.databind.json.JsonMapper;
 import com.logssey.common.error.*;
 import com.logssey.secret.access.*;
@@ -17,7 +17,7 @@ import com.logssey.secret.snapshot.SecretReadSnapshots;
 import static org.assertj.core.api.Assertions.*;
 
 class SecretWorkbenchIntegrationTest {
-    static final PostgreSQLContainer DB=new PostgreSQLContainer("postgres:18.6");static JdbcTemplate jdbc;static TransactionTemplate tx;static DataSourceTransactionManager tm;
+    static final SecretTestPostgres DB=new SecretTestPostgres();static JdbcTemplate jdbc;static TransactionTemplate tx;static DataSourceTransactionManager tm;
     SecretWorkbenchService service;long security,operations,connection,scope;
     @BeforeAll static void db(){DB.start();var ds=new DriverManagerDataSource(DB.getJdbcUrl(),DB.getUsername(),DB.getPassword());Flyway.configure().dataSource(ds).load().migrate();jdbc=new JdbcTemplate(ds);tm=new DataSourceTransactionManager(ds);tx=new TransactionTemplate(tm);tx.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);}
     @AfterAll static void stop(){DB.stop();}
@@ -36,6 +36,65 @@ class SecretWorkbenchIntegrationTest {
         var queue=tx.execute(s->service.queue("security",filters(),"ACTION_REQUIRED","OPEN,IN_PROGRESS",0,20,id));
         assertThat(queue.get("total")).isEqualTo(1);assertThat(queue.get("unit")).isEqualTo("ResponseCase");
         assertThat(metric(summary("security",filters(),null),"ongoingCases").get("value")).isEqualTo(2L);
+    }
+    @Test void everyMatrixCellMatchesItsFrozenQueueAndUnassessedNeverBecomesLow(){
+        for(int i=0;i<3;i++)caseFixture(connection,scope);
+        var first=summary("security",filters(),null);String snapshot=first.get("snapshotId").toString();
+        var cases=block(first.get("caseSummary"));var matrix=block(cases.get("severityValidityMatrix"));
+        assertThat(matrix).containsEntry("status","AVAILABLE").containsEntry("unit","ResponseCase").containsEntry("total",3);
+        assertThat(items(matrix.get("cells"))).hasSize(24);
+        assertThat(block(cases.get("severityCounts"))).containsEntry("UNASSESSED",3L).containsEntry("LOW",0L);
+        long sum=0;
+        for(var cell:items(matrix.get("cells"))) {
+            String grade=(String)cell.get("severity"),validity=(String)cell.get("validity");
+            var queue=tx.execute(s->service.queue("security",filters(),"CURRENT_CASES",null,0,20,snapshot,grade,validity));
+            assertThat(((Number)cell.get("value")).longValue()).isEqualTo(((Number)queue.get("total")).longValue());
+            sum+=((Number)cell.get("value")).longValue();
+            assertThat(block(cell.get("queueFilter"))).containsEntry("snapshotId",snapshot).containsEntry("bucket","CURRENT_CASES");
+        }
+        assertThat(sum).isEqualTo(3);
+        caseFixture(connection,scope);
+        var frozenMatrix=tx.execute(s->service.matrix("security",filters(),snapshot));
+        var freshMatrix=tx.execute(s->service.matrix("security",filters(),null));
+        assertThat(frozenMatrix).containsEntry("total",3);
+        assertThat(freshMatrix).containsEntry("total",4);
+    }
+    @Test void matrixNeverIncludesHiddenConnectionsOtherOriginsOrWrongLocationFilterMatches(){
+        caseFixture(connection,scope);
+        long hidden=connection(),hiddenScope=scope(hidden);caseFixture(hidden,hiddenScope);
+        long testConnection=connection(),testScope=scope(testConnection);grant(security,"SECURITY",testConnection);caseFixture(testConnection,testScope);
+        jdbc.update("UPDATE secret_connection_scopes SET response_origin='TEST' WHERE scope_id=?",testScope);
+        jdbc.update("UPDATE secret_response_cases SET case_origin='TEST' WHERE opening_occurrence_id IN(SELECT occurrence_id FROM secret_occurrences WHERE scope_id=?)",testScope);
+        var production=summary("security",filters(),null);
+        assertThat(block(block(production.get("caseSummary")).get("severityValidityMatrix"))).containsEntry("total",1);
+        var test=summary("security",new SecretWorkbenchService.Filters("TEST","ALL","ALL","ALL",null,null),null);
+        assertThat(block(block(test.get("caseSummary")).get("severityValidityMatrix"))).containsEntry("total",1);
+        var wrongSource=summary("security",new SecretWorkbenchService.Filters("PRODUCTION","AWS","ALL","ALL",null,null),null);
+        assertThat(block(block(wrongSource.get("caseSummary")).get("severityValidityMatrix"))).containsEntry("total",0);
+        var denied=block(block(summary("operations",filters(),null).get("caseSummary")).get("severityValidityMatrix"));
+        assertThat(denied).containsEntry("status","NOT_AUTHORIZED").containsEntry("total",null).containsEntry("staleValidationCaseCount",null);
+        assertThat(items(denied.get("cells"))).isEmpty();
+        code(ErrorCode.FORBIDDEN,()->tx.execute(s->service.queue("operations",filters(),"CURRENT_CASES",null,0,20,null,"ALL","ALL")));
+        code(ErrorCode.INVALID_INPUT,()->tx.execute(s->service.queue("security",filters(),"NEEDS_DECISION",null,0,20,null,"LOW","ALL")));
+    }
+    @Test void heldSeverityAndNotApplicableRemainDistinctFromUnassessedInDistributionAndQueue(){
+        for(int i=0;i<3;i++)caseFixture(connection,scope);
+        var ids=jdbc.queryForList("SELECT occurrence_id FROM secret_occurrences ORDER BY occurrence_id",Long.class);
+        var risks=org.mockito.Mockito.mock(com.logssey.secret.risk.SecretRiskQueryService.class);
+        org.mockito.Mockito.when(risks.occurrenceRisks(org.mockito.ArgumentMatchers.eq(security),org.mockito.ArgumentMatchers.anyList())).thenReturn(Map.of(
+            ids.get(0),Map.of("latestAutomaticAssessment",Map.of("assessmentStatus","UNASSESSED"),"unassessed",true,
+                "effectiveAssessment",Map.of("assessmentId",123L,"severity","HIGH","held",true)),
+            ids.get(1),Map.of("latestAutomaticAssessment",Map.of("assessmentStatus","NOT_APPLICABLE"))));
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"riskQueries",risks);
+        var first=summary("security",filters(),null);var cases=block(first.get("caseSummary"));
+        assertThat(block(cases.get("severityCounts"))).containsEntry("HIGH",1L).containsEntry("UNASSESSED",1L).containsEntry("LOW",0L);
+        assertThat(cases).containsEntry("notApplicableCaseCount",1L);
+        var held=tx.execute(s->service.queue("security",filters(),"CURRENT_CASES",null,0,20,first.get("snapshotId").toString(),"HIGH","UNCHECKED"));
+        assertThat(held).containsEntry("total",1);
+        assertThat(items(held.get("items")).getFirst()).containsEntry("heldOccurrenceCount",1).containsEntry("unassessedOccurrenceCount",1);
+        var excluded=tx.execute(s->service.queue("security",filters(),"CURRENT_CASES",null,0,20,first.get("snapshotId").toString(),"NOT_APPLICABLE","UNCHECKED"));
+        assertThat(excluded).containsEntry("total",1);
+        assertThat(items(excluded.get("items")).getFirst()).containsEntry("severity",null).containsEntry("assessmentStatus","NOT_APPLICABLE");
     }
     @Test void acceptedRiskStaysOutsideActionCardsAndItsDeadlineExpiresTheFrozenCounts(){
         caseFixture(connection,scope);long id=jdbc.queryForObject("SELECT max(case_id) FROM secret_response_cases",Long.class);
