@@ -66,12 +66,15 @@ done
 docker run -d --name "$task_api" --network "$task_network" --read-only \
   --cap-drop ALL --security-opt no-new-privileges \
   --tmpfs /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700 \
-  -p 127.0.0.1::8080 \
   -v "$task_dir/api.properties:/run/config/application.properties:ro" \
   -v "$task_dir/api-secrets:/run/secrets:ro" logssey-secret-api:ci >/dev/null
-task_port="$(docker port "$task_api" 8080/tcp | sed 's/.*://')"
-test -n "$task_port"
-python3 deploy/verify-http.py "http://127.0.0.1:$task_port"
+# The internal bridge intentionally publishes no host port. Share only the API's
+# network namespace with a credential-free HTTP test process.
+docker run --rm --network "container:$task_api" --read-only --cap-drop ALL \
+  --security-opt no-new-privileges \
+  -v "$PWD/deploy/verify-http.py:/verify-http.py:ro" \
+  python:3.13-alpine@sha256:7984cf56ceaddebe4fefeb75d64000b9f45d8b77b11a09b24524da6cdc3af0c8 \
+  python -B /verify-http.py http://127.0.0.1:8080
 docker run --rm --network none --read-only --entrypoint /usr/local/bin/gitleaks \
   logssey-secret-worker:ci version | grep -Fx '8.30.1'
 docker run -d --name "$task_worker" --network "$task_network" --read-only \
