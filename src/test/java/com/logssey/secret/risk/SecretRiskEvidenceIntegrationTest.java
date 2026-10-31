@@ -13,7 +13,7 @@ import org.springframework.jdbc.datasource.*;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 class SecretRiskEvidenceIntegrationTest {
-  static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:18.6");
+  static final PostgreSQLContainer POSTGRES = new com.logssey.secret.testing.SecretTestPostgres();
   static JdbcTemplate jdbc;
   static DataSourceTransactionManager manager;
   SecretRiskEvidenceService service;

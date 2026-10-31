@@ -1,13 +1,13 @@
 # Secret 작업 예약 워커
 
-현재 구현은 작업 예약, DB 기반 실행 관리와 승인된 GitHub 파일의 수집·탐지·정규화 저장, AWS 키 검증 결과 기록을 제공한다. GitHub 처리기와 실행기, 외부 AWS 검증은 기본 비활성화다.
+작업 예약, DB 기반 실행 관리, 승인된 GitHub 파일·AWS 메타데이터/정확한 값의 수집·탐지·정규화, 지원 유형의 유효성 확인과 조치 후 위치 재검사를 제공한다. 원천별 수집과 외부 검증은 각각 명시적인 활성화·승인 설정이 필요하다.
 
 Java 21 / Spring Boot를 사용하는 별도 프로세스다. 대시보드 API에는 워커 의존성이나 스케줄러를 넣지 않았다. 기준은 Secret ADR-S002, ADR-S008과 `database-schema.md`다.
 
 ## 동작
 
 - 기본 30초마다 DB의 현재 시각으로 도래한 연결을 확인한다. 기본 검사 주기는 6시간이다.
-- 현재는 `ACTIVE` GitHub 연결에 예정 시각과 활성 승인 범위가 있어야 예약한다. 아직 실행기가 없는 AWS 등 다른 공급자와 `PAUSED`, `ERROR`, 미승인 범위는 건너뛴다.
+- `ACTIVE` GitHub·AWS 연결에 예정 시각과 지원되는 활성 승인 범위가 있어야 예약한다. 미지원 공급자와 `PAUSED`, `ERROR`, 미승인 범위는 건너뛴다.
 - 연결 행을 `FOR UPDATE SKIP LOCKED`로 잠그고, 작업·검사 실행·승인 범위 스냅샷·다음 예정 시각을 한 트랜잭션에서 저장한다.
 - 같은 연결의 `FULL_SCAN` 작업이 `PENDING` 또는 `LEASED`이면 새 작업을 만들지 않는다. 여러 프로세스와 반복 호출의 중복도 DB 고유 제약으로 막는다.
 - 다음 시각은 **실제 정기 예약 시각 + 6시간**이다. 수동 요청·실패·마지막 성공이 정기 시각을 바꾸지 않는다.
@@ -23,7 +23,7 @@ Java 21 / Spring Boot를 사용하는 별도 프로세스다. 대시보드 API�
 - 일시 실패와 만료된 리스는 지수 백오프 후 같은 실행 ID로 재시도한다. 최대 시도 횟수에 도달하면 작업과 실행을 `FAILED`로 종료한다. 지난 성공 단계와 범위는 보존하고 진행 중·부분 실패·실패 단계는 다시 대기시킨다.
 - 실패 코드는 `SecretJobFailureCode`에 정의된 값만 저장한다. 공급자 응답 본문, 예외 메시지와 원문은 DB 또는 로그에 기록하지 않는다. 처리기는 결과 저장의 멱등성도 보장해야 한다.
 
-GitHub `SecretJobProcessor`는 `GITHUB` 연결의 승인된 현재 커밋만 처리한다. API 프로세스는 실행 서비스를 호출하지 않는다. 실행 프로세스에서 `SECRET_GITHUB_PIPELINE_ENABLED=true`와 `SECRET_JOB_EXECUTOR_ENABLED=true`를 함께 설정해야 수집을 시작한다. AWS 등 아직 수집기가 없는 연결의 작업은 이 처리기가 가져가지 않는다.
+GitHub `SecretJobProcessor`는 `GITHUB` 연결의 승인된 현재 커밋만 처리한다. API 프로세스는 실행 서비스를 호출하지 않는다. 실행 프로세스에서 `SECRET_GITHUB_PIPELINE_ENABLED=true`와 `SECRET_JOB_EXECUTOR_ENABLED=true`를 함께 설정해야 수집을 시작한다. AWS 연결은 별도의 AWS 처리기가 지원하는 메타데이터/정확한 값 범위만 처리한다.
 
 ## GitHub 수집·탐지 실행
 
@@ -46,7 +46,7 @@ java -jar .\secret-worker\build\libs\secret-worker-0.0.1-SNAPSHOT.jar --logssey.
 
 `V3__create_secret_scheduler_tables.sql`은 연결·작업·실행을, V4는 탐지 키·발견 위치·도구 실행을, V5는 안전한 검증 시도 이력을 저장한다. API와 워커는 같은 Flyway 마이그레이션을 패키징한다. 공유된 V1·V2는 변경하지 않았다.
 
-현재 작업 종류는 `FULL_SCAN`뿐이다. API는 `POST /api/v1/secrets/runs`로 수동 스캔 작업을 등록하고 `GET /api/v1/secrets/runs/{runId}`로 실행 상태를 조회한다. 키 목록 조회와 별도 `REVALIDATE` 작업은 아직 구현되지 않았다.
+작업 종류는 `FULL_SCAN`, `REVALIDATE`, DB 전용 `ASSESS`다. 수동 전체 검사는 `POST /api/v1/secrets/runs`로 등록하며 실행 상태는 `GET /api/v1/secrets/runs/{runId}`로 조회한다. REVALIDATE의 유효성 확인과 조치 후 위치 재검사는 서로 다른 목적이다. [위치 재검사 지원·해결 경계](../docs/secret-location-recheck.md), [DB 통합 테스트 실행](../docs/secret-integration-tests.md)을 따른다.
 
 ## 실행
 

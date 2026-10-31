@@ -50,3 +50,5 @@ dependencies {
 tasks.named('test') {
 	useJUnitPlatform()
 }
+
+sourceSets.test.java.srcDir(rootProject.file('src/testFixtures/java'))

@@ -17,7 +17,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** Exercises the V10 outcome transition against the actual PostgreSQL schema and job fence. */
 class SecretRevalidationResultTest {
-    private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:18.6");
+    private static final PostgreSQLContainer POSTGRES = new com.logssey.secret.testing.SecretTestPostgres();
     private static JdbcTemplate jdbc;
     private static DataSourceTransactionManager transactions;
 

@@ -81,7 +81,7 @@ public class SecretRevalidationService {
                 && e.runScopeVersion() == e.currentScopeVersion()
                 && "ACTIVE".equals(e.connectionStatus()) && e.scopeEnabled()
                 && e.caseOrigin().equals(e.responseOrigin())
-                && SecretGithubScopePolicy.approved(e.contentType(), e.historyLimit(),
+                && SecretLocationScopePolicy.approved(e.contentType(), e.historyLimit(),
                         e.approvedRef());
     }
 
