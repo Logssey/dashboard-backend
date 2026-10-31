@@ -141,7 +141,7 @@ INSERT INTO runtime_events
     (raw_event_id, runtime_asset_id, source, source_event_id, event_type, rule_key, rule_version,
      source_priority, occurred_at, received_at, process_id, parent_process_id, process_executable,
      process_arguments, parent_executable, user_id, normalization_status, missing_fields,
-     asset_resolution_status)
+     asset_resolution_status, target_type, target_name, operation)
 VALUES
     ((SELECT raw_event_id FROM runtime_raw_events WHERE source_event_id = 'sample-falco-run-001'),
      (SELECT runtime_asset_id FROM runtime_assets
@@ -149,12 +149,12 @@ VALUES
      'FALCO', 'sample-falco-run-001', 'PROCESS_EXEC', 'RUN-001', '0.1.0', 'WARNING',
      now() - interval '8 minutes', now() - interval '8 minutes', 121, 87, '/usr/bin/bash',
      '["bash", "-c", "whoami"]'::jsonb, '/usr/bin/containerd-shim-runc-v2', '1000',
-     'COMPLETE', '[]'::jsonb, 'RESOLVED');
+     'COMPLETE', '[]'::jsonb, 'RESOLVED', 'PROCESS', '/usr/bin/bash', 'EXEC');
 
 INSERT INTO runtime_findings
     (fingerprint, rule_key, rule_title, rule_version, runtime_asset_id, asset_id, source_priority,
      evaluation_status, first_seen_at, last_seen_at, occurrence_count, process_executable,
-     parent_executable, user_id)
+     parent_executable, user_id, target_type, target_name, operation)
 VALUES
     (repeat('a', 64), 'RUN-001', '컨테이너 셸 실행', '0.1.0',
      (SELECT runtime_asset_id FROM runtime_assets
@@ -162,7 +162,7 @@ VALUES
      (SELECT asset_id FROM assets
       WHERE provider = 'KUBERNETES' AND name = 'reused-api' AND environment = 'PROD'),
      'WARNING', 'PENDING_CONTEXT', now() - interval '38 minutes', now() - interval '8 minutes', 3,
-     '/usr/bin/bash', '/usr/bin/containerd-shim-runc-v2', '1000');
+     '/usr/bin/bash', '/usr/bin/containerd-shim-runc-v2', '1000', 'PROCESS', '/usr/bin/bash', 'EXEC');
 
 INSERT INTO runtime_finding_events (finding_id, runtime_event_id)
 VALUES
