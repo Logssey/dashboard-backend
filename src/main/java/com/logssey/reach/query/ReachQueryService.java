@@ -2,6 +2,7 @@ package com.logssey.reach.query;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
+import com.logssey.reach.ReachCodes;
 import com.logssey.reach.query.dto.ReachFindingDetailResponse;
 import com.logssey.reach.query.dto.ReachFindingPageResponse;
 import com.logssey.reach.query.dto.ReachSummaryResponse;
