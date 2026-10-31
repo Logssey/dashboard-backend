@@ -8,6 +8,11 @@ task_db="$task_prefix-db"
 task_api="$task_prefix-api"
 task_worker="$task_prefix-worker"
 cleanup() {
+  task_exit=$?
+  if [ "$task_exit" != 0 ]; then
+    docker logs "$task_api" 2>&1 | tail -40 || true
+    docker logs "$task_worker" 2>&1 | tail -40 || true
+  fi
   docker rm -f "$task_api" "$task_worker" "$task_db" >/dev/null 2>&1 || true
   docker network rm "$task_network" >/dev/null 2>&1 || true
   # CI runner temporary files contain synthetic values only and expire with the runner.
@@ -65,6 +70,7 @@ docker run -d --name "$task_api" --network "$task_network" --read-only \
   -v "$task_dir/api.properties:/run/config/application.properties:ro" \
   -v "$task_dir/api-secrets:/run/secrets:ro" logssey-secret-api:ci >/dev/null
 task_port="$(docker port "$task_api" 8080/tcp | sed 's/.*://')"
+test -n "$task_port"
 python3 deploy/verify-http.py "http://127.0.0.1:$task_port"
 docker run --rm --network none --read-only --entrypoint /usr/local/bin/gitleaks \
   logssey-secret-worker:ci version | grep -Fx '8.30.1'
