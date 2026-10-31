@@ -1,5 +1,19 @@
 package com.logssey.secretworker.aws;
 
+import com.logssey.secretworker.ClaimedSecretJob;
+import com.logssey.secretworker.SecretJobExecutionService;
+import com.logssey.secretworker.SecretJobFailure;
+import com.logssey.secretworker.SecretJobFailureCode;
+import com.logssey.secretworker.SecretJobProcessor;
+import com.logssey.secretworker.SecretJobProperties;
+import com.logssey.secretworker.aws.content.AwsContentCollector;
+import com.logssey.secretworker.aws.content.AwsContentPipeline;
+import com.logssey.secretworker.aws.content.AwsContentScope;
+import com.logssey.secretworker.aws.metadata.AwsMetadataApprovedScope;
+import com.logssey.secretworker.aws.metadata.AwsMetadataCollector;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -7,20 +21,6 @@ import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-
-import org.springframework.jdbc.core.JdbcTemplate;
-
-import com.logssey.secretworker.ClaimedSecretJob;
-import com.logssey.secretworker.SecretJobExecutionService;
-import com.logssey.secretworker.SecretJobFailure;
-import com.logssey.secretworker.SecretJobFailureCode;
-import com.logssey.secretworker.SecretJobProcessor;
-import com.logssey.secretworker.SecretJobProperties;
-import com.logssey.secretworker.aws.content.AwsContentPipeline;
-import com.logssey.secretworker.aws.content.AwsContentCollector;
-import com.logssey.secretworker.aws.content.AwsContentScope;
-import com.logssey.secretworker.aws.metadata.AwsMetadataApprovedScope;
-import com.logssey.secretworker.aws.metadata.AwsMetadataCollector;
 
 /** Runs approved AWS metadata scopes and separately opted-in exact value scopes. */
 public final class AwsSecretJobProcessor implements SecretJobProcessor {
@@ -61,6 +61,20 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
 
     @Override
     public void process(ClaimedSecretJob job, SecretJobExecutionService execution) {
+        if (content != null && content.isValidationJob(job)) {
+            if (!Boolean.TRUE.equals(
+                    jdbc.queryForObject(
+                            "SELECT auth_ref=? AND status='ACTIVE' FROM secret_connections WHERE"
+                                + " connection_id=?",
+                            Boolean.class,
+                            expectedAuthRef,
+                            job.connectionId())))
+                throw new SecretJobFailure(SecretJobFailureCode.SOURCE_ACCESS_DENIED, false);
+            AccountCheck account = new AccountCheck();
+            content.processValidation(
+                    job, execution, approved -> account.check(approved.accountId()) == null);
+            return;
+        }
         var heartbeat = Executors.newSingleThreadScheduledExecutor(
                 Thread.ofVirtual().name("aws-job-lease-heartbeat").factory());
         var leaseLost = new AtomicBoolean();
@@ -85,7 +99,7 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
         List<Scope> scopes = jdbc.query("""
                 SELECT rs.run_scope_id, s.scope_id, s.content_type, s.approved_ref,
                        s.history_limit, s.enabled, c.scope_version,
-                       r.scope_version AS run_scope_version, c.status, c.auth_ref
+                       r.scope_version AS run_scope_version, c.status, c.auth_ref, s.revision, rs.scope_revision AS captured_revision
                 FROM secret_scan_runs r
                 JOIN secret_connections c ON c.connection_id = r.connection_id
                 JOIN secret_run_scopes rs ON rs.run_id = r.run_id
@@ -97,12 +111,12 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
                 rs.getString("content_type"), rs.getString("approved_ref"),
                 rs.getString("history_limit"), rs.getBoolean("enabled"),
                 rs.getLong("scope_version"), rs.getLong("run_scope_version"),
-                rs.getString("status"), rs.getString("auth_ref")),
+                rs.getString("status"), rs.getString("auth_ref"), rs.getLong("revision"), rs.getObject("captured_revision",Long.class)),
                 job.runId(), job.jobId(), job.connectionId());
         if (scopes.isEmpty() || scopes.stream().anyMatch(scope -> !scope.enabled()
                 || !"ACTIVE".equals(scope.connectionStatus())
                 || !expectedAuthRef.equals(scope.authRef())
-                || scope.connectionVersion() != scope.runVersion())) {
+                || scope.connectionVersion() != scope.runVersion() || !java.util.Objects.equals(scope.capturedRevision(),scope.revision()))) {
             throw new SecretJobFailure(SecretJobFailureCode.SOURCE_ACCESS_DENIED, false);
         }
         withLease(job, execution, () -> jdbc.update("""
@@ -119,7 +133,11 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
         AwsContentPipeline.RunValidation validation = new AwsContentPipeline.RunValidation();
         for (Scope scope : scopes) {
             if (leaseLost.get()) throw new SecretJobFailure(SecretJobFailureCode.LEASE_EXPIRED, true);
+            int failuresBefore = validation.failureCount();
             ScopeResult result = processScope(job, scope, execution, account, contentProgress, validation);
+            if (!execution.recordScopeEvidence(job.jobId(), job.leaseToken(), scope.runScopeId(), validation.failureCount() > failuresBefore)) {
+                throw new SecretJobFailure(SecretJobFailureCode.LEASE_EXPIRED, true);
+            }
             if (result.usable()) succeeded++;
             if (!result.complete()) allSucceeded = false;
             if (firstGap == null) firstGap = result.gap();
@@ -139,6 +157,8 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
         if (succeeded == 0) {
             throw new SecretJobFailure(retryCode(firstGap), retryable(firstGap));
         }
+        if (content != null && content.hasRetryableValidation(job))
+            throw new SecretJobFailure(SecretJobFailureCode.VALIDATOR_TEMPORARY, true);
     }
 
     private ScopeResult processScope(ClaimedSecretJob job, Scope scope,
@@ -363,6 +383,6 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
     private record Scope(long runScopeId, long scopeId, String contentType,
                          String approvedRef, String historyLimit, boolean enabled,
                          long connectionVersion, long runVersion,
-                         String connectionStatus, String authRef) { }
+                         String connectionStatus, String authRef, long revision, Long capturedRevision) { }
     private record ScopeResult(boolean usable, boolean complete, String gap) { }
 }

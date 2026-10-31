@@ -1,14 +1,14 @@
 package com.logssey.secretworker.aws.content;
 
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-
 import com.logssey.secretworker.detection.SecretFindingNormalizer;
 import com.logssey.secretworker.detection.SecretFindingRepository;
 import com.logssey.secretworker.detector.SecretContentDetector;
 import com.logssey.secretworker.validation.AwsValidationService;
 import com.logssey.secretworker.validation.SecretValidationAttemptRepository;
+
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 
 import software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider;
 
@@ -23,10 +23,15 @@ class AwsContentConfiguration {
     }
 
     @Bean
-    AwsContentPipeline awsContentPipeline(AwsContentCollector collector,
-            SecretContentDetector detector, SecretFindingNormalizer normalizer,
-            SecretFindingRepository findings, AwsValidationService validator,
-            SecretValidationAttemptRepository attempts) {
-        return new AwsContentPipeline(collector, detector, normalizer, findings, validator, attempts);
+    AwsContentPipeline awsContentPipeline(
+            AwsContentCollector collector,
+            SecretContentDetector detector,
+            SecretFindingNormalizer normalizer,
+            SecretFindingRepository findings,
+            AwsValidationService validator,
+            SecretValidationAttemptRepository attempts,
+            com.logssey.secretworker.validation.GitHubPatValidator githubValidator) {
+        return new AwsContentPipeline(
+                collector, detector, normalizer, findings, validator, attempts, githubValidator);
     }
 }

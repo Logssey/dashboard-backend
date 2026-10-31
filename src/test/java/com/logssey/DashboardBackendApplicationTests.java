@@ -9,6 +9,8 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /** Context smoke test always uses a disposable database, never the developer's .env DB. */
 @SpringBootTest(properties = {
+        "spring.config.import=",
+        "logssey.secret.bootstrap-operations-login-id=",
         "logssey.admin.login-id=context-test-admin",
         "logssey.admin.password=context-test-password",
         "logssey.admin.display-name=Context Test Admin",

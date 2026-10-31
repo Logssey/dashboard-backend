@@ -203,6 +203,14 @@ class SecretCaseServiceTest {
     }
 
     @Test
+    void operationsRoleCannotReadCredentialCasesOrLocations() {
+        long caseId = caseFixture();
+        grant(securityUser, "OPERATIONS", null);
+        assertThat(service.list(0, 20, "PRODUCTION", "security").items()).isEmpty();
+        assertCode(ErrorCode.FORBIDDEN, () -> service.detail(caseId, "security"));
+    }
+
+    @Test
     void rejectsUnsafeReasonAndTeamWhileSupportingTeamOnlyAndUnassign() {
         long caseId = caseFixture();
         grant(securityUser, "SECURITY", null);
@@ -318,7 +326,7 @@ class SecretCaseServiceTest {
         grant(securityUser, "SECURITY", null);
         grant(remediatorUser, "REMEDIATOR", null);
         long itemId = jdbc.queryForObject(
-                "SELECT item_id FROM secret_checklist_items WHERE case_id = ? ORDER BY item_id LIMIT 1",
+                "SELECT item_id FROM secret_checklist_items WHERE case_id = ? AND occurrence_id IS NULL ORDER BY item_id LIMIT 1",
                 Long.class, caseId);
         assertCode(ErrorCode.FORBIDDEN, () -> service.checklist(caseId, itemId,
                 new SecretChecklistRequest(true, "S2_V1", "TICKET:SEC-123", 0L),

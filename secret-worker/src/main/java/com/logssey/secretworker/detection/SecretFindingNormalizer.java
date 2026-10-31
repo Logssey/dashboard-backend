@@ -1,5 +1,8 @@
 package com.logssey.secretworker.detection;
 
+import com.logssey.secretworker.detector.GitleaksFinding;
+import com.logssey.secretworker.validation.AwsKeyMaterial;
+
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
@@ -19,16 +22,14 @@ import java.util.regex.Pattern;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 
-import com.logssey.secretworker.detector.GitleaksFinding;
-import com.logssey.secretworker.validation.AwsKeyMaterial;
-
 /**
  * Interprets detector positions against the in-memory source object. Neither raw
  * components nor the source text leave this class in its result or exception text.
  */
 public final class SecretFindingNormalizer {
-    private static final Pattern ASSIGNMENT = Pattern.compile(
-            "(?:^|[^A-Za-z0-9_])[\\\"']?(?<name>[A-Za-z][A-Za-z0-9_]*)[\\\"']?\\s*[:=]\\s*[\\\"']?(?<value>[A-Za-z0-9_+/=.\\-]+)");
+    private static final Pattern ASSIGNMENT =
+            Pattern.compile(
+                    "(?:^|[^A-Za-z0-9_])[\\\"']?(?<name>[A-Za-z][A-Za-z0-9_]*)[\\\"']?\\s*[:=]\\s*[\\\"']?(?<value>[A-Za-z0-9_+/=.\\-]+)");
     private static final Pattern AWS_ID = Pattern.compile("(?:AKIA|ASIA)[A-Z0-9]{16}");
     private static final Pattern AWS_SECRET = Pattern.compile("[A-Za-z0-9/+=]{40}");
     private static final Pattern GITHUB_CLASSIC = Pattern.compile("ghp_[A-Za-z0-9_]{36}");
@@ -119,6 +120,7 @@ public final class SecretFindingNormalizer {
 
         List<Credential> result = new ArrayList<>();
         List<AwsCandidate> awsCandidates = new ArrayList<>();
+        List<GitHubCandidate> githubCandidates = new ArrayList<>();
         Set<Component> pairedSecrets = new HashSet<>();
         for (Component id : ids) {
             List<Component> eligibleSecrets = secrets.stream()
@@ -145,16 +147,32 @@ public final class SecretFindingNormalizer {
             List<Component> components = new ArrayList<>(List.of(id));
             if (secret != null) components.add(secret);
             if (session != null) components.add(session);
-            Credential normalized = credential(connectionId, sourceObjectRef, "AWS", type, complete, location,
-                    mask("AWS", id.value(), 4), components);
+            Credential normalized =
+                    credential(
+                            connectionId,
+                            sourceObjectRef,
+                            "AWS",
+                            type,
+                            complete,
+                            location,
+                            mask("AWS", id.value(), 4),
+                            components);
             result.add(normalized);
             awsCandidates.add(new AwsCandidate(normalized, new AwsKeyMaterial(id.value(),
                     secret == null ? null : secret.value(), session == null ? null : session.value())));
         }
         for (Component secret : secrets) {
             if (!pairedSecrets.contains(secret)) {
-                Credential normalized = credential(connectionId, sourceObjectRef, "AWS", "AWS_ACCESS_KEY_PAIR", false,
-                        location(secret.line(), secret.line()), "AWS secret ••••", List.of(secret));
+                Credential normalized =
+                        credential(
+                                connectionId,
+                                sourceObjectRef,
+                                "AWS",
+                                "AWS_ACCESS_KEY_PAIR",
+                                false,
+                                location(secret.line(), secret.line()),
+                                "AWS secret ••••",
+                                List.of(secret));
                 result.add(normalized);
                 awsCandidates.add(new AwsCandidate(normalized, new AwsKeyMaterial(null, secret.value(), null)));
             }
@@ -167,11 +185,27 @@ public final class SecretFindingNormalizer {
                 case "NOTION_TOKEN" -> "NOTION_CONNECTION_TOKEN";
                 default -> throw new IllegalStateException("UNKNOWN_TOKEN_ROLE");
             };
-            result.add(credential(connectionId, sourceObjectRef, issuer, type, true,
-                    location(token.line(), token.line()), mask(issuer, token.value(), 4), List.of(token)));
+            Credential normalized =
+                    credential(
+                            connectionId,
+                            sourceObjectRef,
+                            issuer,
+                            type,
+                            true,
+                            location(token.line(), token.line()),
+                            mask(issuer, token.value(), 4),
+                            List.of(token));
+            result.add(normalized);
+            if ("GITHUB".equals(issuer))
+                githubCandidates.add(new GitHubCandidate(normalized, token.value()));
         }
-        return new Inspection(connectionId, sourceObjectRef, List.copyOf(findings),
-                List.copyOf(result), List.copyOf(awsCandidates));
+        return new Inspection(
+                connectionId,
+                sourceObjectRef,
+                List.copyOf(findings),
+                List.copyOf(result),
+                List.copyOf(awsCandidates),
+                List.copyOf(githubCandidates));
     }
 
     private Credential credential(long connectionId, String source, String issuer, String type,
@@ -185,8 +219,20 @@ public final class SecretFindingNormalizer {
         byte[] digest = hmac(identity);
         List<GitleaksFinding> evidence = components.stream().map(Component::finding)
                 .filter(Objects::nonNull).distinct().toList();
+        List<byte[]> promotionLocators=new ArrayList<>();
+        // Recompute the exact protected identity of prior partial components in this same object.
+        // Neither a common masked suffix nor a nearby line establishes candidate identity.
+        if(complete&&"AWS".equals(issuer)&&components.size()<=3) {
+            for(int subset=1;subset<(1<<components.size())-1;subset++) {
+                List<Component> partial=new ArrayList<>();for(int i=0;i<components.size();i++)if((subset&(1<<i))!=0)partial.add(components.get(i));
+                String partialLocation=location(partial.stream().mapToInt(Component::line).min().orElseThrow(),partial.stream().mapToInt(Component::line).max().orElseThrow());
+                List<String> fields=new ArrayList<>(List.of(issuer,type,Long.toString(connectionId),source,partialLocation));
+                partial.stream().sorted(java.util.Comparator.comparing(Component::role)).forEach(c->{fields.add(c.role());fields.add(c.value());});
+                promotionLocators.add(hmac(fields));
+            }
+        }
         return new Credential(issuer, type, complete ? "CONFIRMED" : "CANDIDATE",
-                complete ? digest : null, complete ? null : digest, keyVersion, label, location, evidence);
+                complete ? digest : null, complete ? null : digest, keyVersion, label, location, evidence,promotionLocators);
     }
 
     private byte[] hmac(List<String> fields) {
@@ -214,7 +260,9 @@ public final class SecretFindingNormalizer {
                 if (roleForName(assignment.name()).equals("SESSION_TOKEN")
                         && qualifier(assignment.name(), "SESSION_TOKEN").equals(qualifier)
                         && assignment.value().length() >= 20) {
-                    matches.add(new Component("SESSION_TOKEN", assignment.value(), qualifier, line, null));
+                    matches.add(
+                            new Component(
+                                    "SESSION_TOKEN", assignment.value(), qualifier, line, null));
                 }
             }
         }
@@ -224,8 +272,13 @@ public final class SecretFindingNormalizer {
     private static List<Assignment> assignments(String line) {
         List<Assignment> result = new ArrayList<>();
         Matcher matcher = ASSIGNMENT.matcher(line);
-        while (matcher.find()) result.add(new Assignment(matcher.group("name"), matcher.group("value"),
-                matcher.start("name"), matcher.end("value")));
+        while (matcher.find())
+            result.add(
+                    new Assignment(
+                            matcher.group("name"),
+                            matcher.group("value"),
+                            matcher.start("name"),
+                            matcher.end("value")));
         return result;
     }
 
@@ -257,13 +310,16 @@ public final class SecretFindingNormalizer {
     private static String roleForName(String name) {
         String compact = name.toUpperCase(java.util.Locale.ROOT).replaceAll("[^A-Z0-9]", "");
         if (compact.contains("AWS") && compact.endsWith("ACCESSKEYID")) return "ACCESS_KEY_ID";
-        if (compact.contains("AWS") && compact.endsWith("SECRETACCESSKEY")) return "SECRET_ACCESS_KEY";
+        if (compact.contains("AWS") && compact.endsWith("SECRETACCESSKEY"))
+            return "SECRET_ACCESS_KEY";
         if (compact.contains("AWS") && compact.endsWith("SESSIONTOKEN")) return "SESSION_TOKEN";
         return "OTHER";
     }
 
     private static String qualifier(String name, String role) {
-        if (!(role.equals("ACCESS_KEY_ID") || role.equals("SECRET_ACCESS_KEY") || role.equals("SESSION_TOKEN"))) return "";
+        if (!(role.equals("ACCESS_KEY_ID")
+                || role.equals("SECRET_ACCESS_KEY")
+                || role.equals("SESSION_TOKEN"))) return "";
         String compact = name.toUpperCase(java.util.Locale.ROOT).replaceAll("[^A-Z0-9]", "");
         String suffix = switch (role) {
             case "ACCESS_KEY_ID" -> "ACCESSKEYID";
@@ -278,7 +334,11 @@ public final class SecretFindingNormalizer {
     }
 
     private static String mask(String issuer, String value, int prefixLength) {
-        return issuer + " " + value.substring(0, prefixLength) + "••••" + value.substring(value.length() - 4);
+        return issuer
+                + " "
+                + value.substring(0, prefixLength)
+                + "••••"
+                + value.substring(value.length() - 4);
     }
 
     private record Assignment(String name, String value, int start, int end) { }
@@ -286,30 +346,77 @@ public final class SecretFindingNormalizer {
 
     public record Credential(String issuer, String credentialType, String componentState,
                              byte[] fingerprint, byte[] candidateLocator, String fingerprintKeyVersion,
-                             String maskedLabel, String locationKey, List<GitleaksFinding> findings) {
+                             String maskedLabel, String locationKey, List<GitleaksFinding> findings,List<byte[]> promotionLocators) {
         public Credential {
             fingerprint = fingerprint == null ? null : fingerprint.clone();
             candidateLocator = candidateLocator == null ? null : candidateLocator.clone();
             findings = List.copyOf(findings);
+            promotionLocators=promotionLocators.stream().map(byte[]::clone).toList();
         }
         @Override public byte[] fingerprint() { return fingerprint == null ? null : fingerprint.clone(); }
         @Override public byte[] candidateLocator() { return candidateLocator == null ? null : candidateLocator.clone(); }
+        @Override public List<byte[]> promotionLocators(){return promotionLocators.stream().map(byte[]::clone).toList();}
         @Override public String toString() {
             return "Credential[issuer=" + issuer + ", credentialType=" + credentialType
                     + ", componentState=" + componentState + ", locationKey=" + locationKey + "]";
         }
     }
 
-    public record Inspection(long connectionId, String sourceObjectRef, List<GitleaksFinding> detectorFindings,
-                             List<Credential> credentials, List<AwsCandidate> awsCandidates) {
+    public record Inspection(
+            long connectionId,
+            String sourceObjectRef,
+            List<GitleaksFinding> detectorFindings,
+            List<Credential> credentials,
+            List<AwsCandidate> awsCandidates,
+            List<GitHubCandidate> githubCandidates) {
+        public Inspection(
+                long connectionId,
+                String sourceObjectRef,
+                List<GitleaksFinding> detectorFindings,
+                List<Credential> credentials,
+                List<AwsCandidate> awsCandidates) {
+            this(
+                    connectionId,
+                    sourceObjectRef,
+                    detectorFindings,
+                    credentials,
+                    awsCandidates,
+                    List.of());
+        }
+
         public Inspection {
             detectorFindings = List.copyOf(detectorFindings);
             credentials = List.copyOf(credentials);
             awsCandidates = List.copyOf(awsCandidates);
+            githubCandidates = List.copyOf(githubCandidates);
         }
         @Override public String toString() {
             return "Inspection[credentialCount=" + credentials.size()
                     + ", awsCandidateCount=" + awsCandidates.size() + "]";
+        }
+    }
+
+    /** In-memory only; safe summary is the sole permitted string representation. */
+    public static final class GitHubCandidate {
+        private final Credential credential;
+        private final String token;
+
+        private GitHubCandidate(Credential credential, String token) {
+            this.credential = credential;
+            this.token = token;
+        }
+
+        public Credential credential() {
+            return credential;
+        }
+
+        public String token() {
+            return token;
+        }
+
+        @Override
+        public String toString() {
+            return "GitHubCandidate[credentialType=" + credential.credentialType() + "]";
         }
     }
 

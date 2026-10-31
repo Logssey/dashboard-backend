@@ -1,5 +1,7 @@
 package com.logssey.secretworker.github;
 
+import tools.jackson.databind.JsonNode;
+
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
@@ -10,11 +12,13 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.regex.Pattern;
 
-import tools.jackson.databind.JsonNode;
-
-/** Reads approved source content at a pinned commit and hands each text blob to a synchronous consumer. */
+/**
+ * Reads approved source content at a pinned commit and hands each text blob to a synchronous
+ * consumer.
+ */
 public final class GitHubCollector {
     private static final Pattern SHA = Pattern.compile("[0-9a-fA-F]{40,64}");
     private final GitHubRestClient api;
@@ -25,7 +29,10 @@ public final class GitHubCollector {
         this.tokens = Objects.requireNonNull(tokens);
     }
 
-    /** The sink must consume bytes before returning. The collector zeroes its buffer immediately afterwards. */
+    /**
+     * The sink must consume bytes before returning. The collector zeroes its buffer immediately
+     * afterwards.
+     */
     @FunctionalInterface
     public interface ContentSink {
         void accept(Source source, byte[] utf8Content);
@@ -45,13 +52,72 @@ public final class GitHubCollector {
 
     public record Gap(String path, GapCode code) { }
 
-    /** Contains metadata only. In particular it never contains a blob, token, or provider error body. */
+    /**
+     * Contains metadata only. In particular it never contains a blob, token, or provider error
+     * body.
+     */
     public record Result(Status status, String commitSha, int objectCount, long byteCount,
                          List<Source> objects, List<Gap> gaps) {
         @Override public String toString() {
             return "GitHubCollectionResult[status=" + status + ", objectCount=" + objectCount
                     + ", byteCount=" + byteCount + ", gapCount=" + gaps.size() + "]";
         }
+    }
+
+    public record RepositoryAccess(
+            boolean publicRepository,
+            boolean metadataComplete,
+            java.time.OffsetDateTime observedAt,
+            String reasonCode) {}
+
+    /**
+     * Collection credentials fetch repository metadata; they never authenticate a discovered PAT.
+     */
+    public RepositoryAccess repositoryAccess(GitHubApprovedScope scope) {
+        try {
+            var metadata =
+                    api.get(
+                            "repos/"
+                                    + GitHubRestClient.encodeSegment(scope.owner())
+                                    + "/"
+                                    + GitHubRestClient.encodeSegment(scope.repository()),
+                            tokens.tokenFor(scope),
+                            65_536);
+            return classifyRepositoryAccess(
+                    metadata, java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC));
+        } catch (RuntimeException ignored) {
+            return new RepositoryAccess(
+                    false,
+                    false,
+                    java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC),
+                    "METADATA_UNAVAILABLE");
+        }
+    }
+
+    static RepositoryAccess classifyRepositoryAccess(
+            JsonNode metadata, java.time.OffsetDateTime at) {
+        if (metadata == null || !metadata.isObject())
+            return new RepositoryAccess(false, false, at, "METADATA_INCOMPLETE");
+        var privateNode = metadata.path("private");
+        var visibilityNode = metadata.path("visibility");
+        boolean hasPrivate = !privateNode.isMissingNode();
+        boolean hasVisibility = !visibilityNode.isMissingNode();
+        boolean privateValid = privateNode.isBoolean();
+        boolean visibilityValid =
+                visibilityNode.isTextual()
+                        && Set.of("public", "private", "internal")
+                                .contains(visibilityNode.asText(""));
+        if (hasPrivate && !privateValid
+                || hasVisibility && !visibilityValid
+                || !hasPrivate && !hasVisibility)
+            return new RepositoryAccess(false, false, at, "METADATA_INCOMPLETE");
+        Boolean byPrivate = privateValid ? !privateNode.asBoolean() : null;
+        Boolean byVisibility = visibilityValid ? "public".equals(visibilityNode.asText("")) : null;
+        if (byPrivate != null && byVisibility != null && !byPrivate.equals(byVisibility))
+            return new RepositoryAccess(false, false, at, "METADATA_CONFLICT");
+        boolean isPublic = byPrivate != null ? byPrivate : Boolean.TRUE.equals(byVisibility);
+        return new RepositoryAccess(
+                isPublic, true, at, isPublic ? "PUBLIC_CONFIRMED" : "REPOSITORY_NON_PUBLIC");
     }
 
     public Result collect(GitHubApprovedScope scope, GitHubCollectionLimits limits, ContentSink sink) {
@@ -63,8 +129,11 @@ public final class GitHubCollector {
             String token = tokens.tokenFor(scope);
             String base = "repos/" + GitHubRestClient.encodeSegment(scope.owner()) + "/"
                     + GitHubRestClient.encodeSegment(scope.repository()) + "/git/";
-            String branchPath = Arrays.stream(scope.branch().split("/"))
-                    .map(GitHubRestClient::encodeSegment).reduce((a, b) -> a + "/" + b).orElseThrow();
+            String branchPath =
+                    Arrays.stream(scope.branch().split("/"))
+                            .map(GitHubRestClient::encodeSegment)
+                            .reduce((a, b) -> a + "/" + b)
+                            .orElseThrow();
             JsonNode ref = api.get(base + "ref/heads/" + branchPath, token, limits.maxJsonBytes());
             String commitSha = checkedSha(ref.path("object").path("sha"));
             if (!"commit".equals(ref.path("object").path("type").asText(""))) {
@@ -89,9 +158,115 @@ public final class GitHubCollector {
         return state.result();
     }
 
+    /**
+     * Reacquires exactly one currently approved file. Historical blob IDs never authorize a read.
+     */
+    public Result collectFile(
+            GitHubApprovedScope scope,
+            String path,
+            GitHubCollectionLimits limits,
+            ContentSink sink) {
+        if (path == null
+                || !path.startsWith(scope.pathPrefix())
+                || path.endsWith("/")
+                || Arrays.stream(path.split("/", -1))
+                        .anyMatch(
+                                p ->
+                                        p.isBlank()
+                                                || p.equals(".")
+                                                || p.equals("..")
+                                                || p.indexOf('\\') >= 0))
+            throw new IllegalArgumentException("INVALID_TARGET_FILE");
+        State state = new State(scope, limits, sink);
+        try {
+            String token = tokens.tokenFor(scope),
+                    base =
+                            "repos/"
+                                    + GitHubRestClient.encodeSegment(scope.owner())
+                                    + "/"
+                                    + GitHubRestClient.encodeSegment(scope.repository())
+                                    + "/git/";
+            String branch =
+                    Arrays.stream(scope.branch().split("/"))
+                            .map(GitHubRestClient::encodeSegment)
+                            .reduce((a, b) -> a + "/" + b)
+                            .orElseThrow();
+            var ref = api.get(base + "ref/heads/" + branch, token, limits.maxJsonBytes());
+            if (!"commit".equals(ref.path("object").path("type").asText(""))) throw malformed();
+            state.commitSha = checkedSha(ref.path("object").path("sha"));
+            String tree =
+                    checkedSha(
+                            api.get(
+                                            base + "commits/" + state.commitSha,
+                                            token,
+                                            limits.maxJsonBytes())
+                                    .path("tree")
+                                    .path("sha"));
+            String[] segments = path.split("/");
+            JsonNode found = null;
+            for (int i = 0; i < segments.length; i++) {
+                found = null;
+                for (var entry : loadTree(base, token, tree, state))
+                    if (segments[i].equals(entry.path("path").asText(""))) {
+                        found = entry;
+                        break;
+                    }
+                if (found == null) {
+                    state.gaps.add(new Gap(path, GapCode.PATH_NOT_FOUND));
+                    return state.result();
+                }
+                if (i < segments.length - 1) {
+                    if (!"tree".equals(found.path("type").asText(""))) throw malformed();
+                    tree = checkedSha(found.path("sha"));
+                }
+            }
+            if (found == null
+                    || !"blob".equals(found.path("type").asText(""))
+                    || !Set.of("100644", "100755").contains(found.path("mode").asText("")))
+                throw malformed();
+            String sha = checkedSha(found.path("sha"));
+            long size = found.path("size").asLong(-1);
+            if (size < 0 || size > limits.maxFileBytes()) {
+                state.gaps.add(new Gap(path, GapCode.FILE_TOO_LARGE));
+                return state.result();
+            }
+            JsonNode blob = api.get(base + "blobs/" + sha, token, limits.maxJsonBytes());
+            if (!"base64".equals(blob.path("encoding").asText(""))) throw malformed();
+            byte[] bytes = Base64.getMimeDecoder().decode(blob.path("content").asText(""));
+            try {
+                if (bytes.length != size || bytes.length > limits.maxFileBytes()) throw malformed();
+                // Reuse the same strict UTF-8/binary check as the full collector.
+                if (isBinary(bytes)) throw malformed();
+                Source source =
+                        new Source(
+                                scope.owner(),
+                                scope.repository(),
+                                scope.branch(),
+                                state.commitSha,
+                                path,
+                                sha,
+                                size);
+                sink.accept(source, bytes);
+                state.objects.add(source);
+                state.bytes += bytes.length;
+            } finally {
+                Arrays.fill(bytes, (byte) 0);
+            }
+        } catch (GitHubSourceException e) {
+            state.gaps.add(new Gap(path, map(e)));
+        } catch (MalformedSourceException | IncompleteTreeException | IllegalArgumentException e) {
+            state.gaps.add(new Gap(path, GapCode.MALFORMED_RESPONSE));
+        }
+        return state.result();
+    }
+
     private String resolvePrefix(String base, String token, String rootSha, State state) {
         String treeSha = rootSha;
-        for (String segment : state.scope.pathPrefix().substring(0, state.scope.pathPrefix().length() - 1).split("/")) {
+        for (String segment :
+                state.scope
+                        .pathPrefix()
+                        .substring(0, state.scope.pathPrefix().length() - 1)
+                        .split("/")) {
             JsonNode entries = loadTree(base, token, treeSha, state);
             String childSha = null;
             for (JsonNode entry : entries) {
@@ -140,7 +315,11 @@ public final class GitHubCollector {
                         state.gaps.add(new Gap(path + "/", GapCode.DEPTH_LIMIT));
                     } else {
                         try {
-                            pending.add(new TreeAt(path + "/", checkedSha(entry.path("sha")), current.depth() + 1));
+                            pending.add(
+                                    new TreeAt(
+                                            path + "/",
+                                            checkedSha(entry.path("sha")),
+                                            current.depth() + 1));
                         } catch (MalformedSourceException e) {
                             state.gaps.add(new Gap(path + "/", GapCode.MALFORMED_RESPONSE));
                         }
@@ -217,7 +396,8 @@ public final class GitHubCollector {
                     state.gaps.add(new Gap(path, GapCode.BINARY_FILE));
                     return;
                 }
-                if (new String(bytes, StandardCharsets.US_ASCII).startsWith("version https://git-lfs.github.com/spec/v1")) {
+                if (new String(bytes, StandardCharsets.US_ASCII)
+                        .startsWith("version https://git-lfs.github.com/spec/v1")) {
                     state.gaps.add(new Gap(path, GapCode.GIT_LFS_POINTER));
                     return;
                 }

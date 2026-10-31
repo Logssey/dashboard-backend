@@ -1,149 +1,70 @@
 package com.logssey.secret.response;
-
-import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
-import java.util.List;
-
-import com.logssey.common.error.ApiException;
-import com.logssey.common.error.ErrorCode;
-
-import org.springframework.dao.DataIntegrityViolationException;
+import java.util.*;
+import com.logssey.common.error.*;
+import com.logssey.secret.access.*;
+import com.logssey.secret.command.*;
+import com.logssey.secret.snapshot.SecretReadSnapshots;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
+import static com.logssey.secret.command.SecretCommandExecutor.requireExpectedVersion;
 @Service
 public class SecretRevalidationService {
-    private final SecretCaseRepository cases;
-    private final SecretRevalidationRepository repository;
-    private final SecretCaseService caseService;
-
-    SecretRevalidationService(SecretCaseRepository cases, SecretRevalidationRepository repository,
-                              SecretCaseService caseService) {
-        this.cases = cases;
-        this.repository = repository;
-        this.caseService = caseService;
-    }
-
-    @Transactional
-    public SecretRevalidationResult request(long caseId, SecretRevalidationRequest request,
-                                            String loginId) {
-        if (caseId <= 0 || request == null || request.occurrenceId() == null
-                || request.occurrenceId() <= 0 || request.expectedVersion() == null
-                || request.expectedVersion() < 0 || request.idempotencyKey() == null
-                || !request.idempotencyKey().matches("[A-Za-z0-9._:-]{1,120}")) {
-            throw new ApiException(ErrorCode.INVALID_INPUT);
-        }
-        long actorId = requireActor(loginId);
-        var target = repository.lockTarget(caseId, request.occurrenceId())
-                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
-        if (!actorIdEquals(target.assigneeId(), actorId)
-                || !cases.hasCaseRole(actorId, caseId, "REMEDIATOR")) {
-            throw new ApiException(ErrorCode.FORBIDDEN);
-        }
-        String digest = digest(caseId, actorId, request.idempotencyKey());
-        var replay = repository.byKey(caseId, digest);
-        if (replay.isPresent()) {
-            if (replay.get().occurrenceId() != request.occurrenceId()) {
-                throw new ApiException(ErrorCode.CONFLICT);
-            }
-            return replay.get();
-        }
-        if (target.version() != request.expectedVersion()
-                || !"REVIEWED".equals(target.reviewStatus())
-                || !"REVALIDATION_PENDING".equals(target.responseStatus())
-                || !("REVALIDATION_PENDING".equals(target.stage())
-                    || "IN_PROGRESS".equals(target.stage()))
-                || !"PRESENT".equals(target.presence())
-                || !"GITHUB".equals(target.provider())
-                || !"ACTIVE".equals(target.connectionStatus())
-                || !target.scopeEnabled()
-                || !target.caseOrigin().equals(target.responseOrigin())
-                || !SecretGithubScopePolicy.approved(target.contentType(),
-                        target.historyLimit(), target.approvedRef())
-                || repository.activeJob(target.connectionId())) {
-            throw new ApiException(ErrorCode.CONFLICT);
-        }
-        var action = repository.latestAction(caseId, target.occurrenceId())
-                .orElseThrow(() -> new ApiException(ErrorCode.CONFLICT));
-        var baseline = repository.baseline(target.occurrenceId())
-                .orElse(new SecretRevalidationRepository.Baseline(null, null));
-        try {
-            return repository.reserve(target, action, baseline, actorId, digest);
-        } catch (DataIntegrityViolationException conflict) {
-            throw new ApiException(ErrorCode.CONFLICT);
-        }
-    }
-
-    @Transactional(readOnly = true)
-    public List<SecretRevalidationResult> list(long caseId, String loginId) {
-        long actorId = requireActor(loginId);
-        if (caseId <= 0 || !cases.caseExists(caseId)) throw new ApiException(ErrorCode.NOT_FOUND);
-        if (!cases.canReadCase(actorId, caseId)) throw new ApiException(ErrorCode.FORBIDDEN);
-        return repository.list(caseId);
-    }
-
-    @Transactional
-    public SecretCaseDetail resolve(long caseId, SecretResolveRequest request, String loginId) {
-        if (caseId <= 0 || request == null || request.expectedVersion() == null
-                || request.expectedVersion() < 0
-                || !"POST_ACTION_REVALIDATION".equals(request.reasonCode())) {
-            throw new ApiException(ErrorCode.INVALID_INPUT);
-        }
-        long actorId = requireActor(loginId);
-        var target = repository.lockResolutionTarget(caseId)
-                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
-        if (!cases.hasCaseRole(actorId, caseId, "SECURITY")) {
-            throw new ApiException(ErrorCode.FORBIDDEN);
-        }
-        if (target.version() != request.expectedVersion()
-                || !"REVIEWED".equals(target.reviewStatus())
-                || !"REVALIDATION_PENDING".equals(target.stage())) {
-            throw new ApiException(ErrorCode.CONFLICT);
-        }
-        var evidence = repository.resolutionEvidence(caseId);
-        if (evidence.isEmpty() || repository.otherAbnormalPresent(caseId)
-                || evidence.stream().anyMatch(item -> !sufficient(item))) {
-            throw new ApiException(ErrorCode.CONFLICT);
-        }
-        repository.resolve(target, actorId, evidence);
-        return caseService.detail(caseId, loginId);
-    }
-
-    @Transactional
-    public SecretCaseDetail resume(long caseId, SecretResumeRequest request, String loginId) {
-        if (caseId <= 0 || request == null || request.occurrenceId() == null
-                || request.occurrenceId() <= 0 || request.expectedVersion() == null
-                || request.expectedVersion() < 0
-                || !"REVALIDATION_PRESENT".equals(request.reasonCode())) {
-            throw new ApiException(ErrorCode.INVALID_INPUT);
-        }
-        long actorId = requireActor(loginId);
-        var target = repository.lockTarget(caseId, request.occurrenceId())
-                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
-        if (!actorIdEquals(target.assigneeId(), actorId)
-                || !cases.hasCaseRole(actorId, caseId, "REMEDIATOR")) {
-            throw new ApiException(ErrorCode.FORBIDDEN);
-        }
-        if (target.version() != request.expectedVersion()
-                || !"REVALIDATION_PENDING".equals(target.responseStatus())
-                || !("REVALIDATION_PENDING".equals(target.stage())
-                    || "IN_PROGRESS".equals(target.stage()))) {
-            throw new ApiException(ErrorCode.CONFLICT);
-        }
-        var result = repository.latestForResume(caseId, target.occurrenceId())
-                .orElseThrow(() -> new ApiException(ErrorCode.CONFLICT));
-        if (!"PRESENT".equals(result.status())
-                || result.latestActionId() == null
-                || result.actionId() != result.latestActionId()) {
-            throw new ApiException(ErrorCode.CONFLICT);
-        }
-        repository.resume(target, actorId, result.revalidationId());
-        return caseService.detail(caseId, loginId);
-    }
-
+ private final SecretRevalidationRepository repository; private final SecretAccessService access;
+ private final SecretLocationWorkflow workflow; private final SecretLocationReadiness readiness;
+ private final SecretCommandExecutor commands; private final SecretReadSnapshots snapshots; private final JdbcTemplate jdbc;
+ public SecretRevalidationService(SecretRevalidationRepository repository,SecretAccessService access,SecretLocationWorkflow workflow,
+   SecretLocationReadiness readiness,SecretCommandExecutor commands,SecretReadSnapshots snapshots,JdbcTemplate jdbc){
+  this.repository=repository;this.access=access;this.workflow=workflow;this.readiness=readiness;this.commands=commands;this.snapshots=snapshots;this.jdbc=jdbc;
+ }
+ public SecretRevalidationResult request(long caseId,SecretRevalidationRequest r,String login){
+  var actor=access.requirePrincipal(login);if(r==null||r.occurrenceId()==null||r.occurrenceId()<=0||r.expectedCaseVersion()==null||r.expectedOccurrenceVersion()==null)invalid();
+  long occurrence=r.occurrenceId();
+  var result=commands.execute(actor,SecretCommandExecutor.Kind.LOCATION_REVALIDATE,r.idempotencyKey(),digest(caseId,r),
+   ()->requireAssigned(actor,caseId,occurrence),()->{
+    var t=repository.lockTarget(caseId,occurrence).orElseThrow(()->new ApiException(ErrorCode.NOT_FOUND));
+    requireExpectedVersion(r.expectedCaseVersion(),t.version());requireExpectedVersion(r.expectedOccurrenceVersion(),t.occurrenceVersion());
+    if(!Boolean.TRUE.equals(readiness.capabilities(actor,caseId,occurrence).get("canRequestRevalidation")))conflict();
+    var action=repository.latestAction(caseId,occurrence).orElseThrow(()->new ApiException(ErrorCode.CONFLICT));
+    var baseline=repository.baseline(occurrence).orElse(new SecretRevalidationRepository.Baseline(null,null));
+    String key="R"+HexFormat.of().formatHex(digest(caseId,actor.userId(),r.idempotencyKey()));
+    var v=repository.reserve(t,action,baseline,actor.userId(),key);snapshots.invalidateOccurrence(occurrence);
+    activity(caseId,occurrence,"REVALIDATION_REQUESTED",actor.userId(),t.version()+1,t.occurrenceVersion()+1,v.revalidationId());
+    return new SecretCommandResult(v.revalidationId(),t.version()+1,SecretCommandResult.Status.PENDING);
+   });
+  return runAccess(actor,repository.list(caseId).stream().filter(v->v.revalidationId()==result.targetId()).findFirst().orElseThrow(()->new ApiException(ErrorCode.NOT_FOUND)));
+ }
+ @Transactional(readOnly=true)
+ public List<SecretRevalidationResult> list(long caseId,String login){
+  var actor=access.requirePrincipal(login);var allowed=workflow.visibleLocations(caseId,actor).stream().map(o->((Number)o.get("occurrence_id")).longValue()).collect(java.util.stream.Collectors.toSet());
+  if(allowed.isEmpty())throw new ApiException(ErrorCode.NOT_FOUND);
+  return repository.list(caseId).stream().filter(v->allowed.contains(v.occurrenceId())).map(v->runAccess(actor,v)).toList();
+ }
+ public SecretCaseDetail resolve(long caseId,SecretResolveRequest request,String login){workflow.rejectLegacy(caseId,login);throw new ApiException(ErrorCode.CONFLICT);}
+ public Map<String,Object> resume(long caseId,SecretResumeRequest r,String login){
+  var actor=access.requirePrincipal(login);if(r==null||r.occurrenceId()==null||!"REVALIDATION_PRESENT".equals(r.reasonCode())||r.expectedCaseVersion()==null||r.expectedOccurrenceVersion()==null)invalid();
+  long occurrence=r.occurrenceId();
+  commands.execute(actor,SecretCommandExecutor.Kind.LOCATION_RESUME,r.idempotencyKey(),digest(caseId,r),()->requireAssigned(actor,caseId,occurrence),()->{
+   var t=repository.lockTarget(caseId,occurrence).orElseThrow(()->new ApiException(ErrorCode.NOT_FOUND));
+   requireExpectedVersion(r.expectedCaseVersion(),t.version());requireExpectedVersion(r.expectedOccurrenceVersion(),t.occurrenceVersion());
+   if(!Boolean.TRUE.equals(readiness.capabilities(actor,caseId,occurrence).get("canResume")))conflict();
+   var v=repository.latestForResume(caseId,occurrence).orElseThrow(()->new ApiException(ErrorCode.CONFLICT));
+   if(!"PRESENT".equals(v.status())||!Objects.equals(v.actionId(),v.latestActionId()))conflict();
+   repository.resume(t,actor.userId(),v.revalidationId());snapshots.invalidateOccurrence(occurrence);
+   activity(caseId,occurrence,"REVALIDATION_RESUMED",actor.userId(),t.version()+1,t.occurrenceVersion()+1,v.revalidationId());
+   return new SecretCommandResult(caseId,t.version()+1,SecretCommandResult.Status.IN_PROGRESS);
+  });return workflow.detail(caseId,login);
+ }
+ private void requireAssigned(SecretPrincipal actor,long c,long o){if(!workflow.assignedRemediator(actor,c,o))throw new ApiException(ErrorCode.FORBIDDEN);}
+ private SecretRevalidationResult runAccess(SecretPrincipal actor,SecretRevalidationResult result){
+  Long connection=jdbc.queryForObject("SELECT connection_id FROM secret_occurrences WHERE occurrence_id=?",Long.class,result.occurrenceId());
+  return result.withRunAccess(connection!=null&&access.canReadConnectionFacts(actor,connection));
+ }
+ private void activity(long c,long o,String type,long actor,long cv,long ov,long ref){jdbc.update("INSERT INTO secret_location_activities(case_id,occurrence_id,activity_type,actor_user_id,case_version,occurrence_version,reference_id) VALUES(?,?,?,?,?,?,?)",c,o,type,actor,cv,ov,ref);}
+ private static byte[] digest(Object... values){try{return MessageDigest.getInstance("SHA-256").digest(Arrays.deepToString(values).getBytes(StandardCharsets.UTF_8));}catch(Exception e){throw new IllegalStateException(e);}}
+ private static void invalid(){throw new ApiException(ErrorCode.INVALID_INPUT);}private static void conflict(){throw new ApiException(ErrorCode.CONFLICT);}
     static boolean sufficient(SecretRevalidationRepository.ResolutionEvidence e) {
         return "REVALIDATION_PENDING".equals(e.responseStatus())
                 && "MISSING".equals(e.presence())
@@ -164,23 +85,4 @@ public class SecretRevalidationService {
                         e.approvedRef());
     }
 
-    private long requireActor(String loginId) {
-        return cases.actorId(loginId).orElseThrow(() -> new ApiException(ErrorCode.UNAUTHENTICATED));
-    }
-
-    private static boolean actorIdEquals(Long assigned, long actorId) {
-        return assigned != null && assigned == actorId;
-    }
-
-    private static String digest(long caseId, long actorId, String key) {
-        try {
-            MessageDigest sha = MessageDigest.getInstance("SHA-256");
-            sha.update(ByteBuffer.allocate(Long.BYTES).putLong(caseId).array());
-            sha.update(ByteBuffer.allocate(Long.BYTES).putLong(actorId).array());
-            sha.update(key.getBytes(StandardCharsets.UTF_8));
-            return "R" + HexFormat.of().formatHex(sha.digest());
-        } catch (NoSuchAlgorithmException error) {
-            throw new IllegalStateException("IDEMPOTENCY_DIGEST_UNAVAILABLE", error);
-        }
-    }
 }

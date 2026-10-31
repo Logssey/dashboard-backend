@@ -10,8 +10,8 @@ Java 21 / Spring Boot를 사용하는 별도 프로세스다. 대시보드 API�
 - 현재는 `ACTIVE` GitHub 연결에 예정 시각과 활성 승인 범위가 있어야 예약한다. 아직 실행기가 없는 AWS 등 다른 공급자와 `PAUSED`, `ERROR`, 미승인 범위는 건너뛴다.
 - 연결 행을 `FOR UPDATE SKIP LOCKED`로 잠그고, 작업·검사 실행·승인 범위 스냅샷·다음 예정 시각을 한 트랜잭션에서 저장한다.
 - 같은 연결의 `FULL_SCAN` 작업이 `PENDING` 또는 `LEASED`이면 새 작업을 만들지 않는다. 여러 프로세스와 반복 호출의 중복도 DB 고유 제약으로 막는다.
-- 다음 시각은 **이전 예정 시각 + 6시간**이다. 서버 재시작, 실패, 마지막 성공 시각 때문에 주기가 뒤로 밀리지 않는다.
-- 장시간 중단 후에는 가장 오래된 예정 시각부터 예약한다. 미완료 작업이 있는 동안 다음 시각을 더 밀지 않고 지연을 보존하므로 대기열을 무한히 늘리지 않는다.
+- 다음 시각은 **실제 정기 예약 시각 + 6시간**이다. 수동 요청·실패·마지막 성공이 정기 시각을 바꾸지 않는다.
+- 장시간 중단 후에는 놓친 슬롯을 한 번 예약하고 과거 슬롯을 연속 재생하지 않는다.
 - 예약은 실행 성공을 뜻하지 않는다. 시작·종료·마지막 수집 성공·수집 건수는 채우지 않는다.
 
 ## 작업 실행 계약
@@ -70,6 +70,7 @@ Get-Content -Raw .\secret-worker\local\register-test-schedule.sql |
 
 설정:
 
+- `SECRET_SCHEDULING_POOL_SIZE`: 스케줄러 스레드 수, 기본 `3`. 예약, 외부 작업 실행, DB 전용 `ASSESS` 폴러가 함께 진행하므로 긴 수집 작업이 다른 두 폴러를 막지 않는다. 각 폴러의 반복 실행은 순차적이며 DB 리스·잠금 제약은 그대로 적용된다. [Spring Boot 스케줄러 설정](https://docs.spring.io/spring-boot/4.1/reference/features/task-execution-and-scheduling.html)을 사용하며 가상 스레드를 활성화하면 이 풀 크기 설정은 적용되지 않는다.
 - `SECRET_SCHEDULER_POLL_DELAY`: DB 확인 간격, 기본 `30s`.
 - `SECRET_SCAN_INTERVAL`: 예약 간격, 기본 `6h`. 테스트에서만 짧게 바꾼다.
 - `SECRET_SCHEDULER_BATCH_SIZE`: 한 번에 예약할 연결 수, 기본 `100`.
@@ -98,3 +99,63 @@ SELECT run_id, collection_status, result_status, started_at, finished_at FROM se
 ```
 
 Docker가 필요하다. Testcontainers의 별도 PostgreSQL 18.6에서 실제 Flyway 마이그레이션과 예약·실행 상태를 검증하며 개발 DB를 초기화하지 않는다. 동시 예약과 선점, 리스 만료 복구, 재시도 상한과 백오프, 오래된 토큰 차단, 완료 조건, 정상 0건과 부분 실패의 차이, 원문성 예외 메시지 차단을 검사한다.
+
+## 발견 키 인증 검증의 운영 등록
+
+모든 기본값은 비활성이다. 외부 인증 호출에는 (1) 공급자 전역 플래그, (2) 연결의 등록 profile 활성화, (3) SECURITY의 현재 scope 승인이 모두 필요하다. 수집 자격 증명으로 발견 키의 인증을 대신하지 않는다. 연결 테스트와 유효성 확인은 별도 작업이다.
+
+배포 담당자는 API와 워커에 같은 `SECRET_AWS_VALIDATION_ENABLED` 값을 공급한다. 수집 실행기·수집원 파이프라인·AWS 본문 읽기는 각각의 별도 설정과 승인이 필요하다. 플래그만 true로 바꿔도 연결이나 scope는 활성화되지 않는다. 승인된 합성 fixture는 모든 설정에서 실제 호출을 생략한다. TEST 표식만으로 합성으로 인정하지 않는다.
+
+연결 profile은 검토된 운영 배포에서 다음 트랜잭션으로 등록한다. `target_id`와 `actor_id`는 현재 승인 연결과 해당 연결 OPERATIONS 사용자 ID로 바꾼다. SQL은 운영 DB 배포 권한으로만 실행하며 일반 대시보드에서 SQL·profile 이름·endpoint·비밀을 입력받지 않는다. 예시는 연결의 키 원문이나 인증 참조를 읽지 않는다.
+
+```sql
+DO $$
+DECLARE target_id BIGINT := 42; actor_id BIGINT := 7; enable_profile BOOLEAN := true;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM secret_role_grants WHERE user_id=actor_id
+      AND role='OPERATIONS' AND revoked_at IS NULL
+      AND (connection_id IS NULL OR connection_id=target_id)) THEN
+    RAISE EXCEPTION 'VALIDATION_OPERATOR_REQUIRED';
+  END IF;
+  PERFORM 1 FROM secret_connections WHERE connection_id=target_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'CONNECTION_NOT_FOUND'; END IF;
+  UPDATE secret_connections SET validation_enabled=enable_profile,
+      validation_profile_version='credential-validation-v1',
+      validation_revision=validation_revision+1 WHERE connection_id=target_id;
+  UPDATE secret_connection_scopes SET validation_approved=false,
+      validation_approval_revision=validation_approval_revision+1
+      WHERE connection_id=target_id;
+  UPDATE secret_validation_attempts SET current_eligible=false,
+      ineligible_reason_code='APPROVAL_CHANGED'
+      WHERE job_id IN (SELECT job_id FROM secret_jobs WHERE connection_id=target_id)
+        AND current_eligible;
+  UPDATE secret_jobs SET status='CANCELLED',last_error_code='APPROVAL_CHANGED',
+      finished_at=clock_timestamp() WHERE connection_id=target_id
+      AND purpose='CREDENTIAL_VALIDITY' AND status='PENDING';
+  INSERT INTO secret_audit_events(event_type,actor_user_id,target_type,target_id,
+      target_version,safe_changes)
+      SELECT 'VALIDATION_PROFILE_CHANGED',actor_id,'CONNECTION',connection_id,
+          validation_revision,jsonb_build_object('enabled',enable_profile,
+          'profileVersion','credential-validation-v1')
+      FROM secret_connections WHERE connection_id=target_id;
+END $$;
+```
+
+profile 변경은 이전 scope 승인을 철회한다. 이후 해당 범위 SECURITY가 `GET /api/v1/secrets/scopes/{id}/validation-policy`로 현재 revision을 확인한 뒤 `PATCH`에 `{expectedValidationApprovalRevision,idempotencyKey,enabled:true,reasonCode:"VALIDATION_APPROVED"}`를 보낸다. 철회는 `enabled:false`, `reasonCode:"VALIDATION_DISABLED"`다. 키·토큰·URL·헤더 필드는 거부한다. 서버 또는 연결 profile이 꺼진 상태에서는 scope 허용만으로 외부 호출하지 않는다.
+
+상태 조회는 `GET /api/v1/secrets/{id}/validation?occurrenceId=...`이며 실제 요청은 `POST /api/v1/secrets/{id}/validation-requests`의 `{occurrenceId,expectedContextVersion,idempotencyKey}`다. 요청자는 SECURITY 또는 현재 할당된 REMEDIATOR다. OPERATIONS는 연결 운영 권한만으로 이 명령을 실행하지 못한다. 반환된 `requestId`는 기존 REVALIDATE/CREDENTIAL_VALIDITY 작업 ID이며 접수는 인증 성공이 아니다.
+
+워커는 현재 원천을 재취득하고 같은 HMAC·키 revision을 확인한 뒤 DB 트랜잭션 밖에서 인증한다. 원문은 DB·큐·파일·로그에 남기지 않는다. 기본 한도는 공급자 분당 30회, 동시 2개, 실행당 500회/30분, 요청 8초, 최초 포함 3회다. backoff·다음 도래 시각은 DB에 남기고 장시간 sleep으로 worker를 점유하지 않는다. 전송 중 승인 철회의 응답은 이력에만 남으며 현재 인증 성공으로 사용하지 않는다.
+
+유효성 조회·이력은 최근 완료 시도, 마지막 인증 성공, 마지막 확정 응답, 현재 신선도를 분리한다. HTTP 오류·timeout·원문 삭제는 키 폐기나 위치 해결을 뜻하지 않는다. GitHub installation token·미등록 유형은 PAT capability로 보내지 않는다. provider wire logging과 APM의 HTTP header/body 캡처를 활성화하지 않는다.
+
+### GitHub PAT validation
+
+`SECRET_GITHUB_VALIDATION_ENABLED=false` remains the default in both API and worker.
+Enable the registered `credential-validation-v1` connection profile using the operator procedure above, then have SECURITY enable the exact source scope policy. The source connection credentials only reacquire approved content; each discovered Classic or Fine-grained PAT authenticates itself with `GET https://api.github.com/user`, API version `2026-03-10`. An installation token is a separate, unsupported capability. No permissions, expiry or revocation cause is inferred.
+
+The worker uses a 3-second connect bound and an 8-second total bound, no redirects, at most 64 KiB response, at most 2 concurrent provider requests, 30 requests/provider/minute, 500 requests/run and a 30-minute validation phase. API manual requests are limited to 10 new commands per actor/minute; idempotent replay is exempt. Retry-After is bounded to 15 minutes; retries otherwise use persisted exponential delay and jitter. Five GitHub authentication rejections within a 60-second window open a 15-minute safety pause. Only response metadata and safe result codes persist. A protected source-version digest records actual GitHub blob evidence; AWS value readers currently supply no provider version, so their digest explicitly records a version-unavailable protected scope/source basis.
+
+A repository-name safety guard produces `SOURCE_GUARD_BLOCKED`; only explicit synthetic scope configuration or a current exact manifest/fingerprint attestation produces `SYNTHETIC_FIXTURE`. A TEST environment label never establishes synthetic contents. The optional repository-access sink receives safe metadata after successful run-scope persistence inside the live-lease transaction. Missing, malformed or conflicting private/visibility fields produce UNKNOWN access scope. Repository metadata failures do not fail otherwise successful collection.
+
+SDK header/wire logging stays disabled. GitHub PAT validation also fails closed when the JVM `jdk.httpclient.HttpClient.log` diagnostic setting is nonempty. AWS uses the registered Apache5 transport with explicit connection bounds ([AWS SDK builder contract](https://docs.aws.amazon.com/java/api/latest/software/amazon/awssdk/http/apache5/Apache5HttpClient.Builder.html)).

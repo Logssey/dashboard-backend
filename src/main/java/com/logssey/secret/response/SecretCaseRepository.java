@@ -21,7 +21,7 @@ class SecretCaseRepository {
                   AND NOT EXISTS (
                     SELECT 1 FROM secret_role_grants g
                     WHERE g.user_id = ? AND g.revoked_at IS NULL
-                      AND g.role IN ('SECURITY', 'REMEDIATOR', 'OPERATIONS')
+                      AND g.role IN ('SECURITY', 'REMEDIATOR')
                       AND (g.connection_id IS NULL OR g.connection_id = o.connection_id)
                   )
             )
@@ -171,7 +171,7 @@ class SecretCaseRepository {
                        AND NOT EXISTS (
                          SELECT 1 FROM secret_role_grants g
                          WHERE g.user_id = ? AND g.revoked_at IS NULL
-                           AND g.role IN ('SECURITY', 'REMEDIATOR', 'OPERATIONS')
+                           AND g.role IN ('SECURITY', 'REMEDIATOR')
                            AND (g.connection_id IS NULL OR g.connection_id = o.connection_id)
                        )
                    )
@@ -367,7 +367,7 @@ class SecretCaseRepository {
         return jdbc.query("""
                 SELECT item_id, guide_version, item_code, status, evidence_ref,
                        completed_at, completed_by_user_id, updated_at
-                FROM secret_checklist_items WHERE case_id = ?
+                FROM secret_checklist_items WHERE case_id = ? AND occurrence_id IS NULL
                 ORDER BY CASE item_code
                     WHEN 'IDENTIFY_OWNER' THEN 1
                     WHEN 'ROTATE_OR_REVOKE' THEN 2

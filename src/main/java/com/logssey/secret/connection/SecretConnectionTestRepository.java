@@ -53,6 +53,14 @@ class SecretConnectionTestRepository {
                 rs.getLong("account_count"), rs.getString("account_id")), connectionId);
     }
 
+    void recordProbe(long connectionId, String loginId, SecretConnectionTestResponse probe) {
+        jdbc.update("""
+                INSERT INTO secret_connection_probes
+                  (connection_id, actor_user_id, check_kind, status, reason_code, checked_at)
+                SELECT ?, user_id, 'IDENTITY_OR_INSTALLATION', ?, ?, ? FROM dashboard_users WHERE login_id=?
+                """, connectionId, probe.status(), probe.reasonCode(), probe.checkedAt(), loginId);
+    }
+
     record Connection(long id, String provider, String status, String authRef) { }
     record Scope(String contentType, String approvedRef, String historyLimit) { }
     record AwsScopeSummary(long count, long invalidCount, long accountCount, String accountId) { }

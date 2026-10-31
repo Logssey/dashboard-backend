@@ -30,6 +30,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest(properties = {
+        "spring.config.import=",
+        "logssey.secret.bootstrap-operations-login-id=",
         "logssey.admin.login-id=case-admin",
         "logssey.admin.password=case-pass",
         "logssey.admin.display-name=Case Admin",
@@ -117,6 +119,78 @@ class SecretCaseSecurityIntegrationTest {
     }
 
     @Test
+    void closureAndExceptionEndpointsWorkThroughSpringTransactionAndRepositoryProxies() throws Exception {
+        jdbc.update("INSERT INTO secret_role_grants(user_id,role,granted_by_user_id,grant_source) VALUES (?,'SECURITY',?,'MANUAL')",actorId,actorId);
+        MockMvc mvc=mvc();
+        var login=mvc.perform(post("/api/v1/auth/login").with(csrf()).contentType(MediaType.APPLICATION_JSON)
+            .content("{\"loginId\":\"case-admin\",\"password\":\"case-pass\"}")).andExpect(status().isOk()).andReturn();
+        var session=(MockHttpSession)login.getRequest().getSession(false);
+        for(String suffix:java.util.List.of("closure-checks","exceptions","transfer-evidence"))
+            mvc.perform(get("/api/v1/secrets/cases/"+caseId+"/"+suffix).session(session)).andExpect(status().isOk());
+        long occurrence=jdbc.queryForObject("SELECT opening_occurrence_id FROM secret_response_cases WHERE case_id=?",Long.class,caseId);
+        String body="{\"occurrenceIds\":["+occurrence+"],\"reasonCode\":\"BUSINESS_CONTINUITY\",\"evidenceRef\":\"TICKET:SEC-123\",\"expiresAt\":\""
+            +OffsetDateTime.now(ZoneOffset.UTC).plusDays(1)+"\",\"expectedCaseVersion\":0,\"idempotencyKey\":\"http-exception-"+caseId+"\"}";
+        mvc.perform(post("/api/v1/secrets/cases/"+caseId+"/exceptions").session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("APPROVED"));
+        mvc.perform(get("/api/v1/secrets/cases/"+caseId+"/exceptions").session(session))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.fullyRiskAccepted").value(true));
+        mvc.perform(get("/api/v1/secrets/summary?origin=TEST").session(session))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.caseSummary.actionCounts.RISK_ACCEPTED").value(1));
+    }
+
+    @Test
+    void operationsBootstrapRequiresExplicitExistingAccountAndPreservesRevocation() {
+        jdbc.update("""
+                INSERT INTO dashboard_users(login_id,password_hash,display_name,role)
+                VALUES ('operations-bootstrap','hash','Operations','ADMIN')
+                ON CONFLICT (login_id) DO NOTHING
+                """);
+        var bootstrap = new SecretRoleBootstrap(jdbc, "case-admin", "", "", "operations-bootstrap");
+        bootstrap.grantConfiguredRoles();
+        bootstrap.grantConfiguredRoles();
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM secret_role_grants g
+                JOIN dashboard_users u ON u.user_id=g.user_id
+                WHERE u.login_id='operations-bootstrap' AND g.role='OPERATIONS' AND g.revoked_at IS NULL
+                """, Long.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM secret_role_grants g
+                JOIN dashboard_users u ON u.user_id=g.user_id
+                WHERE u.login_id='operations-bootstrap' AND g.role IN ('SECURITY','REMEDIATOR')
+                """, Long.class)).isZero();
+        jdbc.update("UPDATE secret_role_grants SET revoked_at=now() WHERE role='OPERATIONS'");
+        bootstrap.grantConfiguredRoles();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM secret_role_grants WHERE role='OPERATIONS' AND revoked_at IS NULL",
+                Long.class)).isZero();
+    }
+
+    @Test
+    void scopeAliasesRejectCredentialPatternsWithoutPersistingAnyChange() throws Exception {
+        long scope=jdbc.queryForObject("SELECT scope_id FROM secret_connection_scopes",Long.class);
+        jdbc.update("INSERT INTO secret_role_grants(user_id,role,granted_by_user_id,grant_source) VALUES(?,'OPERATIONS',?,'MANUAL')",actorId,actorId);
+        var mvc=mvc();var login=mvc.perform(post("/api/v1/auth/login").with(csrf()).contentType(MediaType.APPLICATION_JSON)
+            .content("{\"loginId\":\"case-admin\",\"password\":\"case-pass\"}")).andExpect(status().isOk()).andReturn();
+        var session=(MockHttpSession)login.getRequest().getSession(false);
+        for(String alias:java.util.List.of("ghp_"+"A".repeat(36),"AKIA"+"A".repeat(16),"ntn_"+"A".repeat(46))) {
+            String body="{\"safeDisplayAlias\":\""+alias+"\",\"expectedScopeRevision\":1,\"expectedAliasVersion\":0}";
+            mvc.perform(patch("/api/v1/secrets/scopes/{scopeId}/display-alias",scope).session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest());
+        }
+        assertThat(jdbc.queryForObject("SELECT alias_version FROM secret_connection_scopes WHERE scope_id=?",Long.class,scope)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_scope_alias_history",Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_audit_events WHERE event_type='SCOPE_ALIAS_CHANGED'",Long.class)).isZero();
+    }
+
+    @Test
+    void invalidOperationsBootstrapDoesNotPartiallyGrantRoles() {
+        assertThatThrownBy(() -> new SecretRoleBootstrap(jdbc, "case-admin", "", "", "missing-account")
+                .grantConfiguredRoles()).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> new SecretRoleBootstrap(jdbc, "", "", "", "case-admin")
+                .grantConfiguredRoles()).isInstanceOf(IllegalStateException.class);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM secret_role_grants", Long.class)).isZero();
+    }
+
+    @Test
     void sessionCsrfAndSecretRoleAreEnforcedByRealSecurityFilter() throws Exception {
         MockMvc mvc = mvc();
         mvc.perform(get("/api/v1/secrets/cases?origin=TEST"))
@@ -140,7 +214,7 @@ class SecretCaseSecurityIntegrationTest {
                 .andExpect(jsonPath("$.total").value(1))
                 .andExpect(jsonPath("$.items[0].caseOrigin").value("TEST"));
         String body = "{\"team\":null,\"assigneeUserId\":" + actorId
-                + ",\"reason\":\"INITIAL_ASSIGNMENT\",\"expectedVersion\":0}";
+                + ",\"reasonCode\":\"INITIAL_ASSIGNMENT\",\"expectedVersion\":0}";
         mvc.perform(patch("/api/v1/secrets/cases/{caseId}/assignment", caseId)
                         .session(session).contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isForbidden());
@@ -232,7 +306,7 @@ class SecretCaseSecurityIntegrationTest {
     }
 
     @Test
-    void reviewAndActionRequireCsrfAndReturnAuditedCaseDetail() throws Exception {
+    void legacyReviewIsBlockedAndLocationActionRequiresCsrfWithoutSecondApproval() throws Exception {
         jdbc.update("""
                 INSERT INTO secret_role_grants
                     (user_id, role, granted_by_user_id, grant_source)
@@ -253,27 +327,29 @@ class SecretCaseSecurityIntegrationTest {
                 .andExpect(status().isForbidden());
         mvc.perform(post("/api/v1/secrets/cases/{caseId}/review", caseId)
                         .session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(review))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.reviewStatus").value("REVIEWED"))
-                .andExpect(jsonPath("$.version").value(2))
-                .andExpect(jsonPath("$.stage").value("OPEN"));
+                .andExpect(status().isConflict());
         long occurrenceId = jdbc.queryForObject(
                 "SELECT opening_occurrence_id FROM secret_response_cases WHERE case_id = ?",
                 Long.class, caseId);
+        String assignment="{\"team\":null,\"assigneeUserId\":"+actorId+",\"reasonCode\":\"INITIAL_ASSIGNMENT\",\"expectedCaseVersion\":1,\"expectedOccurrenceVersion\":0}";
+        mvc.perform(patch("/api/v1/secrets/cases/{caseId}/occurrences/{occurrenceId}/assignment",caseId,occurrenceId)
+                .session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(assignment))
+                .andExpect(status().isOk());
         String action = "{\"actionType\":\"ROTATED\",\"occurrenceId\":" + occurrenceId
                 + ",\"performedAt\":\"" + OffsetDateTime.now(ZoneOffset.UTC)
-                + "\",\"evidenceRef\":\"TICKET:SEC-123\",\"expectedVersion\":2}";
+                + "\",\"evidenceRef\":\"TICKET:SEC-123\",\"expectedCaseVersion\":2,\"expectedOccurrenceVersion\":1,\"idempotencyKey\":\"http-action\"}";
         mvc.perform(post("/api/v1/secrets/cases/{caseId}/actions", caseId)
                         .session(session).contentType(MediaType.APPLICATION_JSON).content(action))
                 .andExpect(status().isForbidden());
         mvc.perform(post("/api/v1/secrets/cases/{caseId}/actions", caseId)
                         .session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(action))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.stage").value("REVALIDATION_PENDING"))
-                .andExpect(jsonPath("$.actions[0].evidenceRef").value("TICKET:SEC-123"));
+                .andExpect(jsonPath("$.status").value("IN_PROGRESS"))
+                .andExpect(jsonPath("$.requiresSnapshotRefresh").value(true));
         mvc.perform(post("/api/v1/secrets/cases/{caseId}/actions", caseId)
                         .session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(action))
-                .andExpect(status().isConflict());
+                .andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_action_records",Long.class)).isEqualTo(1);
     }
 
     @Test

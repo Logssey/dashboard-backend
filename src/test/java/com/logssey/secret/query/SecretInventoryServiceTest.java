@@ -3,10 +3,10 @@ package com.logssey.secret.query;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
-import java.util.Optional;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
+import com.logssey.secret.access.SecretAccessService;
 
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterAll;
@@ -46,7 +46,11 @@ class SecretInventoryServiceTest {
                 INSERT INTO dashboard_users (login_id, password_hash, display_name, role)
                 VALUES ('admin', 'test-hash', 'Admin', 'ADMIN')
                 """);
-        service = new SecretInventoryService(new SecretInventoryRepository(jdbc));
+        jdbc.update("""
+                INSERT INTO secret_role_grants (user_id, role, granted_by_user_id, grant_source)
+                VALUES (1, 'SECURITY', 1, 'MANUAL'), (1, 'OPERATIONS', 1, 'MANUAL')
+                """);
+        service = new SecretInventoryService(new SecretInventoryRepository(jdbc), new SecretAccessService(jdbc));
     }
 
     @Test
@@ -111,6 +115,10 @@ class SecretInventoryServiceTest {
         long[] run = run(connection);
         OffsetDateTime base = OffsetDateTime.now(ZoneOffset.UTC).truncatedTo(ChronoUnit.MICROS)
                 .minusMinutes(5);
+        legacyValidation(credential,run,"VALID","AUTHENTICATED",base.minusMinutes(1),base.minusMinutes(1).plusSeconds(2),base.minusMinutes(1).plusSeconds(1));
+        assertThat(service.detail(credential,"admin").validationStatus()).isEqualTo("UNCHECKED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_current_validation_attempts",Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_validation_attempts WHERE evidence_version=0",Long.class)).isEqualTo(1);
         validation(credential, run, "VALID", "AUTHENTICATED", base,
                 base.plusSeconds(2), base.plusSeconds(1));
         validation(credential, run, "UNKNOWN", "RATE_LIMITED", base.plusMinutes(1),
@@ -119,7 +127,7 @@ class SecretInventoryServiceTest {
         var latest = service.detail(credential, "admin");
         assertThat(latest.validationStatus()).isEqualTo("UNKNOWN");
         assertThat(latest.validationReasonCode()).isEqualTo("RATE_LIMITED");
-        assertThat(latest.validatedAt()).isEqualTo(base.plusMinutes(1).plusSeconds(2));
+        assertThat(latest.validatedAt()).isEqualTo(base.plusMinutes(1).plusSeconds(1));
         assertThat(latest.validationCheckedAt()).isEqualTo(base.plusMinutes(1).plusSeconds(1));
         assertThat(service.list(0, 20, "AWS", "CONFIRMED", "admin").items())
                 .singleElement()
@@ -141,10 +149,13 @@ class SecretInventoryServiceTest {
                 base.plusMinutes(3), base.plusMinutes(3).plusSeconds(1), null);
         assertThat(service.detail(credential, "admin").validationReasonCode())
                 .isEqualTo("SYNTHETIC_FIXTURE");
+        validation(credential,run,"UNCHECKED","SOURCE_GUARD_BLOCKED",base.plusMinutes(4),base.plusMinutes(4).plusSeconds(1),null);
+        assertThat(service.detail(credential,"admin").validationReasonCode()).isEqualTo("SOURCE_GUARD_BLOCKED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_validation_attempts WHERE evidence_version=0",Long.class)).isEqualTo(1);
     }
 
     @Test
-    void onlyDatabaseAdminsMayReadInventoryAndActiveConnectionsWithApprovedScopes() {
+    void explicitSecretRolesControlInventoryAndExecutableConnections() {
         long active = connection("ACTIVE", "Approved");
         scope(active, "fixtures/", true);
         scope(active, "draft/", false);
@@ -166,15 +177,18 @@ class SecretInventoryServiceTest {
         assertCode(ErrorCode.UNAUTHENTICATED,
                 () -> service.list(0, 20, "ALL", "ALL", null));
         assertCode(ErrorCode.UNAUTHENTICATED, () -> service.connections("missing"));
-        var nonAdmin = new SecretInventoryService(new SecretInventoryRepository(jdbc) {
-            @Override
-            Optional<String> actorRole(String loginId) {
-                return Optional.of("VIEWER");
-            }
-        });
-        assertCode(ErrorCode.FORBIDDEN, () -> nonAdmin.list(0, 20, "ALL", "ALL", "viewer"));
-        assertCode(ErrorCode.FORBIDDEN, () -> nonAdmin.detail(1, "viewer"));
-        assertCode(ErrorCode.FORBIDDEN, () -> nonAdmin.connections("viewer"));
+        jdbc.update("INSERT INTO dashboard_users (login_id,password_hash,display_name,role) VALUES ('viewer','x','Viewer','ADMIN')");
+        assertCode(ErrorCode.FORBIDDEN, () -> service.list(0, 20, "ALL", "ALL", "viewer"));
+        assertCode(ErrorCode.FORBIDDEN, () -> service.detail(1, "viewer"));
+        assertCode(ErrorCode.FORBIDDEN, () -> service.connections("viewer"));
+    }
+
+    @Test
+    void operationsRoleDoesNotGrantCredentialInventoryRead() {
+        jdbc.update("UPDATE secret_role_grants SET revoked_at=now() WHERE role='SECURITY'");
+        assertCode(ErrorCode.FORBIDDEN, () -> service.list(0, 20, "ALL", "ALL", "admin"));
+        assertCode(ErrorCode.FORBIDDEN, () -> service.detail(1, "admin"));
+        assertThat(service.connections("admin").items()).isEmpty();
     }
 
     @Test
@@ -308,6 +322,13 @@ class SecretInventoryServiceTest {
     }
 
     private void validation(long credential, long[] run, String result, String reason,
+                            OffsetDateTime requested, OffsetDateTime completed,
+                            OffsetDateTime checked) {
+        long occurrence=jdbc.queryForObject("SELECT occurrence_id FROM secret_occurrences WHERE credential_set_id=? ORDER BY occurrence_id LIMIT 1",Long.class,credential);
+        com.logssey.secret.validation.SecretValidationTestFixtures.completed(jdbc,occurrence,run[0],run[1],result,reason,requested,completed,checked);
+    }
+
+    private void legacyValidation(long credential, long[] run, String result, String reason,
                             OffsetDateTime requested, OffsetDateTime completed,
                             OffsetDateTime checked) {
         jdbc.update("""

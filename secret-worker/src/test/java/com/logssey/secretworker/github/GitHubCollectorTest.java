@@ -3,6 +3,16 @@ package com.logssey.secretworker.github;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
+
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.URI;
@@ -15,19 +25,10 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
-
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.json.JsonMapper;
 
 class GitHubCollectorTest {
     private static final String COMMIT = "b".repeat(40);
@@ -50,6 +51,37 @@ class GitHubCollectorTest {
     private String capturedJwt;
     private String capturedTokenRequest;
 
+    @Test
+    void repositoryVisibilityRequiresTypedConsistentProviderMetadata() {
+        var at = java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC);
+        for (String value :
+                List.of(
+                        "{}",
+                        "{\"private\":null}",
+                        "{\"private\":\"false\"}",
+                        "{\"visibility\":false}",
+                        "{\"private\":false,\"visibility\":\"invalid\"}",
+                        "{\"private\":true,\"visibility\":\"public\"}")) {
+            var observation = GitHubCollector.classifyRepositoryAccess(json.readTree(value), at);
+            assertThat(observation.publicRepository()).isFalse();
+            assertThat(observation.metadataComplete()).isFalse();
+        }
+        assertThat(
+                        GitHubCollector.classifyRepositoryAccess(
+                                        json.readTree("{\"private\":false}"), at)
+                                .publicRepository())
+                .isTrue();
+        assertThat(
+                        GitHubCollector.classifyRepositoryAccess(
+                                        json.readTree("{\"visibility\":\"public\"}"), at)
+                                .publicRepository())
+                .isTrue();
+        var privateRepo =
+                GitHubCollector.classifyRepositoryAccess(json.readTree("{\"private\":true}"), at);
+        assertThat(privateRepo.publicRepository()).isFalse();
+        assertThat(privateRepo.metadataComplete()).isTrue();
+    }
+
     @BeforeEach
     void setUp() throws Exception {
         KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
@@ -58,8 +90,10 @@ class GitHubCollectorTest {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", this::respond);
         server.start();
-        api = new GitHubRestClient(URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/"),
-                HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build());
+        api =
+                new GitHubRestClient(
+                        URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/"),
+                        HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build());
         var provider = new GitHubAppTokenProvider(123, 456, key.getPrivate(), api,
                 Clock.fixed(Instant.parse("2026-10-14T00:00:00Z"), ZoneOffset.UTC));
         collector = new GitHubCollector(api, provider);
@@ -116,8 +150,11 @@ class GitHubCollectorTest {
     @Test
     void treatsMissingApprovedDirectoryAsFailureRatherThanEmptySuccess() {
         fixturesTree = tree(FIXTURES, false, List.of());
-        var result = collector.collect(new GitHubApprovedScope("Logssey", "test-find-key", "main", "absent/"),
-                GitHubCollectionLimits.DEFAULT, (source, bytes) -> { });
+        var result =
+                collector.collect(
+                        new GitHubApprovedScope("Logssey", "test-find-key", "main", "absent/"),
+                        GitHubCollectionLimits.DEFAULT,
+                        (source, bytes) -> {});
         assertThat(result.status()).isEqualTo(GitHubCollector.Status.FAILED);
         assertThat(result.gaps()).extracting(GitHubCollector.Gap::code)
                 .containsExactly(GitHubCollector.GapCode.PATH_NOT_FOUND);
@@ -182,6 +219,16 @@ class GitHubCollectorTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    @Test
+    void unavailableRepositoryMetadataDoesNotPreventContentCollection() {
+        fixturesTree=tree(FIXTURES,false,List.of(entry("one.txt","blob","100644",BLOB,13)));
+        var metadata=collector.repositoryAccess(scope());
+        assertThat(metadata.metadataComplete()).isFalse();
+        assertThat(metadata.publicRepository()).isFalse();
+        assertThat(metadata.reasonCode()).isEqualTo("METADATA_UNAVAILABLE");
+        assertThat(collector.collect(scope(),GitHubCollectionLimits.DEFAULT,(source,bytes)->{}).status()).isEqualTo(GitHubCollector.Status.SUCCEEDED);
+    }
+
     private GitHubApprovedScope scope() {
         return new GitHubApprovedScope("Logssey", "test-find-key", "main", "fixtures/");
     }
@@ -193,11 +240,16 @@ class GitHubCollectorTest {
         String response;
         int status = 200;
         if (path.equals("/app/installations/456/access_tokens")) {
-            capturedJwt = exchange.getRequestHeaders().getFirst("Authorization").substring("Bearer ".length());
+            capturedJwt =
+                    exchange.getRequestHeaders()
+                            .getFirst("Authorization")
+                            .substring("Bearer ".length());
             capturedTokenRequest = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             response = tokenResponse;
         } else if (path.equals("/" + API + "ref/heads/main")) {
-            response = json.writeValueAsString(Map.of("object", Map.of("type", "commit", "sha", COMMIT)));
+            response =
+                    json.writeValueAsString(
+                            Map.of("object", Map.of("type", "commit", "sha", COMMIT)));
         } else if (path.equals("/" + API + "commits/" + COMMIT)) {
             response = json.writeValueAsString(Map.of("tree", Map.of("sha", ROOT)));
         } else if (path.equals("/" + API + "trees/" + ROOT)) {
@@ -233,9 +285,17 @@ class GitHubCollectorTest {
     }
 
     private String blob(String sha, String content) {
-        return json.writeValueAsString(Map.of("sha", sha, "encoding", "base64",
-                "size", content.getBytes(StandardCharsets.UTF_8).length,
-                "content", Base64.getEncoder().encodeToString(content.getBytes(StandardCharsets.UTF_8))));
+        return json.writeValueAsString(
+                Map.of(
+                        "sha",
+                        sha,
+                        "encoding",
+                        "base64",
+                        "size",
+                        content.getBytes(StandardCharsets.UTF_8).length,
+                        "content",
+                        Base64.getEncoder()
+                                .encodeToString(content.getBytes(StandardCharsets.UTF_8))));
     }
 
     private void verifyJwt(String jwt) throws Exception {

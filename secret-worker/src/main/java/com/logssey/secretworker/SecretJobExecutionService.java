@@ -1,13 +1,13 @@
 package com.logssey.secretworker;
 
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+
 import java.time.OffsetDateTime;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
-
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
 public class SecretJobExecutionService {
@@ -34,7 +34,8 @@ public class SecretJobExecutionService {
             if (available.isEmpty()) {
                 return Optional.<ClaimedSecretJob>empty();
             }
-            // A new token on every attempt fences a worker that wakes up after its lease expires.
+                            // A new token on every attempt fences a worker that wakes up after its
+                            // lease expires.
             return Optional.of(repository.claim(available.getFirst(), now, now.plus(properties.leaseDuration()),
                     UUID.randomUUID().toString()));
         }));
@@ -53,14 +54,15 @@ public class SecretJobExecutionService {
 
     public boolean renewLease(long jobId, String leaseToken) {
         return Objects.requireNonNull(transaction.execute(status -> {
-            // The database checks the live lease and computes the new deadline atomically.
+                            // The database checks the live lease and computes the new deadline
+                            // atomically.
             return repository.renew(jobId, leaseToken, properties.leaseDuration());
         }));
     }
 
     /**
-     * Execute only short database persistence work here; never perform network calls inside this lock.
-     * This is the write fence that future collectors must use for run/scope/result updates.
+     * Execute only short database persistence work here; never perform network calls inside this
+     * lock. This is the write fence that future collectors must use for run/scope/result updates.
      */
     public boolean persistIfLeased(long jobId, String leaseToken, Runnable databaseWrites) {
         Objects.requireNonNull(databaseWrites, "databaseWrites");
@@ -72,6 +74,11 @@ public class SecretJobExecutionService {
             databaseWrites.run();
             return true;
         }));
+    }
+
+    /** Records stage facts only after the scope callback, fenced by the same live lease. */
+    public boolean recordScopeEvidence(long jobId, String token, long runScopeId, boolean validationFailed) {
+        return persistIfLeased(jobId, token, () -> repository.recordScopeEvidence(runScopeId, validationFailed));
     }
 
     /** Succeeds only after all stages and snapshotted scopes have terminal results. */
@@ -86,6 +93,19 @@ public class SecretJobExecutionService {
                 return false;
             }
             var run = repository.runState(row.get().runId());
+                            if (repository.isCredentialValidation(jobId)) {
+                                if (!java.util.Set.of("SUCCEEDED", "PARTIAL", "SKIPPED", "FAILED")
+                                        .contains(run.validation())) return false;
+                                repository.finishValidation(
+                                        row.get(),
+                                        now,
+                                        "PARTIAL".equals(run.validation())
+                                                ? "PARTIAL"
+                                                : "SKIPPED".equals(run.validation())
+                                                        ? "SKIPPED"
+                                                        : "SUCCEEDED");
+                                return true;
+                            }
             var scopes = repository.scopeState(row.get().runId());
             if (!canComplete(run, scopes)) {
                 return false;

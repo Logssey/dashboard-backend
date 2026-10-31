@@ -46,25 +46,29 @@ public final class SecretFindingRepository {
 
     private long startOrRestartToolRun(long runScopeId, String engineVersion, String configHash, Instant now) {
         List<ExistingToolRun> existing = jdbc.query("""
-                SELECT tr.tool_run_id, tr.engine_version, tr.config_hash, rs.run_id, rs.scope_id
+                SELECT tr.tool_run_id, tr.engine_version, tr.config_hash, rs.run_id, rs.scope_id,tr.fingerprint_key_version,tr.scope_origin_version,sc.response_origin_version AS current_origin_version
                 FROM secret_tool_runs tr
                 JOIN secret_run_scopes rs ON rs.run_scope_id = tr.run_scope_id
+                JOIN secret_connection_scopes sc ON sc.scope_id=rs.scope_id
                 WHERE tr.run_scope_id = ? AND tr.engine = 'GITLEAKS'
                 FOR UPDATE OF tr
                 """, (rs, row) -> new ExistingToolRun(rs.getLong("tool_run_id"),
                 rs.getString("engine_version"), rs.getString("config_hash"),
-                rs.getLong("run_id"), rs.getLong("scope_id")), runScopeId);
+                rs.getLong("run_id"), rs.getLong("scope_id"),rs.getString("fingerprint_key_version"),rs.getObject("scope_origin_version",Long.class),rs.getLong("current_origin_version")), runScopeId);
         if (existing.isEmpty()) {
             Long id = jdbc.queryForObject("""
                     INSERT INTO secret_tool_runs
-                        (run_scope_id, engine, engine_version, config_hash, status, started_at)
-                    VALUES (?, 'GITLEAKS', ?, ?, 'RUNNING', ?)
+                        (run_scope_id, engine, engine_version, config_hash, status, started_at,fingerprint_key_version,scope_origin_version)
+                    SELECT ?, 'GITLEAKS', ?, ?, 'RUNNING', ?,?,s.response_origin_version FROM secret_run_scopes rs
+                    JOIN secret_connection_scopes s ON s.scope_id=rs.scope_id WHERE rs.run_scope_id=?
                     RETURNING tool_run_id
-                    """, Long.class, runScopeId, engineVersion, configHash, utc(now));
+                    """, Long.class, runScopeId, engineVersion, configHash, utc(now),normalizer.keyVersion(),runScopeId);
             return Objects.requireNonNull(id);
         }
         ExistingToolRun old = existing.getFirst();
-        if (!old.engineVersion().equals(engineVersion) || !old.configHash().equals(configHash)) {
+        if (!old.engineVersion().equals(engineVersion) || !old.configHash().equals(configHash)
+            || old.fingerprintVersion()!=null&&!old.fingerprintVersion().equals(normalizer.keyVersion())
+            || old.originVersion()!=null&&old.originVersion()!=old.currentOriginVersion()) {
             throw new IllegalStateException("TOOL_RUN_CONFIG_CHANGED");
         }
         // A leased job may restart after partial ingestion. Prior findings are not fresh evidence
@@ -81,9 +85,9 @@ public final class SecretFindingRepository {
         jdbc.update("DELETE FROM secret_findings WHERE tool_run_id = ?", old.id());
         jdbc.update("""
                 UPDATE secret_tool_runs SET status = 'RUNNING', finding_count = 0,
-                    started_at = ?, finished_at = NULL, failure_code = NULL
+                    started_at = ?, finished_at = NULL, failure_code = NULL,fingerprint_key_version=?,scope_origin_version=?
                 WHERE tool_run_id = ?
-                """, utc(now), old.id());
+                """, utc(now),normalizer.keyVersion(),old.currentOriginVersion(), old.id());
         return old.id();
     }
 
@@ -165,7 +169,7 @@ public final class SecretFindingRepository {
         List<SecretFindingNormalizer.Credential> normalized = inspection.credentials();
         int storedFindings = 0;
         for (SecretFindingNormalizer.Credential credential : normalized) {
-            long credentialSetId = upsertCredential(credential, now);
+            long credentialSetId = upsertCredential(credential, context.runId(), now);
             long occurrenceId = upsertOccurrence(credentialSetId, context, sourceObjectRef,
                     credential.locationKey(), objectVersion, now);
             for (GitleaksFinding finding : credential.findings()) {
@@ -182,7 +186,25 @@ public final class SecretFindingRepository {
         return new ObjectResult(normalized.size(), storedFindings);
     }
 
-    private long upsertCredential(SecretFindingNormalizer.Credential credential, Instant now) {
+    private long upsertCredential(SecretFindingNormalizer.Credential credential, long runId, Instant now) {
+        if("CONFIRMED".equals(credential.componentState())) {
+            jdbc.queryForObject("SELECT pg_advisory_xact_lock(?)",Object.class,ByteBuffer.wrap(credential.fingerprint()).getLong());
+            boolean existing=Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS(SELECT 1 FROM secret_credential_sets WHERE component_state='CONFIRMED' AND issuer=? AND credential_type=? AND fingerprint_key_version=? AND fingerprint=?)
+                """,Boolean.class,credential.issuer(),credential.credentialType(),credential.fingerprintKeyVersion(),credential.fingerprint()));
+            if(!existing&&!credential.promotionLocators().isEmpty()) {
+                var args=new java.util.ArrayList<Object>(List.of(credential.issuer(),credential.credentialType(),credential.fingerprintKeyVersion()));
+                args.addAll(credential.promotionLocators());
+                var matches=jdbc.queryForList("SELECT credential_set_id FROM secret_credential_sets WHERE component_state='CANDIDATE' AND issuer=? AND credential_type=? AND fingerprint_key_version=? AND candidate_locator IN ("
+                    +String.join(",",java.util.Collections.nCopies(credential.promotionLocators().size(),"?"))+") ORDER BY first_seen_at,credential_set_id LIMIT 1 FOR UPDATE",Long.class,args.toArray());
+                if(!matches.isEmpty()) {
+                    long id=matches.getFirst();
+                    jdbc.update("UPDATE secret_credential_sets SET component_state='CONFIRMED',fingerprint=?,candidate_locator=NULL,masked_label=?,last_seen_at=greatest(last_seen_at,?) WHERE credential_set_id=?",
+                        credential.fingerprint(),credential.maskedLabel(),utc(now),id);
+                    return id;
+                }
+            }
+        }
         String conflict = "CONFIRMED".equals(credential.componentState()) ? """
                 ON CONFLICT (issuer, credential_type, fingerprint_key_version, fingerprint)
                     WHERE component_state = 'CONFIRMED'
@@ -195,12 +217,12 @@ public final class SecretFindingRepository {
         Long id = jdbc.queryForObject("""
                 INSERT INTO secret_credential_sets
                     (issuer, credential_type, component_state, fingerprint, candidate_locator,
-                     fingerprint_key_version, masked_label, first_seen_at, last_seen_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     fingerprint_key_version, masked_label, first_seen_at, last_seen_at, first_seen_run_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """ + conflict + " RETURNING credential_set_id", Long.class,
                 credential.issuer(), credential.credentialType(), credential.componentState(),
                 credential.fingerprint(), credential.candidateLocator(), credential.fingerprintKeyVersion(),
-                credential.maskedLabel(), utc(now), utc(now));
+                credential.maskedLabel(), utc(now), utc(now), runId);
         return Objects.requireNonNull(id);
     }
 
@@ -251,6 +273,6 @@ public final class SecretFindingRepository {
     private record ToolContext(long runId, long connectionId, long scopeId,
                                String engineVersion, String configHash, String status) { }
     private record ExistingToolRun(long id, String engineVersion, String configHash,
-                                   long runId, long scopeId) { }
+                                   long runId, long scopeId,String fingerprintVersion,Long originVersion,long currentOriginVersion) { }
     public record ObjectResult(int credentialCount, int newFindingCount) { }
 }

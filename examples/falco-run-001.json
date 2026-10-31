@@ -1,0 +1,31 @@
+{
+  "clusterId": "logssey-prod",
+  "schemaVersion": "falco-json-0.1",
+  "event": {
+    "uuid": "local-falco-run-001",
+    "time": "2026-10-14T06:35:00Z",
+    "priority": "Warning",
+    "rule": "Logssey RUN-001 Container Shell",
+    "output": "Shell spawned in a container",
+    "output_fields": {
+      "proc.name": "bash",
+      "proc.exepath": "/usr/bin/bash",
+      "proc.cmdline": "bash -c whoami",
+      "proc.pid": 121,
+      "proc.ppid": 87,
+      "proc.pexepath": "/usr/bin/containerd-shim-runc-v2",
+      "user.uid": "1000",
+      "container.id": "local-container-reused-api",
+      "container.image.repository": "logssey/reused-api",
+      "container.image.tag": "demo",
+      "container.image.digest": "sha256:local-demo",
+      "k8s.ns.name": "reused",
+      "k8s.deployment.name": "reused-api",
+      "k8s.pod.uid": "local-pod-uid-reused-api",
+      "k8s.pod.name": "reused-api-7d9df64b9f-local",
+      "k8s.pod.container.name": "api",
+      "k8s.node.name": "worker-a",
+      "k8s.sa.name": "reused-api"
+    }
+  }
+}

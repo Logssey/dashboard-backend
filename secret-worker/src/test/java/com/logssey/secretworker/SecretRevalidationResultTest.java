@@ -122,6 +122,25 @@ class SecretRevalidationResultTest {
                 String.class, seed.jobId())).isEqualTo("FAILED");
     }
 
+    @Test void changedRevisionCycleCompletionOrIdentityCannotReuseMissingEvidence(){
+        String[] mutations={"UPDATE secret_connection_scopes SET revision=revision+1",
+          "UPDATE secret_case_occurrences SET action_cycle=action_cycle+1",
+          "UPDATE secret_case_occurrences SET actions_completed_at=clock_timestamp()",
+          "UPDATE secret_case_occurrences SET last_material_action_at=clock_timestamp()",
+          "UPDATE secret_case_occurrences SET version=version+1",
+          "UPDATE secret_credential_sets SET fingerprint=decode(md5(random()::text),'hex')"};
+        for(int i=0;i<mutations.length;i++){
+            if(i>0)seedOneRevalidation();var claim=claim();completedEvidence("SUCCEEDED","SUCCEEDED","config-v1","gitleaks-v1","hmac-v1");
+            jdbc.update(mutations[i]);assertThat(execution.complete(claim.jobId(),claim.leaseToken())).isTrue();
+            assertOutcome("UNKNOWN","REVALIDATION_INCOMPLETE","UNKNOWN","SUCCEEDED");
+        }
+    }
+    @Test void legacyRevalidationWithoutCapturedComparisonFactsCannotProveAbsence(){
+        var claim=claim();completedEvidence("SUCCEEDED","SUCCEEDED","config-v1","gitleaks-v1","hmac-v1");
+        jdbc.update("UPDATE secret_case_revalidations SET scope_revision=NULL,baseline_identity=NULL WHERE run_id=?",seed.runId());
+        assertThat(execution.complete(claim.jobId(),claim.leaseToken())).isTrue();assertOutcome("UNKNOWN","REVALIDATION_INCOMPLETE","UNKNOWN","SUCCEEDED");
+    }
+
     private ClaimedSecretJob claim() {
         var claim = execution.claimNextJob().orElseThrow();
         assertThat(claim.jobId()).isEqualTo(seed.jobId());
@@ -138,7 +157,7 @@ class SecretRevalidationResultTest {
         jdbc.update("""
                 UPDATE secret_run_scopes
                 SET collection_status = ?, object_count = 1,
-                    started_at = clock_timestamp() - INTERVAL '1 second',
+                    started_at = clock_timestamp(),detection_stage_status='SUCCEEDED',
                     finished_at = clock_timestamp()
                 WHERE run_scope_id = ?
                 """, scopeStatus, seed.runScopeId());
@@ -273,6 +292,16 @@ class SecretRevalidationResultTest {
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'test-idempotency',
                         'config-v1', 'gitleaks-v1', 'hmac-v1', 2)
                 """, caseId, occurrenceId, actionId, connectionId, scopeId, jobId, runId, userId);
+        jdbc.update("""
+          UPDATE secret_case_occurrences SET last_material_action_at=(SELECT performed_at FROM secret_action_records WHERE action_id=?),actions_completed_at=clock_timestamp()-INTERVAL '1 minute'
+          WHERE case_id=? AND occurrence_id=?
+          """,actionId,caseId,occurrenceId);
+        jdbc.update("""
+          UPDATE secret_case_revalidations v SET scope_revision=1,scope_origin_version=0,action_cycle=1,occurrence_version=0,
+            last_material_action_at=co.last_material_action_at,actions_completed_at=co.actions_completed_at,
+            baseline_identity=(SELECT fingerprint FROM secret_credential_sets WHERE credential_set_id=?)
+          FROM secret_case_occurrences co WHERE v.run_id=? AND co.case_id=v.case_id AND co.occurrence_id=v.occurrence_id
+          """,credentialId,runId);
         return new Seed(connectionId, occurrenceId, jobId, runId, runScopeId, toolRunId);
     }
 

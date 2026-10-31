@@ -19,21 +19,11 @@ class SecretGuideRepository {
                 SELECT c.case_origin, c.action_status, c.assigned_user_id,
                        s.issuer, s.credential_type, s.component_state,
                        COALESCE(latest.result, 'UNCHECKED') AS validation_status,
-                       EXISTS (SELECT 1 FROM secret_case_occurrences co
-                               WHERE co.case_id = c.case_id)
-                       AND NOT EXISTS (
-                           SELECT 1 FROM secret_case_occurrences co
-                           JOIN secret_occurrences o ON o.occurrence_id = co.occurrence_id
-                           JOIN secret_connection_scopes scope ON scope.scope_id = o.scope_id
-                           JOIN secret_connections conn ON conn.connection_id = o.connection_id
-                           WHERE co.case_id = c.case_id
-                             AND (scope.content_type <> 'GITHUB_REPOSITORY_FILES'
-                                  OR scope.history_limit <> 'CURRENT_COMMIT_ONLY'
-                                  OR scope.approved_ref !~* '^github://Logssey/test-find-key/[^/?#]+/([^/?#]+/)+$'
-                                  OR scope.response_origin <> 'TEST'
-                                  OR NOT scope.enabled
-                                  OR conn.status <> 'ACTIVE')
-                       ) AS synthetic_fixture
+                       EXISTS (SELECT 1 FROM secret_case_occurrences co WHERE co.case_id=c.case_id)
+                       AND NOT EXISTS(SELECT 1 FROM secret_case_occurrences co JOIN secret_occurrences o USING(occurrence_id)
+                         WHERE co.case_id=c.case_id AND NOT EXISTS(SELECT 1 FROM secret_current_fixture_attestations t
+                           WHERE t.credential_set_id=c.credential_set_id AND t.scope_id=o.scope_id))
+                       AND NOT EXISTS(SELECT 1 FROM secret_confirmed_real_credentials real WHERE real.credential_set_id=c.credential_set_id) AS synthetic_fixture
                 FROM secret_response_cases c
                 JOIN secret_credential_sets s ON s.credential_set_id = c.credential_set_id
                 LEFT JOIN LATERAL (
@@ -51,6 +41,18 @@ class SecretGuideRepository {
                 caseId).stream().findFirst();
     }
 
+    boolean canRead(long actor,long caseId) {
+        return new org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate(jdbc).queryForObject("""
+         SELECT EXISTS(SELECT 1 FROM secret_case_occurrences co JOIN secret_occurrences o USING(occurrence_id)
+          WHERE co.case_id=:case AND
+         """+com.logssey.secret.access.SecretOccurrenceAccessSql.predicate("o",":actor")+")",java.util.Map.of("case",caseId,"actor",actor),Boolean.class);
+    }
+    boolean allLocationsReadable(long actor,long caseId) {
+        return new org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate(jdbc).queryForObject("""
+         SELECT NOT EXISTS(SELECT 1 FROM secret_case_occurrences co JOIN secret_occurrences o USING(occurrence_id)
+          WHERE co.case_id=:case AND NOT (
+         """+com.logssey.secret.access.SecretOccurrenceAccessSql.predicate("o",":actor")+"))",java.util.Map.of("case",caseId,"actor",actor),Boolean.class);
+    }
     record GuideCase(String origin, String stage, Long assigneeUserId, String issuer,
                      String credentialType, String componentState, String validationStatus,
                      boolean syntheticFixture) {
