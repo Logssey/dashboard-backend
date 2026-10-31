@@ -9,7 +9,7 @@ Content-Type: application/json
 {"connectionId": 1, "idempotencyKey": "manual-request-1"}
 ```
 
-`connectionId`는 이미 등록된 ACTIVE GitHub 연결이나 지원되는 AWS 메타데이터 범위만 가진 ACTIVE AWS 연결이어야 한다. AWS 범위는 IAM 접근 키, Secrets Manager 목록, SSM 파라미터 목록, S3 버킷 목록이며, 실행하려면 별도 워커의 AWS 수집 옵션을 켜야 한다. 지원되지 않는 공급자·범위는 409로 거부한다. 요청은 원천 URL, 자격 증명, 범위를 받지 않는다. 등록 시 `enabled=true`인 승인 범위만 `secret_run_scopes`에 복사하며, 연결의 `scope_version`을 실행에 기록한다. 승인 범위가 없거나 연결이 중지되면 409, 연결이 없으면 404다. 등록은 정기 검사 `next_due_at`을 바꾸지 않는다.
+`connectionId`는 이미 등록된 ACTIVE GitHub 연결이나 지원되는 승인 범위를 가진 ACTIVE AWS 연결이어야 한다. AWS 범위는 IAM 접근 키·Secrets Manager/SSM/S3 목록 메타데이터와 정확히 승인된 Secret·Parameter·S3 객체 현재 값이며, 실행하려면 별도 워커의 AWS 수집 옵션을 켜야 한다. 지원되지 않는 공급자·범위는 409로 거부한다. 요청은 원천 URL, 자격 증명, 범위를 받지 않는다. 등록 시 `enabled=true`인 승인 범위만 `secret_run_scopes`에 복사하며, 연결의 `scope_version`을 실행에 기록한다. 승인 범위가 없거나 연결이 중지되면 409, 연결이 없으면 404다. 등록은 정기 검사 `next_due_at`을 바꾸지 않는다.
 
 성공 응답은 `202 Accepted`, `Location: /api/v1/secrets/runs/{runId}`, `{ "runId": 1, "status": "PENDING" }`이다. 동일 사용자의 동일 `idempotencyKey` 재요청은 완료 후에도 처음 실행 ID를 반환한다. 키는 사용자 ID와 함께 해시해 저장하며 원문을 DB에 남기지 않는다. 같은 키를 다른 연결에 재사용하거나 이미 진행 중인 연결에 **다른 새 키**로 요청하면 409를 반환한다. 키를 생략하고 진행 중인 연결을 다시 요청하면 기존 실행 ID를 반환한다. 동시 요청은 DB 연결 행 잠금과 멱등 키 잠금으로 한 작업만 예약한다.
 

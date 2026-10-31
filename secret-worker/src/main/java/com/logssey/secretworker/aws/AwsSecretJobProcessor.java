@@ -119,6 +119,10 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
                 || scope.connectionVersion() != scope.runVersion() || !java.util.Objects.equals(scope.capturedRevision(),scope.revision()))) {
             throw new SecretJobFailure(SecretJobFailureCode.SOURCE_ACCESS_DENIED, false);
         }
+        boolean locationRecheck = Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT kind='REVALIDATE' AND purpose='LOCATION_RECHECK' FROM secret_jobs WHERE job_id=?",
+                Boolean.class, job.jobId()));
+        if (locationRecheck) prepareLocationRecheck(job, execution, scopes);
         withLease(job, execution, () -> jdbc.update("""
                 UPDATE secret_scan_runs SET collection_status = 'RUNNING',
                     detection_status = 'SKIPPED', validation_status = 'SKIPPED'
@@ -154,11 +158,54 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
                     validation_status = ?, failure_code = ?
                 WHERE run_id = ?
                 """, collectionStatus, detectionStatus, validationStatus, runGap, job.runId()));
+        if (locationRecheck) {
+            withLease(job, execution, () -> jdbc.update(
+                    "UPDATE secret_case_revalidations SET runtime_fingerprint_version=? WHERE job_id=?",
+                    content.fingerprintKeyVersion(), job.jobId()));
+        }
         if (succeeded == 0) {
             throw new SecretJobFailure(retryCode(firstGap), retryable(firstGap));
         }
         if (content != null && content.hasRetryableValidation(job))
             throw new SecretJobFailure(SecretJobFailureCode.VALIDATOR_TEMPORARY, true);
+    }
+
+    private void prepareLocationRecheck(ClaimedSecretJob job, SecretJobExecutionService execution,
+                                       List<Scope> scopes) {
+        if (content == null || scopes.size() != 1
+                || !AwsContentScope.supports(scopes.getFirst().contentType())) {
+            throw new SecretJobFailure(SecretJobFailureCode.SOURCE_ACCESS_DENIED, false);
+        }
+        Scope scope = scopes.getFirst();
+        // An external location recheck is bound to the original credential and action cycle.
+        // A stale request must not read a newly approved resource or another occurrence.
+        boolean comparable = Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT count(*)=1 FROM secret_case_revalidations v
+                JOIN secret_case_occurrences co ON co.case_id=v.case_id AND co.occurrence_id=v.occurrence_id
+                JOIN secret_response_cases c ON c.case_id=v.case_id
+                JOIN secret_occurrences o ON o.occurrence_id=v.occurrence_id
+                JOIN secret_credential_sets k ON k.credential_set_id=c.credential_set_id
+                JOIN secret_connection_scopes s ON s.scope_id=v.scope_id
+                WHERE v.job_id=? AND v.run_id=? AND v.connection_id=? AND v.scope_id=? AND v.status='PENDING'
+                  AND o.connection_id=v.connection_id AND o.scope_id=v.scope_id
+                  AND o.credential_set_id=c.credential_set_id
+                  AND o.source_object_ref='aws-content-scope:' || v.scope_id::text
+                  AND c.is_current AND c.disposition='IN_SCOPE' AND c.case_origin=s.response_origin
+                  AND co.response_status='REVALIDATION_PENDING' AND co.action_cycle=v.action_cycle
+                  AND co.version=v.occurrence_version AND co.last_material_action_at=v.last_material_action_at
+                  AND co.actions_completed_at=v.actions_completed_at
+                  AND v.requested_at>=co.actions_completed_at AND v.requested_at>co.last_material_action_at
+                  AND s.revision=v.scope_revision AND s.response_origin_version=v.scope_origin_version
+                  AND k.component_state='CONFIRMED' AND k.fingerprint=v.baseline_identity
+                  AND k.fingerprint_key_version=v.baseline_fingerprint_version
+                  AND k.fingerprint_key_version=?
+                """, Boolean.class, job.jobId(), job.runId(), job.connectionId(), scope.scopeId(),
+                content.fingerprintKeyVersion()));
+        if (!comparable) throw new SecretJobFailure(SecretJobFailureCode.SOURCE_ACCESS_DENIED, false);
+        withLease(job, execution, () -> jdbc.update("""
+                UPDATE secret_occurrences o SET presence_status='UNKNOWN'
+                FROM secret_case_revalidations v WHERE v.job_id=? AND v.occurrence_id=o.occurrence_id
+                """, job.jobId()));
     }
 
     private ScopeResult processScope(ClaimedSecretJob job, Scope scope,

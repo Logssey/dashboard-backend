@@ -70,7 +70,7 @@ class SecretRevalidationRepository {
 
     List<Long> requestableOccurrenceIds(long caseId) {
         List<RequestCandidate> candidates = jdbc.query("""
-                SELECT o.occurrence_id, o.connection_id, scope.content_type, scope.history_limit,
+                SELECT o.occurrence_id, o.connection_id, conn.provider, scope.content_type, scope.history_limit,
                        scope.approved_ref
                 FROM secret_response_cases c
                 JOIN secret_case_occurrences co ON co.case_id = c.case_id
@@ -81,16 +81,17 @@ class SecretRevalidationRepository {
                   AND c.action_status IN ('IN_PROGRESS', 'REVALIDATION_PENDING')
                   AND co.response_status = 'REVALIDATION_PENDING'
                   AND o.presence_status = 'PRESENT'
-                  AND conn.provider = 'GITHUB' AND conn.status = 'ACTIVE'
+                  AND conn.provider IN ('GITHUB','AWS') AND conn.status = 'ACTIVE'
                   AND scope.enabled AND scope.response_origin = c.case_origin
                   AND EXISTS (SELECT 1 FROM secret_action_records a
                       WHERE a.case_id = c.case_id AND a.occurrence_id = o.occurrence_id)
                 """, (rs, row) -> new RequestCandidate(rs.getLong("occurrence_id"),
                 rs.getLong("connection_id"),
+                rs.getString("provider"),
                 rs.getString("content_type"), rs.getString("history_limit"),
                 rs.getString("approved_ref")), caseId);
         return candidates.stream().filter(item ->
-                SecretGithubScopePolicy.approved(item.contentType(), item.historyLimit(),
+                SecretLocationScopePolicy.approved(item.provider(), item.contentType(), item.historyLimit(),
                         item.approvedRef()) && !activeJob(item.connectionId()))
                 .map(RequestCandidate::occurrenceId).toList();
     }
@@ -392,7 +393,7 @@ class SecretRevalidationRepository {
     record Baseline(String configHash, String engineVersion) {
     }
 
-    record RequestCandidate(long occurrenceId, long connectionId, String contentType,
+    record RequestCandidate(long occurrenceId, long connectionId, String provider, String contentType,
                             String historyLimit, String approvedRef) {
     }
 

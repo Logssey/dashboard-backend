@@ -69,6 +69,10 @@ public final class AwsContentPipeline {
         return attempts.hasRetryable(job);
     }
 
+    public String fingerprintKeyVersion() {
+        return normalizer.keyVersion();
+    }
+
     public void processValidation(
             ClaimedSecretJob job,
             SecretJobExecutionService execution,
@@ -181,6 +185,10 @@ public final class AwsContentPipeline {
                                                 sourceRef,
                                                 bytes,
                                                 scan.findings());
+                                if (unprovenRecheckAbsence(job, inspection)) {
+                                    consumerGap.set("DETECTOR_NORMALIZATION_INCOMPLETE");
+                                    throw new IllegalStateException("DETECTOR_NORMALIZATION_INCOMPLETE");
+                                }
                                 withLease(
                                         job,
                                         execution,
@@ -257,6 +265,32 @@ public final class AwsContentPipeline {
         withLease(job, execution, () -> findings.finishToolRun(toolRunId.get(),
                 result.status().name(), gap, Instant.now()));
         return new Result(result.status(), result.objectCount(), gap);
+    }
+
+    private boolean unprovenRecheckAbsence(ClaimedSecretJob job,
+                                           SecretFindingNormalizer.Inspection inspection) {
+        var normalized = inspection.credentials().stream()
+                .flatMap(credential -> credential.findings().stream())
+                .collect(java.util.stream.Collectors.toSet());
+        if (normalized.containsAll(inspection.detectorFindings())
+                && inspection.credentials().stream().allMatch(c -> "CONFIRMED".equals(c.componentState())))
+            return false;
+        var targets = attempts.jdbcTemplate().queryForList("""
+                SELECT v.baseline_identity,v.baseline_fingerprint_version,o.location_key
+                FROM secret_case_revalidations v JOIN secret_occurrences o USING(occurrence_id)
+                JOIN secret_jobs j ON j.job_id=v.job_id AND j.purpose='LOCATION_RECHECK'
+                WHERE v.job_id=? AND v.status='PENDING'
+                """, job.jobId());
+        if (targets.isEmpty()) return false;
+        var target = targets.getFirst();
+        // A positive, identity-matched observation is still useful. Uninterpreted candidates
+        // must not otherwise turn a changed/unsupported representation into proof of removal.
+        return inspection.credentials().stream().noneMatch(credential ->
+                "CONFIRMED".equals(credential.componentState())
+                        && credential.locationKey().equals(target.get("location_key"))
+                        && credential.fingerprintKeyVersion().equals(target.get("baseline_fingerprint_version"))
+                        && java.security.MessageDigest.isEqual(credential.fingerprint(),
+                                (byte[]) target.get("baseline_identity")));
     }
 
     private static void withLease(ClaimedSecretJob job, SecretJobExecutionService execution,
