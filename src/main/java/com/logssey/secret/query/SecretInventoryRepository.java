@@ -114,7 +114,7 @@ class SecretInventoryRepository {
                 WHERE c.status = 'ACTIVE' AND c.provider IN ('GITHUB', 'AWS')
                 GROUP BY c.connection_id, c.provider, c.display_name, c.status
                 HAVING c.provider = 'GITHUB'
-                    OR (c.auth_ref ~ '^aws-profile:[A-Za-z0-9._-]{1,100}$'
+                    OR ((c.auth_ref ~ '^aws-profile:[A-Za-z0-9._-]{1,100}$' OR c.auth_ref='aws-workload:default')
                         AND COUNT(*) FILTER (WHERE AWS_SCOPE_VALID) > 0
                         AND COUNT(*) FILTER (WHERE NOT AWS_SCOPE_VALID) = 0)
                 ORDER BY c.display_name, c.connection_id

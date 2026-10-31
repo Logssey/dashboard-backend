@@ -43,3 +43,6 @@ out/
 *.p12
 *.pfx
 *.jks
+
+# Local validation helpers must not add Python bytecode to application PRs.
+__pycache__/

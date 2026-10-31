@@ -106,7 +106,7 @@ class SecretRunRepository {
                 SELECT (? = 'GITHUB' OR EXISTS (
                     SELECT 1 FROM secret_connections c
                     WHERE c.connection_id = ?
-                      AND c.auth_ref ~ '^aws-profile:[A-Za-z0-9._-]{1,100}$'
+                      AND (c.auth_ref ~ '^aws-profile:[A-Za-z0-9._-]{1,100}$' OR c.auth_ref='aws-workload:default')
                 )) AND EXISTS (
                     SELECT 1 FROM secret_connection_scopes s
                     WHERE s.connection_id = ? AND s.enabled

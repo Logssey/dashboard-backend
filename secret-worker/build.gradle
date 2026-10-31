@@ -49,4 +49,5 @@ tasks.named('test') {
 
 // Only the isolated DB/engine core is shared; the worker never imports API configuration.
 sourceSets.main.java.srcDir(rootProject.file('src/main/java/com/logssey/secret/risk/core'))
+sourceSets.main.java.srcDir(rootProject.file('src/main/java/com/logssey/secret/aws'))
 sourceSets.test.java.srcDir(rootProject.file('src/testFixtures/java'))

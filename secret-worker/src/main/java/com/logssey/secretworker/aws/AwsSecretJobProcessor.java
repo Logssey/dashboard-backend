@@ -11,6 +11,7 @@ import com.logssey.secretworker.aws.content.AwsContentPipeline;
 import com.logssey.secretworker.aws.content.AwsContentScope;
 import com.logssey.secretworker.aws.metadata.AwsMetadataApprovedScope;
 import com.logssey.secretworker.aws.metadata.AwsMetadataCollector;
+import com.logssey.secret.aws.SecretAwsSourceCredentials;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 
@@ -44,6 +45,22 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
                                  AwsMetadataCollector additional, AwsIamGateway accountGateway,
                                  AwsIamMetadataRepository metadata, SecretJobProperties jobs,
                                  String profile, AwsContentPipeline content) {
+        this(jdbc, collector, additional, accountGateway, metadata, jobs,
+                profileRef(profile), content, true);
+    }
+
+    public AwsSecretJobProcessor(JdbcTemplate jdbc, AwsIamCollector collector,
+                                 AwsMetadataCollector additional, AwsIamGateway accountGateway,
+                                 AwsIamMetadataRepository metadata, SecretJobProperties jobs,
+                                 SecretAwsSourceCredentials credentials, AwsContentPipeline content) {
+        this(jdbc, collector, additional, accountGateway, metadata, jobs,
+                credentials.authRef(), content, true);
+    }
+
+    private AwsSecretJobProcessor(JdbcTemplate jdbc, AwsIamCollector collector,
+                                 AwsMetadataCollector additional, AwsIamGateway accountGateway,
+                                 AwsIamMetadataRepository metadata, SecretJobProperties jobs,
+                                 String authRef, AwsContentPipeline content, boolean validatedReference) {
         this.jdbc = jdbc;
         this.collector = collector;
         this.additional = additional;
@@ -51,10 +68,15 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
         this.metadata = metadata;
         this.content = content;
         this.jobs = jobs;
-        if (profile == null || !profile.matches("[A-Za-z0-9._-]{1,100}")) {
+        if (!SecretAwsSourceCredentials.isReference(authRef))
+            throw new IllegalArgumentException("AWS_SOURCE_REFERENCE_INVALID");
+        this.expectedAuthRef = authRef;
+    }
+
+    private static String profileRef(String profile) {
+        if (profile == null || !profile.matches("[A-Za-z0-9._-]{1,100}"))
             throw new IllegalArgumentException("AWS_PROFILE_REQUIRED");
-        }
-        this.expectedAuthRef = "aws-profile:" + profile;
+        return "aws-profile:" + profile;
     }
 
     @Override public String provider() { return "AWS"; }
