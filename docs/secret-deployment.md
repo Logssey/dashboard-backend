@@ -106,7 +106,7 @@ python deploy/assert-no-fixture-secrets.py --needles-file /secure/test-fixture-t
 psql 'service=logssey_secret_monitor' -X -v ON_ERROR_STOP=1 -f deploy/monitor-secret.sql
 ```
 
-대기 작업이 2분 이상 도래 상태로 남음, 만료 리스 지속, 실패/부분 실패 급증, 예정 연결의 2분 이상 지연을 알림 대상으로 삼는다. 대시보드의 수집 건강도와 최근 시도/최근 성공을 함께 본다. 워커는 비웹 프로세스이며 HTTP health endpoint와 유휴 시 독립 heartbeat는 없다. 프로세스 생존만으로 폴러 정상 동작을 확정하지 말고 큐 지연/DB 연결도 확인한다. 임계치·외부 알림 시스템 연결은 운영 환경에서 별도 설정한다.
+워커는 비웹 프로세스이며 독립 스레드가 예약·실행·평가·권한 관측의 heartbeat와 실제 진행을 기록한다. API의 독립 타이머가 워커 정지·진행 정체·큐 지연·만료 리스·실패/부분 실패 조건을 내부 알림으로 저장하고 중복/복구를 관리한다. 연결 관리의 운영 상태에서 확인한다. 비활성 기능·미래 backoff·유효 리스의 장시간 작업·완료된 정상 0건은 실패로 합치지 않는다. 임계치와 기대 인스턴스 수는 배포 처리량에 맞춰 정한다. API/DB까지 함께 중단되면 내부 저장이 불가능하므로 배포 플랫폼의 별도 생존/DB 감시가 필요하다. 외부 Slack/메일 전송은 구성하지 않는다. 상세는 [운영 상태·복구 자동화](secret-operations.md)를 따른다.
 
 기동 실패 또는 원문 노출 의심 시 먼저 워커를 중지하고 비밀/로그 접근을 제한한다. 원천 쓰기·키 폐기는 이 앱이 자동 수행하지 않는다. 정상 중지는 `docker compose ... stop worker`를 사용하며 DB 작업 행을 임의 삭제하지 않는다. 재시작 후 만료 리스 복구와 동일 실행의 재시도 결과를 확인한다. 롤백은 이전 이미지로 하되 새 스키마와의 호환성을 먼저 확인한다.
 
@@ -118,4 +118,4 @@ pg_dump 'service=logssey_backup' --format=custom --file=/secure/backups/logssey.
 pg_restore --dbname='service=logssey_restore_drill' --no-owner --exit-on-error /secure/backups/logssey.dump
 ```
 
-복원 DB에서 Flyway validate, 건수/권한, Secret 목록·대응 이력, 동일 HMAC 버전의 비교를 검사한다. 복구 목표(RPO/RTO)·암호화 키·복원 대상 격리·삭제 정책 재적용을 운영자가 확정한다. 감사/실행/근거 데이터의 전체 보존·삭제 자동화, HMAC 무중단 회전, 정기 백업/복원 자동화는 아직 제공하지 않는다. 기존 보호키를 교체하거나 버전 문자열만 바꾸면 과거 지문 비교가 깨질 수 있으므로 승인된 이전·재수집 계획 없이 변경하지 않는다.
+복원 DB에서 Flyway validate, 건수/권한, Secret 목록·대응 이력, 동일 HMAC 버전의 비교를 검사한다. `deploy/secret_recovery.py`는 암호화 논리 백업과 격리 복원 시험 및 명시한 주기의 실행기를 제공한다. 실제 운영 스케줄 설치·백업 저장소·PITR·RPO/RTO 달성은 배포 환경에서 별도로 확정·검증한다. 전체 원장 삭제와 HMAC 무중단 회전은 제공하지 않는다. 보호키의 초기 이력은 운영자의 승인된 실제 런타임 기준으로 확인하며 기존 DB HMAC만으로 실제 키를 역검증할 수 있다고 주장하지 않는다. [운영 상태·복구 자동화](secret-operations.md)의 고정 키 복구·점검 중단 이전 절차를 따른다.
