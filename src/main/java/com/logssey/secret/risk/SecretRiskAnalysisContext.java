@@ -74,7 +74,7 @@ final class SecretRiskAnalysisContext {
     explanation.put("missingReasonCodes", List.copyOf(missing));
     explanation.put("assessmentCurrent", Boolean.TRUE.equals(risk.get("currentEligible")));
     result.put("explanation", explanation);
-    result.put("limitations", List.of("AUTOMATED_PERMISSION_ANALYSIS_UNSUPPORTED",
+    result.put("limitations", List.of("AUTOMATED_IMPACT_ASSESSMENT_UNSUPPORTED",
         "MANUAL_ASSET_LINK_NOT_PERMISSION_PROOF", "VALIDITY_NOT_PERMISSION_PROOF"));
     return result;
   }

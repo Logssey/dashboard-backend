@@ -4,7 +4,9 @@ import java.time.Instant;
 
 /** Safe metadata only: no access key, secret, session token, response body, or exception text. */
 public record AwsValidationResult(Status status, Reason reason, Instant evaluatedAt, Instant checkedAt,
-                                  String method, String version) {
+                                  String method, String version,
+                                  com.logssey.secret.permission.core.SecretProviderIdentity identity) {
+    public AwsValidationResult(Status status,Reason reason,Instant evaluatedAt,Instant checkedAt,String method,String version){this(status,reason,evaluatedAt,checkedAt,method,version,null);}
     public enum Status { VALID, INVALID, UNKNOWN, UNCHECKED }
 
     public enum Reason {
