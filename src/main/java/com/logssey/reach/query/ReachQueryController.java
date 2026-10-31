@@ -4,6 +4,7 @@ import java.security.Principal;
 import java.util.List;
 
 import com.logssey.reach.query.dto.ReachFindingPageResponse;
+import com.logssey.reach.query.dto.ReachSummaryResponse;
 
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -30,8 +31,19 @@ public class ReachQueryController {
             @RequestParam(required = false) String cveContains,
             @RequestParam(required = false) Integer size,
             @RequestParam(required = false) String cursor,
-            @RequestParam(required = false) String include) {
+            @RequestParam(required = false) String include)
+             {
         var filter = new ReachFindingFilter(status, severity, reviewState, deployment, cveContains);
         return service.findings(principal == null ? null : principal.getName(), filter, size, cursor, include);
     }
+
+    /** API-08 */
+    @GetMapping("/summary")
+    public ReachSummaryResponse summary(Principal principal,
+                                        @RequestParam(required = false) List<String> deployment,
+                                        @RequestParam(required = false) List<String> include) {
+        return service.summary(principal == null ? null : principal.getName(), deployment, include);
+    }
+    
 }
+

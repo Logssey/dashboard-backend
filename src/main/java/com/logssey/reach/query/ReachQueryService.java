@@ -3,6 +3,12 @@ package com.logssey.reach.query;
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
 import com.logssey.reach.query.dto.ReachFindingPageResponse;
+import com.logssey.reach.query.dto.ReachSummaryResponse;
+
+import java.time.OffsetDateTime;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -54,5 +60,55 @@ public class ReachQueryService {
         if (!repository.isAdmin(loginId)) {
             throw new ApiException(ErrorCode.FORBIDDEN);
         }
+    }
+
+    public ReachSummaryResponse summary(String loginId, List<String> deployment, List<String> include) {
+        requireAdmin(loginId);
+        var deployments = ReachCodes.checked(deployment, ReachCodes.DEPLOYMENTS);
+        var includes = ReachCodes.checked(include, List.of("matrix"));
+
+        // 명세: 모든 값을 0까지 준다. LinkedHashMap은 넣은 순서를 지킨다
+        var byStatus = zeros(ReachCodes.STATUSES);
+        var byReason = zeros(ReachCodes.NOT_ANALYZED_REASONS);
+        var bySeverity = zeros(ReachCodes.SEVERITIES);
+        var byMethod = zeros(ReachCodes.METHODS);
+        var byReviewState = zeros(ReachCodes.REVIEW_STATES);
+        var byDeployment = zeros(ReachCodes.DEPLOYMENTS);
+        var matrix = new LinkedHashMap<String, Map<String, Long>>();   // 0인 칸은 넣지 않는다
+        long total = 0;
+
+        for (var row : repository.summaryRows(deployments)) {
+            long n = row.count();
+            total += n;
+            byStatus.merge(row.status(), n, Long::sum);
+            bySeverity.merge(row.severity(), n, Long::sum);
+            byReviewState.merge(row.reviewState(), n, Long::sum);
+            byDeployment.merge(row.deployment(), n, Long::sum);
+            if (row.method() != null) byMethod.merge(row.method(), n, Long::sum);              // NOT_ANALYZED는 방식 없음
+            if (row.notAnalyzedReason() != null) byReason.merge(row.notAnalyzedReason(), n, Long::sum);
+            matrix.computeIfAbsent(row.severity(), k -> new LinkedHashMap<>()).merge(row.status(), n, Long::sum);
+            }
+
+        long unreachable = byStatus.get("UNREACHABLE");
+        long judged = byStatus.get("REACHABLE") + unreachable + byStatus.get("UNKNOWN");   // NOT_ANALYZED 제외 (PRD M-01)
+        return new ReachSummaryResponse(
+                new ReachSummaryResponse.Scope(null, null),
+                new ReachSummaryResponse.Totals(total),
+                byStatus, byReason, bySeverity, byMethod, byReviewState, byDeployment,
+                includes.contains("matrix") ? matrix : null,
+                new ReachSummaryResponse.NoiseReduction(unreachable, judged, ratio(unreachable, judged)),
+                new ReachSummaryResponse.Coverage(judged, total, ratio(judged, total)),
+                OffsetDateTime.now());
+    }
+
+    private static Map<String, Long> zeros(List<String> keys) {
+        var map = new LinkedHashMap<String, Long>();
+        keys.forEach(key -> map.put(key, 0L));
+        return map;
+    }
+
+    /** 소수 셋째 자리 반올림, 분모 0이면 null (명세 API-08) */
+    private static Double ratio(long numerator, long denominator) {
+        return denominator == 0 ? null : Math.round(numerator * 1000.0 / denominator) / 1000.0;
     }
 }

@@ -150,4 +150,29 @@ public class ReachQueryRepository {
         return new Row(finding(rs, rowNum), rs.getInt("status_rank"), rs.getInt("severity_rank"),
                 rs.getInt("cve_year"), rs.getInt("cve_number"));
     }
+
+    /** 요약용 한 줄: 상태·심각도·방식·검토·배포·사유 조합과 그 개수 */
+    record SummaryRow(
+            String status,
+            String severity,
+            String method,
+            String reviewState,
+            String deployment,
+            String notAnalyzedReason,
+            long count) {}
+
+    /** API-08. 목록과 같은 CURRENT_FINDINGS를 조합별로 센다. 차원별 합계는 Service가 낸다 */
+    List<SummaryRow> summaryRows(List<String> deployment) {
+        var where = deployment.isEmpty() ? "" : " WHERE deployment IN (:deployment)";
+        var spec = jdbcClient.sql("""
+                SELECT status, severity, method, review_state, deployment, not_analyzed_reason, count(*) AS n
+                FROM (%s) c%s
+                GROUP BY status, severity, method, review_state, deployment, not_analyzed_reason
+                """.formatted(CURRENT_FINDINGS, where));
+        if (!deployment.isEmpty()) spec = spec.param("deployment", deployment);
+        return spec.query((rs, i) -> new SummaryRow(rs.getString("status"), rs.getString("severity"),
+                        rs.getString("method"), rs.getString("review_state"), rs.getString("deployment"),
+                        rs.getString("not_analyzed_reason"), rs.getLong("n")))
+                .list();
+    }
 }
