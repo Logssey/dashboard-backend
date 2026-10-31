@@ -2,7 +2,13 @@ package com.logssey.reach.scan;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
+import com.logssey.reach.scan.dto.ReachScanPageResponse;
 import com.logssey.reach.scan.dto.ReachScanResponse;
+
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterAll;
@@ -21,6 +27,7 @@ import static org.assertj.core.api.Assertions.entry;
 class ReachScanServiceTest {
 
     private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:18.6");
+    private static final ReachScanFilter ALL = new ReachScanFilter(null, null, null, null, null, null);
     private static JdbcTemplate jdbc;
     private ReachScanService service;
 
@@ -170,6 +177,147 @@ class ReachScanServiceTest {
         assertError(() -> service.scan("admin", 999), ErrorCode.NOT_FOUND);
     }
 
+    // ---- API-02 스캔 이력 ----
+
+    @Test
+    void listRequiresAdmin() {
+        assertError(() -> service.scans(null, ALL, null, null, null), ErrorCode.UNAUTHENTICATED);
+        assertError(() -> service.scans("nobody", ALL, null, null, null), ErrorCode.FORBIDDEN);
+    }
+
+    @Test
+    void listsNewestFirstByDefault() {
+        long target = target("sha256:a");
+        long old = scan(target, "SUCCEEDED", "MANUAL", 30);
+        long middle = scan(target, "FAILED", "PR", 20);
+        long recent = scan(target, "RUNNING", "SCHEDULE", 10);
+
+        assertThat(ids(list(ALL))).containsExactly(recent, middle, old);
+        assertThat(ids(list(sorted("createdAt")))).containsExactly(old, middle, recent);
+    }
+
+    @Test
+    void finishedAtSortPutsUnfinishedScansFirstWhenDescending() {
+        long target = target("sha256:a");
+        long slow = scan(target, "SUCCEEDED", "MANUAL", 30);
+        long quick = scan(target, "SUCCEEDED", "MANUAL", 20);
+        long running = scan(target, "RUNNING", "MANUAL", 10);
+        // 가장 먼저 시작했지만 가장 늦게 끝난 스캔: 만든 순서와 끝난 순서가 달라진다
+        jdbc.update("UPDATE reach_scans SET finished_at = now() WHERE scan_id = ?", slow);
+
+        assertThat(ids(list(sorted("-finishedAt")))).containsExactly(running, slow, quick);
+        assertThat(ids(list(sorted("finishedAt")))).containsExactly(quick, slow, running);
+    }
+
+    @Test
+    void filtersByTargetStatusAndTrigger() {
+        long a = target("sha256:a");
+        long b = target("sha256:b");
+        long succeeded = scan(a, "SUCCEEDED", "MANUAL", 30);
+        long failed = scan(a, "FAILED", "PR", 20);
+        long running = scan(a, "RUNNING", "PR", 10);
+        long other = scan(b, "SUCCEEDED", "PR", 5);
+
+        assertThat(ids(list(new ReachScanFilter(a, null, null, null, null, null))))
+                .containsExactly(running, failed, succeeded);
+        assertThat(ids(list(new ReachScanFilter(null, List.of("SUCCEEDED", "FAILED"), null, null, null, null))))
+                .containsExactly(other, failed, succeeded);
+        assertThat(ids(list(new ReachScanFilter(a, List.of("SUCCEEDED", "FAILED"), List.of("PR"), null, null, null))))
+                .containsExactly(failed);
+        // 스캔이 없는 대상은 빈 목록, 없는 대상은 404
+        long noScans = target("sha256:c");
+        assertThat(list(new ReachScanFilter(noScans, null, null, null, null, null)).items()).isEmpty();
+        assertError(() -> list(new ReachScanFilter(999L, null, null, null, null, null)), ErrorCode.NOT_FOUND);
+    }
+
+    @Test
+    void createdAtRangeIncludesFromAndExcludesTo() {
+        long target = target("sha256:a");
+        long start = scan(target, "SUCCEEDED");
+        long noon = scan(target, "SUCCEEDED");
+        long nextDay = scan(target, "SUCCEEDED");
+        createdAt(start, "2026-10-01T00:00:00Z");
+        createdAt(noon, "2026-10-01T12:00:00Z");
+        createdAt(nextDay, "2026-10-02T00:00:00Z");
+
+        var oneDay = new ReachScanFilter(null, null, null,
+                Instant.parse("2026-10-01T00:00:00Z"), Instant.parse("2026-10-02T00:00:00Z"), null);
+        assertThat(ids(list(oneDay))).containsExactly(noon, start);
+    }
+
+    @Test
+    void cursorVisitsEveryScanOnceInEachSort() {
+        long target = target("sha256:a");
+        var newestFirst = new ArrayList<Long>();
+        for (int i = 1; i <= 5; i++) newestFirst.add(scan(target, i == 3 ? "RUNNING" : "SUCCEEDED", "MANUAL", i * 10));
+        long running = newestFirst.get(2);
+        // 끝난 시각 내림차순: 안 끝난 스캔이 맨 위, 나머지는 만든 순서와 같다
+        var finishedDesc = new ArrayList<Long>(newestFirst);
+        finishedDesc.remove(running);
+        finishedDesc.add(0, running);
+
+        var expected = Map.of(
+                "-createdAt", newestFirst,
+                "createdAt", newestFirst.reversed(),
+                "-finishedAt", finishedDesc,
+                "finishedAt", finishedDesc.reversed());
+        expected.forEach((sort, ids) -> {
+            var seen = new ArrayList<Long>();
+            String cursor = null;
+            do {
+                var page = service.scans("admin", sorted(sort), 2, cursor, "total");
+                assertThat(page.totalCount()).isEqualTo(5);
+                seen.addAll(ids(page));
+                cursor = page.nextCursor();
+            } while (cursor != null);
+            assertThat(seen).as(sort).containsExactlyElementsOf(ids);
+        });
+    }
+
+    @Test
+    void cursorCannotBeReusedWithAnotherFilterOrSort() {
+        long target = target("sha256:a");
+        for (int i = 1; i <= 3; i++) scan(target, "SUCCEEDED", "MANUAL", i * 10);
+        String cursor = service.scans("admin", ALL, 1, null, null).nextCursor();
+
+        assertError(() -> service.scans("admin", sorted("createdAt"), 1, cursor, null), ErrorCode.INVALID_INPUT);
+        var other = new ReachScanFilter(null, List.of("SUCCEEDED"), null, null, null, null);
+        assertError(() -> service.scans("admin", other, 1, cursor, null), ErrorCode.INVALID_INPUT);
+    }
+
+    @Test
+    void listRejectsValuesOutsideTheSpec() {
+        assertError(() -> new ReachScanFilter(null, List.of("DONE"), null, null, null, null), ErrorCode.INVALID_INPUT);
+        assertError(() -> new ReachScanFilter(null, null, List.of("PUSH"), null, null, null), ErrorCode.INVALID_INPUT);
+        assertError(() -> sorted("name"), ErrorCode.INVALID_INPUT);
+        assertError(() -> new ReachScanFilter(null, null, null,
+                Instant.parse("2026-10-02T00:00:00Z"), Instant.parse("2026-10-01T00:00:00Z"), null), ErrorCode.INVALID_INPUT);
+        assertError(() -> service.scans("admin", ALL, 101, null, null), ErrorCode.INVALID_INPUT);
+        assertError(() -> service.scans("admin", ALL, 0, null, null), ErrorCode.INVALID_INPUT);
+        assertError(() -> service.scans("admin", ALL, null, "not-a-cursor", null), ErrorCode.INVALID_INPUT);
+        assertError(() -> service.scans("admin", ALL, null, null, "matrix"), ErrorCode.INVALID_INPUT);
+    }
+
+    @Test
+    void listItemsMatchTheDetailAndOnlySucceededScansHaveCounts() {
+        long target = target("sha256:a");
+        long succeeded = scan(target, "SUCCEEDED", "MANUAL", 30);
+        long running = scan(target, "RUNNING", "MANUAL", 20);
+        long empty = scan(target, "SUCCEEDED", "MANUAL", 10);
+        finding(succeeded, "a", "HIGH", "UNREACHABLE", "CONFIRMED");
+        finding(succeeded, "b", "LOW", "NOT_ANALYZED", "UNREVIEWED");
+        jdbc.update("UPDATE reach_scans SET stages = '[{\"name\": \"SBOM\", \"status\": \"SUCCEEDED\"}]' WHERE scan_id = ?",
+                succeeded);
+
+        // 목록 항목은 상세(API-03)와 같다. stages·tools·counts까지
+        var items = list(ALL).items();
+        assertThat(items).containsExactly(
+                service.scan("admin", empty), service.scan("admin", running), service.scan("admin", succeeded));
+        assertThat(items.get(2).counts().total()).isEqualTo(2);
+        assertThat(items.get(1).counts()).isNull();
+        assertThat(items.get(0).counts().total()).isZero();
+    }
+
     private static void assertError(org.assertj.core.api.ThrowableAssert.ThrowingCallable call, ErrorCode code) {
         assertThatThrownBy(call).satisfies(e -> assertThat(((ApiException) e).errorCode()).isEqualTo(code));
     }
@@ -188,19 +336,44 @@ class ReachScanServiceTest {
                 """, Long.class, commit);
     }
 
-    /** 상태에 맞게 시각과 실패 사유를 채운다 (V34 CHECK: 끝난 스캔만 finished_at, FAILED는 failure_code) */
     private static long scan(long targetId, String status) {
+        return scan(targetId, status, "MANUAL", 0);
+    }
+
+    /**
+     * minutesAgo 분 전에 만든 스캔. 시작은 만든 때, 끝난 스캔은 만든 지 1분 뒤에 끝난 것으로 둔다.
+     * 상태에 맞게 시각과 실패 사유를 채운다 (V34 CHECK: 끝난 스캔만 finished_at, FAILED는 failure_code).
+     * now()는 한 문장 안에서 같은 값이라 세 번 써도 같은 시각이다
+     */
+    private static long scan(long targetId, String status, String trigger, int minutesAgo) {
         boolean failed = status.equals("FAILED");
         return jdbc.queryForObject("""
-                INSERT INTO reach_scans (target_id, scan_status, trigger_type, requested_by_kind, started_at, finished_at,
-                                         failure_code, failure_stage, failure_message)
-                VALUES (?, ?, 'MANUAL', 'SYSTEM',
-                        CASE WHEN ? <> 'QUEUED' THEN now() END,
-                        CASE WHEN ? IN ('SUCCEEDED', 'FAILED') THEN now() END,
+                INSERT INTO reach_scans (target_id, scan_status, trigger_type, requested_by_kind, created_at, started_at,
+                                         finished_at, failure_code, failure_stage, failure_message)
+                VALUES (?, ?, ?, 'SYSTEM',
+                        now() - make_interval(mins => ?),
+                        CASE WHEN ? <> 'QUEUED' THEN now() - make_interval(mins => ?) END,
+                        CASE WHEN ? IN ('SUCCEEDED', 'FAILED') THEN now() - make_interval(mins => ?) + interval '1 minute' END,
                         ?, ?, ?)
                 RETURNING scan_id
-                """, Long.class, targetId, status, status, status,
+                """, Long.class, targetId, status, trigger, minutesAgo, status, minutesAgo, status, minutesAgo,
                 failed ? "E-L2-01" : null, failed ? "L2" : null, failed ? "call graph timed out" : null);
+    }
+
+    private static void createdAt(long scanId, String at) {
+        jdbc.update("UPDATE reach_scans SET created_at = ?::timestamptz WHERE scan_id = ?", at, scanId);
+    }
+
+    private static ReachScanFilter sorted(String sort) {
+        return new ReachScanFilter(null, null, null, null, null, sort);
+    }
+
+    private ReachScanPageResponse list(ReachScanFilter filter) {
+        return service.scans("admin", filter, null, null, null);
+    }
+
+    private static List<Long> ids(ReachScanPageResponse page) {
+        return page.items().stream().map(ReachScanResponse::id).toList();
     }
 
     /** Finding + 그 스캔의 현재 판정 + 검토 한 벌. 검토 상태가 UNREVIEWED가 아니면 admin이 같은 판정으로 검토 */

@@ -16,6 +16,13 @@ public final class ReachCodes {
     /** 사람이 검토로 남길 수 있는 판정. NOT_ANALYZED는 사람 판정이 아니다 (API 명세 API-06) */
     public static final List<String> HUMAN_STATUSES = List.of("REACHABLE", "UNKNOWN", "UNREACHABLE");
 
+    /** 스캔 상태와 실행 계기 (V34 reach_scans CHECK) */
+    public static final List<String> SCAN_STATUSES = List.of("QUEUED", "RUNNING", "SUCCEEDED", "FAILED");
+    public static final List<String> TRIGGERS = List.of("MANUAL", "PR", "IMAGE_BUILD", "SCHEDULE");
+
+    /** 스캔 이력(API-02) 정렬. 앞에 -가 붙으면 내림차순 */
+    public static final List<String> SCAN_SORTS = List.of("-createdAt", "createdAt", "-finishedAt", "finishedAt");
+
     /** API 명세 3-11의 네 사유. ANALYSIS_TIMEOUT은 명세에 아직 없어 0으로 채우지 않는다 */
     public static final List<String> NOT_ANALYZED_REASONS =
         List.of("NO_VULN_FUNCTION_DATA", "OS_PACKAGE", "UNANALYZED_COPY", "UNSUPPORTED_ECOSYSTEM");
