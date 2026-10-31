@@ -21,6 +21,8 @@ public class SecretRiskQueryService {
     this.store = new SecretRiskAssessmentStore(jdbc);
   }
 
+  @org.springframework.transaction.annotation.Transactional(
+      readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
   public Map<String, Object> risk(String login, long occurrence) {
     var actor = access.requirePrincipal(login);
     access.requireOccurrenceRead(actor, occurrence);
@@ -216,8 +218,16 @@ FROM secret_risk_evidence e WHERE e.occurrence_id=? AND e.record_kind='ASSERTION
                 : latest.isEmpty()
                     ? "REQUEST_ASSESSMENT"
                     : conflicts.isEmpty() ? "REVIEW_EVIDENCE" : "INVESTIGATE_CONFLICT");
-    result.put("readAt", OffsetDateTime.now(ZoneOffset.UTC));
+    var readAt = OffsetDateTime.now(ZoneOffset.UTC);
+    result.put("analysisContext", new SecretRiskAnalysisContext(jdbc, store).read(o, result, readAt));
+    result.put("readAt", readAt);
     return result;
+  }
+
+  @org.springframework.transaction.annotation.Transactional(
+      readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
+  public Map<String, Object> assets(String login, long occurrence, int page, int size) {
+    return new SecretRiskAssetService(jdbc, access).list(login, occurrence, page, size);
   }
 
   public Map<Long, Map<String, Object>> occurrenceRisks(String login, Collection<Long> ids) {
