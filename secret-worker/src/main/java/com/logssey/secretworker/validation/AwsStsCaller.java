@@ -30,6 +30,11 @@ final class AwsStsCaller implements AwsCredentialValidator.StsCaller {
 
     @Override
     public void getCallerIdentity(AwsKeyMaterial key) {
+        observeIdentity(key);
+    }
+
+    @Override
+    public com.logssey.secret.permission.core.SecretProviderIdentity observeIdentity(AwsKeyMaterial key) {
         AwsCredentials credentials = key.sessionToken() == null || key.sessionToken().isBlank()
                 ? AwsBasicCredentials.create(key.accessKeyId(), key.secretAccessKey())
                 : AwsSessionCredentials.create(key.accessKeyId(), key.secretAccessKey(), key.sessionToken());
@@ -47,7 +52,9 @@ final class AwsStsCaller implements AwsCredentialValidator.StsCaller {
                                                 .apiCallAttemptTimeout(CALL_TIMEOUT)
                                                 .retryPolicy(RetryPolicy.none()))
                 .build()) {
-            sts.getCallerIdentity();
+            var response=sts.getCallerIdentity();
+            try{return com.logssey.secret.permission.core.SecretProviderIdentity.aws(response.account(),response.arn(),response.userId());}
+            catch(IllegalArgumentException unsupportedIdentity){return null;}
         }
     }
 }
