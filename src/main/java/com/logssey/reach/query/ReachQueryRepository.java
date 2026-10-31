@@ -8,8 +8,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Optional;
 
 import com.logssey.reach.query.dto.ReachFindingResponse;
+import com.logssey.reach.query.dto.ReachFindingDetailResponse;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -175,4 +177,74 @@ public class ReachQueryRepository {
                         rs.getString("not_analyzed_reason"), rs.getLong("n")))
                 .list();
     }
+
+    /** API-05 상세.
+     * 목록(CURRENT_FINDINGS)과 달리 최신 스캔으로 좁히지 않아, 옛 스캔의 Finding도 id로 열린다.
+     * 근거는 ord 순서의 JSON 배열로 묶고(없으면[]), 같은 스캔에서 CVE가 같은 다른 Finding의 id도 함께 준다.
+     */
+    private static final String FINDING_DETAIL = """
+        SELECT f.finding_id, f.last_scan_id, f.target_id, f.purl, f.component_name, f.component_version, f.ecosystem,
+               f.vulnerability_id, f.severity, f.severity_note, f.vuln_title, f.affected_feature, f.fixed_versions,
+               f.deployment, f.sources, f.upgrade::text AS upgrade, f.first_seen_at, f.last_seen_at,
+               v.status, v.method, v.summary, v.not_analyzed_reason, v.rule_id,
+               v.callgraph::text AS callgraph, v.engine::text AS engine, v.analyzed_at,
+               (SELECT COALESCE(jsonb_agg(
+                           jsonb_strip_nulls(jsonb_build_object(
+                               'order', e.ord, 'kind', e.kind, 'summary', e.summary,
+                               'factId', e.fact_id, 'ruleId', e.rule_id, 'informational', e.informational))
+                           || e.detail
+                           ORDER BY e.ord), '[]'::jsonb)
+                  FROM reach_evidence e WHERE e.verdict_id = v.verdict_id)::text AS evidence,
+               r.review_state, r.status AS review_status, r.note, r.reviewed_at, r.version,
+               r.proposal::text AS proposal, r.reset_reason,
+               u.user_id AS reviewer_id, u.display_name AS reviewer_name,
+               ARRAY(SELECT o.finding_id FROM reach_findings o
+                     WHERE o.last_scan_id = f.last_scan_id AND o.vulnerability_id = f.vulnerability_id
+                       AND o.finding_id <> f.finding_id
+                     ORDER BY o.finding_id) AS same_cve
+        FROM reach_findings f
+        JOIN reach_verdicts v ON v.finding_id = f.finding_id AND v.is_current
+        JOIN reach_reviews r ON r.finding_id = f.finding_id
+        LEFT JOIN dashboard_users u ON u.user_id = r.reviewer_user_id
+        WHERE f.finding_id = :findingId
+        """;
+
+        Optional<ReachFindingDetailResponse> finding(long findingId) {
+    return jdbcClient.sql(FINDING_DETAIL).param("findingId", findingId).query(this::detail).optional();
+    }
+    /** 
+     * API-05 상세 한 행 → 응답. JSONB 칸은 SQL에서 ::text로 받아 json()으로 바꾼다 
+    */
+    private ReachFindingDetailResponse detail(ResultSet rs, int rowNum) throws SQLException {
+        String status = rs.getString("status");
+        String reviewStatus = rs.getString("review_status");
+        // 검토 전이면 reviewer_id가 NULL. getLong은 NULL을 0으로 주므로 wasNull()로 확인한다
+        long reviewerId = rs.getLong("reviewer_id");
+        var reviewer = rs.wasNull() ? null : new ReachFindingDetailResponse.Reviewer(reviewerId, rs.getString("reviewer_name"));
+
+        return new ReachFindingDetailResponse(
+                rs.getLong("finding_id"), rs.getLong("last_scan_id"), rs.getLong("target_id"),
+                new ReachFindingDetailResponse.Component(rs.getString("purl"), rs.getString("component_name"),
+                        rs.getString("component_version"), rs.getString("ecosystem")),
+                new ReachFindingDetailResponse.Vulnerability(rs.getString("vulnerability_id"), rs.getString("severity"),
+                        rs.getString("severity_note"), rs.getString("vuln_title"), rs.getString("affected_feature"),
+                        strings(rs.getArray("fixed_versions"))),
+                rs.getString("deployment"),
+                strings(rs.getArray("sources")),
+                new ReachFindingDetailResponse.Verdict(status, rs.getString("method"), rs.getString("summary"),
+                        rs.getString("not_analyzed_reason"), rs.getString("rule_id"),
+                        json(rs.getString("callgraph")), json(rs.getString("evidence")),
+                        rs.getObject("analyzed_at", OffsetDateTime.class), json(rs.getString("engine"))),
+                // 사람 판정이 있고 현재 판정과 다르면 true (FR-08, 목록과 같은 규칙)
+                new ReachFindingDetailResponse.Review(rs.getString("review_state"), reviewStatus, rs.getString("note"),
+                        reviewer, rs.getObject("reviewed_at", OffsetDateTime.class), rs.getInt("version"),
+                        reviewStatus != null && !reviewStatus.equals(status),
+                        json(rs.getString("proposal")), rs.getString("reset_reason")),
+                json(rs.getString("upgrade")),
+                // ARRAY(SELECT ...)는 결과가 없어도 NULL이 아니라 빈 배열이다. BIGINT 배열이라 Long[]
+                List.of((Long[]) rs.getArray("same_cve").getArray()),
+                rs.getObject("first_seen_at", OffsetDateTime.class),
+                rs.getObject("last_seen_at", OffsetDateTime.class));
+    }
+
 }

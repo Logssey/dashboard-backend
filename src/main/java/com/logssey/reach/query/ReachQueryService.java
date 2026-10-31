@@ -2,6 +2,7 @@ package com.logssey.reach.query;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
+import com.logssey.reach.query.dto.ReachFindingDetailResponse;
 import com.logssey.reach.query.dto.ReachFindingPageResponse;
 import com.logssey.reach.query.dto.ReachSummaryResponse;
 
@@ -110,5 +111,11 @@ public class ReachQueryService {
     /** 소수 셋째 자리 반올림, 분모 0이면 null (명세 API-08) */
     private static Double ratio(long numerator, long denominator) {
         return denominator == 0 ? null : Math.round(numerator * 1000.0 / denominator) / 1000.0;
+    }
+
+    /** API-05. 없는 id면 404 */
+    public ReachFindingDetailResponse finding(String loginId, long findingId) {
+        requireAdmin(loginId);
+        return repository.finding(findingId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
     }
 }
