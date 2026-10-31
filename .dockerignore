@@ -1,0 +1,30 @@
+# Allowlist the build inputs; local .env, Git history, credentials and collected artifacts
+# never enter the Docker build context.
+**
+!Dockerfile
+!gradlew
+!build.gradle
+!settings.gradle
+!gradle/
+!gradle/**
+!src/
+!src/**
+!secret-worker/
+!secret-worker/build.gradle
+!secret-worker/src/
+!secret-worker/src/**
+!iac-worker/
+!iac-worker/build.gradle
+!iac-worker/src/
+!iac-worker/src/**
+!deploy/
+!deploy/install-gitleaks.sh
+
+# Defense against accidental secrets within an otherwise allowed source directory.
+**/.env
+**/.env.*
+**/local-secrets/**
+**/*.pem
+**/*.p12
+**/*.pfx
+**/*.jks

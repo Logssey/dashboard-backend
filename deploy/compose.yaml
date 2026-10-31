@@ -1,0 +1,71 @@
+# Local/private-host deployment of the already built API and independent worker.
+# A managed PostgreSQL database and a same-origin HTTPS frontend/reverse proxy
+# are external prerequisites. This file creates no cloud resources or source scopes.
+services:
+  frontend:
+    image: ${SECRET_FRONTEND_IMAGE:?Set an immutable frontend image reference}
+    user: "101:101"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+    restart: unless-stopped
+    mem_limit: 128m
+    pids_limit: 64
+    ports: ["127.0.0.1:${SECRET_FRONTEND_PORT:-8088}:8080"]
+    tmpfs: [/tmp:rw,noexec,nosuid,size=16m,uid=101,gid=101,mode=0700]
+    depends_on: [api]
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+
+  api:
+    image: ${SECRET_API_IMAGE:?Set an immutable API image reference}
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    mem_limit: 768m
+    pids_limit: 128
+    ports: ["127.0.0.1:${SECRET_API_PORT:-8080}:8080"]
+    volumes:
+      - type: bind
+        source: ${SECRET_API_CONFIG_FILE:?Set the reviewed API properties file}
+        target: /run/config/application.properties
+        read_only: true
+      - type: bind
+        source: ${SECRET_API_SECRETS_DIR:?Set the external API secret directory}
+        target: /run/secrets
+        read_only: true
+    tmpfs: [/tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700]
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+
+  worker:
+    image: ${SECRET_WORKER_IMAGE:?Set an immutable worker image reference}
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 45s
+    mem_limit: 1024m
+    pids_limit: 128
+    volumes:
+      - type: bind
+        source: ${SECRET_WORKER_CONFIG_FILE:?Set the reviewed worker properties file}
+        target: /run/config/application.properties
+        read_only: true
+      - type: bind
+        source: ${SECRET_WORKER_SECRETS_DIR:?Set the external worker secret directory}
+        target: /run/secrets
+        read_only: true
+    tmpfs: [/tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700]
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}

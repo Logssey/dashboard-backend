@@ -71,6 +71,28 @@ class AwsSecretJobProcessorTest {
     void clean() { jdbc.execute("TRUNCATE secret_connections RESTART IDENTITY CASCADE"); }
 
     @Test
+    void workloadReferenceIsExplicitAndStillChecksApprovedAccount() {
+        long connection = connection();
+        long scope = scope(connection, "IAM_ACCESS_KEY_METADATA",
+                "aws://" + ACCOUNT + "/global/iam/access-keys");
+        jdbc.update("UPDATE secret_connections SET auth_ref='aws-workload:default' WHERE connection_id=?", connection);
+        long run = run(connection, scope);
+        var gateway = new FakeGateway();
+        try (var credentials = com.logssey.secret.aws.SecretAwsSourceCredentials.workload()) {
+            var processor = new AwsSecretJobProcessor(jdbc, new AwsIamCollector(gateway),
+                    new AwsMetadataCollector(new FakeMetadataPages()), gateway,
+                    new AwsIamMetadataRepository(jdbc, new AwsMetadataIdentity(new byte[32], "test-v1")),
+                    properties, credentials, null);
+            var job = execution.claimNextJob("AWS").orElseThrow();
+            processor.process(job, execution);
+            assertThat(execution.complete(job.jobId(), job.leaseToken())).isTrue();
+        }
+        assertThat(gateway.accountCalls).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT result_status FROM secret_scan_runs WHERE run_id=?", String.class, run))
+                .isEqualTo("SUCCEEDED");
+    }
+
+    @Test
     void completedIamInventoryIsMetadataOnlyAndDeduplicatesAcrossRuns() {
         long connection = connection();
         long scope = scope(connection, "IAM_ACCESS_KEY_METADATA",

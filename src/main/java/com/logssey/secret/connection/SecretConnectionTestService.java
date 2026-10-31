@@ -2,7 +2,7 @@ package com.logssey.secret.connection;
 
 import java.time.Clock;
 import java.time.OffsetDateTime;
-import java.util.regex.Pattern;
+import com.logssey.secret.aws.SecretAwsSourceCredentials;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
@@ -14,7 +14,6 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class SecretConnectionTestService {
-    private static final Pattern AWS_PROFILE = Pattern.compile("aws-profile:[A-Za-z0-9._-]{1,100}");
 
     private final SecretConnectionTestRepository repository;
     private final AwsIdentityProbe aws;
@@ -57,7 +56,7 @@ public class SecretConnectionTestService {
     }
 
     private ConnectionProbeResult testAws(SecretConnectionTestRepository.Connection connection) {
-        if (connection.authRef() == null || !AWS_PROFILE.matcher(connection.authRef()).matches()) {
+        if (!SecretAwsSourceCredentials.isReference(connection.authRef())) {
             return ConnectionProbeResult.failed("INVALID_APPROVED_SCOPE");
         }
         var summary = repository.awsScopes(connection.id());
@@ -65,7 +64,9 @@ public class SecretConnectionTestService {
                 || summary.accountCount() != 1 || summary.accountId() == null) {
             return ConnectionProbeResult.failed("INVALID_APPROVED_SCOPE");
         }
-        return aws.probe(connection.authRef().substring("aws-profile:".length()), summary.accountId());
+        return SecretAwsSourceCredentials.WORKLOAD_REF.equals(connection.authRef())
+                ? aws.probeWorkload(summary.accountId())
+                : aws.probe(connection.authRef().substring("aws-profile:".length()), summary.accountId());
     }
 
     private ConnectionProbeResult testGitHub(SecretConnectionTestRepository.Connection connection) {

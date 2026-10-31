@@ -12,13 +12,13 @@ import com.logssey.secretworker.aws.content.AwsContentPipeline;
 import com.logssey.secretworker.aws.metadata.AwsMetadataCollector;
 import com.logssey.secretworker.aws.metadata.AwsSdkMetadataPageClient;
 
-import software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider;
+import com.logssey.secret.aws.SecretAwsSourceCredentials;
 
 @Configuration
 @ConditionalOnProperty(name = "logssey.secret.aws.collection.enabled", havingValue = "true")
 class AwsCollectorConfiguration {
     @Bean(destroyMethod = "close")
-    AwsIamGateway awsIamGateway(ProfileCredentialsProvider credentials) {
+    AwsIamGateway awsIamGateway(SecretAwsSourceCredentials credentials) {
         return new AwsSdkIamGateway(credentials);
     }
 
@@ -28,16 +28,14 @@ class AwsCollectorConfiguration {
     }
 
     @Bean(destroyMethod = "close")
-    ProfileCredentialsProvider awsProfileCredentials(
+    SecretAwsSourceCredentials awsSourceCredentials(
+            @Value("${logssey.secret.aws.collection.credentials-mode:PROFILE}") String mode,
             @Value("${logssey.secret.aws.collection.profile}") String profile) {
-        if (profile == null || !profile.matches("[A-Za-z0-9._-]{1,100}")) {
-            throw new IllegalArgumentException("AWS_PROFILE_REQUIRED");
-        }
-        return ProfileCredentialsProvider.create(profile);
+        return SecretAwsSourceCredentials.fromConfiguration(mode, profile);
     }
 
     @Bean
-    AwsMetadataCollector awsMetadataCollector(ProfileCredentialsProvider credentials) {
+    AwsMetadataCollector awsMetadataCollector(SecretAwsSourceCredentials credentials) {
         return new AwsMetadataCollector(new AwsSdkMetadataPageClient(credentials));
     }
 
@@ -61,8 +59,8 @@ class AwsCollectorConfiguration {
                                                 AwsIamMetadataRepository metadata,
                                                 SecretJobProperties jobs,
                                                 ObjectProvider<AwsContentPipeline> content,
-                                                @Value("${logssey.secret.aws.collection.profile}") String profile) {
+                                                SecretAwsSourceCredentials credentials) {
         return new AwsSecretJobProcessor(jdbc, collector, additional, gateway,
-                metadata, jobs, profile, content.getIfAvailable());
+                metadata, jobs, credentials, content.getIfAvailable());
     }
 }

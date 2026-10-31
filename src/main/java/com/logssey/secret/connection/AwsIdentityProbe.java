@@ -1,10 +1,11 @@
 package com.logssey.secret.connection;
 
 import java.time.Duration;
+import com.logssey.secret.aws.SecretAwsSourceCredentials;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-import software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
@@ -15,9 +16,27 @@ import software.amazon.awssdk.services.sts.model.StsException;
 /** Identity-only AWS probe: STS GetCallerIdentity does not enumerate or read secret values. */
 @Component
 class AwsIdentityProbe {
+    private final String credentialsMode;
+
+    AwsIdentityProbe(@Value("${logssey.secret.aws.collection.credentials-mode:PROFILE}") String credentialsMode) {
+        if (!"PROFILE".equals(credentialsMode) && !"WORKLOAD".equals(credentialsMode))
+            throw new IllegalArgumentException("AWS_CREDENTIALS_MODE_INVALID");
+        this.credentialsMode = credentialsMode;
+    }
+
     ConnectionProbeResult probe(String profile, String expectedAccount) {
-        try (var credentials = ProfileCredentialsProvider.create(profile);
-             var client = StsClient.builder().credentialsProvider(credentials)
+        if (!"PROFILE".equals(credentialsMode)) return ConnectionProbeResult.unavailable("AWS_UNAVAILABLE");
+        return probeIdentity("PROFILE", profile, expectedAccount);
+    }
+
+    ConnectionProbeResult probeWorkload(String expectedAccount) {
+        if (!"WORKLOAD".equals(credentialsMode)) return ConnectionProbeResult.unavailable("AWS_UNAVAILABLE");
+        return probeIdentity("WORKLOAD", "", expectedAccount);
+    }
+
+    private ConnectionProbeResult probeIdentity(String mode, String profile, String expectedAccount) {
+        try (var credentials = SecretAwsSourceCredentials.fromConfiguration(mode, profile);
+             var client = StsClient.builder().credentialsProvider(credentials::resolveCredentials)
                      .region(Region.US_EAST_1)
                      .httpClientBuilder(UrlConnectionHttpClient.builder())
                      .overrideConfiguration(ClientOverrideConfiguration.builder()

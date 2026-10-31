@@ -4,6 +4,8 @@
 
 Java 21 / Spring Boot를 사용하는 별도 프로세스다. 대시보드 API에는 워커 의존성이나 스케줄러를 넣지 않았다. 기준은 Secret ADR-S002, ADR-S008과 `database-schema.md`다.
 
+운영 이미지는 저장소 루트 `Dockerfile --target worker`로 빌드한다. API·워커 분리, 파일 기반 비밀 공급, AWS 임시 역할, Flyway 적용과 운영 점검은 [배포·운영 절차](../docs/secret-deployment.md)를 따른다. 기존 개인 프로필은 개발 모드에 남기고 운영에서는 명시적인 `WORKLOAD` 모드를 사용한다.
+
 ## 동작
 
 - 기본 30초마다 DB의 현재 시각으로 도래한 연결을 확인한다. 기본 검사 주기는 6시간이다.
