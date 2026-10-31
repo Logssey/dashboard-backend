@@ -2,6 +2,8 @@ package com.logssey.reach.query;
 
 import java.util.List;
 
+import com.logssey.reach.ReachCodes;
+
 
 /**
  * Finding 목록(API-04) 필터. 쿼리 파라미터 이름을 그대로 칸 이름으로 쓴다 (Reach API 명세 2-5).
