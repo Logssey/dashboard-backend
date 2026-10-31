@@ -1,0 +1,118 @@
+package com.logssey.reach.scan;
+
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.time.OffsetDateTime;
+import java.util.List;
+import java.util.Optional;
+
+import com.logssey.reach.scan.dto.ReachScanResponse;
+
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.stereotype.Repository;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
+
+/** Reach 스캔 조회 SQL (API-03). 스캔 이력(API-02)이 SCANS와 countRows를 다시 쓴다 */
+@Repository
+public class ReachScanRepository {
+    /** 스캔 + 대상. 상세는 WHERE만 붙인다. JSONB 칸은 ::text로 받아 json()으로 바꾼다 */
+    static final String SCANS = """
+            SELECT s.scan_id, s.scan_status, s.trigger_type, s.rescan_of_scan_id,
+                   s.stages::text AS stages, s.tools::text AS tools, s.analysis::text AS analysis,
+                   s.requested_by_kind, s.requested_by_user_id, s.requested_by_repository, s.requested_by_subject,
+                   s.failure_code, s.failure_stage, s.failure_message, s.created_at, s.started_at, s.finished_at,
+                   t.target_id, t.target_type, t.app, t.repo_name, t.repo_path, t.repo_commit,
+                   t.image_repository, t.image_digest, t.image_revision, t.image_created_at,
+                   t.source_tree, t.display_name
+            FROM reach_scans s
+            JOIN reach_targets t ON t.target_id = s.target_id
+            """;
+
+    private final JdbcClient jdbcClient;
+    private final JsonMapper mapper = JsonMapper.builder().build();
+
+    public ReachScanRepository(JdbcClient jdbcClient) {
+        this.jdbcClient = jdbcClient;
+    }
+
+    boolean isAdmin(String loginId) {
+        return Boolean.TRUE.equals(jdbcClient
+                .sql("SELECT EXISTS (SELECT 1 FROM dashboard_users WHERE login_id = :loginId AND role = 'ADMIN')")
+                .param("loginId", loginId)
+                .query(Boolean.class)
+                .single());
+    }
+
+    Optional<ReachScanResponse> scan(long scanId) {
+        return jdbcClient.sql(SCANS + " WHERE s.scan_id = :scanId")
+                .param("scanId", scanId)
+                .query(this::scanRow)
+                .optional();
+    }
+
+    /** 개수용 한 줄: 스캔·상태·심각도·검토 조합과 그 개수 */
+    record CountRow(long scanId, String status, String severity, String reviewState, long count) {}
+
+    /**
+     * 스캔마다 그 스캔이 낸 도구 판정을 조합별로 센다. 합계는 Service가 낸다.
+     * reach_findings.last_scan_id로 세면 Finding이 다음 스캔에 또 나올 때 예전 스캔의 개수가 줄어서, 판정의 scan_id로 센다.
+     * MANUAL(사람 판정)은 빼서 스캔 결과는 스캔이 낸 값으로 둔다. method가 NULL(NOT_ANALYZED)인 행도 세야 해서 <>가 아니라 IS DISTINCT FROM.
+     * 검토는 Finding마다 지금 한 행뿐이라 byReviewState는 지금의 검토 상태다.
+     * 스캔 id를 목록으로 받아 이력(API-02) 한 페이지도 쿼리 한 번으로 센다
+     */
+    List<CountRow> countRows(List<Long> scanIds) {
+        if (scanIds.isEmpty()) return List.of();   // 빈 IN ()은 SQL 오류다
+        return jdbcClient.sql("""
+                        SELECT v.scan_id, v.status, f.severity, r.review_state, count(*) AS n
+                        FROM reach_verdicts v
+                        JOIN reach_findings f ON f.finding_id = v.finding_id
+                        JOIN reach_reviews r ON r.finding_id = v.finding_id
+                        WHERE v.scan_id IN (:scanIds) AND v.method IS DISTINCT FROM 'MANUAL'
+                        GROUP BY v.scan_id, v.status, f.severity, r.review_state
+                        """)
+                .param("scanIds", scanIds)
+                .query((rs, i) -> new CountRow(rs.getLong("scan_id"), rs.getString("status"),
+                        rs.getString("severity"), rs.getString("review_state"), rs.getLong("n")))
+                .list();
+    }
+
+    /** NULL일 수 있는 BIGINT는 getObject(…, Long.class)로 읽는다. getLong은 NULL을 0으로 준다 */
+    private ReachScanResponse scanRow(ResultSet rs, int rowNum) throws SQLException {
+        String type = rs.getString("target_type");
+        var target = new ReachScanResponse.Target(rs.getLong("target_id"), type, rs.getString("app"),
+                "REPO".equals(type)
+                        ? new ReachScanResponse.Repo(rs.getString("repo_name"), rs.getString("repo_path"),
+                                rs.getString("repo_commit"))
+                        : null,
+                "IMAGE".equals(type)
+                        ? new ReachScanResponse.Image(rs.getString("image_repository"), rs.getString("image_digest"),
+                                rs.getString("image_revision"), rs.getObject("image_created_at", OffsetDateTime.class))
+                        : null,
+                rs.getString("source_tree"), rs.getString("display_name"));
+
+        String status = rs.getString("scan_status");
+        var failure = "FAILED".equals(status)
+                ? new ReachScanResponse.Failure(rs.getString("failure_code"), rs.getString("failure_stage"),
+                        rs.getString("failure_message"))
+                : null;
+
+        return new ReachScanResponse(
+                rs.getLong("scan_id"), status, rs.getString("trigger_type"),
+                rs.getObject("rescan_of_scan_id", Long.class),
+                target,
+                json(rs.getString("stages")), json(rs.getString("tools")), json(rs.getString("analysis")),
+                null,   // counts는 Service가 SUCCEEDED일 때만 채운다
+                failure,
+                new ReachScanResponse.RequestedBy(rs.getString("requested_by_kind"),
+                        rs.getObject("requested_by_user_id", Long.class),
+                        rs.getString("requested_by_repository"), rs.getString("requested_by_subject")),
+                rs.getObject("created_at", OffsetDateTime.class),
+                rs.getObject("started_at", OffsetDateTime.class),
+                rs.getObject("finished_at", OffsetDateTime.class));
+    }
+
+    private JsonNode json(String value) {
+        return value == null ? null : mapper.readTree(value);
+    }
+}
