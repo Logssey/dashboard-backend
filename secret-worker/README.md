@@ -46,7 +46,7 @@ java -jar .\secret-worker\build\libs\secret-worker-0.0.1-SNAPSHOT.jar --logssey.
 
 `V3__create_secret_scheduler_tables.sql`은 연결·작업·실행을, V4는 탐지 키·발견 위치·도구 실행을, V5는 안전한 검증 시도 이력을 저장한다. API와 워커는 같은 Flyway 마이그레이션을 패키징한다. 공유된 V1·V2는 변경하지 않았다.
 
-작업 종류는 `FULL_SCAN`, `REVALIDATE`, DB 전용 `ASSESS`다. 수동 전체 검사는 `POST /api/v1/secrets/runs`로 등록하며 실행 상태는 `GET /api/v1/secrets/runs/{runId}`로 조회한다. REVALIDATE의 유효성 확인과 조치 후 위치 재검사는 서로 다른 목적이다. [위치 재검사 지원·해결 경계](../docs/secret-location-recheck.md), [DB 통합 테스트 실행](../docs/secret-integration-tests.md)을 따른다.
+작업 종류는 `FULL_SCAN`, `REVALIDATE`, DB 전용 `ASSESS`다. 수동 전체 검사는 `POST /api/v1/secrets/runs`로 등록하며 실행 상태는 `GET /api/v1/secrets/runs/{runId}`로 조회한다. REVALIDATE의 유효성 확인과 조치 후 위치 재검사는 서로 다른 목적이다. [위치 재검사 지원·해결 경계](../docs/secret-location-recheck.md), [DB 통합 테스트 실행](../docs/secret-integration-tests.md)을 따른다. 위치별 수용 권한·등록 자산·판정 이유는 [v2 권한·자산 근거 API](../docs/secret-risk-context-api.md)로 조회한다.
 
 ## 실행
 
