@@ -6,7 +6,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
-import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -15,20 +14,59 @@ import tools.jackson.databind.JsonNode;
 
 import org.springframework.stereotype.Component;
 
-/** Converts Falco JSON output for RUN-001 into the dashboard's stable runtime event contract. */
+/** Converts allow-listed Falco rules into the dashboard's stable runtime event contract. */
 @Component
 public class FalcoRuntimeEventNormalizer {
 
+    static final String MISSING_SOURCE_RULE = "MISSING_SOURCE_RULE";
+    static final String UNSUPPORTED_SOURCE_RULE = "UNSUPPORTED_SOURCE_RULE";
+    static final String RULE_NOT_ACTIVE = "RULE_NOT_ACTIVE";
+    static final String RULE_VALIDATION_FAILED = "RULE_VALIDATION_FAILED";
+
     private static final Set<String> SHELLS = Set.of("bash", "sh", "ash", "dash", "zsh");
+    private static final Set<String> PACKAGE_MANAGERS = Set.of(
+            "apt", "apt-get", "dpkg", "yum", "dnf", "rpm", "apk", "pacman", "microdnf", "zypper");
+    private static final Set<String> SERVICE_PROCESSES = Set.of(
+            "java", "node", "nginx", "httpd", "apache2", "php-fpm", "gunicorn", "uwsgi", "dotnet");
+    private static final Set<String> DOWNLOADERS = Set.of("curl", "wget", "aria2c");
+    private static final List<String> SENSITIVE_PATH_PREFIXES = List.of(
+            "/etc/", "/bin/", "/sbin/", "/usr/bin/", "/usr/sbin/", "/lib/", "/lib64/", "/usr/lib/");
+    private static final String SERVICE_ACCOUNT_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/";
+    private static final List<String> TEMP_EXECUTION_PREFIXES = List.of("/tmp/", "/var/tmp/", "/dev/shm/");
+    private static final Set<String> IDENTITY_FILES = Set.of(
+            "/etc/passwd", "/etc/shadow", "/etc/group", "/etc/gshadow", "/etc/sudoers");
+    private static final List<String> PERSISTENCE_PATH_PREFIXES = List.of(
+            "/etc/cron", "/var/spool/cron", "/etc/systemd/system/", "/usr/lib/systemd/system/");
     private static final Pattern DEPLOYMENT_POD = Pattern.compile("^(.+)-[a-f0-9]{8,10}-[a-z0-9]{5}$");
 
-    public Optional<NormalizedRuntimeEvent> normalize(String clusterId, JsonNode event, Instant receivedAt) {
+    private final FalcoRuleRegistry ruleRegistry;
+
+    public FalcoRuntimeEventNormalizer(FalcoRuleRegistry ruleRegistry) {
+        this.ruleRegistry = ruleRegistry;
+    }
+
+    public RuntimeNormalizationResult normalize(String clusterId, JsonNode event, Instant receivedAt) {
+        String sourceRule = text(event, "rule");
+        if (sourceRule == null) {
+            return RuntimeNormalizationResult.ignored(MISSING_SOURCE_RULE);
+        }
+        RuntimeRuleDefinition definition = ruleRegistry.find(sourceRule).orElse(null);
+        if (definition == null) {
+            return RuntimeNormalizationResult.ignored(UNSUPPORTED_SOURCE_RULE);
+        }
+        if (definition.mode() == RuntimeRuleDefinition.Mode.DRAFT) {
+            return RuntimeNormalizationResult.ignored(RULE_NOT_ACTIVE);
+        }
+
         JsonNode fields = event.path("output_fields");
-        String executable = text(fields, "proc.exepath", "proc.exe", "proc.name");
-        String processName = baseName(text(fields, "proc.name", "proc.exepath", "proc.exe"));
         String containerId = text(fields, "container.id");
-        if (!SHELLS.contains(processName) || containerId == null || "host".equals(containerId)) {
-            return Optional.empty();
+        String processName = baseName(text(fields, "proc.name", "proc.exepath", "proc.exe"));
+        String executable = text(fields, "proc.exepath", "proc.exe", "proc.name");
+        String parentExecutable = text(fields, "proc.pexepath", "proc.pname");
+        String parentName = baseName(parentExecutable);
+        String targetPath = text(fields, "fd.name", "fs.path.name", "evt.arg.path", "evt.arg.filename", "fd.directory");
+        if (!valid(definition.validationProfile(), processName, executable, parentName, containerId, targetPath)) {
+            return RuntimeNormalizationResult.ignored(RULE_VALIDATION_FAILED);
         }
 
         String namespace = text(fields, "k8s.ns.name", "k8s.namespace.name");
@@ -43,6 +81,8 @@ public class FalcoRuntimeEventNormalizer {
         required(missing, "asset.podName", podName);
         required(missing, "asset.containerId", containerId);
         required(missing, "process.executable", executable);
+        String targetName = targetName(definition, fields, executable, targetPath, containerId);
+        required(missing, "target.name", targetName);
 
         String cmdline = text(fields, "proc.cmdline", "proc.args");
         List<String> arguments = cmdline == null || cmdline.isBlank()
@@ -68,21 +108,70 @@ public class FalcoRuntimeEventNormalizer {
                 longValue(fields, "proc.ppid"),
                 executable,
                 arguments,
-                text(fields, "proc.pexepath", "proc.pname"),
+                parentExecutable,
                 text(fields, "user.uid", "user.name"));
 
-        return Optional.of(new NormalizedRuntimeEvent(
+        NormalizedRuntimeEvent.TargetSnapshot target = new NormalizedRuntimeEvent.TargetSnapshot(
+                definition.targetType(), targetName, definition.operation());
+
+        return RuntimeNormalizationResult.normalized(new NormalizedRuntimeEvent(
                 sourceEventId,
                 instant(text(event, "time", "timestamp"), receivedAt),
-                "RUN-001",
-                "컨테이너 셸 실행",
-                "0.1.0",
+                definition.ruleKey(),
+                definition.title(),
+                definition.version(),
+                definition.mode(),
+                definition.noiseBudgetPerMinute(),
                 priority(text(event, "priority")),
-                "PROCESS_EXEC",
+                definition.eventType(),
                 asset,
                 process,
+                target,
                 missing.isEmpty() ? "COMPLETE" : "PARTIAL",
                 List.copyOf(missing)));
+    }
+
+    private static boolean valid(RuntimeRuleDefinition.ValidationProfile profile, String processName,
+                                 String executable, String parentName, String containerId, String targetPath) {
+        if (containerId == null || "host".equals(containerId)) {
+            return false;
+        }
+        return switch (profile) {
+            case CONTAINER_SHELL -> SHELLS.contains(processName) && !SERVICE_PROCESSES.contains(parentName);
+            case SERVICE_PROCESS_SHELL -> SHELLS.contains(processName) && SERVICE_PROCESSES.contains(parentName);
+            case PACKAGE_MANAGER_EXECUTION -> PACKAGE_MANAGERS.contains(processName);
+            case SERVICE_ACCOUNT_TOKEN_ACCESS -> targetPath != null
+                    && targetPath.startsWith(SERVICE_ACCOUNT_TOKEN_PATH);
+            case SENSITIVE_PATH_WRITE -> targetPath != null
+                    && SENSITIVE_PATH_PREFIXES.stream().anyMatch(targetPath::startsWith);
+            case PROCESS_MEMORY_ACCESS, GENERIC_CONTAINER_PROCESS, PRIVILEGE_CHANGE -> executable != null;
+            case GENERIC_CONTAINER_FILE -> targetPath != null;
+            case TEMP_EXECUTION -> executable != null
+                    && TEMP_EXECUTION_PREFIXES.stream().anyMatch(executable::startsWith);
+            case DOWNLOADER_EXECUTION -> DOWNLOADERS.contains(processName);
+            case IDENTITY_FILE_CHANGE -> IDENTITY_FILES.contains(targetPath);
+            case PERSISTENCE_FILE_CHANGE -> targetPath != null
+                    && PERSISTENCE_PATH_PREFIXES.stream().anyMatch(targetPath::startsWith);
+            case SSH_AUTHORIZED_KEYS_CHANGE -> targetPath != null && targetPath.endsWith("/authorized_keys");
+            case NETWORK_EVENT, CONTAINER_LIFECYCLE_EVENT -> false;
+        };
+    }
+
+    private static String targetName(RuntimeRuleDefinition definition, JsonNode fields,
+                                     String executable, String targetPath, String containerId) {
+        return switch (definition.targetType()) {
+            case "FILE" -> targetPath;
+            case "NETWORK" -> text(fields, "fd.name", "fd.rip", "fd.sip");
+            case "CONTAINER" -> text(fields, "container.name", "k8s.pod.container.name", "container.id");
+            case "PROCESS" -> definition.validationProfile() == RuntimeRuleDefinition.ValidationProfile.PROCESS_MEMORY_ACCESS
+                    ? first(text(fields, "evt.arg.target_pid", "evt.arg.pid", "evt.arg.procid"), executable)
+                    : executable;
+            default -> null;
+        };
+    }
+
+    private static String first(String first, String fallback) {
+        return first == null ? fallback : first;
     }
 
     private static String image(JsonNode fields) {
@@ -153,9 +242,9 @@ public class FalcoRuntimeEventNormalizer {
         for (String name : names) {
             JsonNode value = node.get(name);
             if (value != null && !value.isNull()) {
-                String text = value.asText().trim();
-                if (!text.isEmpty()) {
-                    return text;
+                String result = value.asText().trim();
+                if (!result.isEmpty()) {
+                    return result;
                 }
             }
         }

@@ -1,0 +1,32 @@
+{
+  "clusterId": "logssey-prod",
+  "schemaVersion": "falco-json-0.1",
+  "event": {
+    "uuid": "local-falco-run-007",
+    "time": "2026-10-27T01:07:00Z",
+    "priority": "Warning",
+    "rule": "Logssey RUN-007 Sensitive Path Write",
+    "output": "Sensitive path modified in a container",
+    "output_fields": {
+      "evt.type": "openat",
+      "fd.name": "/etc/cron.d/persistence",
+      "proc.name": "sh",
+      "proc.exepath": "/usr/bin/sh",
+      "proc.cmdline": "sh -c echo test > /etc/cron.d/persistence",
+      "proc.pid": 4400,
+      "proc.ppid": 4300,
+      "proc.pexepath": "/usr/bin/bash",
+      "user.uid": "0",
+      "container.id": "local-container-reused-api",
+      "container.image.repository": "logssey/reused-api",
+      "container.image.tag": "demo",
+      "k8s.ns.name": "reused",
+      "k8s.deployment.name": "reused-api",
+      "k8s.pod.uid": "local-pod-uid-reused-api",
+      "k8s.pod.name": "reused-api-7d9df64b9f-local",
+      "k8s.pod.container.name": "api",
+      "k8s.node.name": "worker-a",
+      "k8s.sa.name": "reused-api"
+    }
+  }
+}
