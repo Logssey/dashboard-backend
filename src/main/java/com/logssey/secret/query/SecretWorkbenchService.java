@@ -77,6 +77,7 @@ public class SecretWorkbenchService {
             "metrics",metrics,"caseSummary",facts("scope","currentCases","unit","ResponseCase","total",caseAccess?allCases.size():null,
                 "status",caseAccess?"AVAILABLE":"NOT_AUTHORIZED","actionCounts",caseAccess?counts:null,
                 "severityCounts",caseAccess?severityCounts:null,
+                "severityValidityMatrix",SecretCaseMetrics.matrix(allCases,caseAccess,f.normalized(),h.snapshotId().toString()),
                 "notApplicableCaseCount",caseAccess?allCases.stream().filter(c->"NOT_APPLICABLE".equals(c.get("assessmentStatus"))).count():null,
                 "severityStatus",caseAccess?"AVAILABLE":"NOT_AUTHORIZED","severityReasonCode",caseAccess?null:"ROLE_REQUIRED"),
             "normalInventory",facts("unit","CredentialSet","status",securityAccess?"AVAILABLE":"NOT_AUTHORIZED","value",securityAccess?snapshots.count(h,"NormalCredentialSet"):null),
@@ -89,8 +90,23 @@ public class SecretWorkbenchService {
     }
     @Transactional(isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> queue(String login,Filters f,String bucket,String stages,int page,int size,String snapshotId) {
+        return queue(login,f,bucket,stages,page,size,snapshotId,"ALL","ALL");
+    }
+    @Transactional(isolation=Isolation.REPEATABLE_READ)
+    public Map<String,Object> matrix(String login,Filters f,String snapshotId) {
+        var summary=summary(login,f,snapshotId);
+        @SuppressWarnings("unchecked") var cases=(Map<String,Object>)summary.get("caseSummary");
+        @SuppressWarnings("unchecked") var result=new LinkedHashMap<>((Map<String,Object>)cases.get("severityValidityMatrix"));
+        for(String key:List.of("origin","filters","snapshotId","asOf","expiresAt","restrictedCoverage","accessScope"))result.put(key,summary.get(key));
+        return result;
+    }
+    @Transactional(isolation=Isolation.REPEATABLE_READ)
+    public Map<String,Object> queue(String login,Filters f,String bucket,String stages,int page,int size,String snapshotId,String severity,String validity) {
         if(page<0||page>1_000_000||size<1||size>100)throw new ApiException(ErrorCode.INVALID_INPUT);
         SecretInventoryFilters.require(bucket,"ACTION_REQUIRED","CURRENT_CASES","NEEDS_DECISION","NEEDS_CASE_LINK","NORMAL_INVENTORY","COVERAGE_GAPS","UNCLASSIFIED");
+        SecretInventoryFilters.require(severity,"ALL","CRITICAL","HIGH","MEDIUM","LOW","UNASSESSED","NOT_APPLICABLE");
+        SecretInventoryFilters.require(validity,"ALL","VALID","INVALID","UNKNOWN","UNCHECKED");
+        if(!Set.of("ACTION_REQUIRED","CURRENT_CASES").contains(bucket)&&(!severity.equals("ALL")||!validity.equals("ALL")))throw new ApiException(ErrorCode.INVALID_INPUT);
         Set<String> selectedStages=stageFilter(bucket,stages);
         var actor=access.requirePrincipal(login);access.requireAnyRole(actor);
         var required=switch(bucket){case "ACTION_REQUIRED","CURRENT_CASES"->Set.of(SecretRole.SECURITY,SecretRole.REMEDIATOR);case "COVERAGE_GAPS","UNCLASSIFIED"->Set.of(SecretRole.SECURITY,SecretRole.OPERATIONS);default->Set.of(SecretRole.SECURITY);};
@@ -98,14 +114,18 @@ public class SecretWorkbenchService {
         var h=header(login,actor,f,snapshotId);String type=switch(bucket){case "ACTION_REQUIRED","CURRENT_CASES"->"ResponseCase";case "NEEDS_DECISION"->"DecisionOccurrence";case "NEEDS_CASE_LINK"->"LinkOccurrence";case "NORMAL_INVENTORY"->"NormalCredentialSet";case "COVERAGE_GAPS"->"GapScope";default->"UnclassifiedScope";};
         var allowed=snapshots.page(h,type,0,Integer.MAX_VALUE).stream()
             .filter(r->!bucket.equals("ACTION_REQUIRED")||!Set.of("RESOLVED","RISK_ACCEPTED").contains(r.get("stage")))
-            .filter(r->!type.equals("ResponseCase")||selectedStages.isEmpty()||selectedStages.contains(r.get("stage"))).toList();
+            .filter(r->!type.equals("ResponseCase")||selectedStages.isEmpty()||selectedStages.contains(r.get("stage")))
+            .filter(r->severity.equals("ALL")||severity.equals(SecretCaseMetrics.severity(r)))
+            .filter(r->validity.equals("ALL")||validity.equals(r.get("validationStatus"))).toList();
         String unit=switch(type){case "ResponseCase"->"ResponseCase";case "NormalCredentialSet"->"CredentialSet";case "GapScope","UnclassifiedScope"->"Scope";default->"Occurrence";};
         var applied=new TreeMap<>(f.normalized());var ignored=new ArrayList<String>();
+        if(!severity.equals("ALL"))applied.put("severity",severity);
+        if(!validity.equals("ALL"))applied.put("validity",validity);
         if(!type.equals("ResponseCase")&&f.assignee()!=null){applied.remove("assignee");ignored.add("assignee");}
         if(type.equals("GapScope")||type.equals("UnclassifiedScope"))for(String key:List.of("provider","environment"))if(!applied.getOrDefault(key,"ALL").equals("ALL")){applied.remove(key);ignored.add(key);}
         return facts("items",allowed.stream().skip((long)page*size).limit(size).toList(),"total",allowed.size(),"page",page,"size",size,
             "unit",unit,"scope","reviewQueue","snapshotId",h.snapshotId(),"asOf",h.asOf(),"expiresAt",h.expiresAt(),"restrictedCoverage",h.restrictedCoverage(),
-            "partialCoverage",null,"filters",f.normalized(),"appliedFilters",applied,"notApplicableFilters",ignored);
+            "partialCoverage",null,"filters",applied,"appliedFilters",applied,"notApplicableFilters",ignored);
     }
     private Header header(String login,SecretPrincipal actor,Filters f,String supplied) {
         if(f.connectionId()!=null&&!access.canReadConnectionFacts(actor,f.connectionId())&&!access.hasConnectionRole(actor,f.connectionId(),SecretRole.REMEDIATOR))throw new ApiException(ErrorCode.FORBIDDEN);
@@ -117,6 +137,7 @@ public class SecretWorkbenchService {
             &&(f.source().equals("ALL")||f.source().equals(r.source()))&&(f.provider().equals("ALL")||f.provider().equals(r.issuer()))
             &&(f.environment().equals("ALL")||f.environment().equals(r.environment()))).toList();
         var subjects=new ArrayList<Subject>();OffsetDateTime acceptanceDeadline=null;
+        OffsetDateTime evaluationAsOf=jdbc.queryForObject("SELECT CURRENT_TIMESTAMP",OffsetDateTime.class);
         Set<Long> valid=validOccurrences(allRows);
         var completeByKey=allRows.stream().collect(Collectors.groupingBy(Row::secretId));
         var byKey=rows.stream().collect(Collectors.groupingBy(Row::secretId,LinkedHashMap::new,Collectors.toList()));
@@ -125,7 +146,10 @@ public class SecretWorkbenchService {
             var member=rows.stream().filter(r->Objects.equals(r.caseId(),id)).toList();
             if(f.assignee()!=null&&member.stream().noneMatch(r->assignmentMatches(actor,r,f.assignee())))continue;
             var c=cases.detail(id,login);c.remove("checklist");c.remove("occurrences");c.remove("capabilities");
-            c.putAll(SecretRiskReadModel.summarize(allRows.stream().filter(r->Objects.equals(r.caseId(),id)&&!"RESOLVED".equals(r.actionStatus())).map(Row::occurrenceId).distinct().toList(),riskRows,false));
+            var visibleCase=allRows.stream().filter(r->Objects.equals(r.caseId(),id)).toList();
+            c.putAll(SecretRiskReadModel.summarize(visibleCase.stream().filter(r->!"RESOLVED".equals(r.actionStatus())).map(Row::occurrenceId).distinct().toList(),riskRows,false));
+            c.putAll(SecretCaseMetrics.validation(visibleCase,evaluationAsOf));
+            if(c.get("validationDueAt") instanceof OffsetDateTime due&&due.isAfter(evaluationAsOf)&&(acceptanceDeadline==null||due.isBefore(acceptanceDeadline)))acceptanceDeadline=due;
             var deadline=closure==null?null:closure.riskAcceptanceDeadline(id,login);
             if(deadline!=null) {
                 c.put("underlyingActionStage",c.get("stage"));c.put("stage","RISK_ACCEPTED");

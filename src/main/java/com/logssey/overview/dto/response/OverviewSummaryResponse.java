@@ -7,5 +7,8 @@ public record OverviewSummaryResponse(
         long connectedAssetCount,
         int securityScore,
         String scoreRule,
-        String lastCollectedAt) {
+        String lastCollectedAt,
+        SecretIntegration secretIntegration) {
+    public record SecretIntegration(String status, String unit, String origin, Long total,
+            Long unassessedCount, Long notApplicableCount, boolean restrictedCoverage) {}
 }

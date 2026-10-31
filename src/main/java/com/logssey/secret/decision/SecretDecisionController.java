@@ -33,10 +33,11 @@ public class SecretDecisionController {
         @RequestParam(defaultValue="ALL") String provider,@RequestParam(defaultValue="ALL") String environment,
         @RequestParam(required=false) Long connectionId,@RequestParam(required=false) String assignee,
         @RequestParam(required=false) String snapshotId,@RequestParam(required=false) String stages,
+        @RequestParam(defaultValue="ALL") String severity,@RequestParam(defaultValue="ALL") String validity,
         @RequestParam Map<String,String> params) {
-        if(!java.util.Set.of("bucket","origin","page","size","source","provider","environment","connectionId","assignee","snapshotId","stages","classificationStatus","gapOnly").containsAll(params.keySet()))throw new com.logssey.common.error.ApiException(com.logssey.common.error.ErrorCode.INVALID_INPUT);
+        if(!java.util.Set.of("bucket","origin","page","size","source","provider","environment","connectionId","assignee","snapshotId","stages","classificationStatus","gapOnly","severity","validity").containsAll(params.keySet()))throw new com.logssey.common.error.ApiException(com.logssey.common.error.ErrorCode.INVALID_INPUT);
         return workbench==null?service.queue(actor.getName(),bucket,origin,page,size):
-            workbench.queue(actor.getName(),new com.logssey.secret.query.SecretWorkbenchService.Filters(origin,source,provider,environment,connectionId,assignee),bucket,stages,page,size,snapshotId);
+            workbench.queue(actor.getName(),new com.logssey.secret.query.SecretWorkbenchService.Filters(origin,source,provider,environment,connectionId,assignee),bucket,stages,page,size,snapshotId,severity,validity);
     }
 }
 
