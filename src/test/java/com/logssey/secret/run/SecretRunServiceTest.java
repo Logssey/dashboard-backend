@@ -30,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SecretRunServiceTest {
 
-    private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:18.6");
+    private static final PostgreSQLContainer POSTGRES = new com.logssey.secret.testing.SecretTestPostgres();
     private static JdbcTemplate jdbc;
     private static DataSourceTransactionManager transactions;
     private SecretRunService service;
@@ -196,7 +196,8 @@ class SecretRunServiceTest {
         var request = new SecretRunRequest(connection, "pre-foundation-key");
         var original = service.register(request, "admin");
         // Reproduce an existing job created before V13 introduced command audit/idempotency.
-        jdbc.update("DELETE FROM secret_audit_events WHERE command_id IS NOT NULL");
+        // The isolated fixture owner recreates pre-audit state. Runtime audit rows are immutable.
+        jdbc.execute("TRUNCATE secret_audit_events");
         jdbc.update("DELETE FROM secret_command_idempotency");
         jdbc.update("UPDATE secret_jobs SET status='SUCCEEDED',finished_at=now() WHERE connection_id=?", connection);
         jdbc.update("UPDATE secret_scan_runs SET result_status='SKIPPED',finished_at=now() WHERE run_id=?", original.runId());

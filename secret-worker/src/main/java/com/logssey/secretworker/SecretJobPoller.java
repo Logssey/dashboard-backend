@@ -16,12 +16,20 @@ public class SecretJobPoller {
     private final SecretJobExecutionService execution;
     private final SecretJobProperties properties;
     private final ObjectProvider<SecretJobProcessor> processorProvider;
+    private final com.logssey.secretworker.operations.SecretOperationsHeartbeat heartbeat;
 
     public SecretJobPoller(SecretJobExecutionService execution, SecretJobProperties properties,
                            ObjectProvider<SecretJobProcessor> processorProvider) {
+        this(execution,properties,processorProvider,null);
+    }
+    @org.springframework.beans.factory.annotation.Autowired
+    public SecretJobPoller(SecretJobExecutionService execution, SecretJobProperties properties,
+                           ObjectProvider<SecretJobProcessor> processorProvider,
+                           com.logssey.secretworker.operations.SecretOperationsHeartbeat heartbeat) {
         this.execution = execution;
         this.properties = properties;
         this.processorProvider = processorProvider;
+        this.heartbeat = heartbeat;
     }
 
     @Scheduled(fixedDelayString = "${logssey.secret.executor.poll-delay}")
@@ -31,6 +39,7 @@ public class SecretJobPoller {
         if (processors.isEmpty()) {
             return;
         }
+        if(heartbeat!=null)heartbeat.begin("EXECUTOR");
         try {
             execution.recoverExpiredJobs();
             for (SecretJobProcessor processor : processors) {
@@ -41,12 +50,15 @@ public class SecretJobPoller {
                     processOne(processor, job.get());
                 }
             }
+            if(heartbeat!=null)heartbeat.success("EXECUTOR");
         } catch (RuntimeException error) {
+            if(heartbeat!=null)heartbeat.failure("EXECUTOR","EXECUTOR_POLL_FAILED");
             log.error("Secret job polling failed ({}); retry on next poll", error.getClass().getSimpleName());
         }
     }
 
     private void processOne(SecretJobProcessor processor, ClaimedSecretJob job) {
+        if(heartbeat!=null)heartbeat.activeJob("EXECUTOR",job.jobId());
         try {
             processor.process(job, execution);
             if (!execution.complete(job.jobId(), job.leaseToken())) {
@@ -59,6 +71,8 @@ public class SecretJobPoller {
             log.error("Secret job {} failed ({}); recording a generic code", job.jobId(),
                     error.getClass().getSimpleName());
             execution.fail(job.jobId(), job.leaseToken(), SecretJobFailureCode.PROCESSOR_FAILURE, true);
+        } finally {
+            if(heartbeat!=null)heartbeat.clearJob("EXECUTOR");
         }
     }
 }

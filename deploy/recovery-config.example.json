@@ -1,0 +1,23 @@
+{
+  "service_file": "/secure/pg_service.conf",
+  "source_service": "logssey_backup",
+  "restore_admin_service": "secret_restore_admin",
+  "allowed_restore_hosts": ["127.0.0.1"],
+  "pg_dump": "/usr/bin/pg_dump",
+  "pg_restore": "/usr/bin/pg_restore",
+  "age": "/usr/local/bin/age",
+  "recipient_file": "/secure/backup-recipients.txt",
+  "identity_file": "/separate-recovery-store/backup-identity.txt",
+  "approved_key_checks_file": "/separate-recovery-store/approved-runtime-key-checks.json",
+  "output_dir": "/var/lib/logssey-secret-recovery/backups",
+  "restore_keys_dir": "/var/lib/logssey-secret-recovery/restored-keys",
+  "keys": [
+    {"kind": "fingerprint", "version": "replace-version", "file": "/secure/fingerprint.b64"},
+    {"kind": "metadata", "version": "replace-version", "file": "/secure/metadata.b64"}
+  ],
+  "backup_interval_seconds": 0,
+  "restore_interval_seconds": 0,
+  "rpo_seconds": 0,
+  "rto_seconds": 0,
+  "max_retained_drills": 2
+}
