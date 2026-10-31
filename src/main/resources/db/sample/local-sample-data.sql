@@ -192,3 +192,167 @@ VALUES
     -- 폐기됨
     ('NOTION', 'NOTION_PAT', 'SECRET', 'revoked-tool',  'sample-pat-0005', 'Team Member B', 'Backend',  '테스트 연동',
      'REVOKED', 'API', now() - interval '150 days', 'FIXED', now() + interval '30 days', now() - interval '40 days', now());
+
+-- Reach 샘플: PoC api 이미지 1개, 스캔 1개, Finding 23개 (프론트 src/api/reachSample.ts와 같은 값)
+-- 샘플 대상(digest sha256:sample-reach-api)에 딸린 행만 지운다. 실제 스캔 결과는 남는다
+DELETE FROM reach_review_history
+WHERE finding_id IN (SELECT f.finding_id FROM reach_findings f
+                     JOIN reach_targets t ON t.target_id = f.target_id
+                     WHERE t.image_digest = 'sha256:sample-reach-api');
+DELETE FROM reach_reviews
+WHERE finding_id IN (SELECT f.finding_id FROM reach_findings f
+                     JOIN reach_targets t ON t.target_id = f.target_id
+                     WHERE t.image_digest = 'sha256:sample-reach-api');
+DELETE FROM reach_evidence
+WHERE verdict_id IN (SELECT v.verdict_id FROM reach_verdicts v
+                     JOIN reach_findings f ON f.finding_id = v.finding_id
+                     JOIN reach_targets t ON t.target_id = f.target_id
+                     WHERE t.image_digest = 'sha256:sample-reach-api');
+DELETE FROM reach_verdicts
+WHERE finding_id IN (SELECT f.finding_id FROM reach_findings f
+                     JOIN reach_targets t ON t.target_id = f.target_id
+                     WHERE t.image_digest = 'sha256:sample-reach-api');
+DELETE FROM reach_findings
+WHERE target_id IN (SELECT target_id FROM reach_targets WHERE image_digest = 'sha256:sample-reach-api');
+DELETE FROM reach_scans
+WHERE target_id IN (SELECT target_id FROM reach_targets WHERE image_digest = 'sha256:sample-reach-api');
+DELETE FROM reach_targets
+WHERE image_repository = 'logssey/reused-api' AND image_digest = 'sha256:sample-reach-api';
+
+INSERT INTO reach_targets (target_type, app, image_repository, image_digest, display_name)
+VALUES ('IMAGE', 'API', 'logssey/reused-api', 'sha256:sample-reach-api', 'reused-api');
+
+INSERT INTO reach_scans
+    (target_id, scan_status, trigger_type, requested_by_kind, tools, created_at, started_at, finished_at)
+SELECT target_id, 'SUCCEEDED', 'MANUAL', 'SYSTEM', '{"reach": "v0", "scanner": "trivy"}',
+       now() - interval '1 hour', now() - interval '1 hour', now() - interval '55 minutes'
+FROM reach_targets WHERE image_digest = 'sha256:sample-reach-api';
+
+-- 아래 INSERT들이 같이 쓰는 샘플 스캔과 Finding 원본. 행을 늘릴 때는 reach_sample_rows의 VALUES만 늘린다
+DROP TABLE IF EXISTS reach_sample_scan;
+CREATE TEMP TABLE reach_sample_scan AS
+SELECT s.scan_id, s.target_id, s.finished_at
+FROM reach_scans s JOIN reach_targets t ON t.target_id = s.target_id
+WHERE t.image_digest = 'sha256:sample-reach-api';
+
+DROP TABLE IF EXISTS reach_sample_rows;
+CREATE TEMP TABLE reach_sample_rows (
+    seq       INTEGER,
+    severity  VARCHAR(10),
+    cve       VARCHAR(40),
+    name      VARCHAR(200),
+    grp       VARCHAR(200),
+    version   VARCHAR(100),
+    fixed     TEXT[],
+    status    VARCHAR(15),
+    method    VARCHAR(10),
+    reason    VARCHAR(30),
+    review    VARCHAR(15),
+    summary   VARCHAR(500),
+    proposal  VARCHAR(500)
+);
+-- seq는 화면 기본 정렬 순서이고 Finding ID도 이 순서로 매긴다 (reachSample.ts의 rows 순서와 같음)
+INSERT INTO reach_sample_rows VALUES
+    -- Java 라이브러리 14개: 도달 불가 판정
+    (1, 'CRITICAL', 'CVE-2025-14813', 'bcprov-jdk18on', 'org.bouncycastle', '1.81', ARRAY['1.80.2', '1.81.1', '1.84'],
+     'UNREACHABLE', 'CALLGRAPH', NULL, 'CONFIRMED', '취약 메서드 G3413CTRBlockCipher.generateCRT에 닿는 경로 없음', NULL),
+    (2, 'CRITICAL', 'CVE-2026-8763', 'bcprov-jdk18on', 'org.bouncycastle', '1.81', ARRAY['1.85'],
+     'UNREACHABLE', 'CALLGRAPH', NULL, 'CONFIRMED', 'Name Constraints 검증 메서드에 닿지 않는다. BC provider·CertPathValidator 참조 없음', NULL),
+    (3, 'CRITICAL', 'CVE-2026-65182', 'tomcat-embed-core', 'org.apache.tomcat.embed', '11.0.24', ARRAY['11.0.25'],
+     'UNREACHABLE', 'RULE', NULL, 'CONFIRMED', '컨테이너 보안 제약(security-constraint, @ServletSecurity) 없음', NULL),
+    (4, 'CRITICAL', 'CVE-2026-65905', 'tomcat-embed-core', 'org.apache.tomcat.embed', '11.0.24', ARRAY['11.0.25'],
+     'UNREACHABLE', 'RULE', NULL, 'CONFIRMED', 'DIGEST 인증기 설정 없음', NULL),
+    (5, 'CRITICAL', 'CVE-2026-68525', 'tomcat-embed-core', 'org.apache.tomcat.embed', '11.0.24', ARRAY['11.0.25', '10.1.58', '9.0.121'],
+     'UNREACHABLE', 'RULE', NULL, 'CONFIRMED', 'FORM 인증(LoginConfig) 설정 없음', NULL),
+    (6, 'HIGH', 'CVE-2026-13506', 'bcprov-jdk18on', 'org.bouncycastle', '1.81', ARRAY['1.85'],
+     'UNREACHABLE', 'CALLGRAPH', NULL, 'PROVISIONAL', 'ASN.1 지연 파싱 메서드에 닿지 않는다. 패키지는 Argon2 경로로 닿는다', NULL),
+    (7, 'HIGH', 'CVE-2026-68497', 'jackson-databind', 'tools.jackson.core', '3.1.5', ARRAY['3.1.6'],
+     'UNREACHABLE', 'RULE', NULL, 'CONFIRMED', 'javax.xml.datatype(Duration, XMLGregorianCalendar) 사용 없음', NULL),
+    (8, 'HIGH', 'CVE-2026-89407', 'jackson-core', 'tools.jackson.core', '3.1.5', ARRAY['3.1.7', '3.2.2'],
+     'UNREACHABLE', 'RULE', NULL, 'CONFIRMED', 'Jackson에 타입을 알려줄 수 있는 자리(tokens 97개)의 타입에 실수형 필드 없음', NULL),
+    (9, 'HIGH', 'CVE-2026-89425', 'jackson-core', 'tools.jackson.core', '3.1.5', ARRAY['3.1.7'],
+     'UNREACHABLE', 'CALLGRAPH', NULL, 'CONFIRMED', 'DataInput 파서 메서드에 닿지 않는다. DataInput 사용 없음', NULL),
+    (10, 'HIGH', 'CVE-2026-91776', 'jackson-databind', 'tools.jackson.core', '3.1.5', ARRAY['3.1.7'],
+     'UNREACHABLE', 'RULE', NULL, 'CONFIRMED', '@JsonTypeInfo, default typing, 문제 처리기 사용 없음', NULL),
+    (11, 'HIGH', 'CVE-2026-91777', 'jackson-databind', 'tools.jackson.core', '3.1.5', ARRAY['3.1.7'],
+     'UNREACHABLE', 'RULE', NULL, 'CONFIRMED', '@JsonIdentityInfo 사용 없음', NULL),
+    (12, 'MEDIUM', 'CVE-2026-0636', 'bcprov-jdk18on', 'org.bouncycastle', '1.81', ARRAY['1.84'],
+     'UNREACHABLE', 'CALLGRAPH', NULL, 'CONFIRMED', 'LDAP 저장소 메서드(parseDN, search)에 닿지 않는다', NULL),
+    (13, 'MEDIUM', 'CVE-2026-19032', 'jackson-databind', 'tools.jackson.core', '3.1.5', ARRAY['3.1.6'],
+     'UNREACHABLE', 'RULE', NULL, 'CONFIRMED', '역직렬화 타입에 Path 필드 없음', NULL),
+    (14, 'MEDIUM', 'CVE-2026-83557', 'jackson-databind', 'tools.jackson.core', '3.1.5', ARRAY['3.1.6'],
+     'UNREACHABLE', 'RULE', NULL, 'CONFIRMED', '@JsonTypeInfo 사용 없음', NULL),
+    -- Jackson 2 사본 7개: 판정하지 않음, 제안(확정 대기)만 있음
+    (15, 'HIGH', 'CVE-2026-68497', 'jackson-databind', 'com.fasterxml.jackson.core', '2.21.5', ARRAY['2.21.6'],
+     'NOT_ANALYZED', NULL, 'UNANALYZED_COPY', 'UNREVIEWED', '판정하지 않은 패키지 사본', '도달 불가(발동 조건 없음)'),
+    (16, 'HIGH', 'CVE-2026-89407', 'jackson-core', 'com.fasterxml.jackson.core', '2.21.5', ARRAY['2.18.11', '2.21.7', '2.22.3'],
+     'NOT_ANALYZED', NULL, 'UNANALYZED_COPY', 'UNREVIEWED', '판정하지 않은 패키지 사본',
+     '도달 불가. 운영 기본에서 외부 입력을 Jackson 2로 읽는 경로가 없다. anthropic을 켜도 SDK 매퍼가 문자열→숫자 변환을 막는다'),
+    (17, 'HIGH', 'CVE-2026-89425', 'jackson-core', 'com.fasterxml.jackson.core', '2.21.5', ARRAY['2.21.7'],
+     'NOT_ANALYZED', NULL, 'UNANALYZED_COPY', 'UNREVIEWED', '판정하지 않은 패키지 사본', '도달 불가'),
+    (18, 'HIGH', 'CVE-2026-91776', 'jackson-databind', 'com.fasterxml.jackson.core', '2.21.5', ARRAY['2.21.7'],
+     'NOT_ANALYZED', NULL, 'UNANALYZED_COPY', 'UNREVIEWED', '판정하지 않은 패키지 사본', '도달 불가(발동 조건 없음)'),
+    (19, 'HIGH', 'CVE-2026-91777', 'jackson-databind', 'com.fasterxml.jackson.core', '2.21.5', ARRAY['2.21.7'],
+     'NOT_ANALYZED', NULL, 'UNANALYZED_COPY', 'UNREVIEWED', '판정하지 않은 패키지 사본', '도달 불가(발동 조건 없음)'),
+    (20, 'MEDIUM', 'CVE-2026-19032', 'jackson-databind', 'com.fasterxml.jackson.core', '2.21.5', ARRAY['2.21.6'],
+     'NOT_ANALYZED', NULL, 'UNANALYZED_COPY', 'UNREVIEWED', '판정하지 않은 패키지 사본', '도달 불가(발동 조건 없음)'),
+    -- OS 패키지 2개는 Jackson 2 사본 사이에 있다 (CVE 번호 순서)
+    (21, 'MEDIUM', 'CVE-2026-46675', 'libpng', 'alpine', '1.6.58-r1', ARRAY['1.6.59-r0'],
+     'NOT_ANALYZED', NULL, 'OS_PACKAGE', 'UNREVIEWED', 'OS 패키지. Java 호출 그래프로 판정하지 않는다', NULL),
+    (22, 'MEDIUM', 'CVE-2026-83557', 'jackson-databind', 'com.fasterxml.jackson.core', '2.21.5', ARRAY['2.21.6'],
+     'NOT_ANALYZED', NULL, 'UNANALYZED_COPY', 'UNREVIEWED', '판정하지 않은 패키지 사본', '도달 불가(발동 조건 없음)'),
+    (23, 'MEDIUM', 'CVE-2026-85091', 'zlib', 'alpine', '1.3.2-r0', ARRAY['1.3.2-r1'],
+     'NOT_ANALYZED', NULL, 'OS_PACKAGE', 'UNREVIEWED', 'OS 패키지. Java 호출 그래프로 판정하지 않는다', NULL);
+
+INSERT INTO reach_findings
+    (target_id, purl, component_name, component_version, ecosystem, vulnerability_id, severity,
+     fixed_versions, sources, deployment, last_scan_id, first_seen_at, last_seen_at)
+SELECT s.target_id,
+       CASE WHEN r.grp = 'alpine' THEN 'pkg:apk/alpine/' || r.name || '@' || r.version
+            ELSE 'pkg:maven/' || r.grp || '/' || r.name || '@' || r.version END,
+       r.name, r.version, CASE WHEN r.grp = 'alpine' THEN 'apk' ELSE 'maven' END,
+       r.cve, r.severity, r.fixed, ARRAY['TRIVY'], 'RUNNING', s.scan_id, s.finished_at, s.finished_at
+FROM reach_sample_rows r CROSS JOIN reach_sample_scan s
+ORDER BY r.seq;
+
+-- 도구 판정이라 engine과 evidence_hash가 필요하다. 샘플은 자리만 채운다
+INSERT INTO reach_verdicts
+    (finding_id, scan_id, status, method, not_analyzed_reason, summary, rule_id,
+     engine, evidence_hash, is_current, analyzed_at)
+SELECT f.finding_id, s.scan_id, r.status, r.method, r.reason, r.summary,
+       CASE WHEN r.method = 'RULE' THEN 'RULE-' || r.cve END,
+       '{"reach": "v0"}', repeat('0', 64), TRUE, s.finished_at
+FROM reach_sample_rows r
+CROSS JOIN reach_sample_scan s
+JOIN reach_findings f ON f.last_scan_id = s.scan_id AND f.component_name = r.name
+                     AND f.component_version = r.version AND f.vulnerability_id = r.cve;
+
+-- 기본 근거 한 줄: 규칙 판정은 RULE, 나머지는 판정 요약을 NOTE로
+INSERT INTO reach_evidence (verdict_id, ord, kind, summary, rule_id, detail)
+SELECT v.verdict_id, 1, CASE WHEN v.method = 'RULE' THEN 'RULE' ELSE 'NOTE' END, v.summary, v.rule_id,
+       CASE WHEN v.method = 'RULE' THEN '{"matchedCondition": "UNREACHABLE"}'::JSONB ELSE '{}'::JSONB END
+FROM reach_verdicts v JOIN reach_sample_scan s ON s.scan_id = v.scan_id;
+
+-- 검토자는 ADMIN 계정이다. 빈 DB로 처음 켜면 계정이 샘플보다 늦게 만들어질 수 있어 그때는 UNREVIEWED로 넣는다
+INSERT INTO reach_reviews
+    (finding_id, review_state, status, note, proposal, reviewer_user_id, reviewed_at, version, base_verdict_id)
+SELECT f.finding_id,
+       CASE WHEN r.review <> 'UNREVIEWED' AND u.user_id IS NOT NULL THEN r.review ELSE 'UNREVIEWED' END,
+       CASE WHEN r.review <> 'UNREVIEWED' AND u.user_id IS NOT NULL THEN v.status END,
+       CASE WHEN r.review = 'CONFIRMED' AND u.user_id IS NOT NULL THEN 'PoC 정답지(answer-key.md)와 같은 판정'
+            WHEN r.review = 'PROVISIONAL' AND u.user_id IS NOT NULL THEN 'PoC 조사 결과. 확정 전에 한 번 더 확인한다' END,
+       CASE WHEN r.proposal IS NOT NULL THEN jsonb_build_object(
+            'status', 'UNREACHABLE', 'summary', r.proposal, 'reference', '규칙명세서 9-1, PoC 작업 기록 15-7절') END,
+       CASE WHEN r.review <> 'UNREVIEWED' THEN u.user_id END,
+       CASE WHEN r.review <> 'UNREVIEWED' AND u.user_id IS NOT NULL THEN s.finished_at + interval '10 minutes' END,
+       CASE WHEN r.review <> 'UNREVIEWED' AND u.user_id IS NOT NULL THEN 2 ELSE 1 END,
+       v.verdict_id
+FROM reach_sample_rows r
+CROSS JOIN reach_sample_scan s
+JOIN reach_findings f ON f.last_scan_id = s.scan_id AND f.component_name = r.name
+                     AND f.component_version = r.version AND f.vulnerability_id = r.cve
+JOIN reach_verdicts v ON v.finding_id = f.finding_id AND v.is_current
+LEFT JOIN LATERAL (SELECT user_id FROM dashboard_users WHERE role = 'ADMIN' ORDER BY user_id LIMIT 1) u ON TRUE;
+
+DROP TABLE reach_sample_rows;
+DROP TABLE reach_sample_scan;
