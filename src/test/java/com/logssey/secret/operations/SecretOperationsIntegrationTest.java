@@ -27,6 +27,39 @@ class SecretOperationsIntegrationTest {
     void beat(boolean enabled){store.heartbeat(new SecretOperationsStore.Beat(instance,"secret-worker","EXECUTOR",enabled,"IDLE",30000,null,null,OffsetDateTime.now(ZoneOffset.UTC),null,null));}
     long job(int delayMinutes){return jdbc.queryForObject("INSERT INTO secret_jobs(kind,connection_id,scheduled_at,available_at,attempt_no,max_attempts,status) VALUES('FULL_SCAN',?,now(),now()+(?*interval '1 minute'),0,3,'PENDING') RETURNING job_id",Long.class,connection,delayMinutes);}
     long openCount(){return jdbc.queryForObject("SELECT count(*) FROM secret_operations_alerts WHERE status='OPEN'",Long.class);}
+    long occurrence(){
+        long scope=jdbc.queryForObject("INSERT INTO secret_connection_scopes(connection_id,scope_key,revision,content_type,approved_ref,history_limit,enabled) VALUES(?,?,1,'GITHUB_REPOSITORY_FILES','github://Sample/repo/main/fixtures/','CURRENT_COMMIT_ONLY',true) RETURNING scope_id",Long.class,connection,UUID.randomUUID().toString());
+        long key=jdbc.queryForObject("INSERT INTO secret_credential_sets(issuer,credential_type,component_state,fingerprint,fingerprint_key_version,masked_label,first_seen_at,last_seen_at) VALUES('GITHUB','GITHUB_CLASSIC_PAT','CONFIRMED',?,'fixture-v1','GITHUB masked',now(),now()) RETURNING credential_set_id",Long.class,java.security.SecureRandom.getSeed(32));
+        return jdbc.queryForObject("INSERT INTO secret_occurrences(credential_set_id,connection_id,scope_id,source_object_ref,location_key,environment,exposure_status,exposure_range,presence_status,first_seen_at,last_seen_at) VALUES(?,?,?,'fixture-only','L1','UNKNOWN','UNKNOWN','UNKNOWN','PRESENT',now(),now()) RETURNING occurrence_id",Long.class,key,connection,scope);
+    }
+    void terminal(String kind,String purpose,long target,String state,String reason,int ageDays){
+        jdbc.update("INSERT INTO secret_jobs(kind,purpose,connection_id,target_occurrence_id,scheduled_at,available_at,created_at,finished_at,attempt_no,max_attempts,status,last_error_code) VALUES(?,?,?,?,now()-(?*interval '1 day'),now()-(?*interval '1 day'),now()-(?*interval '1 day'),clock_timestamp()-(?*interval '1 day'),1,3,?,?)",kind,purpose,connection,target,ageDays,ageDays,ageDays,ageDays,state,reason);
+    }
+    @Test void oldTerminalFailureNeedsActualReplacementSuccessForTheSamePurposeAndTarget(){
+        long target=occurrence(),other=occurrence();
+        terminal("REVALIDATE","CREDENTIAL_VALIDITY",target,"FAILED","SOURCE_UNAVAILABLE",40);store.monitor();
+        assertThat(store.alerts("OPEN",0,20).toString()).contains("CREDENTIAL_VALIDITY_JOB_FAILED");
+        terminal("REVALIDATE","CREDENTIAL_VALIDITY",target,"CANCELLED","STALE_BASELINE",0);
+        terminal("REVALIDATE","CREDENTIAL_VALIDITY",other,"SUCCEEDED",null,0);store.monitor();assertThat(openCount()).isEqualTo(1);
+        terminal("REVALIDATE","CREDENTIAL_VALIDITY",target,"SUCCEEDED",null,0);store.monitor();assertThat(openCount()).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_scan_runs",Long.class)).isZero();
+    }
+    @Test void expectedCancellationStaleBaselineAndSuccessfulInvalidValidationAreNotOperationalFailures(){
+        long target=occurrence();terminal("ASSESS","SEVERITY_ASSESSMENT",target,"FAILED","STALE_BASELINE",0);
+        terminal("REVALIDATE","CREDENTIAL_VALIDITY",target,"CANCELLED","APPROVAL_CHANGED",0);
+        terminal("REVALIDATE","CREDENTIAL_VALIDITY",target,"SUCCEEDED","KEY_REJECTED",0);
+        store.monitor();assertThat(openCount()).isZero();
+    }
+    @Test void assessmentAndOptionalPermissionEnrichmentHaveIndependentPersistentTaskAlerts(){
+        long target=occurrence();terminal("ASSESS","SEVERITY_ASSESSMENT",target,"FAILED","ASSESSMENT_PROCESSING_FAILED",30);store.monitor();
+        assertThat(store.alerts("OPEN",0,20).toString()).contains("SEVERITY_ASSESSMENT_JOB_FAILED");
+        terminal("ASSESS","SEVERITY_ASSESSMENT",target,"SUCCEEDED",null,0);store.monitor();assertThat(openCount()).isZero();
+        if(jdbc.queryForObject("SELECT to_regclass('secret_permission_requests') IS NOT NULL",Boolean.class)){
+            terminal("ENRICH","PERMISSION_ASSISTANCE",target,"FAILED","PERMISSION_OBSERVER_FAILED",30);store.monitor();
+            assertThat(store.alerts("OPEN",0,20).toString()).contains("PERMISSION_ASSISTANCE_JOB_FAILED");
+            terminal("ENRICH","PERMISSION_ASSISTANCE",target,"SUCCEEDED",null,0);store.monitor();assertThat(openCount()).isZero();
+        }
+    }
     @Test void readyQueueAlertsDeduplicateAndRecoverWithoutAnyExternalMessages(){
         beat(true);long id=job(-5);store.monitor();store.monitor();
         assertThat(openCount()).isEqualTo(1);

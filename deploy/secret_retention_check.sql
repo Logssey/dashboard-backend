@@ -13,7 +13,7 @@ FROM pg_constraint WHERE contype='f' AND confrelid IN(
   'secret_jobs'::regclass,'secret_scan_runs'::regclass,'secret_occurrences'::regclass,
   'secret_risk_evidence'::regclass,'secret_severity_assessments'::regclass,
   'secret_command_idempotency'::regclass)
-ORDER BY referenced_table::text,referencing_table::text,conname;
+ORDER BY confrelid::regclass::text,conrelid::regclass::text,conname;
 SELECT event_object_table,trigger_name,event_manipulation
 FROM information_schema.triggers WHERE event_object_table IN(
   'secret_audit_events','secret_risk_evidence','secret_severity_assessments','secret_operations_alert_events')

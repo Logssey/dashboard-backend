@@ -108,6 +108,22 @@ public final class SecretOperationsStore {
               """);
             for(var r:runs){String id=r.get("connection_id").toString(),kind="PARTIAL".equals(r.get("result_status"))?"RUN_PARTIAL":"RUN_FAILED";
                 add(active,new Alert("CONNECTION:"+id,kind,"CONNECTION",id,r.get("run_id").toString(),kind));}
+            // These jobs intentionally have no ScanRun. A new successful job must
+            // match both purpose and target before an old terminal failure clears.
+            var failedTasks=jdbc.queryForList("""
+              SELECT * FROM(SELECT DISTINCT ON(j.connection_id,j.kind,j.purpose,coalesce(j.target_occurrence_id,v.occurrence_id,j.job_id))
+                j.job_id,j.connection_id,j.kind,j.purpose,j.status,coalesce(j.target_occurrence_id,v.occurrence_id,j.job_id) AS target_id
+                FROM secret_jobs j LEFT JOIN secret_case_revalidations v ON v.job_id=j.job_id
+                WHERE j.kind IN('REVALIDATE','ASSESS','ENRICH') AND j.status IN('FAILED','SUCCEEDED')
+                  AND(j.status='SUCCEEDED' OR coalesce(j.last_error_code,'') NOT IN('STALE_BASELINE','PERMISSION_BASELINE_CHANGED','APPROVAL_CHANGED','CONTEXT_CHANGED','SCOPE_CHANGED'))
+                ORDER BY j.connection_id,j.kind,j.purpose,coalesce(j.target_occurrence_id,v.occurrence_id,j.job_id),j.finished_at DESC,j.job_id DESC
+              ) latest WHERE status='FAILED'
+              """);
+            for(var task:failedTasks){
+                String id=task.get("connection_id").toString(),purpose=task.get("purpose").toString();
+                String key="TASK:"+id+":"+task.get("kind")+":"+purpose+":"+task.get("target_id");
+                add(active,new Alert(key,"RUN_FAILED","CONNECTION",id,task.get("job_id").toString(),purpose+"_JOB_FAILED"));
+            }
             for(var alert:active.values())open(alert);
             for(var row:jdbc.queryForList("SELECT alert_id,dedupe_key FROM secret_operations_alerts WHERE status='OPEN' AND starts_with(dedupe_key,?) FOR UPDATE",prefix)){
                 if(active.containsKey(((String)row.get("dedupe_key")).substring(prefix.length())))continue;
