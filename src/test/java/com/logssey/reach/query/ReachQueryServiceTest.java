@@ -1,0 +1,223 @@
+package com.logssey.reach.query;
+
+import com.logssey.common.error.ApiException;
+import com.logssey.common.error.ErrorCode;
+import com.logssey.reach.query.dto.ReachFindingPageResponse;
+import com.logssey.reach.query.dto.ReachFindingResponse;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import org.flywaydb.core.Flyway;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.testcontainers.postgresql.PostgreSQLContainer;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+class ReachQueryServiceTest {
+
+    private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:18.6");
+    private static final ReachFindingFilter ALL = new ReachFindingFilter(null, null, null, null, null);
+    private static JdbcTemplate jdbc;
+    private ReachQueryService service;
+    private long scan;
+
+    @BeforeAll
+    static void startDatabase() {
+        POSTGRES.start();
+        var datasource = new DriverManagerDataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
+        Flyway.configure().dataSource(datasource).load().migrate();   // 버전 번호를 적지 않는다
+        jdbc = new JdbcTemplate(datasource);
+    }
+
+    @AfterAll
+    static void stopDatabase() {
+        POSTGRES.stop();
+    }
+
+    @BeforeEach
+    void reset() {
+        jdbc.execute("TRUNCATE reach_review_history, reach_reviews, reach_evidence, reach_verdicts, "
+                + "reach_findings, reach_scans, reach_targets, dashboard_users RESTART IDENTITY CASCADE");
+        jdbc.update("INSERT INTO dashboard_users (login_id, password_hash, display_name, role) "
+                + "VALUES ('admin', 'h', 'Admin', 'ADMIN')");
+        scan = scan(target("sha256:a"), "SUCCEEDED", 1);
+        service = new ReachQueryService(new ReachQueryRepository(JdbcClient.create(jdbc)));
+    }
+
+    @Test
+    void requiresAdmin() {
+        assertError(() -> service.findings(null, ALL, null, null, null), ErrorCode.UNAUTHENTICATED);
+        assertError(() -> service.findings("nobody", ALL, null, null, null), ErrorCode.FORBIDDEN);
+        assertError(() -> service.summary("nobody", null, null), ErrorCode.FORBIDDEN);
+        assertError(() -> service.finding("nobody", 1), ErrorCode.FORBIDDEN);
+    }
+
+    @Test
+    void listsOnlyTheLatestSucceededScanOfEachTarget() {
+        long target = target("sha256:b");
+        long old = scan(target, "SUCCEEDED", 3);
+        long latest = scan(target, "SUCCEEDED", 2);
+        long failed = scan(target, "FAILED", 1);
+        finding(old, "lib", "CVE-2026-1", "HIGH", "REACHABLE", "UNREVIEWED");
+        finding(latest, "lib", "CVE-2026-2", "HIGH", "REACHABLE", "UNREVIEWED");
+        finding(failed, "lib", "CVE-2026-3", "HIGH", "REACHABLE", "UNREVIEWED");
+
+        assertThat(cves(service.findings("admin", ALL, null, null, null))).containsExactly("CVE-2026-2");
+        assertThat(service.summary("admin", null, null).totals().findings()).isEqualTo(1);
+    }
+
+    @Test
+    void sortsByStatusThenSeverityThenCveNumber() {
+        finding(scan, "a", "CVE-2026-13506", "HIGH", "UNREACHABLE", "UNREVIEWED");
+        finding(scan, "b", "GHSA-xxxx-yyyy-zzzz", "HIGH", "UNREACHABLE", "UNREVIEWED");
+        finding(scan, "c", "CVE-2026-8763", "HIGH", "UNREACHABLE", "UNREVIEWED");
+        finding(scan, "d", "CVE-2026-1", "CRITICAL", "UNREACHABLE", "UNREVIEWED");
+        finding(scan, "e", "CVE-2026-2", "LOW", "REACHABLE", "UNREVIEWED");
+
+        // 명세 2-5: 문자열로 비교하면 13506이 8763보다 앞에 온다. CVE가 아닌 ID는 맨 뒤
+        assertThat(cves(service.findings("admin", ALL, null, null, null))).containsExactly(
+                "CVE-2026-2", "CVE-2026-1", "CVE-2026-8763", "CVE-2026-13506", "GHSA-xxxx-yyyy-zzzz");
+    }
+
+    @Test
+    void filterValuesAreOrWithinAFieldAndAndAcrossFields() {
+        finding(scan, "a", "CVE-2026-1", "HIGH", "REACHABLE", "UNREVIEWED");
+        finding(scan, "b", "CVE-2026-2", "LOW", "UNKNOWN", "UNREVIEWED");
+        finding(scan, "c", "CVE-2026-3", "HIGH", "UNREACHABLE", "UNREVIEWED");
+
+        var either = new ReachFindingFilter(List.of("REACHABLE", "UNKNOWN"), null, null, null, null);
+        assertThat(cves(service.findings("admin", either, null, null, null))).containsExactly("CVE-2026-1", "CVE-2026-2");
+
+        var both = new ReachFindingFilter(List.of("REACHABLE", "UNKNOWN"), List.of("HIGH"), null, null, " 2026-1 ");
+        assertThat(cves(service.findings("admin", both, null, null, null))).containsExactly("CVE-2026-1");
+    }
+
+    @Test
+    void rejectsValuesOutsideTheSpec() {
+        assertError(() -> new ReachFindingFilter(List.of("REACKABLE"), null, null, null, null), ErrorCode.INVALID_INPUT);
+        assertError(() -> service.findings("admin", ALL, 101, null, null), ErrorCode.INVALID_INPUT);
+        assertError(() -> service.findings("admin", ALL, null, "not-a-cursor", null), ErrorCode.INVALID_INPUT);
+        assertError(() -> service.findings("admin", ALL, null, null, "matrix"), ErrorCode.INVALID_INPUT);
+        assertError(() -> service.summary("admin", null, List.of("total")), ErrorCode.INVALID_INPUT);
+    }
+
+    @Test
+    void cursorVisitsEveryFindingOnce() {
+        for (int i = 1; i <= 5; i++) finding(scan, "lib" + i, "CVE-2026-" + i, "HIGH", "UNREACHABLE", "UNREVIEWED");
+
+        var seen = new ArrayList<String>();
+        String cursor = null;
+        do {
+            var page = service.findings("admin", ALL, 2, cursor, "total");
+            assertThat(page.totalCount()).isEqualTo(5);
+            seen.addAll(cves(page));
+            cursor = page.nextCursor();
+        } while (cursor != null);
+
+        assertThat(seen).containsExactly("CVE-2026-1", "CVE-2026-2", "CVE-2026-3", "CVE-2026-4", "CVE-2026-5");
+    }
+
+    @Test
+    void cursorCannotBeReusedWithAnotherFilter() {
+        for (int i = 1; i <= 3; i++) finding(scan, "lib" + i, "CVE-2026-" + i, "HIGH", "UNREACHABLE", "UNREVIEWED");
+        String cursor = service.findings("admin", ALL, 1, null, null).nextCursor();
+
+        var other = new ReachFindingFilter(List.of("UNREACHABLE"), null, null, null, null);
+        assertError(() -> service.findings("admin", other, 1, cursor, null), ErrorCode.INVALID_INPUT);
+    }
+
+    @Test
+    void summaryMatchesTheListAndLeavesRatioEmptyWithoutJudgedFindings() {
+        finding(scan, "a", "CVE-2026-1", "CRITICAL", "UNREACHABLE", "CONFIRMED");
+        finding(scan, "b", "CVE-2026-2", "HIGH", "REACHABLE", "UNREVIEWED");
+        finding(scan, "c", "CVE-2026-3", "HIGH", "NOT_ANALYZED", "UNREVIEWED");
+
+        var summary = service.summary("admin", null, List.of("matrix"));
+        assertThat(summary.totals().findings()).isEqualTo(service.findings("admin", ALL, null, null, "total").totalCount());
+        assertThat(summary.byStatus()).containsEntry("UNREACHABLE", 1L).containsEntry("UNKNOWN", 0L);
+        assertThat(summary.byNotAnalyzedReason()).containsEntry("OS_PACKAGE", 1L);
+        assertThat(summary.severityByStatus().get("HIGH")).containsOnlyKeys("REACHABLE", "NOT_ANALYZED");
+        assertThat(summary.noiseReduction().ratio()).isEqualTo(0.5);      // UNREACHABLE 1 / 판정 2
+        assertThat(summary.coverage().ratio()).isEqualTo(0.667);          // 판정 2 / 전체 3
+
+        var empty = service.summary("admin", List.of("RUNNING"), null);  // 테스트 Finding은 전부 deployment UNKNOWN
+        assertThat(empty.totals().findings()).isZero();
+        assertThat(empty.noiseReduction().ratio()).isNull();
+        assertThat(empty.severityByStatus()).isNull();
+    }
+
+    @Test
+    void detailOrdersEvidenceAndListsOtherFindingsOfTheSameCve() {
+        long id = finding(scan, "jackson-core", "CVE-2026-1", "HIGH", "UNREACHABLE", "CONFIRMED");
+        long same = finding(scan, "jackson-databind", "CVE-2026-1", "HIGH", "UNREACHABLE", "UNREVIEWED");
+        long verdict = jdbc.queryForObject("SELECT verdict_id FROM reach_verdicts WHERE finding_id = ?", Long.class, id);
+        jdbc.update("""
+                INSERT INTO reach_evidence (verdict_id, ord, kind, summary, detail) VALUES
+                    (?, 2, 'PATH', 'second', '{"path": ["Main.run", "Lib.parse"]}'),
+                    (?, 1, 'NOTE', 'first', '{}')
+                """, verdict, verdict);
+
+        var detail = service.finding("admin", id);
+        var evidence = detail.verdict().evidence();
+        assertThat(evidence.get(0).get("summary").asString()).isEqualTo("first");
+        assertThat(evidence.get(1).get("path").get(1).asString()).isEqualTo("Lib.parse");   // detail 키가 합쳐진다
+        assertThat(detail.sameCveFindings()).containsExactly(same);
+        assertThat(detail.review().reviewer().name()).isEqualTo("Admin");
+        assertThat(service.finding("admin", same).review().reviewer()).isNull();
+
+        assertError(() -> service.finding("admin", 999), ErrorCode.NOT_FOUND);
+    }
+
+    private static void assertError(org.assertj.core.api.ThrowableAssert.ThrowingCallable call, ErrorCode code) {
+        assertThatThrownBy(call).satisfies(e -> assertThat(((ApiException) e).errorCode()).isEqualTo(code));
+    }
+
+    private static List<String> cves(ReachFindingPageResponse page) {
+        return page.items().stream().map(ReachFindingResponse::vulnerability).map(ReachFindingResponse.Vulnerability::id).toList();
+    }
+
+    private static long target(String digest) {
+        return jdbc.queryForObject("""
+                INSERT INTO reach_targets (target_type, app, image_repository, image_digest, display_name)
+                VALUES ('IMAGE', 'API', 'reused-api', ?, 'api') RETURNING target_id
+                """, Long.class, digest);
+    }
+
+    /** hoursAgo 시간 전에 끝난 스캔. FAILED는 failure_code가 있어야 한다 (V34 CHECK) */
+    private static long scan(long targetId, String status, int hoursAgo) {
+        return jdbc.queryForObject("""
+                INSERT INTO reach_scans (target_id, scan_status, trigger_type, requested_by_kind, failure_code, finished_at)
+                VALUES (?, ?, 'MANUAL', 'SYSTEM', ?, now() - make_interval(hours => ?)) RETURNING scan_id
+                """, Long.class, targetId, status, status.equals("FAILED") ? "TEST" : null, hoursAgo);
+    }
+
+    /** Finding + 현재 판정 + 검토 한 벌. NOT_ANALYZED면 방식 없이 사유 OS_PACKAGE, 검토 상태가 UNREVIEWED가 아니면 admin이 같은 판정으로 검토 */
+    private static long finding(long scanId, String component, String cve, String severity, String status, String reviewState) {
+        long id = jdbc.queryForObject("""
+                INSERT INTO reach_findings (target_id, purl, component_name, component_version, ecosystem,
+                                            vulnerability_id, severity, sources, last_scan_id, first_seen_at, last_seen_at)
+                SELECT target_id, 'pkg:maven/test/' || ? || '@1', ?, '1', 'maven', ?, ?, ARRAY['TRIVY'], scan_id, now(), now()
+                FROM reach_scans WHERE scan_id = ? RETURNING finding_id
+                """, Long.class, component, component, cve, severity, scanId);
+        boolean notAnalyzed = status.equals("NOT_ANALYZED");
+        jdbc.update("""
+                INSERT INTO reach_verdicts (finding_id, scan_id, status, method, not_analyzed_reason, summary,
+                                            engine, evidence_hash, is_current, analyzed_at)
+                VALUES (?, ?, ?, ?, ?, 'test', '{}', 'h', true, now())
+                """, id, scanId, status, notAnalyzed ? null : "CALLGRAPH", notAnalyzed ? "OS_PACKAGE" : null);
+        boolean human = !reviewState.equals("UNREVIEWED");
+        jdbc.update("""
+                INSERT INTO reach_reviews (finding_id, review_state, status, note, reviewer_user_id, reviewed_at)
+                VALUES (?, ?, ?, ?, ?, CASE WHEN ? THEN now() END)
+                """, id, reviewState, human ? status : null, human ? "checked" : null, human ? 1L : null, human);
+        return id;
+    }
+}
