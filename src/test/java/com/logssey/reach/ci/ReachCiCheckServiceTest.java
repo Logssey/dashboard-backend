@@ -3,8 +3,11 @@ package com.logssey.reach.ci;
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
 import com.logssey.reach.ci.dto.ReachCiCheckResponse;
+import com.logssey.reach.scan.ReachScanRepository;
+import com.logssey.reach.scan.ReachScanService;
+import com.logssey.reach.scan.dto.ReachScanResponse;
 
-import java.util.Map;
+import java.util.List;
 
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterAll;
@@ -229,6 +232,69 @@ class ReachCiCheckServiceTest {
         assertThat(result.scanStatus()).isEqualTo("FAILED");
         assertThat(result.gate()).isNull();
         assertThat(result.finishedAt()).isNotNull();
+    }
+
+    @Test
+    void scanRequestOnAnImageCreatesAManualCheckWithDefaultOptions() {
+        var image = new ReachTargetRequest("IMAGE", "API", null, new ReachTargetRequest.Image("logssey/reused-api", DIGEST));
+        var created = service.createScan("admin", "s1", new ReachScanRequest(image, null, null));
+        assertThat(created.replayed()).isFalse();
+        long scanId = created.check().scanId();
+
+        // 이미지 대상은 레포를 모른다. options를 빼면 기본값을 남긴다 (명세 API-01)
+        assertThat(jdbc.queryForMap("SELECT mode, repository, head_commit, policy, options::text AS options "
+                + "FROM reach_ci_checks WHERE scan_id = ?", scanId))
+                .containsEntry("mode", "MANUAL").containsEntry("repository", null).containsEntry("head_commit", null)
+                .containsEntry("policy", "REPORT_ONLY")
+                .containsEntry("options", "{\"l1\": true, \"l2\": true, \"crossCheck\": [\"GRYPE\"]}");
+
+        // 응답은 API-03과 같은 Scan이다
+        var scan = new ReachScanService(new ReachScanRepository(JdbcClient.create(jdbc))).scan("admin", scanId);
+        assertThat(scan.scanStatus()).isEqualTo("QUEUED");
+        assertThat(scan.trigger()).isEqualTo("MANUAL");
+        assertThat(scan.target().displayName()).isEqualTo("reused-api @ a6ffffef");
+        assertThat(scan.requestedBy()).isEqualTo(new ReachScanResponse.RequestedBy("USER", 1L, null, null));
+        assertThat(scan.counts()).isNull();
+    }
+
+    @Test
+    void scanRequestOnARepoKeepsTheCommitAndOptions() {
+        var options = new ReachScanRequest.Options(List.of(), true, false);
+        long scanId = service.createScan("admin", "s1", new ReachScanRequest(repo(COMMIT.toUpperCase()), null, options))
+                .check().scanId();
+        assertThat(jdbc.queryForMap("SELECT repository, head_commit, options->'l2' AS l2, "
+                + "jsonb_array_length(options->'crossCheck') AS cross FROM reach_ci_checks WHERE scan_id = ?", scanId))
+                .containsEntry("repository", "service-backend").containsEntry("head_commit", COMMIT)
+                .containsEntry("cross", 0);
+        assertThat(jdbc.queryForObject("SELECT options->>'l2' FROM reach_ci_checks WHERE scan_id = ?", String.class, scanId))
+                .isEqualTo("false");
+    }
+
+    @Test
+    void scanRequestValidatesTheBodyAndSharesIdempotencyWithCiChecks() {
+        long done = scan(imageTarget(), "SUCCEEDED");
+        var both = new ReachScanRequest(repo(COMMIT), done, null);
+        var neither = new ReachScanRequest(null, null, null);
+        var trivy = new ReachScanRequest(repo(COMMIT), null, new ReachScanRequest.Options(List.of("TRIVY"), null, null));
+        for (var body : new ReachScanRequest[] {both, neither, trivy, null}) {
+            assertError(() -> service.createScan("admin", "k", body), ErrorCode.INVALID_INPUT);
+        }
+        assertError(() -> service.createScan("admin", null, new ReachScanRequest(repo(COMMIT), null, null)),
+                ErrorCode.INVALID_INPUT);
+        assertError(() -> service.createScan(null, "k", new ReachScanRequest(repo(COMMIT), null, null)),
+                ErrorCode.UNAUTHENTICATED);
+
+        // 재대조는 원래 스캔의 대상을 쓴다. 같은 키로 다시 보내면 같은 스캔
+        var rescan = new ReachScanRequest(null, done, null);
+        long scanId = service.createScan("admin", "r", rescan).check().scanId();
+        assertThat(scanTarget(scanId)).isEqualTo(scanTarget(done));
+        var again = service.createScan("admin", "r", rescan);
+        assertThat(again.replayed()).isTrue();
+        assertThat(again.check().scanId()).isEqualTo(scanId);
+
+        // 키는 호출 주체마다 하나라 API-12에서 쓴 키를 API-01에 쓰면 본문이 달라 409
+        service.create("admin", "shared", pr("GATE"));
+        assertError(() -> service.createScan("admin", "shared", rescan), ErrorCode.CONFLICT);
     }
 
     private static ReachCiCheckRequest pr(String policy) {

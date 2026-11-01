@@ -19,13 +19,15 @@ import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * Reach CI 검사 (API-12). 실행은 검사와 스캔을 QUEUED로 만들고, 결과 조회는 스캔이 끝났으면 게이트를 계산한다.
+ * Reach CI 검사 (API-12)와 스캔 요청 (API-01). 실행은 검사와 스캔을 QUEUED로 만들고, 결과 조회는 스캔이 끝났으면 게이트를 계산한다.
  * 명세의 인증은 GitHub OIDC지만 아직 붙이지 않아(SecurityConfig 변경과 라이브러리 추가는 팀 결정) 지금은 대시보드 ADMIN 세션으로 받는다
  */
 @Service
 @Transactional
 public class ReachCiCheckService {
 
+    /** 교차 확인 스캐너 (명세 API-01 options.crossCheck). 주 스캐너는 Trivy */
+    private static final List<String> CROSS_CHECKS = List.of("GRYPE");
     /** 멱등 키 길이 (명세 2-7: 1~64자) */
     private static final int KEY_MAX = 64;
     /** V37 칸 길이 */
@@ -48,8 +50,48 @@ public class ReachCiCheckService {
         if (request == null) throw invalid();
         String key = key(idempotencyKey);
         validate(request);
+        var pr = request.pullRequest();
+        var plan = new Plan(request.mode(), request.repository(),
+                request.headCommit() == null ? null : ReachTargets.commit(request.headCommit()),
+                pr == null ? null : pr.number(), pr == null ? null : pr.baseRef(), pr == null ? null : pr.headRef(),
+                request.policy() == null ? "REPORT_ONLY" : request.policy(), request.baselineScanId(), "{}");
+        return open(userId, key, request, request.target(), request.rescanOf(), plan);
+    }
 
-        // 명세 2-7: 키는 호출 주체별이다. OIDC를 붙이면 CI:<repository>로 바꾼다
+    /**
+     * API-01 스캔 요청. 명세대로 mode = MANUAL인 CI 검사를 함께 만든다(러너는 검사 ID로 결과를 올린다).
+     * GitHub workflow_dispatch 호출은 아직 하지 않아 스캔은 QUEUED로 남는다
+     */
+    public Created createScan(String loginId, String idempotencyKey, ReachScanRequest request) {
+        long userId = requireAdmin(loginId);
+        if (request == null) throw invalid();
+        String key = key(idempotencyKey);
+        if ((request.target() == null) == (request.rescanOf() == null)) throw invalid();   // 둘 중 하나만
+        var options = request.options();
+        var crossCheck = options == null || options.crossCheck() == null ? List.of("GRYPE")
+                : ReachCodes.checked(options.crossCheck(), CROSS_CHECKS);
+        var stored = new LinkedHashMap<String, Object>();
+        stored.put("crossCheck", crossCheck);
+        stored.put("l1", options == null || options.l1() == null || options.l1());
+        stored.put("l2", options == null || options.l2() == null || options.l2());
+
+        // 레포 대상이면 레포와 커밋을 검사에도 남긴다. 이미지 대상은 레포를 모른다(서비스 등록 목록 PRD FR-15 전)
+        var repo = request.target() == null ? null : request.target().repo();
+        boolean repoTarget = request.target() != null && "REPO".equals(request.target().type()) && repo != null;
+        var plan = new Plan("MANUAL", repoTarget ? repo.name() : null, repoTarget ? ReachTargets.commit(repo.commit()) : null,
+                null, null, null, "REPORT_ONLY", null, mapper.writeValueAsString(stored));
+        return open(userId, key, request, request.target(), request.rescanOf(), plan);
+    }
+
+    /** 검사 칸 중 요청마다 다른 것. 스캔 id와 멱등 키는 open()이 채운다 */
+    private record Plan(String mode, String repository, String headCommit, Integer prNumber, String prBaseRef,
+                        String prHeadRef, String policy, Long baselineScanId, String options) {}
+
+    /**
+     * 멱등 키를 보고 처음이면 대상·스캔·검사를 만든다 (명세 2-7).
+     * 키는 호출 주체별이다. 지금은 USER:<user_id>, OIDC를 붙이면 CI:<repository>로 바꾼다
+     */
+    private Created open(long userId, String key, Object request, ReachTargetRequest target, Long rescanOf, Plan plan) {
         String scope = "USER:" + userId;
         String hash = sha256(mapper.writeValueAsString(request));
         repository.lockIdempotencyKey(scope, key);
@@ -60,14 +102,11 @@ public class ReachCiCheckService {
             return new Created(created(existing.get().checkId()), true);
         }
 
-        long targetId = request.rescanOf() != null ? rescanTarget(request.rescanOf()) : target(request.target());
-        String policy = request.policy() == null ? "REPORT_ONLY" : request.policy();
-        var pr = request.pullRequest();
-        long scanId = repository.insertScan(targetId, request.mode(), request.rescanOf(), userId);
-        long checkId = repository.insertCheck(new ReachCiCheckRepository.NewCheck(scanId, request.mode(),
-                request.repository(), request.headCommit() == null ? null : ReachTargets.commit(request.headCommit()),
-                pr == null ? null : pr.number(), pr == null ? null : pr.baseRef(), pr == null ? null : pr.headRef(),
-                policy, request.baselineScanId(), "{}", scope, key, hash));
+        long targetId = rescanOf != null ? rescanTarget(rescanOf) : target(target);
+        long scanId = repository.insertScan(targetId, plan.mode(), rescanOf, userId);
+        long checkId = repository.insertCheck(new ReachCiCheckRepository.NewCheck(scanId, plan.mode(),
+                plan.repository(), plan.headCommit(), plan.prNumber(), plan.prBaseRef(), plan.prHeadRef(),
+                plan.policy(), plan.baselineScanId(), plan.options(), scope, key, hash));
         return new Created(created(checkId), false);
     }
 
