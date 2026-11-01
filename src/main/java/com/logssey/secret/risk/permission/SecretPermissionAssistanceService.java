@@ -28,13 +28,17 @@ public class SecretPermissionAssistanceService {
     @Transactional(readOnly=true)
     public Map<String,Object> context(String login,long occurrence){
         var actor=reader(login,occurrence);var c=current(occurrence);var blocked=blocked(actor,c);
-        var options=collectors(actor,c);if(options.isEmpty())blocked.add("APPROVED_COLLECTOR_REQUIRED");
+        var options=collectors(actor,c);
+        // The principal/account is needed to match an approved collector. Before validation,
+        // an empty option list means "not yet determined", not "no approved connection".
+        if(c.get("identity_id")!=null&&options.isEmpty())blocked.add("APPROVED_COLLECTOR_REQUIRED");
         var latest=jdbc.queryForList("SELECT request_id FROM secret_permission_requests WHERE occurrence_id=? ORDER BY request_id DESC LIMIT 1",occurrence);
         var request=latest.isEmpty()?null:status(login,occurrence,number(latest.getFirst(),"request_id"));
         return facts("occurrenceId",occurrence,"contextVersion",version(c),"evidenceRevision",c.get("risk_evidence_revision"),
             "support",facts("status",TYPES.contains(c.get("credential_type"))?"PARTIAL":"UNSUPPORTED","reasonCodes",List.of("AUTOMATIC_IMPACT_UNSUPPORTED","HUMAN_CONFIRMATION_REQUIRED")),
             "identity",facts("status",c.get("identity_id")==null?"UNAVAILABLE":"MATCHED","provider",c.get("issuer"),"principalType",c.get("principal_type"),"observedAt",time(c.get("identity_observed_at")),"validationAttemptId",c.get("validation_attempt_id")),
             "supplementation",supplementation(actor,c),
+            "requestReadiness",SecretPermissionReadiness.describe(blocked,c.get("identity_id")!=null,!options.isEmpty()),
             "collectorOptions",options.stream().map(o->facts("connectionId",o.get("connection_id"),"displayName",com.logssey.secret.connection.SecretDisplayLabels.safeAlias((String)o.get("display_name"))?o.get("display_name"):"연결 #"+o.get("connection_id"))).toList(),
             "latestRequest",request,"latestObservation",request==null?null:request.get("observation"),"capabilities",facts("canRequest",blocked.isEmpty(),"blockedReasonCodes",blocked));
     }
