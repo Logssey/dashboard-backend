@@ -77,6 +77,20 @@ class SecretPermissionAssistanceIntegrationTest {
         var stale=service.preview("security",occurrence,observation);assertThat(stale).containsEntry("canConfirm",false);assertThat(stale.get("blockedReasonCodes").toString()).contains("CONTEXT_CHANGED","FRESH_IDENTITY_VALIDATION_REQUIRED");
         assertThatThrownBy(()->service.status("outsider",occurrence,((Number)request.get("requestId")).longValue())).isInstanceOf(ApiException.class);
     }
+    @Test void staleIdentityShowsValidationBeforeCollectorSetupAndCannotEnqueue(){
+        String before=policy();
+        jdbc.update("UPDATE secret_connection_scopes SET revision=revision+1 WHERE scope_id=1");
+        var context=service.context("security",occurrence);
+        assertThat(context.get("capabilities").toString()).contains("FRESH_IDENTITY_VALIDATION_REQUIRED")
+                .doesNotContain("APPROVED_COLLECTOR_REQUIRED");
+        assertThat(context.get("requestReadiness").toString()).contains("VALIDATE_CREDENTIAL", "WAITING");
+        assertThatThrownBy(()->service.request("security",occurrence,
+                new SecretPermissionAssistanceService.Request((String)context.get("contextVersion"),"stale-identity",1L)))
+                .isInstanceOf(ApiException.class);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_permission_requests",Long.class)).isZero();
+        assertThat(policy()).isEqualTo(before);
+        assertThat(context.toString()).doesNotContain("github-user:123","fixture-app","protected");
+    }
     private long publish(Map<String,Object> request,List<String> caps){var json=new JsonMapper();return jdbc.queryForObject("INSERT INTO secret_permission_observations(request_id,status,safe_facts,observed_at,expires_at,observer_version) VALUES(?,'PARTIAL',?::jsonb,clock_timestamp(),clock_timestamp()+interval '1 hour','fixture') RETURNING observation_id",Long.class,request.get("requestId"),json.writeValueAsString(Map.of("capabilities",caps,"coverage",Map.of("permissionCoverage","PARTIAL","targetCoverage","UNKNOWN","restrictionCoverage","UNKNOWN","classificationCoverage","UNKNOWN"),"reasonCodes",List.of("EFFECTIVE_PERMISSION_NOT_PROVEN"))));}
     private SecretPermissionAssistanceService.Confirm confirm(Map<String,Object> preview,List<SecretRiskProvenance.Ref> refs,String key){return new SecretPermissionAssistanceService.Confirm((String)preview.get("contextVersion"),((Number)preview.get("evidenceRevision")).longValue(),key,true,"TICKET:SEC-123",OffsetDateTime.now(ZoneOffset.UTC),OffsetDateTime.now(ZoneOffset.UTC).plusMinutes(30),Map.of("capability","RESOURCE_ADMINISTRATION","targetScope","ACCOUNT","permissionCoverage","COMPLETE","targetCoverage","COMPLETE","restrictionCoverage","COMPLETE","classificationCoverage","COMPLETE"),refs);}
     private long revision(){return jdbc.queryForObject("SELECT risk_evidence_revision FROM secret_occurrences WHERE occurrence_id=?",Long.class,occurrence);}

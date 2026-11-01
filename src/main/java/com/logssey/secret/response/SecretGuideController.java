@@ -2,6 +2,7 @@ package com.logssey.secret.response;
 
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -13,6 +14,12 @@ public class SecretGuideController {
 
     SecretGuideController(SecretGuideService service) {
         this.service = service;
+    }
+
+    /** Loads deterministic guidance and configuration readiness without calling an AI provider. */
+    @GetMapping("/{caseId}/guide")
+    public SecretGuideResponse readiness(@PathVariable long caseId, Authentication authentication) {
+        return service.readiness(caseId, authentication == null ? null : authentication.getName());
     }
 
     /** No request body: prompts are built entirely from server-owned enum fields. */

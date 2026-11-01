@@ -26,6 +26,10 @@ AWS IAM 조회에는 검증한 principal의 GetUser/GetRole, 사용자·그룹·
 | `POST /observations/{observationId}/confirm` | 추가 근거를 검토한 사람의 명시적인 수동 권한 확인 |
 | `POST /observations/{observationId}/reject` | 검토 후보 제외. 사유는 NOT_APPLICABLE/INSUFFICIENT_EVIDENCE/IDENTITY_MISMATCH |
 
+기본 GET은 기존 capability에 더해 `requestReadiness`를 제공한다. `checks`는 기능 설정·담당 권한·지원 유형·키 구성·원천 상태·현재 키 주체·조회 연결 순서의 실제 요청 조건이며, 상태는 READY/BLOCKED/WAITING/UNSUPPORTED다. `nextAction`은 현재 먼저 해결할 작업 코드다. 이 정보는 기존 요청 검사를 설명하며 권한이나 근거를 대신하지 않는다.
+
+현재 키 주체가 없으면 조회 연결은 WAITING이다. 같은 계정·원천을 아직 대조할 수 없기 때문에 이 단계에서는 `APPROVED_COLLECTOR_REQUIRED`를 반환하지 않는다. 유효성 확인 후 실제로 적격 연결이 없을 때 별도 연결 설정 작업을 안내한다. 조회 준비 완료는 권한 자료 수집 또는 담당자 확정 완료를 의미하지 않는다.
+
 확인 요청은 `{expectedContextVersion,expectedEvidenceRevision,idempotencyKey,attestation:true,evidenceRef,observedAt,validUntil,facts,sourceRefs}`다. `facts`는 기존 수동 PERMISSION_MAPPING 형식(capability, targetScope 및 네 종류 coverage)이며 모두 COMPLETE를 확인해야 한다. 관측에 없는 capability는 선택할 수 없다.
 
 체크박스는 근거를 대신하지 않는다. 실제 현재 검증 시도(BINDS_IDENTITY), 승인된 자산 분류(CLASSIFIES), 보안 담당자가 수락한 PROVIDER_REFERENCE 조사 이력(ASSERTS/LIMITS)이 모두 필요하다. 이 부모 근거는 기존 provenance 검사를 통과해야 한다. 부족하면 기존 자산 분류·조사 작업으로 연결한다. 관측을 승인된 수동 근거로 이름만 바꾸어 쓰지 않는다.

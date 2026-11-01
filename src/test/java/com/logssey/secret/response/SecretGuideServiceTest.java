@@ -28,8 +28,10 @@ class SecretGuideServiceTest {
         prepare("PRODUCTION", null);
         var response = service.guide(17, "security");
 
-        assertThat(response.version()).isEqualTo("secret-response-guide-v1");
+        assertThat(response.version()).isEqualTo("secret-response-guide-v2");
         assertThat(response.source()).isEqualTo("DEFAULT");
+        assertThat(response.readiness().reasonCode()).isEqualTo("TEST_ONLY");
+        assertThat(response.readiness().providerCalled()).isFalse();
         assertThat(response.steps()).extracting(SecretGuideResponse.Step::code)
                 .contains("EXTERNAL_ROTATION", "RECORD_ACTION", "REVALIDATE");
         verifyNoInteractions(provider);
@@ -50,16 +52,19 @@ class SecretGuideServiceTest {
     @Test
     void testCaseSendsOnlyWhitelistedEnumsAndAcceptsValidSelection() {
         prepare("TEST", null);
-        when(provider.selectSteps(any())).thenReturn(Optional.of(List.of("VERIFY_EXPOSURE",
-                "EXTERNAL_ROTATION", "RECORD_ACTION", "REVALIDATE")));
+        when(provider.select(any())).thenReturn(new SecretGuideProvider.Selection(List.of("VERIFY_EXPOSURE",
+                "EXTERNAL_ROTATION", "RECORD_ACTION", "REVALIDATE"), "GROQ_GENERATED", true, false));
 
         var response = service.guide(17, "security");
 
         assertThat(response.source()).isEqualTo("GROQ");
+        assertThat(response.readiness().status()).isEqualTo("GENERATED");
+        assertThat(response.readiness().aiRequested()).isTrue();
+        assertThat(response.readiness().providerCalled()).isTrue();
         assertThat(response.steps()).extracting(SecretGuideResponse.Step::code)
                 .containsExactly("VERIFY_EXPOSURE", "EXTERNAL_ROTATION", "RECORD_ACTION", "REVALIDATE");
         var context = org.mockito.ArgumentCaptor.forClass(SecretGuideContext.class);
-        verify(provider).selectSteps(context.capture());
+        verify(provider).select(context.capture());
         assertThat(context.getValue().externalFields()).containsEntry("issuer", "AWS")
                 .containsEntry("credentialType", "AWS_ACCESS_KEY_PAIR")
                 .containsEntry("validationStatus", "UNCHECKED")
@@ -67,13 +72,66 @@ class SecretGuideServiceTest {
     }
 
     @Test
+    void getReturnsUsefulDefaultAndReadinessWithoutProviderSelection() {
+        prepare("TEST", null);
+        var response = service.readiness(17, "security");
+
+        assertThat(response.source()).isEqualTo("DEFAULT");
+        assertThat(response.title()).contains("AWS");
+        assertThat(response.readiness()).isEqualTo(new SecretGuideReadiness(
+                "READY", "READY", true, false, false, false));
+        verify(provider, never()).select(any());
+        verify(provider, never()).selectSteps(any());
+        verify(cases, never()).updateAssignment(anyLong(), anyLong(), any(), any());
+    }
+
+    @Test
+    void readinessDistinguishesMissingConfigurationAndPartialCaseAccess() {
+        prepare("TEST", null);
+        when(provider.configurationReason()).thenReturn("KEY_MISSING");
+        assertThat(service.readiness(17, "security").readiness()).isEqualTo(
+                new SecretGuideReadiness("UNAVAILABLE", "KEY_MISSING", false, false, false, false));
+        assertThat(service.guide(17, "security").readiness().aiRequested()).isTrue();
+        when(guides.allLocationsReadable(7, 17)).thenReturn(false);
+        assertThat(service.readiness(17, "security").readiness().reasonCode())
+                .isEqualTo("ALL_LOCATIONS_ACCESS_REQUIRED");
+        verify(provider, never()).select(any());
+    }
+
+    @Test
+    void exactProviderFailureAndCachedProvenanceAreReturnedWithoutProviderText() {
+        prepare("TEST", null);
+        when(provider.select(any())).thenReturn(SecretGuideProvider.Selection.fallback("PROVIDER_TIMEOUT", true));
+        var failure = service.guide(17, "security");
+        assertThat(failure.source()).isEqualTo("DEFAULT");
+        assertThat(failure.readiness()).isEqualTo(new SecretGuideReadiness(
+                "FALLBACK", "PROVIDER_TIMEOUT", true, true, true, false));
+        when(provider.select(any())).thenReturn(new SecretGuideProvider.Selection(List.of("VERIFY_EXPOSURE",
+                "EXTERNAL_ROTATION", "RECORD_ACTION", "REVALIDATE"), "CACHE_HIT", false, true));
+        var cached = service.guide(17, "security");
+        assertThat(cached.source()).isEqualTo("GROQ");
+        assertThat(cached.readiness().cached()).isTrue();
+        assertThat(cached.readiness().providerCalled()).isFalse();
+    }
+
+    @Test
+    void unsupportedIssuerGetsDefaultWithoutAnyProviderInteraction() {
+        prepare("TEST", null);
+        when(guides.currentCase(17)).thenReturn(Optional.of(new SecretGuideRepository.GuideCase(
+                "TEST", "OPEN", null, "NOTION", "NOTION_CONNECTION_TOKEN", "CONFIRMED", "UNCHECKED", true)));
+        assertThat(service.readiness(17, "security").readiness().reasonCode()).isEqualTo("UNSUPPORTED_ISSUER");
+        assertThat(service.guide(17, "security").source()).isEqualTo("DEFAULT");
+        verifyNoInteractions(provider);
+    }
+
+    @Test
     void unknownAndMalformedProviderResultsAreSafeFallbacks() {
         prepare("TEST", null);
-        when(provider.selectSteps(any())).thenReturn(Optional.of(List.of("VERIFY_EXPOSURE",
-                "EXTERNAL_ROTATION", "REVALIDATE")));
+        when(provider.select(any())).thenReturn(new SecretGuideProvider.Selection(List.of("VERIFY_EXPOSURE",
+                "EXTERNAL_ROTATION", "REVALIDATE"), "GROQ_GENERATED", true, false));
         assertThat(service.guide(17, "security").source()).isEqualTo("DEFAULT");
 
-        when(provider.selectSteps(any())).thenThrow(new IllegalStateException("provider body or secret"));
+        when(provider.select(any())).thenThrow(new IllegalStateException("provider body or secret"));
         assertThat(service.guide(17, "security").source()).isEqualTo("DEFAULT");
     }
 
@@ -107,6 +165,7 @@ class SecretGuideServiceTest {
         when(guides.currentCase(17)).thenReturn(Optional.of(guideCase(origin, assignee)));
         when(guides.canRead(7,17)).thenReturn(true);
         when(guides.allLocationsReadable(7,17)).thenReturn(true);
+        when(provider.configurationReason()).thenReturn("READY");
     }
 
     private static SecretGuideRepository.GuideCase guideCase(String origin, Long assignee) {

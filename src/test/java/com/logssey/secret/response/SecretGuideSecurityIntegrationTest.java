@@ -19,6 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -108,6 +109,8 @@ class SecretGuideSecurityIntegrationTest {
     @Test
     void sessionCsrfAndCaseRoleProtectReadOnlyGuide() throws Exception {
         MockMvc mvc = MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).build();
+        mvc.perform(get("/api/v1/secrets/cases/{caseId}/guide", caseId))
+                .andExpect(status().isUnauthorized());
         mvc.perform(post("/api/v1/secrets/cases/{caseId}/guide", caseId).with(csrf()))
                 .andExpect(status().isUnauthorized());
         var login = mvc.perform(post("/api/v1/auth/login").with(csrf())
@@ -116,6 +119,9 @@ class SecretGuideSecurityIntegrationTest {
                 .andExpect(status().isOk()).andReturn();
         var session = (MockHttpSession) login.getRequest().getSession(false);
         assertThat(session).isNotNull();
+
+        mvc.perform(get("/api/v1/secrets/cases/{caseId}/guide", caseId).session(session))
+                .andExpect(status().isForbidden());
 
         mvc.perform(post("/api/v1/secrets/cases/{caseId}/guide", caseId).session(session))
                 .andExpect(status().isForbidden());
@@ -134,6 +140,12 @@ class SecretGuideSecurityIntegrationTest {
 
         jdbc.update("UPDATE secret_case_occurrences SET assigned_user_id = ? WHERE case_id = ?",
                 actorId, caseId);
+        mvc.perform(get("/api/v1/secrets/cases/{caseId}/guide", caseId).session(session))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.source").value("DEFAULT"))
+                .andExpect(jsonPath("$.readiness.reasonCode").value("SYNTHETIC_FIXTURE_REQUIRED"))
+                .andExpect(jsonPath("$.readiness.aiRequested").value(false))
+                .andExpect(jsonPath("$.readiness.providerCalled").value(false));
         mvc.perform(post("/api/v1/secrets/cases/{caseId}/guide", caseId)
                         .session(session).with(csrf()))
                 .andExpect(status().isOk())
