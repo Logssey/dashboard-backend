@@ -63,26 +63,35 @@ class ReachQueryServiceTest {
     }
 
     @Test
-    void listsOnlyTheLatestSucceededScanOfEachTarget() {
-        long target = target("sha256:b");
-        long old = scan(target, "SUCCEEDED", 3);
-        long latest = scan(target, "SUCCEEDED", 2);
-        long failed = scan(target, "FAILED", 1);
-        finding(old, "lib", "CVE-2026-1", "HIGH", "REACHABLE", "UNREVIEWED");
-        finding(latest, "lib", "CVE-2026-2", "HIGH", "REACHABLE", "UNREVIEWED");
-        finding(failed, "lib", "CVE-2026-3", "HIGH", "REACHABLE", "UNREVIEWED");
+    void listsOnlyTheLatestSucceededScanOfEachAppAndKind() {
+        // 이미지를 다시 빌드하면 digest마다 대상이 생긴다. 기본 범위는 app·대상 종류마다 최신 스캔 하나라 옛 이미지는 빠진다
+        long olderImage = target("sha256:b");   // API 이미지. reset()의 sha256:a 스캔(1시간 전)보다 먼저 끝났다
+        finding(scan(olderImage, "SUCCEEDED", 5), "lib", "CVE-2026-1", "HIGH", "REACHABLE", "UNREVIEWED");
+        finding(scan, "lib", "CVE-2026-2", "HIGH", "REACHABLE", "UNREVIEWED");
+        long web = target("sha256:c", "WEB");
+        long old = scan(web, "SUCCEEDED", 3);
+        long latest = scan(web, "SUCCEEDED", 2);
+        long failed = scan(web, "FAILED", 1);
+        finding(old, "lib", "CVE-2026-3", "HIGH", "REACHABLE", "UNREVIEWED");
+        finding(latest, "lib", "CVE-2026-4", "HIGH", "REACHABLE", "UNREVIEWED");
+        finding(failed, "lib", "CVE-2026-5", "HIGH", "REACHABLE", "UNREVIEWED");
+        // 같은 app이어도 레포 대상은 따로 센다 (명세 3-2: CHAT은 레포 + 이미지)
+        finding(scan(repoTarget("API", "1".repeat(40)), "SUCCEEDED", 4), "lib", "CVE-2026-6", "HIGH", "REACHABLE", "UNREVIEWED");
 
-        assertThat(cves(service.findings("admin", ALL, null, null, null))).containsExactly("CVE-2026-2");
-        assertThat(service.summary("admin", null, null, null, null).totals().findings()).isEqualTo(1);
+        assertThat(cves(service.findings("admin", ALL, null, null, null)))
+                .containsExactly("CVE-2026-2", "CVE-2026-4", "CVE-2026-6");
+        assertThat(service.summary("admin", null, null, null, null).totals().findings()).isEqualTo(3);
+        // 옛 이미지는 target으로 지정하면 본다
+        assertThat(cves(service.findings("admin", scope(null, olderImage), null, null, null))).containsExactly("CVE-2026-1");
     }
 
     @Test
     void prScansStayOutOfTheListAndSummary() {
-        finding(scan(target("sha256:b"), "SUCCEEDED", 2), "lib", "CVE-2026-1", "HIGH", "REACHABLE", "UNREVIEWED");
-        // PR 스캔만 있는 대상은 기준 범위에 없다 (ARD SR-09)
-        finding(scan(target("sha256:c"), "SUCCEEDED", 1, "PR"), "lib", "CVE-2026-2", "HIGH", "REACHABLE", "UNREVIEWED");
+        finding(scan(target("sha256:b", "WEB"), "SUCCEEDED", 2), "lib", "CVE-2026-1", "HIGH", "REACHABLE", "UNREVIEWED");
+        // PR 스캔만 있는 대상은 더 늦게 끝났어도 기준 범위에 없다 (ARD SR-09)
+        finding(scan(target("sha256:c", "WEB"), "SUCCEEDED", 1, "PR"), "lib", "CVE-2026-2", "HIGH", "REACHABLE", "UNREVIEWED");
         // 같은 대상을 나중에 PR로 다시 스캔해 last_scan_id가 PR 스캔이 되어도 기준 스캔의 Finding은 남는다
-        long mixed = target("sha256:d");
+        long mixed = target("sha256:d", "CHAT");
         long manual = scan(mixed, "SUCCEEDED", 3);
         long id = finding(manual, "lib", "CVE-2026-3", "HIGH", "REACHABLE", "UNREVIEWED");
         long pr = scan(mixed, "SUCCEEDED", 1, "PR");
@@ -159,10 +168,23 @@ class ReachQueryServiceTest {
         finding(scan, "c", "CVE-2026-8763", "HIGH", "UNREACHABLE", "UNREVIEWED");
         finding(scan, "d", "CVE-2026-1", "CRITICAL", "UNREACHABLE", "UNREVIEWED");
         finding(scan, "e", "CVE-2026-2", "LOW", "REACHABLE", "UNREVIEWED");
+        finding(scan, "f", "CVE-2026-12345678901", "HIGH", "UNREACHABLE", "UNREVIEWED");
 
-        // 명세 2-5: 문자열로 비교하면 13506이 8763보다 앞에 온다. CVE가 아닌 ID는 맨 뒤
+        // 명세 2-5: 문자열로 비교하면 13506이 8763보다 앞에 온다. CVE가 아닌 ID와 int를 넘는 번호는 맨 뒤
         assertThat(cves(service.findings("admin", ALL, null, null, null))).containsExactly(
-                "CVE-2026-2", "CVE-2026-1", "CVE-2026-8763", "CVE-2026-13506", "GHSA-xxxx-yyyy-zzzz");
+                "CVE-2026-2", "CVE-2026-1", "CVE-2026-8763", "CVE-2026-13506", "GHSA-xxxx-yyyy-zzzz", "CVE-2026-12345678901");
+        String cursor = service.findings("admin", ALL, 5, null, null).nextCursor();
+        assertThat(cves(service.findings("admin", ALL, 5, cursor, null))).containsExactly("CVE-2026-12345678901");
+    }
+
+    @Test
+    void nullInsideAnArrayColumnIsSkipped() {
+        long id = finding(scan, "a", "CVE-2026-1", "HIGH", "REACHABLE", "UNREVIEWED");
+        jdbc.update("UPDATE reach_findings SET fixed_versions = ARRAY['1.0.1', NULL] WHERE finding_id = ?", id);
+
+        assertThat(service.findings("admin", ALL, null, null, null).items().getFirst().vulnerability().fixedVersions())
+                .containsExactly("1.0.1");
+        assertThat(service.finding("admin", id, null).vulnerability().fixedVersions()).containsExactly("1.0.1");
     }
 
     @Test
@@ -322,10 +344,22 @@ class ReachQueryServiceTest {
     }
 
     private static long target(String digest) {
+        return target(digest, "API");
+    }
+
+    /** 이미지 대상. 기본 범위는 app·대상 종류마다 하나라, 여러 대상을 같이 보려면 app을 나눈다 */
+    private static long target(String digest, String app) {
         return jdbc.queryForObject("""
                 INSERT INTO reach_targets (target_type, app, image_repository, image_digest, display_name)
-                VALUES ('IMAGE', 'API', 'reused-api', ?, 'api') RETURNING target_id
-                """, Long.class, digest);
+                VALUES ('IMAGE', ?, 'reused-api', ?, 'api') RETURNING target_id
+                """, Long.class, app, digest);
+    }
+
+    private static long repoTarget(String app, String commit) {
+        return jdbc.queryForObject("""
+                INSERT INTO reach_targets (target_type, app, repo_name, repo_commit, display_name)
+                VALUES ('REPO', ?, 'service-backend', ?, 'repo') RETURNING target_id
+                """, Long.class, app, commit);
     }
 
     /** hoursAgo 시간 전에 끝난 스캔. FAILED는 failure_code가 있어야 한다 (V34 CHECK) */
