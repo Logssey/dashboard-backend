@@ -20,6 +20,12 @@ public final class ReachCodes {
     public static final List<String> SCAN_STATUSES = List.of("QUEUED", "RUNNING", "SUCCEEDED", "FAILED");
     public static final List<String> TRIGGERS = List.of("MANUAL", "PR", "IMAGE_BUILD", "SCHEDULE");
 
+    /** 서비스 단위 (V34 reach_targets CHECK) */
+    public static final List<String> APPS = List.of("API", "WEB", "CHAT");
+
+    /** CI 검사 게이트 정책 (V37 reach_ci_checks CHECK). 검사 mode는 스캔 trigger와 값이 같아 TRIGGERS를 쓴다 */
+    public static final List<String> POLICIES = List.of("REPORT_ONLY", "GATE");
+
     /** 스캔 이력(API-02) 정렬. 앞에 -가 붙으면 내림차순 */
     public static final List<String> SCAN_SORTS = List.of("-createdAt", "createdAt", "-finishedAt", "finishedAt");
 
