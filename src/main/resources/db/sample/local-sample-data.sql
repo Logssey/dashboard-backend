@@ -195,6 +195,24 @@ VALUES
 
 -- Reach 샘플: PoC api 이미지 1개, 스캔 1개, Finding 23개 (프론트 src/api/reachSample.ts와 같은 값)
 -- 샘플 대상(digest sha256:sample-reach-api)에 딸린 행만 지운다. 실제 스캔 결과는 남는다
+-- 실제 결과가 샘플을 가리키면(샘플 검토를 이어받음, 샘플 스캔을 재대조·기준 스캔으로 씀) 그 연결을 먼저 끊는다. 안 끊으면 아래 삭제가 FK에 막힌다
+UPDATE reach_reviews SET carried_from_finding_id = NULL, carried_from_scan_id = NULL
+WHERE carried_from_scan_id IN (SELECT s.scan_id FROM reach_scans s
+                               JOIN reach_targets t ON t.target_id = s.target_id
+                               WHERE t.image_digest = 'sha256:sample-reach-api');
+UPDATE reach_scans SET rescan_of_scan_id = NULL
+WHERE rescan_of_scan_id IN (SELECT s.scan_id FROM reach_scans s
+                            JOIN reach_targets t ON t.target_id = s.target_id
+                            WHERE t.image_digest = 'sha256:sample-reach-api');
+UPDATE reach_ci_checks SET baseline_scan_id = NULL
+WHERE baseline_scan_id IN (SELECT s.scan_id FROM reach_scans s
+                           JOIN reach_targets t ON t.target_id = s.target_id
+                           WHERE t.image_digest = 'sha256:sample-reach-api');
+-- 샘플 스캔을 재대조한 검사(API-01 rescanOf)는 샘플 대상의 스캔을 가리키니 같이 지운다
+DELETE FROM reach_ci_checks
+WHERE scan_id IN (SELECT s.scan_id FROM reach_scans s
+                  JOIN reach_targets t ON t.target_id = s.target_id
+                  WHERE t.image_digest = 'sha256:sample-reach-api');
 DELETE FROM reach_review_history
 WHERE finding_id IN (SELECT f.finding_id FROM reach_findings f
                      JOIN reach_targets t ON t.target_id = f.target_id

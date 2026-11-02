@@ -7,7 +7,9 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.Objects;
 import java.util.Optional;
 
 import com.logssey.reach.query.dto.ReachFindingResponse;
@@ -41,8 +43,9 @@ public class ReachQueryRepository {
                    CASE v.status WHEN 'REACHABLE' THEN 0 WHEN 'UNKNOWN' THEN 1 WHEN 'UNREACHABLE' THEN 2 ELSE 3 END AS status_rank,
                    CASE f.severity WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 WHEN 'LOW' THEN 3 ELSE 4 END AS severity_rank,
                    -- CVE가 아닌 ID(GHSA 등)는 맨 뒤로. NULL이면 커서의 행 비교가 깨져서 큰 값으로 채운다
-                   COALESCE(CASE WHEN f.vulnerability_id ~ '^CVE-\\d+-\\d+$' THEN split_part(f.vulnerability_id, '-', 2)::int END, 2147483647) AS cve_year,
-                   COALESCE(CASE WHEN f.vulnerability_id ~ '^CVE-\\d+-\\d+$' THEN split_part(f.vulnerability_id, '-', 3)::int END, 2147483647) AS cve_number
+                   -- 숫자가 9자리를 넘으면 int로 바꿀 수 없어(목록 전체가 500) CVE가 아닌 ID처럼 맨 뒤로 보낸다
+                   COALESCE(CASE WHEN f.vulnerability_id ~ '^CVE-\\d{1,9}-\\d{1,9}$' THEN split_part(f.vulnerability_id, '-', 2)::int END, 2147483647) AS cve_year,
+                   COALESCE(CASE WHEN f.vulnerability_id ~ '^CVE-\\d{1,9}-\\d{1,9}$' THEN split_part(f.vulnerability_id, '-', 3)::int END, 2147483647) AS cve_number
             FROM reach_findings f
             JOIN latest l ON l.target_id = f.target_id
              AND EXISTS (SELECT 1 FROM reach_verdicts lv
@@ -55,15 +58,17 @@ public class ReachQueryRepository {
     /**
      * 기준 범위 (API-04·08 scanId·target).
      * scanId가 있으면 그 스캔 하나다. PR 검사의 스캔도 이렇게 지정하면 본다 (API-12 findingsUrl).
-     * 없으면 대상마다 PR이 아닌 최신 SUCCEEDED 스캔이고 (ARD SR-09), target이 있으면 그 대상만이다.
-     * 스캔이 있는지·끝났는지는 Service가 먼저 확인한다
+     * 없으면 app·대상 종류(REPO/IMAGE)마다 PR이 아닌 최신 SUCCEEDED 스캔 하나다 (ARD SR-09).
+     * 이미지를 다시 빌드하면 digest마다 대상이 생기는데, 대상마다로 두면 옛 이미지의 Finding이 요약에 계속 쌓여서다.
+     * target이 있으면 그 대상의 PR이 아닌 최신 스캔이다. 스캔이 있는지·끝났는지는 Service가 먼저 확인한다
      */
     private static String latest(Long scanId, Long target) {
         if (scanId != null) return "SELECT target_id, scan_id FROM reach_scans WHERE scan_id = :scopeScan";
         return """
-                SELECT DISTINCT ON (target_id) target_id, scan_id
-                FROM reach_scans WHERE scan_status = 'SUCCEEDED' AND trigger_type <> 'PR'%s
-                ORDER BY target_id, finished_at DESC, scan_id DESC""".formatted(target == null ? "" : " AND target_id = :scopeTarget");
+                SELECT DISTINCT ON (t.app, t.target_type) s.target_id, s.scan_id
+                FROM reach_scans s JOIN reach_targets t ON t.target_id = s.target_id
+                WHERE s.scan_status = 'SUCCEEDED' AND s.trigger_type <> 'PR'%s
+                ORDER BY t.app, t.target_type, s.finished_at DESC, s.scan_id DESC""".formatted(target == null ? "" : " AND s.target_id = :scopeTarget");
     }
 
     static String currentFindings(Long scanId, Long target) {
@@ -144,8 +149,10 @@ public class ReachQueryRepository {
                 rs.getObject("first_seen_at", OffsetDateTime.class));
     }
 
+    /** 배열 안의 NULL은 버린다. List.of는 null 원소에서 NPE를 내서 그 행이 든 목록·상세가 500이 된다 */
     private static List<String> strings(Array array) throws SQLException {
-        return array == null ? List.of() : List.of((String[]) array.getArray());
+        return array == null ? List.of()
+                : Arrays.stream((String[]) array.getArray()).filter(Objects::nonNull).toList();
     }
 
     private JsonNode json(String value) {

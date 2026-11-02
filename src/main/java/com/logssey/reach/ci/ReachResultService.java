@@ -103,7 +103,17 @@ public class ReachResultService {
         }
 
         repository.startScan(scanId, scanRecord);
+        boolean pr = "PR".equals(check.mode());
         for (var row : rows) {
+            var shared = pr ? repository.baselineFinding(check.targetId(), row.purl(), row.vulnerabilityId())
+                    : Optional.<Long>empty();
+            if (shared.isPresent()) {
+                // 같은 커밋을 PR로 다시 스캔했다. PR 결과는 이 스캔의 판정으로만 남기고(API-03 counts·게이트가 읽는다)
+                // Finding 칸·현재 판정·사람 검토는 기준 스캔의 것을 그대로 둔다 (ARD SR-09)
+                long verdictId = repository.insertToolVerdict(row.verdict().withIds(shared.get(), scanId));
+                repository.insertEvidence(verdictId, row.evidence());
+                continue;
+            }
             var upserted = repository.upsertFinding(row.finding().withIds(check.targetId(), scanId));
             long findingId = upserted.id();
             long verdictId = repository.insertToolVerdict(row.verdict().withIds(findingId, scanId));
@@ -224,6 +234,7 @@ public class ReachResultService {
                     || tooLong(c.name(), 200) || blank(c.version()) || tooLong(c.version(), 100) || tooLong(c.path(), 500)
                     || blank(vuln.id()) || tooLong(vuln.id(), 40) || tooLong(vuln.severityNote(), 500)
                     || tooLong(vuln.title(), 500) || tooLong(vuln.affectedFeature(), 500)
+                    || hasBlank(vuln.fixedVersions()) || hasBlank(vuln.cwe()) || hasBlank(vuln.references())
                     || (item.upgrade() != null && !item.upgrade().isObject())) {
                 throw invalid();
             }
@@ -260,6 +271,7 @@ public class ReachResultService {
         String reason = v.notAnalyzedReason() == null ? null : upper(v.notAnalyzedReason(), ReachCodes.NOT_ANALYZED_REASONS);
         if (notAnalyzed != (method == null) || notAnalyzed != (reason != null)) throw invalid();
         if (blank(v.summary()) || tooLong(v.summary(), SUMMARY_MAX) || tooLong(v.ruleId(), 80) || !object(v.engine())
+                || (v.vulnFunctionIds() != null && v.vulnFunctionIds().contains(null))
                 || (v.callgraph() != null && !v.callgraph().isObject())) {
             throw invalid();
         }
@@ -352,6 +364,11 @@ public class ReachResultService {
 
     private static boolean blank(String value) {
         return value == null || value.isBlank();
+    }
+
+    /** 문자열 배열 칸(fixedVersions 등)에 null·빈 값이 있는지. 저장하면 배열 안의 NULL이 되어 읽는 쪽이 깨진다 */
+    private static boolean hasBlank(List<String> values) {
+        return values != null && values.stream().anyMatch(ReachResultService::blank);
     }
 
     /** DB VARCHAR 길이는 글자(code point) 수다 */

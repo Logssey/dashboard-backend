@@ -128,6 +128,25 @@ public class ReachResultRepository {
         }
     }
 
+    /**
+     * 같은 대상에서 PR이 아닌 스캔의 도구 판정이 있는 Finding (기준 범위에 드는 Finding).
+     * 레포 대상은 커밋으로 찾아서, 같은 커밋을 PR로 다시 스캔하면 이 Finding을 같이 쓰게 된다 (ARD SR-09)
+     */
+    Optional<Long> baselineFinding(long targetId, String purl, String vulnerabilityId) {
+        return jdbcClient.sql("""
+                        SELECT f.finding_id FROM reach_findings f
+                        WHERE f.target_id = :targetId AND f.purl = :purl AND f.vulnerability_id = :vulnerabilityId
+                          AND EXISTS (SELECT 1 FROM reach_verdicts v JOIN reach_scans s ON s.scan_id = v.scan_id
+                                      WHERE v.finding_id = f.finding_id AND s.trigger_type <> 'PR'
+                                        AND v.method IS DISTINCT FROM 'MANUAL')
+                        """)
+                .param("targetId", targetId)
+                .param("purl", purl)
+                .param("vulnerabilityId", vulnerabilityId)
+                .query(Long.class)
+                .optional();
+    }
+
     record UpsertedFinding(long id, boolean inserted) {}
 
     /**

@@ -8,6 +8,7 @@ import com.logssey.reach.review.ReachReviewService;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -152,9 +153,18 @@ class ReachResultServiceTest {
         var factWithoutId = item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "RULE", null,
                 List.of(map("kind", "FACT", "summary", "x")));
         var ok = item("a", "CVE-2026-1", "HIGH", "REACHABLE", "CALLGRAPH", null, List.of());
+        // 배열 칸의 null·빈 값은 저장하면 배열 안의 NULL이 되어 목록·상세가 깨진다
+        var nullFixedVersion = item("a", "CVE-2026-1", "HIGH", "REACHABLE", "CALLGRAPH", null, List.of());
+        nullFixedVersion.put("vulnerability", map("id", "CVE-2026-1", "severity", "HIGH", "fixedVersions", Arrays.asList("1.0.1", null)));
+        var blankCwe = item("a", "CVE-2026-1", "HIGH", "REACHABLE", "CALLGRAPH", null, List.of());
+        blankCwe.put("vulnerability", map("id", "CVE-2026-1", "severity", "HIGH", "cwe", List.of(" ")));
+        var nullVulnFunction = item("a", "CVE-2026-1", "HIGH", "REACHABLE", "CALLGRAPH", null, List.of());
+        nullVulnFunction.put("verdict", map("status", "REACHABLE", "method", "CALLGRAPH", "summary", "test",
+                "vulnFunctionIds", Arrays.asList(1, null), "engine", map("reach", "v0")));
 
         for (var items : List.of(List.of(noEvidence), List.of(notAnalyzedWithMethod), List.of(manual),
-                List.of(badSeverity), List.of(factWithoutId), List.of(ok, ok))) {   // 마지막은 같은 purl × CVE 두 번
+                List.of(badSeverity), List.of(factWithoutId), List.of(nullFixedVersion), List.of(blankCwe),
+                List.of(nullVulnFunction), List.of(ok, ok))) {   // 마지막은 같은 purl × CVE 두 번
             assertError(() -> service.upload("admin", check, "gzip", gzip(bundle(items))), ErrorCode.INVALID_INPUT);
         }
         var noSbom = bundle(List.of(ok));
@@ -263,6 +273,27 @@ class ReachResultServiceTest {
     }
 
     @Test
+    void prRescanOfAnAlreadyScannedCommitLeavesTheBaselineFindingAlone() {
+        var evidence = List.of(map("kind", "NOTE", "summary", "no path"));
+        long schedule = upload(repoCheck("SCHEDULE", "d"), item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence));
+        long a = finding("a");
+        long baseline = currentVerdict(a);
+        confirm(a, "UNREACHABLE", 1);
+
+        // develop → main PR처럼 이미 스캔한 커밋을 PR로 다시 스캔하면 같은 대상이라 같은 Finding을 만난다.
+        // PR 결과는 그 스캔의 판정으로만 남고 기준 Finding의 칸·현재 판정·사람 검토는 그대로다 (ARD SR-09)
+        long pr = upload(repoCheck("PR", "d"), item("a", "CVE-2026-1", "CRITICAL", "REACHABLE", "CALLGRAPH", null, evidence));
+        assertThat(finding("a")).isEqualTo(a);
+        assertThat(currentVerdict(a)).isEqualTo(baseline);
+        assertThat(review(a)).isEqualTo("CONFIRMED:2:null");
+        assertThat(history(a)).containsExactly("2:HUMAN:CONFIRMED");
+        assertThat(jdbc.queryForMap("SELECT last_scan_id, severity FROM reach_findings WHERE finding_id = ?", a))
+                .containsEntry("last_scan_id", schedule).containsEntry("severity", "HIGH");
+        assertThat(jdbc.queryForObject("SELECT status FROM reach_verdicts WHERE finding_id = ? AND scan_id = ? AND NOT is_current",
+                String.class, a, pr)).isEqualTo("REACHABLE");
+    }
+
+    @Test
     void humanVerdictOnANotAnalyzedFindingStaysCurrentAndIsCarried() {
         var notAnalyzed = item("a", "CVE-2026-1", "HIGH", "NOT_ANALYZED", null, "UNANALYZED_COPY", List.of());
         upload(check("a"), notAnalyzed);
@@ -313,10 +344,15 @@ class ReachResultServiceTest {
 
     /** PR 검사. service-backend 레포라 app이 API로 정해져 check()의 이미지와 같은 서비스다 */
     private long prCheck(String tag) {
+        return repoCheck("PR", tag);
+    }
+
+    /** 레포 대상 검사. 같은 tag면 같은 커밋이라 같은 대상이다. PR이면 pullRequest를 붙인다 */
+    private long repoCheck(String mode, String tag) {
         String commit = tag.repeat(40);
         var target = new ReachTargetRequest("REPO", null, new ReachTargetRequest.Repo("service-backend", commit, null), null);
-        var request = new ReachCiCheckRequest("PR", "service-backend", commit,
-                new ReachCiCheckRequest.PullRequest(1, "main", "feature/x"), target, null, null, null);
+        var pullRequest = "PR".equals(mode) ? new ReachCiCheckRequest.PullRequest(1, "main", "feature/x") : null;
+        var request = new ReachCiCheckRequest(mode, "service-backend", commit, pullRequest, target, null, null, null);
         return checks.create("admin", "key-" + System.nanoTime(), request).check().id();
     }
 
