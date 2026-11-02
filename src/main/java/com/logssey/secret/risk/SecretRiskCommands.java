@@ -67,6 +67,14 @@ public class SecretRiskCommands {
                   keyHash,
                   request,
                   json.writeValueAsString(result));
+          var changes = new LinkedHashMap<String, Object>();
+          changes.put("reasonCode", kind);
+          // Explicit asset changes belong to the same classification command and audit transaction.
+          if (result.containsKey("assetId")) {
+            changes.put("assetId", result.get("assetId"));
+            changes.put("previousAssetId", result.get("previousAssetId"));
+            changes.put("retractedEvidenceIds", result.get("retractedEvidenceIds"));
+          }
           jdbc.update(
               "INSERT INTO"
                   + " secret_audit_events(event_type,actor_user_id,target_type,target_id,target_version,command_id,safe_changes)"
@@ -76,16 +84,25 @@ public class SecretRiskCommands {
               ((Number) result.get("occurrenceId")).longValue(),
               ((Number) result.get("evidenceRevision")).longValue(),
               command,
-              json.writeValueAsString(Map.of("reasonCode", kind)));
+              json.writeValueAsString(changes));
           return result;
         });
   }
 
   @SuppressWarnings("unchecked")
   Map<String, Object> read(String value) {
-    Map<String, Object> result = json.readValue(value, Map.class);
-    result.replaceAll((k, v) -> v instanceof Number n ? n.longValue() : v);
-    return result;
+    return (Map<String, Object>) normalize(json.readValue(value, Map.class));
+  }
+
+  private Object normalize(Object value) {
+    if (value instanceof Number n) return n.longValue();
+    if (value instanceof Map<?, ?> map) {
+      var result = new LinkedHashMap<String, Object>();
+      map.forEach((k, v) -> result.put(k.toString(), normalize(v)));
+      return result;
+    }
+    if (value instanceof List<?> list) return list.stream().map(this::normalize).toList();
+    return value;
   }
 
   public static byte[] digest(String value) {

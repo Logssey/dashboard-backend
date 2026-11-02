@@ -25,6 +25,27 @@ class SecretConnectionTestServiceTest {
             repository, aws, github, Clock.fixed(Instant.parse("2026-10-14T01:02:03Z"), ZoneOffset.UTC), access);
 
     @Test
+    void workloadReferenceProbesOnlyConfiguredWorkloadIdentityAndNeverAProfile() {
+        when(access.requirePrincipal("admin")).thenReturn(new SecretPrincipal(1));
+        when(repository.connection(7)).thenReturn(Optional.of(new SecretConnectionTestRepository.Connection(
+                7, "AWS", "ACTIVE", "aws-workload:default")));
+        when(repository.awsScopes(7)).thenReturn(new SecretConnectionTestRepository.AwsScopeSummary(
+                1, 0, 1, "123456789012"));
+        when(aws.probeWorkload("123456789012")).thenReturn(ConnectionProbeResult.connected());
+        assertThat(service.test(7, "admin").status()).isEqualTo("CONNECTED");
+        verify(aws).probeWorkload("123456789012");
+        verify(aws, never()).probe(anyString(), anyString());
+    }
+
+    @Test
+    void identityProbeRejectsWrongRuntimeModeBeforeResolvingAnyCredentials() {
+        assertThat(new AwsIdentityProbe("PROFILE").probeWorkload("123456789012").reasonCode())
+                .isEqualTo("AWS_UNAVAILABLE");
+        assertThat(new AwsIdentityProbe("WORKLOAD").probe("personal", "123456789012").reasonCode())
+                .isEqualTo("AWS_UNAVAILABLE");
+    }
+
+    @Test
     void operationsProbesAwsIdentityWithoutReturningAccountOrProfile() {
         when(access.requirePrincipal("admin")).thenReturn(new SecretPrincipal(1));
         when(repository.connection(7)).thenReturn(Optional.of(new SecretConnectionTestRepository.Connection(

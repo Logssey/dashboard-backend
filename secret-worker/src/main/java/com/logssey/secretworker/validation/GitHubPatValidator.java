@@ -134,11 +134,9 @@ public final class GitHubPatValidator {
                                 && root.path("id").asLong(0) > 0
                                 && root.path("login").isTextual()
                                 && !root.path("login").asText("").isBlank();
-                return result(
-                        principal ? "VALID" : "UNKNOWN",
-                        principal ? "AUTHENTICATED" : "UNEXPECTED_RESPONSE",
-                        at,
-                        status);
+                return new CredentialValidationResult(principal ? "VALID" : "UNKNOWN",
+                        principal ? "AUTHENTICATED" : "UNEXPECTED_RESPONSE",at,status,null,
+                        principal?com.logssey.secret.permission.core.SecretProviderIdentity.github(root.path("id").asLong(),token.startsWith("ghp_"),response.headers().firstValue("X-OAuth-Scopes").orElse(null)):null);
             } finally {
                 Arrays.fill(body, (byte) 0);
             }

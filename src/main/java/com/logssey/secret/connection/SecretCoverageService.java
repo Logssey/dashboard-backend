@@ -126,7 +126,7 @@ public class SecretCoverageService {
             "(s.content_type='GITHUB_REPOSITORY_FILES' AND s.history_limit='CURRENT_COMMIT_ONLY' AND s.approved_ref ~ '^github://[^/]+/[^/]+/[^/]+/.+$')";
         String sql="SELECT EXISTS(SELECT 1 FROM secret_connection_scopes s WHERE s.connection_id=? AND s.enabled)"
             +" AND NOT EXISTS(SELECT 1 FROM secret_connection_scopes s WHERE s.connection_id=? AND s.enabled AND ("+valid+") IS NOT TRUE)";
-        if(provider.equals("AWS"))sql+=" AND EXISTS(SELECT 1 FROM secret_connections c WHERE c.connection_id=? AND c.auth_ref ~ '^aws-profile:[A-Za-z0-9._-]{1,100}$')";
+        if(provider.equals("AWS"))sql+=" AND EXISTS(SELECT 1 FROM secret_connections c WHERE c.connection_id=? AND (c.auth_ref ~ '^aws-profile:[A-Za-z0-9._-]{1,100}$' OR c.auth_ref='aws-workload:default'))";
         return Boolean.TRUE.equals(provider.equals("AWS")?jdbc.queryForObject(sql,Boolean.class,connectionId,connectionId,connectionId):jdbc.queryForObject(sql,Boolean.class,connectionId,connectionId));
     }
 

@@ -5,6 +5,7 @@ import com.logssey.overview.dto.response.OverviewSummaryResponse;
 import com.logssey.overview.dto.response.PriorityFindingListResponse;
 import com.logssey.overview.dto.response.RiskTrendResponse;
 
+import java.security.Principal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -22,14 +23,14 @@ public class OverviewController {
     }
 
     @GetMapping("/summary")
-    public OverviewSummaryResponse summary(@RequestParam(defaultValue = "ALL") String environment) {
-        return overviewService.getSummary(EnvironmentFilter.from(environment));
+    public OverviewSummaryResponse summary(Principal principal, @RequestParam(defaultValue = "ALL") String environment) {
+        return overviewService.getSummary(EnvironmentFilter.from(environment), principal.getName());
     }
 
     @GetMapping("/risk-trend")
-    public RiskTrendResponse riskTrend(@RequestParam(defaultValue = "ALL") String environment,
+    public RiskTrendResponse riskTrend(Principal principal, @RequestParam(defaultValue = "ALL") String environment,
                                        @RequestParam(defaultValue = "7") int days) {
-        return overviewService.getRiskTrend(EnvironmentFilter.from(environment), days);
+        return overviewService.getRiskTrend(EnvironmentFilter.from(environment), days, principal.getName());
     }
 
     @GetMapping("/assets")
@@ -38,8 +39,8 @@ public class OverviewController {
     }
 
     @GetMapping("/priority-findings")
-    public PriorityFindingListResponse priorityFindings(@RequestParam(defaultValue = "ALL") String environment,
+    public PriorityFindingListResponse priorityFindings(Principal principal, @RequestParam(defaultValue = "ALL") String environment,
                                                         @RequestParam(defaultValue = "4") int limit) {
-        return overviewService.getPriorityFindings(EnvironmentFilter.from(environment), limit);
+        return overviewService.getPriorityFindings(EnvironmentFilter.from(environment), limit, principal.getName());
     }
 }

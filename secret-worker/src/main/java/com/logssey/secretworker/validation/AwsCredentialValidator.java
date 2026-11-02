@@ -17,6 +17,7 @@ public final class AwsCredentialValidator implements AwsValidationService {
     @FunctionalInterface
     interface StsCaller {
         void getCallerIdentity(AwsKeyMaterial key);
+        default com.logssey.secret.permission.core.SecretProviderIdentity observeIdentity(AwsKeyMaterial key){getCallerIdentity(key);return null;}
     }
 
     private final boolean enabled;
@@ -56,9 +57,9 @@ public final class AwsCredentialValidator implements AwsValidationService {
         }
 
         try {
-            sts.getCallerIdentity(key);
-            return result(AwsValidationResult.Status.VALID, AwsValidationResult.Reason.AUTHENTICATED,
-                    evaluatedAt, clock.instant());
+            var identity=sts.observeIdentity(key);
+            return new AwsValidationResult(AwsValidationResult.Status.VALID, AwsValidationResult.Reason.AUTHENTICATED,
+                    evaluatedAt, clock.instant(),AwsValidationResult.METHOD,AwsValidationResult.VERSION,identity);
         } catch (StsException exception) {
             return classifySts(exception, evaluatedAt, clock.instant());
         } catch (RuntimeException exception) {

@@ -17,7 +17,9 @@ public class SecretLocationReadiness {
     s.enabled,s.content_type,s.history_limit,s.approved_ref,s.response_origin,s.revision,s.response_origin_version,v.scope_origin_version AS revalidation_origin_version,
     v.scope_revision AS revalidation_revision,v.occurrence_version AS revalidation_occurrence_version,co.version AS location_version,
     EXISTS(SELECT 1 FROM secret_jobs j WHERE j.connection_id=o.connection_id AND j.kind IN ('FULL_SCAN','REVALIDATE') AND j.status IN ('PENDING','LEASED')) AS busy,
-    v.revalidation_id,v.status AS revalidation_status,v.action_cycle AS revalidation_cycle,
+    v.revalidation_id,v.run_id AS revalidation_run_id,v.status AS revalidation_status,v.action_cycle AS revalidation_cycle,
+    (SELECT outcome.run_id FROM secret_scope_outcomes outcome WHERE outcome.scope_id=o.scope_id AND outcome.scope_revision=s.revision
+     ORDER BY outcome.requested_at DESC,outcome.run_id DESC LIMIT 1) AS latest_scope_run_id,
     v.last_material_action_at AS revalidation_action_at,v.actions_completed_at AS revalidation_completed_at,v.finished_at AS revalidation_finished_at,
     vr.scope_version AS revalidation_connection_version,cn.scope_version,
     EXISTS(SELECT 1 FROM secret_scope_outcomes outcome WHERE outcome.scope_id=o.scope_id AND outcome.scope_revision=s.revision
@@ -37,7 +39,7 @@ public class SecretLocationReadiness {
   else if(!Boolean.TRUE.equals(o.get("is_current"))||!"IN_SCOPE".equals(o.get("disposition"))||"RESOLVED".equals(o.get("action_status")))reason="CASE_NOT_ACTIVE";
   else if(!"REVALIDATION_PENDING".equals(o.get("response_status"))||o.get("actions_completed_at")==null||o.get("last_material_action_at")==null)reason="COMPLETE_ACTIONS_REQUIRED";
   else if(!"CONFIRMED".equals(o.get("component_state"))||o.get("fingerprint_key_version")==null)reason="COMPLETE_IDENTITY_REQUIRED";
-  else if(!"GITHUB".equals(o.get("provider"))||!SecretGithubScopePolicy.approved((String)o.get("content_type"),(String)o.get("history_limit"),(String)o.get("approved_ref")))reason="SOURCE_REVALIDATION_UNSUPPORTED";
+  else if(!SecretLocationScopePolicy.approved((String)o.get("provider"),(String)o.get("content_type"),(String)o.get("history_limit"),(String)o.get("approved_ref")))reason="SOURCE_REVALIDATION_UNSUPPORTED";
   else if(!Boolean.TRUE.equals(o.get("enabled"))||!"ACTIVE".equals(o.get("connection_status"))||!Objects.equals(o.get("case_origin"),o.get("response_origin")))reason="SCOPE_UNAVAILABLE";
   else if(Boolean.TRUE.equals(o.get("busy")))reason="ACTIVE_JOB_EXISTS";
   boolean canResume=assigned&&Boolean.TRUE.equals(o.get("is_current"))&&"IN_SCOPE".equals(o.get("disposition"))
@@ -47,6 +49,7 @@ public class SecretLocationReadiness {
   boolean missing="MISSING".equals(o.get("revalidation_status"))&&"MISSING".equals(o.get("presence_status"))
    &&Boolean.TRUE.equals(o.get("is_current"))&&Boolean.TRUE.equals(o.get("same_identity"))&&"IN_SCOPE".equals(o.get("disposition"))&&"REVALIDATION_PENDING".equals(o.get("response_status"))
    &&Objects.equals(o.get("scope_version"),o.get("revalidation_connection_version"))&&!Boolean.TRUE.equals(o.get("later_incomplete"))
+   &&Objects.equals(o.get("latest_scope_run_id"),o.get("revalidation_run_id"))
    &&Objects.equals(o.get("actions_completed_at"),o.get("revalidation_completed_at"))&&Objects.equals(o.get("action_cycle"),o.get("revalidation_cycle"))
    &&Objects.equals(o.get("revision"),o.get("revalidation_revision"))&&Objects.equals(o.get("response_origin_version"),o.get("revalidation_origin_version"))&&Objects.equals(o.get("location_version"),o.get("revalidation_occurrence_version"))
    &&o.get("last_material_action_at")!=null&&Objects.equals(o.get("last_material_action_at"),o.get("revalidation_action_at"))

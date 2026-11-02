@@ -1,0 +1,36 @@
+# Copy OUTSIDE the repository. Configuration alone never grants a source scope.
+spring.datasource.url=jdbc:postgresql://replace-db-host:5432/logssey?sslmode=verify-full&sslrootcert=/run/secrets/db-root-ca.crt
+spring.datasource.username=logssey_secret_worker
+# /run/secrets/spring.datasource.password contains only the worker DB password.
+spring.flyway.enabled=false
+logssey.secret.scheduler.enabled=false
+logssey.secret.scheduler.poll-delay=30s
+logssey.secret.scheduler.scan-interval=6h
+logssey.secret.executor.enabled=false
+logssey.secret.executor.poll-delay=30s
+logssey.secret.aws.collection.enabled=false
+logssey.secret.aws.collection.credentials-mode=WORKLOAD
+logssey.secret.aws.collection.profile=
+logssey.secret.aws.content.enabled=false
+logssey.secret.github.enabled=false
+logssey.secret.github.app-id=0
+logssey.secret.github.installation-id=0
+logssey.secret.github.private-key-path=/run/secrets/github-app.pem
+logssey.secret.detection.gitleaks-path=/usr/local/bin/gitleaks
+logssey.secret.detection.fingerprint-key-version=replace-approved-hmac-version
+# Required when content pipelines are enabled:
+# /run/secrets/logssey.secret.detection.fingerprint-key (base64, at least 32 decoded bytes)
+logssey.secret.aws.collection.identity-key-version=replace-approved-metadata-key-version
+# Required when AWS collection is enabled:
+# /run/secrets/logssey.secret.aws.collection.identity-key (base64, at least 32 decoded bytes)
+logssey.secret.validation.aws.enabled=false
+logssey.secret.validation.github.enabled=false
+logging.level.software.amazon.awssdk=OFF
+logging.level.org.apache.hc.client5.http.wire=OFF
+logging.level.org.apache.hc.client5.http.headers=OFF
+logssey.secret.operations.enabled=true
+logssey.secret.operations.deployment-key=secret-worker
+logssey.secret.operations.expected-instances=1
+logssey.secret.operations.snapshot-cleanup.enabled=true
+logssey.secret.permissions.enabled=false
+logssey.secret.permissions.poll-delay=30s

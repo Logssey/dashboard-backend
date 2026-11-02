@@ -37,7 +37,7 @@ public class SecretScheduleRepository {
                 FROM secret_connections c
                 WHERE c.status = 'ACTIVE'
                   AND (c.provider = 'GITHUB' OR (? AND c.provider = 'AWS'
-                       AND c.auth_ref ~ '^aws-profile:[A-Za-z0-9._-]{1,100}$'))
+                       AND (c.auth_ref ~ '^aws-profile:[A-Za-z0-9._-]{1,100}$' OR c.auth_ref='aws-workload:default')))
                   AND c.next_due_at <= ?
                   AND EXISTS (
                     SELECT 1 FROM secret_connection_scopes s

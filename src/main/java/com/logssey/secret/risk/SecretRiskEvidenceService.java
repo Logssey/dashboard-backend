@@ -22,7 +22,14 @@ public class SecretRiskEvidenceService {
       OffsetDateTime validUntil,
       String evidenceRef,
       Map<String, Object> facts,
-      List<SecretRiskProvenance.Ref> sourceRefs) {
+      List<SecretRiskProvenance.Ref> sourceRefs,
+      Long assetId) {
+    public Submission(
+        Long revision, String key, String kind, String subject, OffsetDateTime observed,
+        OffsetDateTime until, String ref, Map<String, Object> facts,
+        List<SecretRiskProvenance.Ref> sourceRefs) {
+      this(revision, key, kind, subject, observed, until, ref, facts, sourceRefs, null);
+    }
     public Submission(
         Long revision,
         String key,
@@ -32,7 +39,7 @@ public class SecretRiskEvidenceService {
         OffsetDateTime until,
         String ref,
         Map<String, Object> facts) {
-      this(revision, key, kind, subject, observed, until, ref, facts, List.of());
+      this(revision, key, kind, subject, observed, until, ref, facts, List.of(), null);
     }
   }
 
@@ -58,7 +65,11 @@ public class SecretRiskEvidenceService {
     SecretRiskFacts.window(
         r.evidenceType(), r.observedAt(), r.validUntil(), OffsetDateTime.now(ZoneOffset.UTC));
     SecretEvidenceRules.reference(r.evidenceRef(), true);
-    var refs = r.sourceRefs() == null ? List.<SecretRiskProvenance.Ref>of() : r.sourceRefs();
+    if (r.assetId() != null
+        && (r.assetId() <= 0 || !"ASSET_CLASSIFICATION".equals(r.evidenceType())))
+      throw SecretRiskFacts.invalid();
+    var refs = new ArrayList<>(r.sourceRefs() == null ? List.<SecretRiskProvenance.Ref>of() : r.sourceRefs());
+    if (r.assetId() != null) refs.add(new SecretRiskProvenance.Ref("ASSET", r.assetId(), 1, "CLASSIFIES"));
     if (refs.size() > 30
         || refs.stream()
             .anyMatch(
@@ -68,7 +79,7 @@ public class SecretRiskEvidenceService {
                         || ref.role() == null
                         || ref.id() <= 0
                         || ref.version() < 0)) throw SecretRiskFacts.invalid();
-    refs =
+    final var normalizedRefs =
         refs.stream()
             .distinct()
             .sorted(
@@ -77,7 +88,6 @@ public class SecretRiskEvidenceService {
                     .thenComparingLong(SecretRiskProvenance.Ref::version)
                     .thenComparing(SecretRiskProvenance.Ref::role))
             .toList();
-    final var normalizedRefs = refs;
     var safe =
         new ArrayList<Object>(
             Arrays.asList(
@@ -89,12 +99,17 @@ public class SecretRiskEvidenceService {
                 r.evidenceRef(),
                 facts,
                 normalizedRefs));
+    if (r.assetId() != null) safe.add(r.assetId());
     return commands.execute(
         actor,
         "RISK_EVIDENCE_SUBMITTED",
         r.idempotencyKey(),
         safe,
-        () -> authorizeSubmission(actor, occurrence),
+        () -> {
+          authorizeSubmission(actor, occurrence);
+          if (r.assetId() != null && !access.hasGlobalRole(actor, SecretRole.SECURITY))
+            throw new ApiException(ErrorCode.FORBIDDEN);
+        },
         () -> {
           var o = lock(occurrence, r.expectedEvidenceRevision());
           boolean accepted =
@@ -103,6 +118,26 @@ public class SecretRiskEvidenceService {
               && !access.hasConnectionRole(
                   actor, number(o, "connection_id"), SecretRole.REMEDIATOR))
             throw new ApiException(ErrorCode.FORBIDDEN);
+          Long previousAsset = o.get("asset_id") instanceof Number id ? id.longValue() : null;
+          var retractedEvidence = new ArrayList<Long>();
+          if (r.assetId() != null) {
+            // Locking the chosen registry row serializes its environment with the evidence write.
+            var assets = jdbc.queryForList(
+                "SELECT a.asset_id,a.provider,a.environment,k.issuer,k.component_state FROM assets a"
+                    + " CROSS JOIN secret_credential_sets k WHERE a.asset_id=?"
+                    + " AND k.credential_set_id=? FOR SHARE OF a", r.assetId(), o.get("credential_set_id"));
+            if (assets.isEmpty()) throw new ApiException(ErrorCode.NOT_FOUND);
+            var asset = assets.getFirst();
+            if (!Objects.equals(asset.get("provider"), asset.get("issuer"))
+                || !Objects.equals(asset.get("environment"), facts.get("environment"))
+                || "METADATA_ONLY".equals(asset.get("component_state")))
+              throw new ApiException(ErrorCode.EVIDENCE_REQUIRED);
+            if (!Objects.equals(previousAsset, r.assetId()))
+              retractedEvidence.addAll(retractAssetEvidence(o, actor, r.idempotencyKey()));
+            jdbc.update("UPDATE secret_occurrences SET asset_id=? WHERE occurrence_id=?", r.assetId(), occurrence);
+            o = lock(occurrence, jdbc.queryForObject(
+                "SELECT risk_evidence_revision FROM secret_occurrences WHERE occurrence_id=?", Long.class, occurrence));
+          }
           try {
             new SecretRiskProvenance(jdbc).validate(o, normalizedRefs);
           } catch (IllegalArgumentException error) {
@@ -144,8 +179,37 @@ VALUES('ASSERTION',?,?,?,?,'MANUAL',?,?::jsonb,?::jsonb,?,?,?,?,?,'EVIDENCE_SUBM
                           ? "MATCHED"
                           : "UNRESOLVED")
                       : "NOT_APPLICABLE");
-          return result(occurrence, id, accepted ? "ACCEPTED" : "PENDING");
+          var result = new LinkedHashMap<String, Object>(result(occurrence, id, accepted ? "ACCEPTED" : "PENDING"));
+          if (r.assetId() != null) {
+            result.put("assetId", r.assetId());
+            result.put("previousAssetId", previousAsset);
+            result.put("retractedEvidenceIds", List.copyOf(retractedEvidence));
+          }
+          return result;
         });
+  }
+
+  private List<Long> retractAssetEvidence(Map<String, Object> o, SecretPrincipal actor, String key) {
+    var parents = jdbc.queryForList(
+        "SELECT * FROM secret_current_risk_evidence WHERE occurrence_id=?"
+            + " AND kind IN('ASSET_CLASSIFICATION','PERMISSION_MAPPING') ORDER BY evidence_id", o.get("occurrence_id"));
+    var result = new ArrayList<Long>();
+    for (var parent : parents) {
+      long parentId = number(parent, "evidence_id");
+      jdbc.update("""
+INSERT INTO secret_risk_evidence(record_kind,kind,occurrence_id,credential_set_id,scope_id,
+ related_evidence_id,source_kind,verification_level,safe_payload,observed_at,effective_from,expires_at,
+ submitted_by_user_id,reviewed_by_user_id,reason_code,evidence_ref,safe_payload_digest,ingestion_key,
+ credential_revision,scope_revision)
+VALUES('RETRACTION',?,?,?,?,?,'MANUAL','MANUAL_ACCEPTED','{}',?,?,?,?,?,'ASSET_LINK_CHANGED',?,?,?,?,?)
+""", parent.get("kind"), o.get("occurrence_id"), o.get("credential_set_id"), o.get("scope_id"), parentId,
+          parent.get("observed_at"), parent.get("effective_from"), parent.get("expires_at"),
+          actor.userId(), actor.userId(), parent.get("evidence_ref"), SecretRiskCommands.digest("{}"),
+          HexFormat.of().formatHex(SecretRiskCommands.digest("asset-link:" + actor.userId() + ":" + key + ":" + parentId)),
+          o.get("credential_revision"), o.get("revision"));
+      result.add(parentId);
+    }
+    return result;
   }
 
   public Map<String, Object> decide(String login, long occurrence, long evidence, Decision r) {

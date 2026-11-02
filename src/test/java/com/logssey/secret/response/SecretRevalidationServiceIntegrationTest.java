@@ -35,7 +35,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "logssey.secret.bootstrap-remediator-login-id="
 })
 class SecretRevalidationServiceIntegrationTest {
-    private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:18.6");
+    private static final PostgreSQLContainer POSTGRES = new com.logssey.secret.testing.SecretTestPostgres();
 
     static {
         POSTGRES.start();
@@ -55,6 +55,7 @@ class SecretRevalidationServiceIntegrationTest {
 
     @Autowired private JdbcTemplate jdbc;
     @Autowired private SecretRevalidationService service;
+    @Autowired private SecretLocationReadiness readiness;
     @Autowired private com.logssey.secret.lifecycle.SecretLifecycleService lifecycle;
     @Autowired private SecretGuideService guide;
     @Autowired private SecretGuideRepository guideRepository;
@@ -191,6 +192,74 @@ class SecretRevalidationServiceIntegrationTest {
         assertThatThrownBy(() -> service.request(caseId,
                 new SecretRevalidationRequest(occurrenceId, 1L, 1L, "external-still-exclusive"),
                 "revalidation-admin")).isInstanceOf(ApiException.class);
+    }
+
+    @Test
+    void exactAwsValueLocationsCanRequestTheSameAuditedLocationRecheck() {
+        String[][] scopes = {
+                {"AWS_SECRETS_MANAGER_VALUE", "aws://123456789012/ap-northeast-2/secrets-manager/secret/arn%3Aaws%3Asecretsmanager%3Aap-northeast-2%3A123456789012%3Asecret%3Afixture"},
+                {"AWS_SSM_PARAMETER_VALUE", "aws://123456789012/ap-northeast-2/ssm/parameter/arn%3Aaws%3Assm%3Aap-northeast-2%3A123456789012%3Aparameter%2Ffixture"},
+                {"AWS_S3_OBJECT_CONTENT", "aws://123456789012/ap-northeast-2/s3/object/example-bucket/fixture.env"}
+        };
+        for (int i = 0; i < scopes.length; i++) {
+            if (i > 0) fixture();
+            jdbc.update("UPDATE secret_connections SET provider='AWS',auth_ref='aws-profile:test'");
+            jdbc.update("UPDATE secret_connection_scopes SET content_type=?,history_limit='CURRENT_VALUE_ONLY',approved_ref=?",
+                    scopes[i][0], scopes[i][1]);
+            jdbc.update("UPDATE secret_occurrences SET source_object_ref='aws-content-scope:' || scope_id::text WHERE occurrence_id=?", occurrenceId);
+            var accepted = service.request(caseId,
+                    new SecretRevalidationRequest(occurrenceId, 0L, 0L, "exact-aws-location-" + i),
+                    "revalidation-admin");
+            assertThat(accepted.jobStatus()).isEqualTo("PENDING");
+            assertThat(jdbc.queryForMap("SELECT j.kind,j.purpose,s.snapshot_content_type FROM secret_scan_runs r JOIN secret_jobs j USING(job_id) JOIN secret_run_scopes s USING(run_id) WHERE r.run_id=?", accepted.runId()))
+                    .containsEntry("kind", "REVALIDATE")
+                    .containsEntry("purpose", "LOCATION_RECHECK")
+                    .containsEntry("snapshot_content_type", scopes[i][0]);
+        }
+    }
+
+    @Test
+    void awsMetadataCannotBeRecheckedAsASecretLocation() {
+        jdbc.update("UPDATE secret_connections SET provider='AWS',auth_ref='aws-profile:test'");
+        jdbc.update("UPDATE secret_connection_scopes SET content_type='IAM_ACCESS_KEY_METADATA',history_limit='CURRENT_STATE_ONLY',approved_ref='aws://123456789012/global/iam/access-keys'");
+        assertThatThrownBy(() -> service.request(caseId,
+                new SecretRevalidationRequest(occurrenceId, 0L, 0L, "metadata-is-not-a-value"),
+                "revalidation-admin")).isInstanceOf(ApiException.class);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_jobs WHERE purpose='LOCATION_RECHECK'", Long.class)).isZero();
+    }
+
+    @Test
+    void laterSuccessfulFullScanInvalidatesTheSamePostActionAbsenceProjectionAsClosure() {
+        var accepted = service.request(caseId,
+                new SecretRevalidationRequest(occurrenceId, 0L, 0L, "latest-absence"),
+                "revalidation-admin");
+        jdbc.update("UPDATE secret_jobs SET status='SUCCEEDED',finished_at=clock_timestamp() WHERE job_id=(SELECT job_id FROM secret_scan_runs WHERE run_id=?)", accepted.runId());
+        jdbc.update("UPDATE secret_scan_runs SET collection_status='SUCCEEDED',detection_status='SUCCEEDED',validation_status='SKIPPED',result_status='SUCCEEDED',finished_at=clock_timestamp() WHERE run_id=?", accepted.runId());
+        jdbc.update("UPDATE secret_run_scopes SET collection_status='SUCCEEDED',object_count=1,started_at=clock_timestamp(),finished_at=clock_timestamp(),detection_stage_status='SUCCEEDED',validation_stage_status='SKIPPED',validation_required=false WHERE run_id=?", accepted.runId());
+        jdbc.update("UPDATE secret_case_revalidations SET status='MISSING',finished_at=clock_timestamp() WHERE run_id=?", accepted.runId());
+        jdbc.update("UPDATE secret_occurrences SET presence_status='MISSING' WHERE occurrence_id=?", occurrenceId);
+        var principal = new com.logssey.secret.access.SecretPrincipal(actor());
+        assertThat(((java.util.Map<?, ?>) readiness.capabilities(principal, caseId, occurrenceId).get("locationAbsenceCheck")).get("status"))
+                .isEqualTo("PASSED");
+
+        long connection = jdbc.queryForObject("SELECT connection_id FROM secret_occurrences WHERE occurrence_id=?", Long.class, occurrenceId);
+        long scope = jdbc.queryForObject("SELECT scope_id FROM secret_occurrences WHERE occurrence_id=?", Long.class, occurrenceId);
+        long job = jdbc.queryForObject("""
+                INSERT INTO secret_jobs(kind,connection_id,scheduled_at,available_at,status,attempt_no,max_attempts,finished_at)
+                VALUES('FULL_SCAN',?,clock_timestamp(),clock_timestamp(),'SUCCEEDED',1,3,clock_timestamp()) RETURNING job_id
+                """, Long.class, connection);
+        long run = jdbc.queryForObject("""
+                INSERT INTO secret_scan_runs(job_id,connection_id,trigger_type,scope_version,scheduled_at,requested_at,
+                    collection_status,detection_status,validation_status,result_status,finished_at)
+                VALUES(?,?,'SCHEDULED',1,clock_timestamp(),clock_timestamp(),'SUCCEEDED','SUCCEEDED','SKIPPED','SUCCEEDED',clock_timestamp()) RETURNING run_id
+                """, Long.class, job, connection);
+        jdbc.update("""
+                INSERT INTO secret_run_scopes(run_id,scope_id,collection_status,object_count,started_at,finished_at,
+                    detection_stage_status,validation_stage_status,validation_required)
+                VALUES(?,?,'SUCCEEDED',1,clock_timestamp(),clock_timestamp(),'SUCCEEDED','SKIPPED',false)
+                """, run, scope);
+        assertThat(((java.util.Map<?, ?>) readiness.capabilities(principal, caseId, occurrenceId).get("locationAbsenceCheck")).get("status"))
+                .isEqualTo("UNKNOWN");
     }
 
     @Test

@@ -9,7 +9,9 @@ public record CredentialValidationResult(
         String reasonCode,
         Instant providerCheckedAt,
         Integer httpStatus,
-        Instant nextDueAt) {
+        Instant nextDueAt,
+        com.logssey.secret.permission.core.SecretProviderIdentity identity) {
+    public CredentialValidationResult(String result,String reasonCode,Instant providerCheckedAt,Integer httpStatus,Instant nextDueAt){this(result,reasonCode,providerCheckedAt,httpStatus,nextDueAt,null);}
     public CredentialValidationResult {
         if (!Set.of("VALID", "INVALID", "UNKNOWN", "UNCHECKED").contains(result)
                 || reasonCode == null
@@ -17,6 +19,7 @@ public record CredentialValidationResult(
                 || Set.of("VALID", "INVALID").contains(result) && providerCheckedAt == null
                 || "UNCHECKED".equals(result) && providerCheckedAt != null)
             throw new IllegalArgumentException("INVALID_VALIDATION_RESULT");
+        if(identity!=null&&!"VALID".equals(result))throw new IllegalArgumentException("IDENTITY_REQUIRES_VALID_RESULT");
     }
 
     public static CredentialValidationResult unchecked(String reason) {

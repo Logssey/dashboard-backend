@@ -45,7 +45,7 @@ import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.spy;
 
 class AwsSecretJobProcessorTest {
-    private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:18.6");
+    private static final PostgreSQLContainer POSTGRES = new com.logssey.secret.testing.SecretTestPostgres();
     private static final String ACCOUNT = "123456789012";
     private static final String ACCESS_KEY_ID = "AKIAABCDEFGHIJKLMNOP";
     private static JdbcTemplate jdbc;
@@ -69,6 +69,28 @@ class AwsSecretJobProcessorTest {
 
     @BeforeEach
     void clean() { jdbc.execute("TRUNCATE secret_connections RESTART IDENTITY CASCADE"); }
+
+    @Test
+    void workloadReferenceIsExplicitAndStillChecksApprovedAccount() {
+        long connection = connection();
+        long scope = scope(connection, "IAM_ACCESS_KEY_METADATA",
+                "aws://" + ACCOUNT + "/global/iam/access-keys");
+        jdbc.update("UPDATE secret_connections SET auth_ref='aws-workload:default' WHERE connection_id=?", connection);
+        long run = run(connection, scope);
+        var gateway = new FakeGateway();
+        try (var credentials = com.logssey.secret.aws.SecretAwsSourceCredentials.workload()) {
+            var processor = new AwsSecretJobProcessor(jdbc, new AwsIamCollector(gateway),
+                    new AwsMetadataCollector(new FakeMetadataPages()), gateway,
+                    new AwsIamMetadataRepository(jdbc, new AwsMetadataIdentity(new byte[32], "test-v1")),
+                    properties, credentials, null);
+            var job = execution.claimNextJob("AWS").orElseThrow();
+            processor.process(job, execution);
+            assertThat(execution.complete(job.jobId(), job.leaseToken())).isTrue();
+        }
+        assertThat(gateway.accountCalls).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT result_status FROM secret_scan_runs WHERE run_id=?", String.class, run))
+                .isEqualTo("SUCCEEDED");
+    }
 
     @Test
     void completedIamInventoryIsMetadataOnlyAndDeduplicatesAcrossRuns() {
@@ -434,6 +456,198 @@ class AwsSecretJobProcessorTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_tool_runs", Long.class)).isZero();
     }
 
+    @Test
+    void exactAwsValueRechecksProveAbsenceOnlyAfterACompleteComparableRead() {
+        String[][] scopes = {
+                {"AWS_SECRETS_MANAGER_VALUE", exactSecretRef(ACCOUNT)},
+                {"AWS_SSM_PARAMETER_VALUE", "aws://" + ACCOUNT + "/ap-northeast-2/ssm/parameter/arn%3Aaws%3Assm%3Aap-northeast-2%3A" + ACCOUNT + "%3Aparameter%2Ffixture"},
+                {"AWS_S3_OBJECT_CONTENT", "aws://" + ACCOUNT + "/ap-northeast-2/s3/object/example-bucket/fixture.env"}
+        };
+        for (int i = 0; i < scopes.length; i++) {
+            if (i > 0) clean();
+            var seed = prepareContentRecheck(scopes[i][0], scopes[i][1]);
+            var reader = new FakeContentReader();
+            reader.bytes = "CONFIG=credential-removed\n".getBytes(StandardCharsets.UTF_8);
+            executeContent(seed.runId(), new FakeGateway(), reader);
+            assertThat(reader.calls).isEqualTo(1);
+            assertThat(jdbc.queryForMap("SELECT status,runtime_fingerprint_version FROM secret_case_revalidations WHERE run_id=?", seed.runId()))
+                    .containsEntry("status", "MISSING")
+                    .containsEntry("runtime_fingerprint_version", "test-v1");
+            assertThat(jdbc.queryForObject("SELECT presence_status FROM secret_occurrences WHERE occurrence_id=?", String.class, seed.occurrenceId()))
+                    .isEqualTo("MISSING");
+            assertThat(jdbc.queryForObject("SELECT action_status FROM secret_response_cases WHERE case_id=?", String.class, seed.caseId()))
+                    .isEqualTo("REVALIDATION_PENDING");
+        }
+    }
+
+    @Test
+    void sameKeyStillInAwsValueKeepsTheLocationPresent() {
+        var seed = prepareContentRecheck("AWS_SECRETS_MANAGER_VALUE", exactSecretRef(ACCOUNT));
+        var reader = new FakeContentReader();
+        reader.bytes = credentialContent();
+        executeContent(seed.runId(), new FakeGateway(), reader);
+        assertThat(jdbc.queryForObject("SELECT status FROM secret_case_revalidations WHERE run_id=?", String.class, seed.runId()))
+                .isEqualTo("PRESENT");
+        assertThat(jdbc.queryForObject("SELECT presence_status FROM secret_occurrences WHERE occurrence_id=?", String.class, seed.occurrenceId()))
+                .isEqualTo("PRESENT");
+    }
+
+    @Test
+    void changedAwsValueDoesNotSubstituteTheReplacementKeyForTheOriginal() {
+        var seed = prepareContentRecheck("AWS_SECRETS_MANAGER_VALUE", exactSecretRef(ACCOUNT));
+        var reader = new FakeContentReader();
+        reader.bytes = new String(credentialContent(), StandardCharsets.UTF_8)
+                .replace("ABCDEFGHIJKLMNOP", "QRSTUVWXYZABCDEF").getBytes(StandardCharsets.UTF_8);
+        executeContent(seed.runId(), new FakeGateway(), reader);
+        assertThat(jdbc.queryForObject("SELECT status FROM secret_case_revalidations WHERE run_id=?", String.class, seed.runId()))
+                .isEqualTo("MISSING");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_credential_sets WHERE component_state='CONFIRMED'", Long.class))
+                .isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_occurrences WHERE presence_status='PRESENT'", Long.class))
+                .isEqualTo(1);
+    }
+
+    @Test
+    void missingOrUnreadableAwsResourceNeverProvesTheKeyWasRemoved() {
+        for (var failure : List.of(AwsContentReader.FailureCode.NOT_FOUND, AwsContentReader.FailureCode.ACCESS_DENIED)) {
+            clean();
+            var seed = prepareContentRecheck("AWS_SECRETS_MANAGER_VALUE", exactSecretRef(ACCOUNT));
+            var reader = new FakeContentReader();
+            reader.failure = failure;
+            var job = execution.claimNextJob("AWS").orElseThrow();
+            assertThatThrownBy(() -> contentProcessor(new FakeGateway(), reader, execution).process(job, execution))
+                    .isInstanceOf(SecretJobFailure.class);
+            assertThat(execution.fail(job.jobId(), job.leaseToken(), SecretJobFailureCode.SOURCE_ACCESS_DENIED, false))
+                    .isTrue();
+            assertThat(jdbc.queryForObject("SELECT status FROM secret_case_revalidations WHERE run_id=?", String.class, seed.runId()))
+                    .isEqualTo("UNKNOWN");
+            assertThat(jdbc.queryForObject("SELECT presence_status FROM secret_occurrences WHERE occurrence_id=?", String.class, seed.occurrenceId()))
+                    .isEqualTo("UNKNOWN");
+            assertThat(jdbc.queryForObject("SELECT failure_code FROM secret_run_scopes WHERE run_id=?", String.class, seed.runId()))
+                    .isEqualTo("AWS_CONTENT_" + failure.name());
+        }
+    }
+
+    @Test
+    void staleAwsRecheckCannotReadAnotherResourceOrUseChangedIdentity() {
+        for (String change : List.of("UPDATE secret_connection_scopes SET revision=revision+1",
+                "UPDATE secret_credential_sets SET fingerprint=decode(md5(random()::text),'hex')",
+                "UPDATE secret_occurrences SET source_object_ref='aws-content-scope:999999'",
+                "UPDATE secret_case_occurrences SET action_cycle=action_cycle+1")) {
+            clean();
+            prepareContentRecheck("AWS_SECRETS_MANAGER_VALUE", exactSecretRef(ACCOUNT));
+            jdbc.update(change);
+            var reader = new FakeContentReader();
+            var job = execution.claimNextJob("AWS").orElseThrow();
+            assertThatThrownBy(() -> contentProcessor(new FakeGateway(), reader, execution).process(job, execution))
+                    .isInstanceOf(SecretJobFailure.class);
+            assertThat(reader.calls).isZero();
+        }
+    }
+
+    @Test
+    void lostAwsRecheckLeasePreventsReaderCallAndCannotPublishAbsence() {
+        var seed = prepareContentRecheck("AWS_SECRETS_MANAGER_VALUE", exactSecretRef(ACCOUNT));
+        var reader = new FakeContentReader();
+        var controlled = spy(execution);
+        doReturn(false).when(controlled).renewLease(anyLong(), anyString());
+        var job = controlled.claimNextJob("AWS").orElseThrow();
+        assertThatThrownBy(() -> contentProcessor(new FakeGateway(), reader, controlled).process(job, controlled))
+                .isInstanceOf(SecretJobFailure.class);
+        assertThat(reader.calls).isZero();
+        assertThat(jdbc.queryForObject("SELECT status FROM secret_case_revalidations WHERE run_id=?", String.class, seed.runId()))
+                .isEqualTo("PENDING");
+        assertThat(jdbc.queryForObject("SELECT presence_status FROM secret_occurrences WHERE occurrence_id=?", String.class, seed.occurrenceId()))
+                .isEqualTo("UNKNOWN");
+    }
+
+    @Test
+    void unnormalizedCandidatesCannotProveAwsCredentialRemoval() {
+        var seed = prepareContentRecheck("AWS_SECRETS_MANAGER_VALUE", exactSecretRef(ACCOUNT));
+        var reader = new FakeContentReader();
+        reader.bytes = new String(credentialContent(), StandardCharsets.UTF_8)
+                .replace("AWS_SECRET_ACCESS_KEY", "UNRELATED_CREDENTIAL").getBytes(StandardCharsets.UTF_8);
+        var job = execution.claimNextJob("AWS").orElseThrow();
+        assertThatThrownBy(() -> contentProcessor(new FakeGateway(), reader, execution).process(job, execution))
+                .isInstanceOf(SecretJobFailure.class);
+        execution.fail(job.jobId(), job.leaseToken(), SecretJobFailureCode.SOURCE_ACCESS_DENIED, false);
+        assertThat(jdbc.queryForObject("SELECT status FROM secret_case_revalidations WHERE run_id=?", String.class, seed.runId()))
+                .isEqualTo("UNKNOWN");
+        assertThat(jdbc.queryForObject("SELECT failure_code FROM secret_run_scopes WHERE run_id=?", String.class, seed.runId()))
+                .isEqualTo("DETECTOR_NORMALIZATION_INCOMPLETE");
+    }
+
+    @Test
+    void remainingPartialAwsKeyCannotBeReportedAsFullyRemoved() {
+        var seed = prepareContentRecheck("AWS_SECRETS_MANAGER_VALUE", exactSecretRef(ACCOUNT));
+        var reader = new FakeContentReader();
+        reader.bytes = "AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\n".getBytes(StandardCharsets.UTF_8);
+        var job = execution.claimNextJob("AWS").orElseThrow();
+        assertThatThrownBy(() -> contentProcessor(new FakeGateway(), reader, execution).process(job, execution))
+                .isInstanceOf(SecretJobFailure.class);
+        execution.fail(job.jobId(), job.leaseToken(), SecretJobFailureCode.SOURCE_ACCESS_DENIED, false);
+        assertThat(jdbc.queryForObject("SELECT status FROM secret_case_revalidations WHERE run_id=?", String.class, seed.runId()))
+                .isEqualTo("UNKNOWN");
+    }
+
+    private Recheck prepareContentRecheck(String type, String ref) {
+        long connection = connection();
+        long scopeId = contentScope(connection, type, ref, 1);
+        long actor = jdbc.queryForObject("""
+                INSERT INTO dashboard_users(login_id,password_hash,display_name)
+                VALUES('aws-recheck-worker','test-only','AWS recheck worker')
+                ON CONFLICT(login_id) DO UPDATE SET display_name=EXCLUDED.display_name RETURNING user_id
+                """, Long.class);
+        jdbc.update("UPDATE secret_connection_scopes SET response_origin='TEST',response_origin_set_by_user_id=?,response_origin_set_at=clock_timestamp() WHERE scope_id=?", actor, scopeId);
+        var baseline = new FakeContentReader();
+        baseline.bytes = credentialContent();
+        executeContent(run(connection, scopeId), new FakeGateway(), baseline);
+        var occurrence = jdbc.queryForMap("SELECT o.occurrence_id,o.credential_set_id FROM secret_occurrences o WHERE o.scope_id=?", scopeId);
+        long occurrenceId = ((Number) occurrence.get("occurrence_id")).longValue();
+        long credential = ((Number) occurrence.get("credential_set_id")).longValue();
+        jdbc.update("UPDATE secret_occurrences SET exposure_status='ABNORMAL' WHERE occurrence_id=?", occurrenceId);
+        long caseId = jdbc.queryForObject("""
+                INSERT INTO secret_response_cases(credential_set_id,opening_occurrence_id,opened_by_user_id,opening_reason,
+                    case_origin,review_status,action_status,version)
+                VALUES(?,?,?,'ASSESSED_EXPOSURE','TEST','REVIEWED','REVALIDATION_PENDING',1) RETURNING case_id
+                """, Long.class, credential, occurrenceId, actor);
+        jdbc.update("INSERT INTO secret_case_occurrences(case_id,occurrence_id,credential_set_id,response_status) VALUES(?,?,?,'REVALIDATION_PENDING')", caseId, occurrenceId, credential);
+        long action = jdbc.queryForObject("""
+                INSERT INTO secret_action_records(case_id,occurrence_id,action_type,performed_at,recorded_by_user_id,evidence_ref,case_version)
+                VALUES(?,?,'REMOVED_FROM_SOURCE',clock_timestamp()-INTERVAL '10 minutes',?,'TICKET:AWS-101',1) RETURNING action_id
+                """, Long.class, caseId, occurrenceId, actor);
+        jdbc.update("UPDATE secret_case_occurrences SET last_material_action_at=(SELECT performed_at FROM secret_action_records WHERE action_id=?),actions_completed_at=clock_timestamp()-INTERVAL '1 minute' WHERE case_id=?", action, caseId);
+        long job = jdbc.queryForObject("""
+                INSERT INTO secret_jobs(kind,connection_id,scheduled_at,available_at,attempt_no,max_attempts,status)
+                VALUES('REVALIDATE',?,clock_timestamp(),clock_timestamp()-INTERVAL '1 second',0,1,'PENDING') RETURNING job_id
+                """, Long.class, connection);
+        long run = jdbc.queryForObject("""
+                INSERT INTO secret_scan_runs(job_id,connection_id,trigger_type,scope_version,scheduled_at,requested_at,
+                    collection_status,detection_status,validation_status,result_status)
+                VALUES(?,?,'REVALIDATION',1,clock_timestamp(),clock_timestamp(),'PENDING','PENDING','PENDING','PENDING') RETURNING run_id
+                """, Long.class, job, connection);
+        jdbc.update("INSERT INTO secret_run_scopes(run_id,scope_id,collection_status) VALUES(?,?,'PENDING')", run, scopeId);
+        jdbc.update("""
+                INSERT INTO secret_case_revalidations(case_id,occurrence_id,action_id,connection_id,scope_id,job_id,run_id,
+                    requested_by_user_id,idempotency_digest,baseline_config_hash,baseline_engine_version,baseline_fingerprint_version,
+                    case_version,scope_revision,scope_origin_version,action_cycle,occurrence_version,last_material_action_at,
+                    actions_completed_at,baseline_identity)
+                SELECT ?,?,?,?,?,?,?,?,'aws-recheck-test',?,?,'test-v1',1,s.revision,s.response_origin_version,co.action_cycle,
+                    co.version,co.last_material_action_at,co.actions_completed_at,k.fingerprint
+                FROM secret_connection_scopes s JOIN secret_case_occurrences co ON co.case_id=? AND co.occurrence_id=?
+                JOIN secret_credential_sets k ON k.credential_set_id=co.credential_set_id WHERE s.scope_id=?
+                """, caseId, occurrenceId, action, connection, scopeId, job, run, actor,
+                "a".repeat(64), "8.30.1", caseId, occurrenceId, scopeId);
+        return new Recheck(caseId, occurrenceId, run);
+    }
+
+    private static byte[] credentialContent() {
+        return ("AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\nAWS_SECRET_ACCESS_KEY=" + "aB3/".repeat(10) + "\n")
+                .getBytes(StandardCharsets.UTF_8);
+    }
+
+    private record Recheck(long caseId, long occurrenceId, long runId) { }
+
     private static String exactSecretRef(String account) {
         return "aws://" + account + "/ap-northeast-2/secrets-manager/secret/"
                 + "arn%3Aaws%3Asecretsmanager%3Aap-northeast-2%3A" + account
@@ -456,6 +670,15 @@ class AwsSecretJobProcessorTest {
 
     private static void executeContent(long run, FakeGateway gateway, FakeContentReader reader,
                                        SecretJobExecutionService executionService) {
+        var processor = contentProcessor(gateway, reader, executionService);
+        var job = executionService.claimNextJob("AWS").orElseThrow();
+        assertThat(job.runId()).isEqualTo(run);
+        processor.process(job, executionService);
+        assertThat(executionService.complete(job.jobId(), job.leaseToken())).isTrue();
+    }
+
+    private static AwsSecretJobProcessor contentProcessor(FakeGateway gateway, FakeContentReader reader,
+                                                          SecretJobExecutionService executionService) {
         var datasource = jdbc.getDataSource();
         var normalizer = new SecretFindingNormalizer(new byte[32], "test-v1");
         var findings = new SecretFindingRepository(jdbc,
@@ -465,14 +688,10 @@ class AwsSecretJobProcessorTest {
                 normalizer, findings, key -> new AwsValidationResult(AwsValidationResult.Status.UNCHECKED,
                         AwsValidationResult.Reason.DISABLED, Instant.now(), null,
                         AwsValidationResult.METHOD, AwsValidationResult.VERSION), attempts);
-        var processor = new AwsSecretJobProcessor(jdbc, new AwsIamCollector(gateway),
+        return new AwsSecretJobProcessor(jdbc, new AwsIamCollector(gateway),
                 new AwsMetadataCollector(new FakeMetadataPages()), gateway,
                 new AwsIamMetadataRepository(jdbc, new AwsMetadataIdentity(new byte[32], "test-v1")),
                 properties, "test", content);
-        var job = executionService.claimNextJob("AWS").orElseThrow();
-        assertThat(job.runId()).isEqualTo(run);
-        processor.process(job, executionService);
-        assertThat(executionService.complete(job.jobId(), job.leaseToken())).isTrue();
     }
 
     private static final class FakeContentReader implements AwsContentReader {
@@ -495,9 +714,11 @@ class AwsSecretJobProcessorTest {
         @Override public GitleaksScanResult scan(byte[] content) {
             String text = new String(content, StandardCharsets.UTF_8);
             if (!text.contains("AWS_ACCESS_KEY_ID=")) return new GitleaksScanResult(engineVersion(), HASH, List.of());
-            return new GitleaksScanResult(engineVersion(), HASH, List.of(
-                    new GitleaksFinding("aws-access-token", 1, 1, 19, 38),
-                    new GitleaksFinding("generic-api-key", 2, 2, 1, 60)));
+            var findings = new java.util.ArrayList<GitleaksFinding>();
+            findings.add(new GitleaksFinding("aws-access-token", 1, 1, 19, 38));
+            if (text.contains("AWS_SECRET_ACCESS_KEY=") || text.contains("UNRELATED_CREDENTIAL="))
+                findings.add(new GitleaksFinding("generic-api-key", 2, 2, 1, 60));
+            return new GitleaksScanResult(engineVersion(), HASH, findings);
         }
     }
 

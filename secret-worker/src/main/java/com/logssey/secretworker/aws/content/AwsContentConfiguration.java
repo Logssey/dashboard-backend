@@ -10,7 +10,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-import software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider;
+import com.logssey.secret.aws.SecretAwsSourceCredentials;
 
 /** Merely creating these beans makes no AWS value calls. Both opt-ins are required. */
 @Configuration(proxyBeanMethods = false)
@@ -18,7 +18,7 @@ import software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider;
         "logssey.secret.aws.content.enabled"}, havingValue = "true")
 class AwsContentConfiguration {
     @Bean
-    AwsContentCollector awsContentCollector(ProfileCredentialsProvider credentials) {
+    AwsContentCollector awsContentCollector(SecretAwsSourceCredentials credentials) {
         return new AwsContentCollector(new AwsSdkContentReader(credentials));
     }
 

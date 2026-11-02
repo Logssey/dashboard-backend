@@ -21,6 +21,15 @@ public class SecretRiskController {
     return query.risk(actor.getName(), id);
   }
 
+  @GetMapping("/occurrences/{id}/risk-assets")
+  public Map<String, Object> assets(
+      @PathVariable long id,
+      @RequestParam(defaultValue = "0") int page,
+      @RequestParam(defaultValue = "20") int size,
+      Principal actor) {
+    return query.assets(actor.getName(), id, page, size);
+  }
+
   @GetMapping("/occurrences/{id}/assessment-history")
   public Map<String, Object> history(
       @PathVariable long id,

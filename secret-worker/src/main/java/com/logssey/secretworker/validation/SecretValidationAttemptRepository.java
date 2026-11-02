@@ -78,7 +78,7 @@ public class SecretValidationAttemptRepository {
                                     aws.reason().name(),
                                     aws.checkedAt(),
                                     null,
-                                    null);
+                                    null,aws.identity());
                         },
                         sourceRunScopeId,
                         sourceRef,
@@ -95,7 +95,7 @@ public class SecretValidationAttemptRepository {
                 Instant.now(),
                 result.providerCheckedAt(),
                 AwsValidationResult.METHOD,
-                AwsValidationResult.VERSION);
+                AwsValidationResult.VERSION,result.identity());
     }
 
     public CredentialValidationResult validateGitHub(
@@ -849,6 +849,15 @@ WHERE attempt_id=? AND reservation_token=?::uuid AND attempt_state IN('RESERVED'
                                     eligible ? null : "APPROVAL_CHANGED",
                                     r.id(),
                                     r.token());
+                            if(eligible&&"VALID".equals(result.result())&&result.identity()!=null){
+                                var identity=result.identity();
+                                jdbc.update("""
+INSERT INTO secret_credential_identities(validation_attempt_id,occurrence_id,credential_set_id,credential_revision,scope_revision,provider,principal_type,account_ref,principal_ref,principal_id,safe_claims,observed_at,expires_at)
+SELECT attempt_id,occurrence_id,credential_set_id,credential_revision,scope_revision,?,?,?,?,?,?::jsonb,provider_checked_at,provider_checked_at+interval '6 hours'
+FROM secret_current_validation_attempts WHERE attempt_id=? AND result='VALID' AND current_eligible
+ON CONFLICT(validation_attempt_id) DO NOTHING
+""",identity.provider(),identity.principalType(),identity.accountRef(),identity.principalRef(),identity.principalId(),new tools.jackson.databind.json.JsonMapper().writeValueAsString(identity.claims()),r.id());
+                            }
                         });
         if (!live) throw lease();
     }
