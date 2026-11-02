@@ -24,6 +24,9 @@ public class ReachQueryService {
     private static final int DEFAULT_SIZE = 20;
     private static final int MAX_SIZE = 100;
 
+    /** API-05 include (명세). RULE·vulnFunctions는 API-09·10 데이터가 생기면, verdictHistory는 따로 채운다 */
+    private static final List<String> DETAIL_INCLUDES = List.of("RULE", "vulnFunctions", "reviewHistory", "verdictHistory");
+
     private final ReachQueryRepository repository;
 
     public ReachQueryService(ReachQueryRepository repository) {
@@ -114,9 +117,11 @@ public class ReachQueryService {
         return denominator == 0 ? null : Math.round(numerator * 1000.0 / denominator) / 1000.0;
     }
 
-    /** API-05. 없는 id면 404 */
-    public ReachFindingDetailResponse finding(String loginId, long findingId) {
+    /** API-05. 없는 id면 404. include는 명세의 네 값을 받고, 지금은 reviewHistory만 채운다 */
+    public ReachFindingDetailResponse finding(String loginId, long findingId, List<String> include) {
         requireAdmin(loginId);
-        return repository.finding(findingId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+        var includes = ReachCodes.checked(include, DETAIL_INCLUDES);
+        var detail = repository.finding(findingId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+        return includes.contains("reviewHistory") ? detail.withReviewHistory(repository.reviewHistory(findingId)) : detail;
     }
 }

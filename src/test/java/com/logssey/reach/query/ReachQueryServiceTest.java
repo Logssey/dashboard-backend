@@ -2,6 +2,7 @@ package com.logssey.reach.query;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
+import com.logssey.reach.query.dto.ReachFindingDetailResponse;
 import com.logssey.reach.query.dto.ReachFindingPageResponse;
 import com.logssey.reach.query.dto.ReachFindingResponse;
 
@@ -57,7 +58,7 @@ class ReachQueryServiceTest {
         assertError(() -> service.findings(null, ALL, null, null, null), ErrorCode.UNAUTHENTICATED);
         assertError(() -> service.findings("nobody", ALL, null, null, null), ErrorCode.FORBIDDEN);
         assertError(() -> service.summary("nobody", null, null), ErrorCode.FORBIDDEN);
-        assertError(() -> service.finding("nobody", 1), ErrorCode.FORBIDDEN);
+        assertError(() -> service.finding("nobody", 1, null), ErrorCode.FORBIDDEN);
     }
 
     @Test
@@ -165,15 +166,69 @@ class ReachQueryServiceTest {
                     (?, 1, 'NOTE', 'first', '{}')
                 """, verdict, verdict);
 
-        var detail = service.finding("admin", id);
+        var detail = service.finding("admin", id, null);
         var evidence = detail.verdict().evidence();
         assertThat(evidence.get(0).get("summary").asString()).isEqualTo("first");
         assertThat(evidence.get(1).get("path").get(1).asString()).isEqualTo("Lib.parse");   // detail 키가 합쳐진다
         assertThat(detail.sameCveFindings()).containsExactly(same);
         assertThat(detail.review().reviewer().name()).isEqualTo("Admin");
-        assertThat(service.finding("admin", same).review().reviewer()).isNull();
+        assertThat(service.finding("admin", same, null).review().reviewer()).isNull();
 
-        assertError(() -> service.finding("admin", 999), ErrorCode.NOT_FOUND);
+        assertError(() -> service.finding("admin", 999, null), ErrorCode.NOT_FOUND);
+    }
+
+    @Test
+    void reviewHistoryIsNewestFirstAndOnlyWhenIncluded() {
+        long id = finding(scan, "jackson-core", "CVE-2026-1", "HIGH", "UNREACHABLE", "UNREVIEWED");
+        long other = finding(scan, "jackson-databind", "CVE-2026-2", "HIGH", "UNREACHABLE", "UNREVIEWED");
+        // 사람 저장 두 번 뒤에 서버가 되돌린 기록 (admin은 user_id 1)
+        jdbc.update("""
+                INSERT INTO reach_review_history (finding_id, version, review_state, status, note, reviewer_user_id,
+                                                  reviewed_at, change_kind) VALUES
+                    (?, 2, 'PROVISIONAL', 'UNREACHABLE', 'first', 1, now() - interval '2 hours', 'HUMAN'),
+                    (?, 3, 'CONFIRMED', 'UNREACHABLE', 'second', 1, now() - interval '1 hour', 'HUMAN'),
+                    (?, 4, 'UNREVIEWED', NULL, NULL, NULL, NULL, 'RESET'),
+                    (?, 2, 'PROVISIONAL', 'UNKNOWN', 'other', 1, now(), 'HUMAN')
+                """, id, id, id, other);
+
+        assertThat(service.finding("admin", id, null).review().history()).isNull();
+
+        var history = service.finding("admin", id, List.of("reviewHistory")).review().history();
+        assertThat(history).extracting(ReachFindingDetailResponse.History::version).containsExactly(4, 3, 2);
+        assertThat(history.get(0).changeKind()).isEqualTo("RESET");
+        assertThat(history.get(0).reviewer()).isNull();
+        assertThat(history.get(1).reviewer().name()).isEqualTo("Admin");
+        assertThat(history.get(1).note()).isEqualTo("second");
+
+        long none = finding(scan, "netty", "CVE-2026-3", "LOW", "UNREACHABLE", "UNREVIEWED");
+        assertThat(service.finding("admin", none, List.of("reviewHistory")).review().history()).isEmpty();
+    }
+
+    @Test
+    void includeAcceptsTheFourSpecValues() {
+        long id = finding(scan, "jackson-core", "CVE-2026-1", "HIGH", "UNREACHABLE", "UNREVIEWED");
+
+        // RULE·vulnFunctions·verdictHistory는 받기만 하고 아직 채우지 않는다
+        var detail = service.finding("admin", id, List.of("RULE", "vulnFunctions", "verdictHistory"));
+        assertThat(detail.review().history()).isNull();
+        assertError(() -> service.finding("admin", id, List.of("bogus")), ErrorCode.INVALID_INPUT);
+        assertError(() -> service.finding("admin", id, List.of("reviewhistory")), ErrorCode.INVALID_INPUT);
+    }
+
+    @Test
+    void carriedFromPointsToThePreviousFindingsReview() {
+        long previous = finding(scan, "jackson-core", "CVE-2026-1", "HIGH", "UNREACHABLE", "CONFIRMED");
+        long newer = scan(target("sha256:b"), "SUCCEEDED", 0);
+        long carried = finding(newer, "jackson-core", "CVE-2026-1", "HIGH", "UNREACHABLE", "CONFIRMED");
+        jdbc.update("UPDATE reach_reviews SET reviewed_at = now() - interval '3 days' WHERE finding_id = ?", previous);
+        jdbc.update("UPDATE reach_reviews SET carried_from_finding_id = ?, carried_from_scan_id = ? WHERE finding_id = ?",
+                previous, scan, carried);
+
+        var carriedFrom = service.finding("admin", carried, null).review().carriedFrom();
+        assertThat(carriedFrom.findingId()).isEqualTo(previous);
+        assertThat(carriedFrom.scanId()).isEqualTo(scan);
+        assertThat(carriedFrom.reviewedAt()).isEqualTo(service.finding("admin", previous, null).review().reviewedAt());
+        assertThat(service.finding("admin", previous, null).review().carriedFrom()).isNull();
     }
 
     private static void assertError(org.assertj.core.api.ThrowableAssert.ThrowingCallable call, ErrorCode code) {

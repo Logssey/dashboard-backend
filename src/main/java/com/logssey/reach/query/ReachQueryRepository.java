@@ -197,6 +197,7 @@ public class ReachQueryRepository {
                   FROM reach_evidence e WHERE e.verdict_id = v.verdict_id)::text AS evidence,
                r.review_state, r.status AS review_status, r.note, r.reviewed_at, r.version,
                r.proposal::text AS proposal, r.reset_reason,
+               r.carried_from_finding_id, r.carried_from_scan_id, cr.reviewed_at AS carried_reviewed_at,
                u.user_id AS reviewer_id, u.display_name AS reviewer_name,
                ARRAY(SELECT o.finding_id FROM reach_findings o
                      WHERE o.last_scan_id = f.last_scan_id AND o.vulnerability_id = f.vulnerability_id
@@ -206,6 +207,7 @@ public class ReachQueryRepository {
         JOIN reach_verdicts v ON v.finding_id = f.finding_id AND v.is_current
         JOIN reach_reviews r ON r.finding_id = f.finding_id
         LEFT JOIN dashboard_users u ON u.user_id = r.reviewer_user_id
+        LEFT JOIN reach_reviews cr ON cr.finding_id = r.carried_from_finding_id
         WHERE f.finding_id = :findingId
         """;
 
@@ -218,9 +220,10 @@ public class ReachQueryRepository {
     private ReachFindingDetailResponse detail(ResultSet rs, int rowNum) throws SQLException {
         String status = rs.getString("status");
         String reviewStatus = rs.getString("review_status");
-        // 검토 전이면 reviewer_id가 NULL. getLong은 NULL을 0으로 주므로 wasNull()로 확인한다
-        long reviewerId = rs.getLong("reviewer_id");
-        var reviewer = rs.wasNull() ? null : new ReachFindingDetailResponse.Reviewer(reviewerId, rs.getString("reviewer_name"));
+        // 두 칸은 같이 있거나 같이 없다 (V34 ck_reach_reviews_carried). NULL일 수 있는 BIGINT라 getObject로 읽는다
+        Long carriedId = rs.getObject("carried_from_finding_id", Long.class);
+        var carriedFrom = carriedId == null ? null : new ReachFindingDetailResponse.CarriedFrom(carriedId,
+                rs.getLong("carried_from_scan_id"), rs.getObject("carried_reviewed_at", OffsetDateTime.class));
 
         return new ReachFindingDetailResponse(
                 rs.getLong("finding_id"), rs.getLong("last_scan_id"), rs.getLong("target_id"),
@@ -237,9 +240,10 @@ public class ReachQueryRepository {
                         rs.getObject("analyzed_at", OffsetDateTime.class), json(rs.getString("engine"))),
                 // 사람 판정이 있고 현재 판정과 다르면 true (FR-08, 목록과 같은 규칙)
                 new ReachFindingDetailResponse.Review(rs.getString("review_state"), reviewStatus, rs.getString("note"),
-                        reviewer, rs.getObject("reviewed_at", OffsetDateTime.class), rs.getInt("version"),
+                        reviewer(rs), rs.getObject("reviewed_at", OffsetDateTime.class), rs.getInt("version"),
                         reviewStatus != null && !reviewStatus.equals(status),
-                        json(rs.getString("proposal")), rs.getString("reset_reason")),
+                        json(rs.getString("proposal")), carriedFrom, rs.getString("reset_reason"),
+                        null),   // history는 Service가 include=reviewHistory일 때만 채운다
                 json(rs.getString("upgrade")),
                 // ARRAY(SELECT ...)는 결과가 없어도 NULL이 아니라 빈 배열이다. BIGINT 배열이라 Long[]
                 List.of((Long[]) rs.getArray("same_cve").getArray()),
@@ -247,4 +251,27 @@ public class ReachQueryRepository {
                 rs.getObject("last_seen_at", OffsetDateTime.class));
     }
 
+    /** API-05 include=reviewHistory. 새것부터. version은 Finding마다 겹치지 않는다 (uq_reach_review_history_version) */
+    List<ReachFindingDetailResponse.History> reviewHistory(long findingId) {
+        return jdbcClient.sql("""
+                        SELECT h.review_state, h.status, h.note, h.proposal::text AS proposal, h.reviewed_at,
+                               h.version, h.change_kind, u.user_id AS reviewer_id, u.display_name AS reviewer_name
+                        FROM reach_review_history h
+                        LEFT JOIN dashboard_users u ON u.user_id = h.reviewer_user_id
+                        WHERE h.finding_id = :findingId
+                        ORDER BY h.version DESC
+                        """)
+                .param("findingId", findingId)
+                .query((rs, i) -> new ReachFindingDetailResponse.History(rs.getString("review_state"),
+                        rs.getString("status"), rs.getString("note"), json(rs.getString("proposal")), reviewer(rs),
+                        rs.getObject("reviewed_at", OffsetDateTime.class), rs.getInt("version"),
+                        rs.getString("change_kind")))
+                .list();
+    }
+
+    /** 검토 전이거나 서버가 되돌린 기록이면 reviewer_id가 NULL. getLong은 NULL을 0으로 주므로 wasNull()로 확인한다 */
+    private static ReachFindingDetailResponse.Reviewer reviewer(ResultSet rs) throws SQLException {
+        long id = rs.getLong("reviewer_id");
+        return rs.wasNull() ? null : new ReachFindingDetailResponse.Reviewer(id, rs.getString("reviewer_name"));
+    }
 }
