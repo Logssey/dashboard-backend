@@ -149,7 +149,8 @@ public class ReachReviewRepository {
                 rs.getObject("reviewed_at", OffsetDateTime.class), rs.getInt("version"),
                 // 사람 판정이 있고 현재 판정과 다르면 true (FR-08). MANUAL 판정이면 같으니 false
                 status != null && !status.equals(rs.getString("verdict_status")),
-                json(rs.getString("proposal")), rs.getString("reset_reason"));
+                // 저장하면 carried_from_*을 비우니 carriedFrom은 없다. 이력은 상세(include=reviewHistory)로 본다
+                json(rs.getString("proposal")), null, rs.getString("reset_reason"), null);
     }
 
     private JsonNode json(String value) {

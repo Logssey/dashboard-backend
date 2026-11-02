@@ -49,8 +49,9 @@ public class ReachQueryController {
 
     /** API-05 */
     @GetMapping("/findings/{findingId}")
-    public ReachFindingDetailResponse finding(Principal principal, @PathVariable long findingId) {
-        return service.finding(principal == null ? null : principal.getName(), findingId);
+    public ReachFindingDetailResponse finding(Principal principal, @PathVariable long findingId,
+                                              @RequestParam(required = false) List<String> include) {
+        return service.finding(principal == null ? null : principal.getName(), findingId, include);
     }
 }
 
