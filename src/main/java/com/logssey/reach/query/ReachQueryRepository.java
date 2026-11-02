@@ -20,21 +20,19 @@ import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Reach 조회 SQL (API-04 목록, API-05 상세, API-08 요약).
- * 기준 범위는 대상마다 PR이 아닌 최신 SUCCEEDED 스캔이다 (DB 스키마 5절, ARD SR-09). 목록과 요약이 같은 CURRENT_FINDINGS를 써서 숫자가 맞는다
+ * 기준 범위는 대상마다 PR이 아닌 최신 SUCCEEDED 스캔이다 (DB 스키마 5절, ARD SR-09). scanId·target으로 좁힐 수 있다.
+ * 목록과 요약이 같은 CURRENT_FINDINGS를 써서 숫자가 맞는다
  */
 @Repository
 public class ReachQueryRepository {
     /**
-     * 대상마다 최신 SUCCEEDED 스캔의 Finding + 현재 판정 + 검토 (DB 스키마 5절). 목록과 요약이 같이 쓴다.
-     * PR 검사의 스캔은 그 PR의 결과로만 두고 넣지 않는다 (ARD SR-09).
+     * 기준 범위(latest)의 Finding + 현재 판정 + 검토 (DB 스키마 5절). 목록과 요약이 같이 쓴다. latest는 {@link #latest}.
      * Finding은 last_scan_id가 아니라 그 스캔의 도구 판정으로 잇는다. 같은 레포 커밋을 PR로 다시 스캔하면
      * last_scan_id가 PR 스캔으로 바뀌어도 기준 스캔의 Finding이 빠지지 않는다 (API-03 counts와 같은 기준)
      */
-    static final String CURRENT_FINDINGS ="""
+    private static final String CURRENT_FINDINGS ="""
      WITH latest AS (
-                SELECT DISTINCT ON (target_id) target_id, scan_id
-                FROM reach_scans WHERE scan_status = 'SUCCEEDED' AND trigger_type <> 'PR'
-                ORDER BY target_id, finished_at DESC, scan_id DESC
+                %s
             )
             SELECT f.finding_id, l.scan_id AS last_scan_id, f.target_id, f.purl, f.component_name, f.component_version,
                    f.vulnerability_id, f.severity, f.fixed_versions, f.deployment, f.first_seen_at,
@@ -54,6 +52,30 @@ public class ReachQueryRepository {
             JOIN reach_reviews r ON r.finding_id = f.finding_id
     """;
 
+    /**
+     * 기준 범위 (API-04·08 scanId·target).
+     * scanId가 있으면 그 스캔 하나다. PR 검사의 스캔도 이렇게 지정하면 본다 (API-12 findingsUrl).
+     * 없으면 대상마다 PR이 아닌 최신 SUCCEEDED 스캔이고 (ARD SR-09), target이 있으면 그 대상만이다.
+     * 스캔이 있는지·끝났는지는 Service가 먼저 확인한다
+     */
+    private static String latest(Long scanId, Long target) {
+        if (scanId != null) return "SELECT target_id, scan_id FROM reach_scans WHERE scan_id = :scopeScan";
+        return """
+                SELECT DISTINCT ON (target_id) target_id, scan_id
+                FROM reach_scans WHERE scan_status = 'SUCCEEDED' AND trigger_type <> 'PR'%s
+                ORDER BY target_id, finished_at DESC, scan_id DESC""".formatted(target == null ? "" : " AND target_id = :scopeTarget");
+    }
+
+    static String currentFindings(Long scanId, Long target) {
+        return CURRENT_FINDINGS.formatted(latest(scanId, target));
+    }
+
+    /** latest()가 쓰는 파라미터를 넣는다 */
+    private static void scope(Map<String, Object> params, Long scanId, Long target) {
+        if (scanId != null) params.put("scopeScan", scanId);
+        else if (target != null) params.put("scopeTarget", target);
+    }
+
     /** 기본 정렬: 상태 -> 심각도 -> CVE(연도·번호를 숫자로) -> id (Reach API 명세 2-5). */
     private static final String DEFAULT_ORDER = 
     " ORDER BY status_rank, severity_rank, cve_year, cve_number, finding_id";
@@ -72,6 +94,33 @@ public class ReachQueryRepository {
             .query(Boolean.class)
             .single());
 
+    }
+
+    boolean targetExists(long targetId) {
+        return Boolean.TRUE.equals(jdbcClient
+                .sql("SELECT EXISTS (SELECT 1 FROM reach_targets WHERE target_id = :targetId)")
+                .param("targetId", targetId)
+                .query(Boolean.class)
+                .single());
+    }
+
+    /** 범위로 지정한 스캔의 대상과 상태 */
+    record ScanState(long targetId, String status) {}
+
+    Optional<ScanState> scanState(long scanId) {
+        return jdbcClient.sql("SELECT target_id, scan_status FROM reach_scans WHERE scan_id = :scanId")
+                .param("scanId", scanId)
+                .query((rs, i) -> new ScanState(rs.getLong("target_id"), rs.getString("scan_status")))
+                .optional();
+    }
+
+    /** 대상 하나의 기준 스캔 (API-08 scope.scanId). 없으면 null */
+    Long baselineScan(long targetId) {
+        return jdbcClient.sql(latest(null, targetId))
+                .param("scopeTarget", targetId)
+                .query((rs, i) -> rs.getLong("scan_id"))
+                .optional()
+                .orElse(null);
     }
 
     private ReachFindingResponse finding(ResultSet rs, int rowNum) throws SQLException {
@@ -111,7 +160,8 @@ public class ReachQueryRepository {
         var where = where(filter, after);
         var params = new HashMap<>(where.params());
         params.put("limit", limit);
-        return jdbcClient.sql("SELECT * FROM (" + CURRENT_FINDINGS + ") c" + where.sql() + DEFAULT_ORDER + " LIMIT :limit")
+        return jdbcClient.sql("SELECT * FROM (" + currentFindings(filter.scanId(), filter.target()) + ") c"
+                        + where.sql() + DEFAULT_ORDER + " LIMIT :limit")
                 .params(params)
                 .query(this::row)
                 .list();
@@ -119,7 +169,7 @@ public class ReachQueryRepository {
 
     long countFindings(ReachFindingFilter filter) {
         var where = where(filter, null);   // 개수는 커서와 무관하게 필터 전체
-        return jdbcClient.sql("SELECT count(*) FROM (" + CURRENT_FINDINGS + ") c" + where.sql())
+        return jdbcClient.sql("SELECT count(*) FROM (" + currentFindings(filter.scanId(), filter.target()) + ") c" + where.sql())
                 .params(where.params())
                 .query(Long.class)
                 .single();
@@ -128,6 +178,7 @@ public class ReachQueryRepository {
     private Where where(ReachFindingFilter filter, ReachFindingCursor after) {
         var conditions = new ArrayList<String>();
         var params = new HashMap<String, Object>();
+        scope(params, filter.scanId(), filter.target());
         in(conditions, params, "status", filter.status());
         in(conditions, params, "severity", filter.severity());
         in(conditions, params, "review_state", filter.reviewState());
@@ -172,14 +223,17 @@ public class ReachQueryRepository {
             long count) {}
 
     /** API-08. 목록과 같은 CURRENT_FINDINGS를 조합별로 센다. 차원별 합계는 Service가 낸다 */
-    List<SummaryRow> summaryRows(List<String> deployment) {
+    List<SummaryRow> summaryRows(Long scanId, Long target, List<String> deployment) {
+        var params = new HashMap<String, Object>();
+        scope(params, scanId, target);
         var where = deployment.isEmpty() ? "" : " WHERE deployment IN (:deployment)";
+        if (!deployment.isEmpty()) params.put("deployment", deployment);
         var spec = jdbcClient.sql("""
                 SELECT status, severity, method, review_state, deployment, not_analyzed_reason, count(*) AS n
                 FROM (%s) c%s
                 GROUP BY status, severity, method, review_state, deployment, not_analyzed_reason
-                """.formatted(CURRENT_FINDINGS, where));
-        if (!deployment.isEmpty()) spec = spec.param("deployment", deployment);
+                """.formatted(currentFindings(scanId, target), where))
+                .params(params);
         return spec.query((rs, i) -> new SummaryRow(rs.getString("status"), rs.getString("severity"),
                         rs.getString("method"), rs.getString("review_state"), rs.getString("deployment"),
                         rs.getString("not_analyzed_reason"), rs.getLong("n")))

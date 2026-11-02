@@ -8,13 +8,16 @@ import com.logssey.reach.ReachCodes;
 /**
  * Finding 목록(API-04) 필터. 쿼리 파라미터 이름을 그대로 칸 이름으로 쓴다 (Reach API 명세 2-5).
  * 한 칸 안의 값은 OR, 칸끼리는 AND. 허용 밖 값이면 만들 때 INVALID_INPUT(400)이다.
+ * scanId·target은 기준 범위를 바꾼다. 있는지와 상태는 DB를 봐야 해서 Service가 검사한다
  */
 record ReachFindingFilter(
         List<String> status,
         List<String> severity,
         List<String> reviewState,
         List<String> deployment,
-        String cveContains) {
+        String cveContains,
+        Long scanId,
+        Long target) {
 
     ReachFindingFilter {
         status = ReachCodes.checked(status, ReachCodes.STATUSES);
@@ -22,6 +25,12 @@ record ReachFindingFilter(
         reviewState = ReachCodes.checked(reviewState, ReachCodes.REVIEW_STATES);
         deployment = ReachCodes.checked(deployment, ReachCodes.DEPLOYMENTS);
         cveContains = (cveContains == null || cveContains.isBlank()) ? null : cveContains.trim();
+    }
+
+    /** 기준 범위를 지정하지 않는 필터 */
+    ReachFindingFilter(List<String> status, List<String> severity, List<String> reviewState,
+                       List<String> deployment, String cveContains) {
+        this(status, severity, reviewState, deployment, cveContains, null, null);
     }
 
     /** 커서가 이 필터로 만들어졌는지 확인하는 값. 커서와 함께 필터를 바꾸면 400이다 (명세 2-4) */

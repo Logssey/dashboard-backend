@@ -5,6 +5,7 @@ import com.logssey.common.error.ErrorCode;
 import com.logssey.reach.query.dto.ReachFindingDetailResponse;
 import com.logssey.reach.query.dto.ReachFindingPageResponse;
 import com.logssey.reach.query.dto.ReachFindingResponse;
+import com.logssey.reach.query.dto.ReachSummaryResponse;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -57,7 +58,7 @@ class ReachQueryServiceTest {
     void requiresAdmin() {
         assertError(() -> service.findings(null, ALL, null, null, null), ErrorCode.UNAUTHENTICATED);
         assertError(() -> service.findings("nobody", ALL, null, null, null), ErrorCode.FORBIDDEN);
-        assertError(() -> service.summary("nobody", null, null), ErrorCode.FORBIDDEN);
+        assertError(() -> service.summary("nobody", null, null, null, null), ErrorCode.FORBIDDEN);
         assertError(() -> service.finding("nobody", 1, null), ErrorCode.FORBIDDEN);
     }
 
@@ -72,7 +73,7 @@ class ReachQueryServiceTest {
         finding(failed, "lib", "CVE-2026-3", "HIGH", "REACHABLE", "UNREVIEWED");
 
         assertThat(cves(service.findings("admin", ALL, null, null, null))).containsExactly("CVE-2026-2");
-        assertThat(service.summary("admin", null, null).totals().findings()).isEqualTo(1);
+        assertThat(service.summary("admin", null, null, null, null).totals().findings()).isEqualTo(1);
     }
 
     @Test
@@ -94,7 +95,61 @@ class ReachQueryServiceTest {
         var page = service.findings("admin", ALL, null, null, null);
         assertThat(cves(page)).containsExactly("CVE-2026-1", "CVE-2026-3");
         assertThat(page.items().get(1).scanId()).isEqualTo(manual);
-        assertThat(service.summary("admin", null, null).totals().findings()).isEqualTo(2);
+        assertThat(service.summary("admin", null, null, null, null).totals().findings()).isEqualTo(2);
+    }
+
+    @Test
+    void scanIdAndTargetNarrowTheScope() {
+        long a = target("sha256:b");
+        long old = scan(a, "SUCCEEDED", 3);
+        long latest = scan(a, "SUCCEEDED", 2);
+        finding(old, "lib", "CVE-2026-1", "HIGH", "REACHABLE", "UNREVIEWED");
+        finding(latest, "lib", "CVE-2026-2", "HIGH", "REACHABLE", "UNREVIEWED");
+        finding(scan(target("sha256:c"), "SUCCEEDED", 2), "lib", "CVE-2026-3", "HIGH", "REACHABLE", "UNREVIEWED");
+        long prTarget = target("sha256:d");
+        long pr = scan(prTarget, "SUCCEEDED", 1, "PR");
+        finding(pr, "lib", "CVE-2026-4", "HIGH", "REACHABLE", "UNREVIEWED");
+
+        assertThat(cves(service.findings("admin", scope(null, a), null, null, null))).containsExactly("CVE-2026-2");
+        var oldPage = service.findings("admin", scope(old, null), null, null, null);
+        assertThat(cves(oldPage)).containsExactly("CVE-2026-1");
+        assertThat(oldPage.items().getFirst().scanId()).isEqualTo(old);
+        // PR 스캔은 기준 범위에 없지만 scanId로 지정하면 본다 (API-12 findingsUrl)
+        assertThat(cves(service.findings("admin", scope(pr, null), null, null, null))).containsExactly("CVE-2026-4");
+        assertThat(cves(service.findings("admin", scope(old, a), null, null, null))).containsExactly("CVE-2026-1");
+
+        var summary = service.summary("admin", a, null, null, null);
+        assertThat(summary.scope()).isEqualTo(new ReachSummaryResponse.Scope(a, latest));
+        assertThat(summary.totals().findings()).isEqualTo(1);
+        assertThat(service.summary("admin", null, pr, null, null).scope()).isEqualTo(new ReachSummaryResponse.Scope(prTarget, pr));
+        assertThat(service.summary("admin", null, null, null, null).scope()).isEqualTo(new ReachSummaryResponse.Scope(null, null));
+        long empty = target("sha256:e");
+        var none = service.summary("admin", empty, null, null, null);
+        assertThat(none.scope()).isEqualTo(new ReachSummaryResponse.Scope(empty, null));
+        assertThat(none.totals().findings()).isZero();
+    }
+
+    @Test
+    void scopeParametersAreChecked() {
+        long a = target("sha256:b");
+        long b = target("sha256:c");
+        long scanA = scan(a, "SUCCEEDED", 2);
+        finding(scanA, "lib", "CVE-2026-1", "HIGH", "REACHABLE", "UNREVIEWED");
+        finding(scanA, "lib2", "CVE-2026-2", "HIGH", "REACHABLE", "UNREVIEWED");
+        long running = jdbc.queryForObject("""
+                INSERT INTO reach_scans (target_id, scan_status, trigger_type, requested_by_kind)
+                VALUES (?, 'RUNNING', 'MANUAL', 'SYSTEM') RETURNING scan_id
+                """, Long.class, a);
+
+        assertError(() -> service.findings("admin", scope(999_999L, null), null, null, null), ErrorCode.NOT_FOUND);
+        assertError(() -> service.findings("admin", scope(null, 999_999L), null, null, null), ErrorCode.NOT_FOUND);
+        assertError(() -> service.findings("admin", scope(running, null), null, null, null), ErrorCode.CONFLICT);
+        assertError(() -> service.findings("admin", scope(scanA, b), null, null, null), ErrorCode.INVALID_INPUT);
+        assertError(() -> service.summary("admin", b, scanA, null, null), ErrorCode.INVALID_INPUT);
+        // 커서는 범위와도 묶인다
+        String cursor = service.findings("admin", scope(scanA, null), 1, null, null).nextCursor();
+        assertError(() -> service.findings("admin", scope(null, a), 1, cursor, null), ErrorCode.INVALID_INPUT);
+        assertThat(service.findings("admin", scope(scanA, null), 1, cursor, null).items()).hasSize(1);
     }
 
     @Test
@@ -129,7 +184,7 @@ class ReachQueryServiceTest {
         assertError(() -> service.findings("admin", ALL, 101, null, null), ErrorCode.INVALID_INPUT);
         assertError(() -> service.findings("admin", ALL, null, "not-a-cursor", null), ErrorCode.INVALID_INPUT);
         assertError(() -> service.findings("admin", ALL, null, null, "matrix"), ErrorCode.INVALID_INPUT);
-        assertError(() -> service.summary("admin", null, List.of("total")), ErrorCode.INVALID_INPUT);
+        assertError(() -> service.summary("admin", null, null, null, List.of("total")), ErrorCode.INVALID_INPUT);
     }
 
     @Test
@@ -163,7 +218,7 @@ class ReachQueryServiceTest {
         finding(scan, "b", "CVE-2026-2", "HIGH", "REACHABLE", "UNREVIEWED");
         finding(scan, "c", "CVE-2026-3", "HIGH", "NOT_ANALYZED", "UNREVIEWED");
 
-        var summary = service.summary("admin", null, List.of("matrix"));
+        var summary = service.summary("admin", null, null, null, List.of("matrix"));
         assertThat(summary.totals().findings()).isEqualTo(service.findings("admin", ALL, null, null, "total").totalCount());
         assertThat(summary.byStatus()).containsEntry("UNREACHABLE", 1L).containsEntry("UNKNOWN", 0L);
         assertThat(summary.byNotAnalyzedReason()).containsEntry("OS_PACKAGE", 1L);
@@ -171,7 +226,7 @@ class ReachQueryServiceTest {
         assertThat(summary.noiseReduction().ratio()).isEqualTo(0.5);      // UNREACHABLE 1 / 판정 2
         assertThat(summary.coverage().ratio()).isEqualTo(0.667);          // 판정 2 / 전체 3
 
-        var empty = service.summary("admin", List.of("RUNNING"), null);  // 테스트 Finding은 전부 deployment UNKNOWN
+        var empty = service.summary("admin", null, null, List.of("RUNNING"), null);  // 테스트 Finding은 전부 deployment UNKNOWN
         assertThat(empty.totals().findings()).isZero();
         assertThat(empty.noiseReduction().ratio()).isNull();
         assertThat(empty.severityByStatus()).isNull();
@@ -259,6 +314,11 @@ class ReachQueryServiceTest {
 
     private static List<String> cves(ReachFindingPageResponse page) {
         return page.items().stream().map(ReachFindingResponse::vulnerability).map(ReachFindingResponse.Vulnerability::id).toList();
+    }
+
+    /** 기준 범위만 지정한 필터 */
+    private static ReachFindingFilter scope(Long scanId, Long target) {
+        return new ReachFindingFilter(null, null, null, null, null, scanId, target);
     }
 
     private static long target(String digest) {
