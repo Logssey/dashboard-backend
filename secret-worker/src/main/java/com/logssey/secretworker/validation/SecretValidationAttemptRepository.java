@@ -119,6 +119,27 @@ public class SecretValidationAttemptRepository {
                 sourceVersion);
     }
 
+    public CredentialValidationResult validateNotion(
+            ClaimedSecretJob job,
+            SecretFindingNormalizer.NotionCandidate candidate,
+            NotionTokenValidator validator,
+            Long sourceRunScopeId,
+            String sourceRef,
+            String sourceVersion) {
+        return validate(
+                job,
+                candidate.credential(),
+                NotionTokenValidator.METHOD,
+                NotionTokenValidator.VERSION,
+                NotionTokenValidator.ENDPOINT_CLASS,
+                false,
+                validator.enabled(),
+                () -> validator.validate(candidate.token()),
+                sourceRunScopeId,
+                sourceRef,
+                sourceVersion);
+    }
+
     public CredentialValidationResult validate(
             ClaimedSecretJob job,
             SecretFindingNormalizer.Credential credential,
@@ -272,7 +293,11 @@ public class SecretValidationAttemptRepository {
                         && Set.of("GITHUB_CLASSIC_PAT", "GITHUB_FINE_GRAINED_PAT")
                                 .contains(credential.credentialType())
                         && GitHubPatValidator.METHOD.equals(validator)
-                        && "GITHUB_USER".equals(endpoint));
+                        && "GITHUB_USER".equals(endpoint))
+                || ("NOTION".equals(credential.issuer())
+                        && "NOTION_CONNECTION_TOKEN".equals(credential.credentialType())
+                        && NotionTokenValidator.METHOD.equals(validator)
+                        && NotionTokenValidator.ENDPOINT_CLASS.equals(endpoint));
     }
 
     public CredentialValidationResult recordUnsupported(
@@ -512,7 +537,8 @@ WHERE v.connection_id=j.connection_id AND k.issuer=? AND k.credential_type=? AND
                         "AWS_ACCESS_KEY_PAIR",
                         "AWS_TEMPORARY_CREDENTIALS",
                         "GITHUB_CLASSIC_PAT",
-                        "GITHUB_FINE_GRAINED_PAT")
+                        "GITHUB_FINE_GRAINED_PAT",
+                        "NOTION_CONNECTION_TOKEN")
                 .contains(c.get("credential_type"))) return "UNSUPPORTED_TYPE";
         if (!enabled || !Boolean.TRUE.equals(c.get("validation_enabled"))) return "DISABLED";
         if (!"CONFIRMED".equals(c.get("component_state")))
@@ -962,12 +988,14 @@ SELECT (j.requested_by_user_id IS NULL OR EXISTS(SELECT 1 FROM secret_role_grant
     }
 
     private static String method(Map<String, Object> c) {
+        if ("NOTION".equals(c.get("issuer"))) return NotionTokenValidator.METHOD;
         return "AWS".equals(c.get("issuer"))
                 ? "AWS_STS_GET_CALLER_IDENTITY"
                 : "GITHUB_GET_AUTHENTICATED_USER";
     }
 
     private static String endpoint(Map<String, Object> c) {
+        if ("NOTION".equals(c.get("issuer"))) return NotionTokenValidator.ENDPOINT_CLASS;
         return "AWS".equals(c.get("issuer")) ? "AWS_STS" : "GITHUB_USER";
     }
 

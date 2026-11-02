@@ -32,11 +32,43 @@ public final class SecretRiskObservationWriter {
     return Objects.requireNonNull(
         tx.execute(
             status ->
-                recordGithubAccess(
+                recordAccess(
+                    AccessSource.GITHUB,
                     occurrence, runScopeId, publicRepository, metadataComplete, observedAt)));
   }
 
-  private long recordGithubAccess(
+  /**
+   * A Notion page published to the web is readable by anyone with its link, without sign-in, so it
+   * proves BROAD. An unpublished page proves nothing about its workspace audience (UNKNOWN).
+   */
+  public long notionPageAccess(
+      long occurrence, long runScopeId, boolean publishedToWeb, OffsetDateTime observedAt) {
+    return Objects.requireNonNull(
+        tx.execute(
+            status ->
+                recordAccess(
+                    AccessSource.NOTION, occurrence, runScopeId, publishedToWeb, true, observedAt)));
+  }
+
+  private enum AccessSource {
+    GITHUB("GITHUB", "github-access:", "GITHUB_REPOSITORY_METADATA_V1", "PUBLIC_REPOSITORY_CONFIRMED"),
+    NOTION("NOTION", "notion-access:", "NOTION_PAGE_METADATA_V1", "PUBLISHED_TO_WEB_CONFIRMED");
+
+    private final String provider;
+    private final String ingestionPrefix;
+    private final String writerServiceId;
+    private final String publicReason;
+
+    AccessSource(String provider, String ingestionPrefix, String writerServiceId, String publicReason) {
+      this.provider = provider;
+      this.ingestionPrefix = ingestionPrefix;
+      this.writerServiceId = writerServiceId;
+      this.publicReason = publicReason;
+    }
+  }
+
+  private long recordAccess(
+      AccessSource access,
       long occurrence,
       long runScopeId,
       boolean publicRepository,
@@ -49,10 +81,11 @@ public final class SecretRiskObservationWriter {
                 + " connection_status,s.enabled FROM secret_run_scopes rs JOIN secret_scan_runs r"
                 + " USING(run_id) JOIN secret_connections c ON c.connection_id=r.connection_id JOIN"
                 + " secret_connection_scopes s ON s.scope_id=rs.scope_id WHERE rs.run_scope_id=?"
-                + " AND c.provider='GITHUB' AND rs.collection_status='SUCCEEDED' AND EXISTS(SELECT"
+                + " AND c.provider=? AND rs.collection_status='SUCCEEDED' AND EXISTS(SELECT"
                 + " 1 FROM secret_findings f JOIN secret_tool_runs t USING(tool_run_id) WHERE"
                 + " f.occurrence_id=? AND t.run_scope_id=rs.run_scope_id)",
             runScopeId,
+            access.provider,
             occurrence);
     var now = jdbc.queryForObject("SELECT clock_timestamp()", OffsetDateTime.class);
     if (scopes.isEmpty() || observedAt == null || observedAt.isAfter(now.plusMinutes(5)))
@@ -70,7 +103,7 @@ public final class SecretRiskObservationWriter {
     String ingestion =
         HexFormat.of()
             .formatHex(
-                SecretRiskAssessmentStore.digest("github-access:" + occurrence + ":" + runScopeId));
+                SecretRiskAssessmentStore.digest(access.ingestionPrefix + occurrence + ":" + runScopeId));
     boolean broad = publicRepository && metadataComplete;
     var facts = new TreeMap<String, Object>();
     facts.put("audienceClass", broad ? "BROAD" : "UNKNOWN");
@@ -100,7 +133,7 @@ public final class SecretRiskObservationWriter {
 INSERT INTO secret_risk_evidence(record_kind,kind,occurrence_id,credential_set_id,scope_id,source_kind,verification_level,
  source_refs,safe_payload,observed_at,effective_from,expires_at,writer_service_id,reason_code,safe_payload_digest,
  ingestion_key,credential_revision,scope_revision,source_object_version,collector_connection_id,collector_identity_ref,identity_binding_status)
-VALUES('ASSERTION','ACCESS_SCOPE',?,?,?,'PROVIDER_OBSERVATION','PROVIDER_OBSERVED',?::jsonb,?::jsonb,?,?,?,'GITHUB_REPOSITORY_METADATA_V1',?,?, ?,?,?,?,?,?,'NOT_APPLICABLE') RETURNING evidence_id
+VALUES('ASSERTION','ACCESS_SCOPE',?,?,?,'PROVIDER_OBSERVATION','PROVIDER_OBSERVED',?::jsonb,?::jsonb,?,?,?,?,?,?, ?,?,?,?,?,?,'NOT_APPLICABLE') RETURNING evidence_id
 """,
         Long.class,
         occurrence,
@@ -121,7 +154,8 @@ VALUES('ASSERTION','ACCESS_SCOPE',?,?,?,'PROVIDER_OBSERVATION','PROVIDER_OBSERVE
         observedAt,
         observedAt,
         observedAt.plusHours(6),
-        broad ? "PUBLIC_REPOSITORY_CONFIRMED" : "ACCESS_RANGE_NOT_PROVEN",
+        access.writerServiceId,
+        broad ? access.publicReason : "ACCESS_RANGE_NOT_PROVEN",
         SecretRiskAssessmentStore.digest(payload),
         ingestion,
         SecretRiskAssessmentStore.number(o, "credential_revision"),

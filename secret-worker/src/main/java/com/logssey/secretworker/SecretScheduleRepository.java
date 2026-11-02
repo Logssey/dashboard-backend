@@ -13,17 +13,25 @@ public class SecretScheduleRepository {
 
     private final JdbcTemplate jdbc;
     private final boolean awsCollectionEnabled;
+    private final boolean notionCollectionEnabled;
 
     @Autowired
     public SecretScheduleRepository(JdbcTemplate jdbc,
                                     @Value("${logssey.secret.aws.collection.enabled:false}")
-                                    boolean awsCollectionEnabled) {
+                                    boolean awsCollectionEnabled,
+                                    @Value("${logssey.secret.notion.enabled:false}")
+                                    boolean notionCollectionEnabled) {
         this.jdbc = jdbc;
         this.awsCollectionEnabled = awsCollectionEnabled;
+        this.notionCollectionEnabled = notionCollectionEnabled;
+    }
+
+    public SecretScheduleRepository(JdbcTemplate jdbc, boolean awsCollectionEnabled) {
+        this(jdbc, awsCollectionEnabled, false);
     }
 
     public SecretScheduleRepository(JdbcTemplate jdbc) {
-        this(jdbc, false);
+        this(jdbc, false, false);
     }
 
     public OffsetDateTime databaseNow() {
@@ -37,17 +45,20 @@ public class SecretScheduleRepository {
                 FROM secret_connections c
                 WHERE c.status = 'ACTIVE'
                   AND (c.provider = 'GITHUB' OR (? AND c.provider = 'AWS'
-                       AND (c.auth_ref ~ '^aws-profile:[A-Za-z0-9._-]{1,100}$' OR c.auth_ref='aws-workload:default')))
+                       AND (c.auth_ref ~ '^aws-profile:[A-Za-z0-9._-]{1,100}$' OR c.auth_ref='aws-workload:default'))
+                       OR (? AND c.provider = 'NOTION'))
                   AND c.next_due_at <= ?
                   AND EXISTS (
                     SELECT 1 FROM secret_connection_scopes s
                     WHERE s.connection_id = c.connection_id AND s.enabled
-                      AND (c.provider = 'GITHUB' OR AWS_SCOPE_VALID)
+                      AND (c.provider = 'GITHUB' OR c.provider = 'AWS' AND AWS_SCOPE_VALID
+                           OR c.provider = 'NOTION' AND NOTION_SCOPE_VALID)
                   )
                   AND (c.provider = 'GITHUB' OR NOT EXISTS (
                     SELECT 1 FROM secret_connection_scopes unsupported
                     WHERE unsupported.connection_id = c.connection_id AND unsupported.enabled
-                      AND NOT AWS_UNSUPPORTED_SCOPE_VALID
+                      AND NOT (c.provider = 'AWS' AND AWS_UNSUPPORTED_SCOPE_VALID
+                           OR c.provider = 'NOTION' AND NOTION_UNSUPPORTED_SCOPE_VALID)
                   ))
                   AND NOT EXISTS (
                     SELECT 1 FROM secret_jobs j
@@ -57,10 +68,19 @@ public class SecretScheduleRepository {
                 ORDER BY c.next_due_at, c.connection_id
                 LIMIT ? FOR UPDATE OF c SKIP LOCKED
                 """.replace("AWS_SCOPE_VALID", supportedAwsScope("s"))
-                .replace("AWS_UNSUPPORTED_SCOPE_VALID", supportedAwsScope("unsupported"));
+                .replace("AWS_UNSUPPORTED_SCOPE_VALID", supportedAwsScope("unsupported"))
+                .replace("NOTION_SCOPE_VALID", supportedNotionScope("s"))
+                .replace("NOTION_UNSUPPORTED_SCOPE_VALID", supportedNotionScope("unsupported"));
         return jdbc.query(query, (rs, row) -> new DueConnection(rs.getLong("connection_id"),
                 rs.getLong("scope_version"), rs.getObject("next_due_at", OffsetDateTime.class)),
-                awsCollectionEnabled, now, limit);
+                awsCollectionEnabled, notionCollectionEnabled, now, limit);
+    }
+
+    /** Kept in sync with NotionApprovedScope: one page at its current version, nothing below it. */
+    private static String supportedNotionScope(String alias) {
+        return "(" + alias + ".content_type = 'NOTION_PAGE_CONTENT' AND " + alias
+                + ".history_limit = 'CURRENT_VERSION_ONLY' AND " + alias + ".approved_ref ~ '"
+                + com.logssey.secretworker.notion.NotionApprovedScope.APPROVED_REF_SQL_PATTERN + "')";
     }
 
     private static String supportedAwsScope(String alias) {

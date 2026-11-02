@@ -40,6 +40,17 @@ java -jar .\secret-worker\build\libs\secret-worker-0.0.1-SNAPSHOT.jar --logssey.
 
 `Logssey/test-find-key`의 승인된 `fixtures/` 16개 파일을 실제 GitHub App으로 읽은 로컬 검증에서 작업은 `SUCCEEDED`로 종료됐고, 7개 완전 키·2개 불완전 후보·15개 발견 위치가 저장됐다. 합성 원문 28개 긴 토큰이 DB 덤프와 워커 로그에 없는 것도 확인했다.
 
+## Notion 페이지 수집·탐지 실행
+
+읽기 전용 Notion 연결(콘텐츠 읽기 권한만)의 토큰을 파일로 두고 `SECRET_NOTION_TOKEN_PATH`에 경로를 지정한다. 토큰 값은 Git, DB, 로그에 넣지 않는다. `SECRET_NOTION_PIPELINE_ENABLED=true`와 `SECRET_JOB_EXECUTOR_ENABLED=true`를 함께 설정해야 수집을 시작하며, Gitleaks 경로와 지문 키는 GitHub과 같은 설정을 쓴다.
+
+- 범위 하나는 승인된 페이지 하나다: `content_type='NOTION_PAGE_CONTENT'`, `approved_ref='notion://pages/<페이지 ID 32자리>'`, `history_limit='CURRENT_VERSION_ONLY'`. 하위 페이지, 데이터베이스, 첨부 파일, 이미지는 읽지 않는다. 예시는 `local/register-notion-test-schedule.sql`.
+- 호출은 고정 호스트 `api.notion.com`의 `GET /v1/pages/{id}`(버전·휴지통·웹 게시 여부)와 `GET /v1/pages/{id}/markdown` 두 가지뿐이다. 페이지 본문은 메모리에서 Gitleaks `stdin`으로 넘기고, DB에는 GitHub과 같이 HMAC, 마스킹 라벨, 위치, 규칙만 저장한다. 발견 위치는 `notion/pages/<id>`, 객체 버전은 `last_edited_time`이다.
+- 공유되지 않은 페이지(404), 권한 오류(401/403), 휴지통 페이지는 정상 0건이 아니라 `FAILED`와 `NOTION_*` 코드로 기록한다. 본문이 잘렸거나(`truncated`, `unknown_block_ids`) 탐지기가 찾은 위치를 정규화기가 키로 연결하지 못하면 `PARTIAL`과 `NOTION_CONTENT_TRUNCATED`/`NOTION_UNATTRIBUTED_FINDINGS`로 남긴다. 공용 정규화기는 `NAME=value` 형태만 키로 인정하므로, "노션 토큰: ntn_..."처럼 한글 문장이나 표에 적힌 키는 지금 이 코드로만 드러난다.
+- 페이지가 웹에 게시돼 있으면(`public_url` 존재) 위치마다 `ACCESS_SCOPE` 근거를 `BROAD`(`PUBLISHED_TO_WEB_CONFIRMED`)로 저장한다. 게시되지 않은 페이지는 워크스페이스 안에서 누가 읽는지 증명하지 못하므로 `UNKNOWN`으로 둔다.
+- 발견한 Notion 토큰은 `SECRET_NOTION_VALIDATION_ENABLED=true`일 때만 `NotionTokenValidator`가 고정 엔드포인트 `GET https://api.notion.com/v1/users/me`로 확인한다(`NOTION_GET_SELF`/`NOTION_SELF`). 200은 `VALID/AUTHENTICATED`, Notion의 `unauthorized` 401만 `INVALID/AUTHENTICATION_REJECTED`, 403·404는 `UNKNOWN/ACCESS_LIMITED`, 429·5xx·시간 초과는 재시도 가능한 `UNKNOWN`이다. 만료·폐기는 추측하지 않는다. 페이지 안의 AWS 키·GitHub 토큰은 기존 검증기 설정을 그대로 따른다.
+- 조치 후 수동 재검증(`REVALIDATE`)과 API의 수동 실행·연결 관리 화면은 아직 Notion을 지원하지 않는다.
+
 ## AWS 키 검증 어댑터
 
 `AwsCredentialValidator`는 메모리의 완전한 AWS access key ID·secret access key 쌍만 AWS STS `GetCallerIdentity`로 확인한다. `ASIA` 임시 키에는 session token도 필요하다. 호출은 발견한 키로 직접 서명하며 워커의 AWS 프로필이나 기본 자격 증명을 사용하지 않는다. STS 대상은 `us-east-1`의 공식 HTTPS 엔드포인트로 고정했다. 리소스 권한·실제 사용 여부는 이 결과로 판단하지 않는다.

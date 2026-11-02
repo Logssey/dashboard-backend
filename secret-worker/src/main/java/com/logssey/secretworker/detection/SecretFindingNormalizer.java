@@ -121,6 +121,7 @@ public final class SecretFindingNormalizer {
         List<Credential> result = new ArrayList<>();
         List<AwsCandidate> awsCandidates = new ArrayList<>();
         List<GitHubCandidate> githubCandidates = new ArrayList<>();
+        List<NotionCandidate> notionCandidates = new ArrayList<>();
         Set<Component> pairedSecrets = new HashSet<>();
         for (Component id : ids) {
             List<Component> eligibleSecrets = secrets.stream()
@@ -198,6 +199,8 @@ public final class SecretFindingNormalizer {
             result.add(normalized);
             if ("GITHUB".equals(issuer))
                 githubCandidates.add(new GitHubCandidate(normalized, token.value()));
+            if ("NOTION".equals(issuer))
+                notionCandidates.add(new NotionCandidate(normalized, token.value()));
         }
         return new Inspection(
                 connectionId,
@@ -205,7 +208,8 @@ public final class SecretFindingNormalizer {
                 List.copyOf(findings),
                 List.copyOf(result),
                 List.copyOf(awsCandidates),
-                List.copyOf(githubCandidates));
+                List.copyOf(githubCandidates),
+                List.copyOf(notionCandidates));
     }
 
     private Credential credential(long connectionId, String source, String issuer, String type,
@@ -368,7 +372,25 @@ public final class SecretFindingNormalizer {
             List<GitleaksFinding> detectorFindings,
             List<Credential> credentials,
             List<AwsCandidate> awsCandidates,
-            List<GitHubCandidate> githubCandidates) {
+            List<GitHubCandidate> githubCandidates,
+            List<NotionCandidate> notionCandidates) {
+        public Inspection(
+                long connectionId,
+                String sourceObjectRef,
+                List<GitleaksFinding> detectorFindings,
+                List<Credential> credentials,
+                List<AwsCandidate> awsCandidates,
+                List<GitHubCandidate> githubCandidates) {
+            this(
+                    connectionId,
+                    sourceObjectRef,
+                    detectorFindings,
+                    credentials,
+                    awsCandidates,
+                    githubCandidates,
+                    List.of());
+        }
+
         public Inspection(
                 long connectionId,
                 String sourceObjectRef,
@@ -389,6 +411,7 @@ public final class SecretFindingNormalizer {
             credentials = List.copyOf(credentials);
             awsCandidates = List.copyOf(awsCandidates);
             githubCandidates = List.copyOf(githubCandidates);
+            notionCandidates = List.copyOf(notionCandidates);
         }
         @Override public String toString() {
             return "Inspection[credentialCount=" + credentials.size()
@@ -417,6 +440,30 @@ public final class SecretFindingNormalizer {
         @Override
         public String toString() {
             return "GitHubCandidate[credentialType=" + credential.credentialType() + "]";
+        }
+    }
+
+    /** In-memory only; safe summary is the sole permitted string representation. */
+    public static final class NotionCandidate {
+        private final Credential credential;
+        private final String token;
+
+        private NotionCandidate(Credential credential, String token) {
+            this.credential = credential;
+            this.token = token;
+        }
+
+        public Credential credential() {
+            return credential;
+        }
+
+        public String token() {
+            return token;
+        }
+
+        @Override
+        public String toString() {
+            return "NotionCandidate[credentialType=" + credential.credentialType() + "]";
         }
     }
 

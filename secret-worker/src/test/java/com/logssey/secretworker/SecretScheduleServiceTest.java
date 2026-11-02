@@ -122,6 +122,29 @@ class SecretScheduleServiceTest {
     }
 
     @Test
+    void notionPageNeedsCollectorOptInAndOneExactApprovedPage() {
+        long notion = connection("NOTION", "ACTIVE", pastDue(), true);
+        jdbc.update("""
+                UPDATE secret_connection_scopes
+                SET content_type = 'NOTION_PAGE_CONTENT',
+                    approved_ref = 'notion://pages/0123456789abcdef0123456789abcdef',
+                    history_limit = 'CURRENT_VERSION_ONLY'
+                WHERE connection_id = ?
+                """, notion);
+        assertThat(service.reserveDueJobs()).isZero();
+
+        var optedIn = new SecretScheduleService(new SecretScheduleRepository(jdbc, false, true),
+                properties(true, 100), transactions);
+        jdbc.update("UPDATE secret_connection_scopes SET approved_ref = 'notion://databases/0123456789abcdef0123456789abcdef' WHERE connection_id = ?", notion);
+        assertThat(optedIn.reserveDueJobs()).isZero();
+        jdbc.update("UPDATE secret_connection_scopes SET approved_ref = 'notion://pages/0123456789abcdef0123456789abcdef', history_limit = 'ALL_HISTORY' WHERE connection_id = ?", notion);
+        assertThat(optedIn.reserveDueJobs()).isZero();
+        jdbc.update("UPDATE secret_connection_scopes SET history_limit = 'CURRENT_VERSION_ONLY' WHERE connection_id = ?", notion);
+        assertThat(optedIn.reserveDueJobs()).isEqualTo(1);
+        assertThat(count("secret_jobs")).isEqualTo(1);
+    }
+
+    @Test
     void regionalMetadataScopesStayUnscheduledWhenAwsCollectionIsDisabled() {
         long aws = connection("AWS", "ACTIVE", pastDue(), true);
         jdbc.update("UPDATE secret_connections SET auth_ref = 'aws-profile:test' WHERE connection_id = ?", aws);
