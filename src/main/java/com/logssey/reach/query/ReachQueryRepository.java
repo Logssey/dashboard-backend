@@ -20,18 +20,23 @@ import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Reach 조회 SQL (API-04 목록, API-05 상세, API-08 요약).
- * 기준 범위는 대상마다 최신 SUCCEEDED 스캔이다 (DB 스키마 5절). 목록과 요약이 같은 CURRENT_FINDINGS를 써서 숫자가 맞는다
+ * 기준 범위는 대상마다 PR이 아닌 최신 SUCCEEDED 스캔이다 (DB 스키마 5절, ARD SR-09). 목록과 요약이 같은 CURRENT_FINDINGS를 써서 숫자가 맞는다
  */
 @Repository
 public class ReachQueryRepository {
-    /** 대상마다 최신 SUCCEEDED 스캔의 Finding + 현재 판정 + 검토 (DB 스키마 5절). 목록과 요약이 같이 쓴다. */
+    /**
+     * 대상마다 최신 SUCCEEDED 스캔의 Finding + 현재 판정 + 검토 (DB 스키마 5절). 목록과 요약이 같이 쓴다.
+     * PR 검사의 스캔은 그 PR의 결과로만 두고 넣지 않는다 (ARD SR-09).
+     * Finding은 last_scan_id가 아니라 그 스캔의 도구 판정으로 잇는다. 같은 레포 커밋을 PR로 다시 스캔하면
+     * last_scan_id가 PR 스캔으로 바뀌어도 기준 스캔의 Finding이 빠지지 않는다 (API-03 counts와 같은 기준)
+     */
     static final String CURRENT_FINDINGS ="""
      WITH latest AS (
-                SELECT DISTINCT ON (target_id) scan_id
-                FROM reach_scans WHERE scan_status = 'SUCCEEDED'
+                SELECT DISTINCT ON (target_id) target_id, scan_id
+                FROM reach_scans WHERE scan_status = 'SUCCEEDED' AND trigger_type <> 'PR'
                 ORDER BY target_id, finished_at DESC, scan_id DESC
             )
-            SELECT f.finding_id, f.last_scan_id, f.target_id, f.purl, f.component_name, f.component_version,
+            SELECT f.finding_id, l.scan_id AS last_scan_id, f.target_id, f.purl, f.component_name, f.component_version,
                    f.vulnerability_id, f.severity, f.fixed_versions, f.deployment, f.first_seen_at,
                    v.status, v.method, v.summary, v.not_analyzed_reason,
                    r.review_state, r.status AS review_status, r.proposal::text AS proposal, r.reset_reason,
@@ -41,7 +46,10 @@ public class ReachQueryRepository {
                    COALESCE(CASE WHEN f.vulnerability_id ~ '^CVE-\\d+-\\d+$' THEN split_part(f.vulnerability_id, '-', 2)::int END, 2147483647) AS cve_year,
                    COALESCE(CASE WHEN f.vulnerability_id ~ '^CVE-\\d+-\\d+$' THEN split_part(f.vulnerability_id, '-', 3)::int END, 2147483647) AS cve_number
             FROM reach_findings f
-            JOIN latest l ON l.scan_id = f.last_scan_id
+            JOIN latest l ON l.target_id = f.target_id
+             AND EXISTS (SELECT 1 FROM reach_verdicts lv
+                         WHERE lv.finding_id = f.finding_id AND lv.scan_id = l.scan_id
+                           AND lv.method IS DISTINCT FROM 'MANUAL')
             JOIN reach_verdicts v ON v.finding_id = f.finding_id AND v.is_current
             JOIN reach_reviews r ON r.finding_id = f.finding_id
     """;

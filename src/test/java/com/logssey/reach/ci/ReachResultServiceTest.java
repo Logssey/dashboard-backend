@@ -239,6 +239,30 @@ class ReachResultServiceTest {
     }
 
     @Test
+    void prResultsNeitherCarryNorBecomeTheSource() {
+        var evidence = List.of(map("kind", "NOTE", "summary", "no path"));
+        var a = item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence);
+        upload(check("a"), a);
+        long image = finding("a");
+        long imageScan = jdbc.queryForObject("SELECT last_scan_id FROM reach_findings WHERE finding_id = ?", Long.class, image);
+        confirm(image, "UNREACHABLE", 1);
+
+        // PR 검사는 같은 서비스(API)여도 이어받지 않는다 (ARD SR-09)
+        upload(prCheck("c"), a);
+        long pr = jdbc.queryForObject("SELECT max(finding_id) FROM reach_findings WHERE component_name = 'a'", Long.class);
+        assertThat(pr).isNotEqualTo(image);
+        assertThat(review(pr)).isEqualTo("UNREVIEWED:1:null");
+        assertThat(history(pr)).isEmpty();
+
+        // PR Finding을 확정해 가장 최근 검토가 되어도, 다음 이미지는 PR이 아닌 Finding에서 이어받는다
+        confirm(pr, "UNREACHABLE", 1);
+        upload(check("b"), a);
+        long next = jdbc.queryForObject("SELECT max(finding_id) FROM reach_findings WHERE component_name = 'a'", Long.class);
+        assertThat(jdbc.queryForMap("SELECT carried_from_finding_id, carried_from_scan_id FROM reach_reviews WHERE finding_id = ?", next))
+                .containsEntry("carried_from_finding_id", image).containsEntry("carried_from_scan_id", imageScan);
+    }
+
+    @Test
     void humanVerdictOnANotAnalyzedFindingStaysCurrentAndIsCarried() {
         var notAnalyzed = item("a", "CVE-2026-1", "HIGH", "NOT_ANALYZED", null, "UNANALYZED_COPY", List.of());
         upload(check("a"), notAnalyzed);
@@ -284,6 +308,15 @@ class ReachResultServiceTest {
         var target = new ReachTargetRequest("IMAGE", null, null,
                 new ReachTargetRequest.Image("logssey/reused-api", "sha256:" + tag.repeat(64)));
         var request = new ReachCiCheckRequest("IMAGE_BUILD", "service-backend", null, null, target, null, null, null);
+        return checks.create("admin", "key-" + System.nanoTime(), request).check().id();
+    }
+
+    /** PR 검사. service-backend 레포라 app이 API로 정해져 check()의 이미지와 같은 서비스다 */
+    private long prCheck(String tag) {
+        String commit = tag.repeat(40);
+        var target = new ReachTargetRequest("REPO", null, new ReachTargetRequest.Repo("service-backend", commit, null), null);
+        var request = new ReachCiCheckRequest("PR", "service-backend", commit,
+                new ReachCiCheckRequest.PullRequest(1, "main", "feature/x"), target, null, null, null);
         return checks.create("admin", "key-" + System.nanoTime(), request).check().id();
     }
 

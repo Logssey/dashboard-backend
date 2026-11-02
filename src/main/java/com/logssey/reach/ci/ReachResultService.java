@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.zip.GZIPInputStream;
 
 import com.logssey.common.error.ApiException;
@@ -116,14 +117,16 @@ public class ReachResultService {
 
     /**
      * 검토 처리와 현재 판정 정하기 (DB 스키마 4절 5단계).
-     * 1. 새 Finding이면 같은 app·purl·CVE의 가장 최근 다른 Finding에서 사람 판정을 이어받는다(CARRIED). 없으면 검토 전으로 만든다
+     * 1. 새 Finding이면 같은 app·purl·CVE의 가장 최근 다른 Finding에서 사람 판정을 이어받는다(CARRIED). 없으면 검토 전으로 만든다.
+     *    PR 검사의 결과는 그 PR의 결과로만 두고 이어받지 않는다 (ARD SR-09)
      * 2. 사람 판정이 남아 있으면 그 검토가 본 도구 판정과 비교해 상태가 다르면 VERDICT_CHANGED, 근거 해시가 다르면 EVIDENCE_CHANGED로 되돌린다(RESET)
      * 3. 사람 판정이 남았고 새 도구 판정이 다시 NOT_ANALYZED면 MANUAL 판정이 현재 판정이다(API-06 예외). 아니면 새 도구 판정이 현재 판정이다
      */
     private void review(ReachResultRepository.CheckState check, long scanId, Row row, long findingId,
                         boolean inserted, long verdictId) {
         if (inserted) {
-            var source = repository.carrySource(check.app(), row.purl(), row.vulnerabilityId(), findingId);
+            var source = "PR".equals(check.mode()) ? Optional.<ReachResultRepository.CarrySource>empty()
+                    : repository.carrySource(check.app(), row.purl(), row.vulnerabilityId(), findingId);
             if (source.isEmpty()) {
                 repository.insertReview(findingId, verdictId, row.proposal());
                 repository.makeCurrent(findingId, verdictId);

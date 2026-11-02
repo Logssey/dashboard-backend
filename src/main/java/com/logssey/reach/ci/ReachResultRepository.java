@@ -28,13 +28,13 @@ public class ReachResultRepository {
                 .optional();
     }
 
-    /** 검사와 그 스캔. app은 검토 이어받기 키다 (DB 스키마 3-2: MVP의 서비스 단위) */
-    record CheckState(long scanId, boolean uploaded, String scanStatus, long targetId, String app) {}
+    /** 검사와 그 스캔. app은 검토 이어받기 키다 (DB 스키마 3-2: MVP의 서비스 단위). mode가 PR이면 이어받지 않는다 (ARD SR-09) */
+    record CheckState(long scanId, boolean uploaded, String scanStatus, long targetId, String app, String mode) {}
 
     /** 같은 검사에 동시에 올리면 두 번째 요청은 첫 트랜잭션이 끝날 때까지 기다렸다가 uploaded를 본다 */
     Optional<CheckState> lockCheck(long checkId) {
         return jdbcClient.sql("""
-                        SELECT c.scan_id, c.results_uploaded_at IS NOT NULL AS uploaded, s.scan_status, s.target_id, t.app
+                        SELECT c.scan_id, c.results_uploaded_at IS NOT NULL AS uploaded, s.scan_status, s.target_id, t.app, c.mode
                         FROM reach_ci_checks c
                         JOIN reach_scans s ON s.scan_id = c.scan_id
                         JOIN reach_targets t ON t.target_id = s.target_id
@@ -43,7 +43,7 @@ public class ReachResultRepository {
                         """)
                 .param("checkId", checkId)
                 .query((rs, i) -> new CheckState(rs.getLong("scan_id"), rs.getBoolean("uploaded"),
-                        rs.getString("scan_status"), rs.getLong("target_id"), rs.getString("app")))
+                        rs.getString("scan_status"), rs.getLong("target_id"), rs.getString("app"), rs.getString("mode")))
                 .optional();
     }
 
@@ -220,15 +220,22 @@ public class ReachResultRepository {
 
     /**
      * 같은 app·purl·취약점 ID를 가진 가장 최근 다른 Finding (DB 스키마 4절 5단계). 그 Finding이 검토 전이면 이어받지 않는다.
-     * 이미지 digest가 바뀌거나 커밋이 바뀌면 대상이 달라 Finding이 새로 생기는데, 그때 사람 검토를 다시 하지 않게 하려는 것이다
+     * 이미지 digest가 바뀌거나 커밋이 바뀌면 대상이 달라 Finding이 새로 생기는데, 그때 사람 검토를 다시 하지 않게 하려는 것이다.
+     * PR 스캔에서만 나온 Finding은 원본이 되지 않고, scanId는 그 Finding이 나온 PR이 아닌 마지막 스캔이다 (ARD SR-09)
      */
     Optional<CarrySource> carrySource(String app, String purl, String vulnerabilityId, long findingId) {
         return jdbcClient.sql("""
-                        SELECT f.finding_id, f.last_scan_id, r.review_state, r.status, r.note, r.reviewer_user_id,
+                        SELECT f.finding_id, src.scan_id, r.review_state, r.status, r.note, r.reviewer_user_id,
                                r.reviewed_at, r.base_verdict_id
                         FROM reach_findings f
                         JOIN reach_targets t ON t.target_id = f.target_id
                         JOIN reach_reviews r ON r.finding_id = f.finding_id
+                        JOIN LATERAL (SELECT v.scan_id
+                                      FROM reach_verdicts v JOIN reach_scans s ON s.scan_id = v.scan_id
+                                      WHERE v.finding_id = f.finding_id AND s.trigger_type <> 'PR'
+                                        AND v.method IS DISTINCT FROM 'MANUAL'
+                                      ORDER BY s.finished_at DESC NULLS LAST, s.scan_id DESC
+                                      LIMIT 1) src ON true
                         WHERE t.app = :app AND f.purl = :purl AND f.vulnerability_id = :vulnerabilityId
                           AND f.finding_id <> :findingId
                         ORDER BY f.last_seen_at DESC, f.finding_id DESC
@@ -238,7 +245,7 @@ public class ReachResultRepository {
                 .param("purl", purl)
                 .param("vulnerabilityId", vulnerabilityId)
                 .param("findingId", findingId)
-                .query((rs, i) -> new CarrySource(rs.getLong("finding_id"), rs.getLong("last_scan_id"),
+                .query((rs, i) -> new CarrySource(rs.getLong("finding_id"), rs.getLong("scan_id"),
                         rs.getString("review_state"), rs.getString("status"), rs.getString("note"),
                         rs.getLong("reviewer_user_id"), rs.getObject("reviewed_at", OffsetDateTime.class),
                         rs.getObject("base_verdict_id", Long.class)))
