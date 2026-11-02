@@ -1,0 +1,373 @@
+package com.logssey.reach.ci;
+
+import com.logssey.common.error.ApiException;
+import com.logssey.common.error.ErrorCode;
+import com.logssey.reach.review.ReachReviewRepository;
+import com.logssey.reach.review.ReachReviewRequest;
+import com.logssey.reach.review.ReachReviewService;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.zip.GZIPOutputStream;
+
+import org.flywaydb.core.Flyway;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.testcontainers.postgresql.PostgreSQLContainer;
+import tools.jackson.databind.json.JsonMapper;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+class ReachResultServiceTest {
+
+    private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:18.6");
+    private static final JsonMapper MAPPER = JsonMapper.builder().build();
+    private static JdbcTemplate jdbc;
+    private static DataSourceTransactionManager manager;
+    private ReachResultService service;
+    private ReachCiCheckService checks;
+    private ReachReviewService reviews;
+
+    @BeforeAll
+    static void startDatabase() {
+        POSTGRES.start();
+        var datasource = new DriverManagerDataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
+        Flyway.configure().dataSource(datasource).load().migrate();   // 버전 번호를 적지 않는다
+        jdbc = new JdbcTemplate(datasource);
+        manager = new DataSourceTransactionManager(datasource);      // 업로드는 트랜잭션 되돌리기까지 본다
+    }
+
+    @AfterAll
+    static void stopDatabase() {
+        POSTGRES.stop();
+    }
+
+    @BeforeEach
+    void reset() {
+        jdbc.execute("TRUNCATE reach_ci_checks, reach_review_history, reach_reviews, reach_evidence, reach_verdicts, "
+                + "reach_findings, reach_scans, reach_targets, dashboard_users RESTART IDENTITY CASCADE");
+        jdbc.update("INSERT INTO dashboard_users (login_id, password_hash, display_name, role) "
+                + "VALUES ('admin', 'h', 'Admin', 'ADMIN')");
+        var client = JdbcClient.create(jdbc);
+        service = new ReachResultService(new ReachResultRepository(client), manager);
+        checks = new ReachCiCheckService(new ReachCiCheckRepository(client));
+        reviews = new ReachReviewService(new ReachReviewRepository(client));
+    }
+
+    @Test
+    void requiresAdminGzipAndSizeLimits() {
+        long check = check("a");
+        byte[] body = gzip(bundle(List.of()));
+        assertError(() -> service.upload(null, check, "gzip", body), ErrorCode.UNAUTHENTICATED);
+        assertError(() -> service.upload("nobody", check, "gzip", body), ErrorCode.FORBIDDEN);
+        assertError(() -> service.upload("admin", check, null, body), ErrorCode.INVALID_INPUT);
+        assertError(() -> service.upload("admin", check, "gzip", "{}".getBytes()), ErrorCode.INVALID_INPUT);   // gzip 아님
+        assertError(() -> service.upload("admin", check, "gzip", gzip("{not json")), ErrorCode.INVALID_INPUT);
+        assertError(() -> service.upload("admin", check, "gzip", new byte[ReachResultService.COMPRESSED_MAX + 1]),
+                ErrorCode.PAYLOAD_TOO_LARGE);
+        // 0만 채운 큰 본문은 아주 작게 압축된다. 풀었을 때 한도를 넘으면 413
+        assertError(() -> service.upload("admin", check, "gzip", gzip(new byte[ReachResultService.UNCOMPRESSED_MAX + 1])),
+                ErrorCode.PAYLOAD_TOO_LARGE);
+        assertError(() -> service.upload("admin", 999, "gzip", body), ErrorCode.NOT_FOUND);
+        assertThat(scanStatus(check)).isEqualTo("QUEUED");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")   // 테스트 묶음을 Map으로 만들어서 verdict를 꺼낼 때 형변환한다
+    void storesFindingsVerdictsEvidenceAndFinishesTheScan() {
+        long check = check("a");
+        var unreachable = item("jackson-core", "CVE-2026-89407", "high", "unreachable", "rule", null,
+                List.of(map("kind", "fact", "factId", "F-dto.floating.tokens", "value", false, "checkedCount", 97,
+                                "summary", "tokens 97개에 실수형 필드 없음"),
+                        map("kind", "rule", "ruleId", "RULE-CVE-2026-89407", "matchedCondition", "unreachable",
+                                "summary", "도달 불가 조건")));
+        var osPackage = item("zlib", "CVE-2026-85091", "medium", "not_analyzed", null, "os_package", List.of());
+        osPackage.put("component", map("purl", "pkg:apk/alpine/zlib@1.3.2-r0", "name", "zlib", "version", "1.3.2-r0"));
+        osPackage.put("proposal", map("status", "unreachable", "summary", "앱이 압축을 쓰지 않는다"));
+        var reachable = item("tomcat-embed-core", "CVE-2026-65182", "critical", "reachable", "callgraph", null,
+                List.of(map("kind", "path", "path", List.of("A.main", "B.run"), "pathTarget", "vuln_function",
+                        "candidate", true, "summary", "후보 경로")));
+        reachable.put("verdict", withCallgraph((Map<String, Object>) reachable.get("verdict")));
+
+        var response = service.upload("admin", check, "gzip", gzip(bundle(List.of(unreachable, osPackage, reachable))));
+        assertThat(response.scanStatus()).isEqualTo("SUCCEEDED");
+        long scanId = response.scanId();
+        assertThat(jdbc.queryForMap("SELECT scan_status, started_at IS NOT NULL AS started, finished_at IS NOT NULL AS finished, "
+                + "tools->>'trivy' AS trivy, stages->0->>'name' AS stage FROM reach_scans WHERE scan_id = ?", scanId))
+                .containsEntry("scan_status", "SUCCEEDED").containsEntry("started", true).containsEntry("finished", true)
+                .containsEntry("trivy", "0.69.3").containsEntry("stage", "SBOM");
+
+        // 소문자 열거값은 대문자로, ecosystem은 purl 타입으로 채운다
+        assertThat(jdbc.queryForMap("SELECT severity, ecosystem, sources[1] AS source, fixed_versions[1] AS fixed, deployment "
+                + "FROM reach_findings WHERE vulnerability_id = 'CVE-2026-85091'"))
+                .containsEntry("severity", "MEDIUM").containsEntry("ecosystem", "apk").containsEntry("source", "TRIVY")
+                .containsEntry("fixed", "1.0.1").containsEntry("deployment", "UNKNOWN");
+        assertThat(jdbc.queryForList("SELECT v.status || ':' || COALESCE(v.method, v.not_analyzed_reason) FROM reach_verdicts v "
+                + "WHERE v.is_current ORDER BY v.finding_id", String.class))
+                .containsExactly("UNREACHABLE:RULE", "NOT_ANALYZED:OS_PACKAGE", "REACHABLE:CALLGRAPH");
+
+        // 근거는 배열 순서로 order를 매기고, 칸이 아닌 필드는 detail에 API 이름 그대로 둔다
+        var evidence = jdbc.queryForList("""
+                SELECT e.ord, e.kind, e.fact_id, e.rule_id, e.detail::text AS detail
+                FROM reach_evidence e JOIN reach_verdicts v ON v.verdict_id = e.verdict_id
+                JOIN reach_findings f ON f.finding_id = v.finding_id
+                WHERE f.vulnerability_id = 'CVE-2026-89407' ORDER BY e.ord
+                """);
+        assertThat(evidence).hasSize(2);
+        assertThat(evidence.get(0)).containsEntry("kind", "FACT").containsEntry("fact_id", "F-dto.floating.tokens");
+        assertThat((String) evidence.get(0).get("detail")).contains("\"checkedCount\": 97").doesNotContain("summary");
+        assertThat((String) evidence.get(1).get("detail")).contains("\"matchedCondition\": \"UNREACHABLE\"");
+        assertThat(jdbc.queryForObject("SELECT callgraph->>'entryStage' FROM reach_verdicts v JOIN reach_findings f "
+                + "ON f.finding_id = v.finding_id WHERE f.vulnerability_id = 'CVE-2026-65182'", String.class)).isEqualTo("1");
+
+        // 새 Finding은 검토 전 version 1, 처음 행이라 이력이 없다. 제안은 검토 전 행에 둔다
+        assertThat(jdbc.queryForList("SELECT review_state || ':' || version FROM reach_reviews", String.class))
+                .containsOnly("UNREVIEWED:1");
+        assertThat(jdbc.queryForObject("SELECT proposal->>'status' FROM reach_reviews r JOIN reach_findings f "
+                + "ON f.finding_id = r.finding_id WHERE f.vulnerability_id = 'CVE-2026-85091'", String.class))
+                .isEqualTo("UNREACHABLE");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM reach_review_history", Long.class)).isZero();
+
+        // 같은 검사에 다시 올리면 409
+        assertError(() -> service.upload("admin", check, "gzip", gzip(bundle(List.of()))), ErrorCode.CONFLICT);
+    }
+
+    @Test
+    void rejectsBundlesThatBreakTheRulesWithoutSavingAnything() {
+        long check = check("a");
+        var noEvidence = item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "RULE", null, List.of());
+        var notAnalyzedWithMethod = item("a", "CVE-2026-1", "HIGH", "NOT_ANALYZED", "RULE", "OS_PACKAGE", List.of());
+        var manual = item("a", "CVE-2026-1", "HIGH", "REACHABLE", "MANUAL", null, List.of());
+        var badSeverity = item("a", "CVE-2026-1", "SEVERE", "REACHABLE", "CALLGRAPH", null, List.of());
+        var factWithoutId = item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "RULE", null,
+                List.of(map("kind", "FACT", "summary", "x")));
+        var ok = item("a", "CVE-2026-1", "HIGH", "REACHABLE", "CALLGRAPH", null, List.of());
+
+        for (var items : List.of(List.of(noEvidence), List.of(notAnalyzedWithMethod), List.of(manual),
+                List.of(badSeverity), List.of(factWithoutId), List.of(ok, ok))) {   // 마지막은 같은 purl × CVE 두 번
+            assertError(() -> service.upload("admin", check, "gzip", gzip(bundle(items))), ErrorCode.INVALID_INPUT);
+        }
+        var noSbom = bundle(List.of(ok));
+        noSbom.remove("sbom");
+        assertError(() -> service.upload("admin", check, "gzip", gzip(noSbom)), ErrorCode.INVALID_INPUT);
+
+        assertThat(scanStatus(check)).isEqualTo("QUEUED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM reach_findings", Long.class)).isZero();
+    }
+
+    @Test
+    void failureBundleEndsTheScanAsFailed() {
+        long check = check("a");
+        var failed = map("tools", map("cdxgen", "11.0.0"),
+                "stages", List.of(map("name", "sbom", "status", "failed", "durationSeconds", 12)),
+                "failure", map("code", "BUILD_FAILED", "stage", "sbom", "message", "Gradle build failed"));
+        var response = service.upload("admin", check, "gzip", gzip(failed));
+        assertThat(response.scanStatus()).isEqualTo("FAILED");
+        assertThat(jdbc.queryForMap("SELECT scan_status, failure_code, failure_stage, finished_at IS NOT NULL AS finished "
+                + "FROM reach_scans WHERE scan_id = ?", response.scanId()))
+                .containsEntry("scan_status", "FAILED").containsEntry("failure_code", "BUILD_FAILED")
+                .containsEntry("failure_stage", "SBOM").containsEntry("finished", true);
+        assertError(() -> service.upload("admin", check, "gzip", gzip(failed)), ErrorCode.CONFLICT);
+    }
+
+    @Test
+    void nextScanOfTheSameTargetKeepsAnUnchangedReviewAndResetsAChangedOne() {
+        var evidence = List.of(map("kind", "NOTE", "summary", "no path"));
+        upload(check("a"), item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence),
+                item("b", "CVE-2026-2", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence));
+        long a = finding("a");
+        long b = finding("b");
+        var firstSeen = jdbc.queryForObject("SELECT first_seen_at FROM reach_findings WHERE finding_id = ?", Object.class, a);
+        confirm(a, "UNREACHABLE", 1);
+        confirm(b, "UNREACHABLE", 1);
+
+        // 같은 이미지를 다시 스캔: a는 판정·근거가 같고, b는 근거만 바뀌었다
+        long second = upload(check("a"), item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence),
+                item("b", "CVE-2026-2", "HIGH", "UNREACHABLE", "CALLGRAPH", null,
+                        List.of(map("kind", "NOTE", "summary", "another path checked"))));
+        assertThat(finding("a")).isEqualTo(a);   // 같은 Finding을 갱신한다
+        assertThat(jdbc.queryForMap("SELECT last_scan_id, first_seen_at FROM reach_findings WHERE finding_id = ?", a))
+                .containsEntry("last_scan_id", second).containsEntry("first_seen_at", firstSeen);
+        assertThat(review(a)).isEqualTo("CONFIRMED:2:null");
+        assertThat(review(b)).isEqualTo("UNREVIEWED:3:EVIDENCE_CHANGED");
+        assertThat(jdbc.queryForObject("SELECT scan_id FROM reach_verdicts WHERE finding_id = ? AND is_current", Long.class, a))
+                .isEqualTo(second);
+
+        // 판정 상태가 바뀌면 VERDICT_CHANGED. 사람 판정은 이력의 앞 version에 남는다
+        upload(check("a"), item("a", "CVE-2026-1", "HIGH", "REACHABLE", "CALLGRAPH", null, evidence));
+        assertThat(review(a)).isEqualTo("UNREVIEWED:3:VERDICT_CHANGED");
+        assertThat(history(a)).containsExactly("2:HUMAN:CONFIRMED", "3:RESET:UNREVIEWED");
+    }
+
+    @Test
+    void newImageOfTheSameAppCarriesTheReviewAndResetsItWhenTheVerdictChanged() {
+        var evidence = List.of(map("kind", "NOTE", "summary", "no path"));
+        upload(check("a"), item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence),
+                item("b", "CVE-2026-2", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence));
+        long oldA = finding("a");
+        long oldB = finding("b");
+        long oldScan = jdbc.queryForObject("SELECT last_scan_id FROM reach_findings WHERE finding_id = ?", Long.class, oldA);
+        confirm(oldA, "UNREACHABLE", 1);
+        confirm(oldB, "UNREACHABLE", 1);
+
+        // 새 digest라 대상이 다르다. a는 같은 판정이라 이어받고, b는 판정이 바뀌어 이어받은 뒤 되돌린다
+        upload(check("b"), item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence),
+                item("b", "CVE-2026-2", "HIGH", "REACHABLE", "CALLGRAPH", null, evidence));
+        long newA = jdbc.queryForObject("SELECT max(finding_id) FROM reach_findings WHERE component_name = 'a'", Long.class);
+        long newB = jdbc.queryForObject("SELECT max(finding_id) FROM reach_findings WHERE component_name = 'b'", Long.class);
+        assertThat(newA).isNotEqualTo(oldA);
+        assertThat(jdbc.queryForMap("SELECT review_state, status, note, reviewer_user_id, carried_from_finding_id, "
+                + "carried_from_scan_id, reviewed_at = (SELECT reviewed_at FROM reach_reviews WHERE finding_id = ?) AS same_time "
+                + "FROM reach_reviews WHERE finding_id = ?", oldA, newA))
+                .containsEntry("review_state", "CONFIRMED").containsEntry("status", "UNREACHABLE")
+                .containsEntry("note", "checked").containsEntry("reviewer_user_id", 1L)
+                .containsEntry("carried_from_finding_id", oldA).containsEntry("carried_from_scan_id", oldScan)
+                .containsEntry("same_time", true);
+        assertThat(history(newA)).containsExactly("1:CARRIED:CONFIRMED");
+        assertThat(review(newB)).isEqualTo("UNREVIEWED:2:VERDICT_CHANGED");
+        assertThat(history(newB)).containsExactly("1:CARRIED:CONFIRMED", "2:RESET:UNREVIEWED");
+    }
+
+    @Test
+    void humanVerdictOnANotAnalyzedFindingStaysCurrentAndIsCarried() {
+        var notAnalyzed = item("a", "CVE-2026-1", "HIGH", "NOT_ANALYZED", null, "UNANALYZED_COPY", List.of());
+        upload(check("a"), notAnalyzed);
+        long a = finding("a");
+        confirm(a, "UNREACHABLE", 1);   // API-06 예외: MANUAL 판정이 현재 판정이 된다
+        long manual = currentVerdict(a);
+
+        upload(check("a"), notAnalyzed);   // 다시 NOT_ANALYZED → MANUAL 그대로
+        assertThat(currentVerdict(a)).isEqualTo(manual);
+        assertThat(review(a)).isEqualTo("CONFIRMED:2:null");
+
+        upload(check("b"), notAnalyzed);   // 새 이미지로 이어받으면 그 Finding에도 MANUAL 판정을 만든다
+        long newA = jdbc.queryForObject("SELECT max(finding_id) FROM reach_findings", Long.class);
+        assertThat(jdbc.queryForMap("SELECT status, method, created_by_user_id, summary FROM reach_verdicts "
+                + "WHERE finding_id = ? AND is_current", newA))
+                .containsEntry("status", "UNREACHABLE").containsEntry("method", "MANUAL")
+                .containsEntry("created_by_user_id", 1L).containsEntry("summary", "checked");
+    }
+
+    @Test
+    void serverErrorRollsBackTheResultsAndLeavesTheScanFailed() {
+        var broken = new ReachResultRepository(JdbcClient.create(jdbc)) {
+            @Override
+            void succeedScan(long scanId) {
+                throw new IllegalStateException("boom");
+            }
+        };
+        service = new ReachResultService(broken, manager);
+        long check = check("a");
+        byte[] body = gzip(bundle(List.of(item("a", "CVE-2026-1", "HIGH", "REACHABLE", "CALLGRAPH", null, List.of()))));
+        assertThatThrownBy(() -> service.upload("admin", check, "gzip", body)).isInstanceOf(IllegalStateException.class);
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM reach_findings", Long.class)).isZero();
+        assertThat(jdbc.queryForMap("SELECT s.scan_status, s.failure_code, s.failure_stage FROM reach_scans s "
+                + "JOIN reach_ci_checks c ON c.scan_id = s.scan_id WHERE c.check_id = ?", check))
+                .containsEntry("scan_status", "FAILED").containsEntry("failure_code", "INTERNAL_ERROR")
+                .containsEntry("failure_stage", "REPORT");
+        assertError(() -> service.upload("admin", check, "gzip", body), ErrorCode.CONFLICT);
+    }
+
+    /** 이미지 digest가 다르면 대상이 다르다. 같은 tag면 같은 대상의 새 스캔이다 */
+    private long check(String tag) {
+        var target = new ReachTargetRequest("IMAGE", null, null,
+                new ReachTargetRequest.Image("logssey/reused-api", "sha256:" + tag.repeat(64)));
+        var request = new ReachCiCheckRequest("IMAGE_BUILD", "service-backend", null, null, target, null, null, null);
+        return checks.create("admin", "key-" + System.nanoTime(), request).check().id();
+    }
+
+    /** 올린 뒤 스캔 id */
+    @SafeVarargs
+    private long upload(long check, Map<String, Object>... items) {
+        return service.upload("admin", check, "gzip", gzip(bundle(List.of(items)))).scanId();
+    }
+
+    /** API-06으로 사람이 확정한다 (base_verdict_id·MANUAL·이력을 실제 API처럼 남긴다) */
+    private void confirm(long findingId, String status, int version) {
+        reviews.save("admin", findingId, new ReachReviewRequest("CONFIRMED", status, "checked", null, version));
+    }
+
+    private static long finding(String component) {
+        return jdbc.queryForObject("SELECT min(finding_id) FROM reach_findings WHERE component_name = ?", Long.class, component);
+    }
+
+    private static long currentVerdict(long findingId) {
+        return jdbc.queryForObject("SELECT verdict_id FROM reach_verdicts WHERE finding_id = ? AND is_current", Long.class, findingId);
+    }
+
+    private static String scanStatus(long checkId) {
+        return jdbc.queryForObject("SELECT s.scan_status FROM reach_scans s JOIN reach_ci_checks c ON c.scan_id = s.scan_id "
+                + "WHERE c.check_id = ?", String.class, checkId);
+    }
+
+    private static String review(long findingId) {
+        return jdbc.queryForObject("SELECT review_state || ':' || version || ':' || COALESCE(reset_reason, 'null') "
+                + "FROM reach_reviews WHERE finding_id = ?", String.class, findingId);
+    }
+
+    private static List<String> history(long findingId) {
+        return jdbc.queryForList("SELECT version || ':' || change_kind || ':' || review_state "
+                + "FROM reach_review_history WHERE finding_id = ? ORDER BY version", String.class, findingId);
+    }
+
+    /** 러너가 올리는 묶음. sbom·matches·reachResult는 저장하지 않아 모양만 맞춘다 */
+    private static Map<String, Object> bundle(List<Map<String, Object>> items) {
+        return map("sbom", map("bomFormat", "CycloneDX"), "matches", map("trivy", map()), "verdicts", items,
+                "reachResult", map("facts", List.of()), "tools", map("trivy", "0.69.3", "reach", "v0"),
+                "analysis", map("appClasses", 412),
+                "stages", List.of(map("name", "sbom", "status", "succeeded", "durationSeconds", 8),
+                        map("name", "L2", "status", "SUCCEEDED", "durationSeconds", 41)));
+    }
+
+    /** Finding 한 항목. purl은 component 이름으로 만든다 */
+    private static Map<String, Object> item(String component, String cve, String severity, String status, String method,
+                                            String reason, List<Map<String, Object>> evidence) {
+        return map("component", map("purl", "pkg:maven/test/" + component + "@1", "name", component, "version", "1"),
+                "vulnerability", map("id", cve, "severity", severity, "fixedVersions", List.of("1.0.1")),
+                "sources", List.of("trivy"),
+                "verdict", map("status", status, "method", method, "notAnalyzedReason", reason, "summary", "test",
+                        "evidence", evidence, "engine", map("reach", "v0", "rulesVersion", "1.0.0")));
+    }
+
+    private static Map<String, Object> withCallgraph(Map<String, Object> verdict) {
+        verdict.put("callgraph", map("packageReached", true, "vulnFunctionReached", true, "entryStage", 1));
+        return verdict;
+    }
+
+    /** null 값을 넣을 수 있는 순서 있는 Map. Map.of는 null을 받지 않는다 */
+    private static Map<String, Object> map(Object... keyValues) {
+        var map = new LinkedHashMap<String, Object>();
+        for (int i = 0; i < keyValues.length; i += 2) map.put((String) keyValues[i], keyValues[i + 1]);
+        return map;
+    }
+
+    private static byte[] gzip(Object json) {
+        return gzip(json instanceof String s ? s.getBytes() : MAPPER.writeValueAsBytes(json));
+    }
+
+    private static byte[] gzip(byte[] raw) {
+        var out = new ByteArrayOutputStream();
+        try (var zip = new GZIPOutputStream(out)) {
+            zip.write(raw);
+        } catch (IOException e) {
+            throw new IllegalStateException(e);
+        }
+        return out.toByteArray();
+    }
+
+    private static void assertError(Runnable call, ErrorCode code) {
+        assertThatThrownBy(call::run).isInstanceOfSatisfying(ApiException.class,
+                e -> assertThat(e.errorCode()).isEqualTo(code));
+    }
+}
