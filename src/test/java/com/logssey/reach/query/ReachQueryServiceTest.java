@@ -76,6 +76,28 @@ class ReachQueryServiceTest {
     }
 
     @Test
+    void prScansStayOutOfTheListAndSummary() {
+        finding(scan(target("sha256:b"), "SUCCEEDED", 2), "lib", "CVE-2026-1", "HIGH", "REACHABLE", "UNREVIEWED");
+        // PR 스캔만 있는 대상은 기준 범위에 없다 (ARD SR-09)
+        finding(scan(target("sha256:c"), "SUCCEEDED", 1, "PR"), "lib", "CVE-2026-2", "HIGH", "REACHABLE", "UNREVIEWED");
+        // 같은 대상을 나중에 PR로 다시 스캔해 last_scan_id가 PR 스캔이 되어도 기준 스캔의 Finding은 남는다
+        long mixed = target("sha256:d");
+        long manual = scan(mixed, "SUCCEEDED", 3);
+        long id = finding(manual, "lib", "CVE-2026-3", "HIGH", "REACHABLE", "UNREVIEWED");
+        long pr = scan(mixed, "SUCCEEDED", 1, "PR");
+        jdbc.update("""
+                INSERT INTO reach_verdicts (finding_id, scan_id, status, method, summary, engine, evidence_hash, is_current, analyzed_at)
+                VALUES (?, ?, 'REACHABLE', 'CALLGRAPH', 'test', '{}', 'h', false, now())
+                """, id, pr);
+        jdbc.update("UPDATE reach_findings SET last_scan_id = ? WHERE finding_id = ?", pr, id);
+
+        var page = service.findings("admin", ALL, null, null, null);
+        assertThat(cves(page)).containsExactly("CVE-2026-1", "CVE-2026-3");
+        assertThat(page.items().get(1).scanId()).isEqualTo(manual);
+        assertThat(service.summary("admin", null, null).totals().findings()).isEqualTo(2);
+    }
+
+    @Test
     void sortsByStatusThenSeverityThenCveNumber() {
         finding(scan, "a", "CVE-2026-13506", "HIGH", "UNREACHABLE", "UNREVIEWED");
         finding(scan, "b", "GHSA-xxxx-yyyy-zzzz", "HIGH", "UNREACHABLE", "UNREVIEWED");
@@ -248,10 +270,14 @@ class ReachQueryServiceTest {
 
     /** hoursAgo 시간 전에 끝난 스캔. FAILED는 failure_code가 있어야 한다 (V34 CHECK) */
     private static long scan(long targetId, String status, int hoursAgo) {
+        return scan(targetId, status, hoursAgo, "MANUAL");
+    }
+
+    private static long scan(long targetId, String status, int hoursAgo, String trigger) {
         return jdbc.queryForObject("""
                 INSERT INTO reach_scans (target_id, scan_status, trigger_type, requested_by_kind, failure_code, finished_at)
-                VALUES (?, ?, 'MANUAL', 'SYSTEM', ?, now() - make_interval(hours => ?)) RETURNING scan_id
-                """, Long.class, targetId, status, status.equals("FAILED") ? "TEST" : null, hoursAgo);
+                VALUES (?, ?, ?, 'SYSTEM', ?, now() - make_interval(hours => ?)) RETURNING scan_id
+                """, Long.class, targetId, status, trigger, status.equals("FAILED") ? "TEST" : null, hoursAgo);
     }
 
     /** Finding + 현재 판정 + 검토 한 벌. NOT_ANALYZED면 방식 없이 사유 OS_PACKAGE, 검토 상태가 UNREVIEWED가 아니면 admin이 같은 판정으로 검토 */
