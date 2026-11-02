@@ -22,10 +22,12 @@ public class ReachQueryController {
         this.service = service;
     }
 
-    /** API-04. 쉼표로 준 값은 Spring이 목록으로 나눈다 (status=REACHABLE,UNKNOWN) */
+    /** API-04. 쉼표로 준 값은 Spring이 목록으로 나눈다 (status=REACHABLE,UNKNOWN). scanId·target은 기준 범위 */
     @GetMapping("/findings")
     public ReachFindingPageResponse findings(
             Principal principal,
+            @RequestParam(required = false) Long scanId,
+            @RequestParam(required = false) Long target,
             @RequestParam(required = false) List<String> status,
             @RequestParam(required = false) List<String> severity,
             @RequestParam(required = false) List<String> reviewState,
@@ -35,16 +37,18 @@ public class ReachQueryController {
             @RequestParam(required = false) String cursor,
             @RequestParam(required = false) String include)
              {
-        var filter = new ReachFindingFilter(status, severity, reviewState, deployment, cveContains);
+        var filter = new ReachFindingFilter(status, severity, reviewState, deployment, cveContains, scanId, target);
         return service.findings(principal == null ? null : principal.getName(), filter, size, cursor, include);
     }
 
     /** API-08 */
     @GetMapping("/summary") 
     public ReachSummaryResponse summary(Principal principal,
+                                        @RequestParam(required = false) Long target,
+                                        @RequestParam(required = false) Long scanId,
                                         @RequestParam(required = false) List<String> deployment,
                                         @RequestParam(required = false) List<String> include) {
-        return service.summary(principal == null ? null : principal.getName(), deployment, include);
+        return service.summary(principal == null ? null : principal.getName(), target, scanId, deployment, include);
     }
 
     /** API-05 */

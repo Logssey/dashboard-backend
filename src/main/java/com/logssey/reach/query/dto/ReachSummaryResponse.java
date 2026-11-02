@@ -17,7 +17,7 @@ public record ReachSummaryResponse(
     NoiseReduction noiseReduction,
     Coverage coverage,
     OffsetDateTime generatedAt) {
-        public record Scope(Long targetId, Long ScanId){}
+        public record Scope(Long targetId, Long scanId){}
         public record Totals(long findings){}
         public record NoiseReduction(long unreachable, long judged, Double ratio){}
         public record Coverage(long judged, long total, Double ratio){}

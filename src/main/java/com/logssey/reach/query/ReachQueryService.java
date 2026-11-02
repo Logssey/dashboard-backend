@@ -42,6 +42,7 @@ public class ReachQueryService {
 
         var after = cursor == null ? null : ReachFindingCursor.decode(cursor);
         if (after != null && after.filter() != filter.fingerprint()) throw new ApiException(ErrorCode.INVALID_INPUT);
+        scopeTarget(filter.target(), filter.scanId());
 
         var rows = repository.findings(filter, after, limit + 1);    // 하나 더 가져와 다음 페이지 확인
         boolean hasNext = rows.size() > limit;
@@ -67,10 +68,28 @@ public class ReachQueryService {
         }
     }
 
-    public ReachSummaryResponse summary(String loginId, List<String> deployment, List<String> include) {
+    /**
+     * 기준 범위 검사 (API-04·08 target·scanId). 범위의 대상 ID를 돌려준다.
+     * 없는 대상·스캔은 404, 끝나지 않은 스캔은 409(SCAN_NOT_READY: 공통 코드가 없어 CONFLICT, API-11과 같음),
+     * 스캔이 target과 다른 대상이면 400
+     */
+    private Long scopeTarget(Long target, Long scanId) {
+        if (target != null && !repository.targetExists(target)) throw new ApiException(ErrorCode.NOT_FOUND);
+        if (scanId == null) return target;
+        var scan = repository.scanState(scanId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+        if (!"SUCCEEDED".equals(scan.status())) throw new ApiException(ErrorCode.CONFLICT);
+        if (target != null && target != scan.targetId()) throw new ApiException(ErrorCode.INVALID_INPUT);
+        return scan.targetId();
+    }
+
+    /** API-08. scope는 target·scanId가 없으면 (null, null)이다. 대상이 여럿이라 기준 스캔이 하나가 아니다 */
+    public ReachSummaryResponse summary(String loginId, Long target, Long scanId, List<String> deployment,
+                                        List<String> include) {
         requireAdmin(loginId);
         var deployments = ReachCodes.checked(deployment, ReachCodes.DEPLOYMENTS);
         var includes = ReachCodes.checked(include, List.of("matrix"));
+        Long scopeTarget = scopeTarget(target, scanId);
+        Long scopeScan = scanId != null ? scanId : scopeTarget == null ? null : repository.baselineScan(scopeTarget);
 
         // 명세: 모든 값을 0까지 준다. LinkedHashMap은 넣은 순서를 지킨다
         var byStatus = zeros(ReachCodes.STATUSES);
@@ -82,7 +101,7 @@ public class ReachQueryService {
         var matrix = new LinkedHashMap<String, Map<String, Long>>();   // 0인 칸은 넣지 않는다
         long total = 0;
 
-        for (var row : repository.summaryRows(deployments)) {
+        for (var row : repository.summaryRows(scanId, target, deployments)) {
             long n = row.count();
             total += n;
             byStatus.merge(row.status(), n, Long::sum);
@@ -97,7 +116,7 @@ public class ReachQueryService {
         long unreachable = byStatus.get("UNREACHABLE");
         long judged = byStatus.get("REACHABLE") + unreachable + byStatus.get("UNKNOWN");   // NOT_ANALYZED 제외 (PRD M-01)
         return new ReachSummaryResponse(
-                new ReachSummaryResponse.Scope(null, null),
+                new ReachSummaryResponse.Scope(scopeTarget, scopeScan),
                 new ReachSummaryResponse.Totals(total),
                 byStatus, byReason, bySeverity, byMethod, byReviewState, byDeployment,
                 includes.contains("matrix") ? matrix : null,
