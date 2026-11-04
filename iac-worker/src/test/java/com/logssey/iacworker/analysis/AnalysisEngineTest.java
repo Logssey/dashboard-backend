@@ -48,6 +48,36 @@ class AnalysisEngineTest {
         assertThat(result.verdict()).isEqualTo("WARN");
     }
 
+    /** http_tokens 를 optional 로 적어 만들거나 바꾼 인스턴스만 path.imds_v1_added. 원래 optional·값 없음은 아님. */
+    @Test
+    void instanceSetToImdsV1IsReportedWithoutAPath() {
+        var graph = new GraphSnapshot(Map.of("internet", node("internet", "Internet", null)), List.of(), Map.of(),
+                Map.of(), Map.of());
+        var plan = MAPPER.readTree("""
+                {"format_version":"1.2","resource_changes":[
+                  {"address":"aws_instance.new_v1","type":"aws_instance","change":{"actions":["create"],"before":null,
+                    "after":{"metadata_options":[{"http_tokens":"optional"}]}}},
+                  {"address":"aws_instance.to_v1","type":"aws_instance","change":{"actions":["update"],
+                    "before":{"id":"i-1","metadata_options":[{"http_tokens":"required"}]},
+                    "after":{"id":"i-1","metadata_options":[{"http_tokens":"optional"}]}}},
+                  {"address":"aws_instance.still_v1","type":"aws_instance","change":{"actions":["update"],
+                    "before":{"id":"i-2","metadata_options":[{"http_tokens":"optional"}],"tags":{}},
+                    "after":{"id":"i-2","metadata_options":[{"http_tokens":"optional"}],"tags":{"a":"b"}}}},
+                  {"address":"aws_instance.unset","type":"aws_instance","change":{"actions":["create"],"before":null,
+                    "after":{}}}]}
+                """);
+
+        var result = new AnalysisEngine((documents, action, resource) -> "allowed").analyze(graph, plan, Set.of());
+
+        assertThat(result.changes()).isEmpty();
+        assertThat(result.findings()).extracting(f -> f.ruleId() + "|" + f.enforcement() + "|" + f.severity() + "|"
+                + f.cause().address() + "|" + f.cause().action())
+                .containsExactly("path.imds_v1_added|WARN|MEDIUM|aws_instance.new_v1|CREATE",
+                        "path.imds_v1_added|WARN|MEDIUM|aws_instance.to_v1|UPDATE");
+        assertThat(result.verdict()).isEqualTo("WARN");
+        assertThat(result.highestSeverity()).isEqualTo("MEDIUM");
+    }
+
     private static GraphSnapshot.Node node(String id, String kind, Integer tier) {
         return new GraphSnapshot.Node(id, kind, id, null, tier, null);
     }

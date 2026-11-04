@@ -157,6 +157,29 @@ class AnalyzeRunProcessorTest {
     }
 
     @Test
+    void newImdsV1InstanceIsAFindingThatClosesWhenTheNextCommitFixesIt() {
+        long run = analyze(gzip("""
+                {"format_version":"1.2","resource_changes":[{"address":"module.compute.aws_instance.bastion",
+                  "type":"aws_instance","change":{"actions":["create"],"before":null,
+                  "after":{"metadata_options":[{"http_tokens":"optional"}]}}}]}
+                """), policySimulator());
+
+        assertThat(jdbc.queryForObject("SELECT verdict || '/' || highest_severity FROM iac_runs WHERE run_id = ?",
+                String.class, run)).isEqualTo("WARN/MEDIUM");
+        assertThat(jdbc.queryForList("""
+                SELECT rule_id || '|' || source || '|' || enforcement || '|' || severity || '|' || resource_address || '|' ||
+                       (params ->> 'action') || '|' || status
+                FROM iac_findings
+                """, String.class)).containsExactly(
+                "path.imds_v1_added|PATH|WARN|MEDIUM|module.compute.aws_instance.bastion|CREATE|OPEN");
+        assertThat(count("iac_run_path_changes")).isZero();
+
+        analyze("nochange.json.gz", policySimulator());
+        assertThat(jdbc.queryForObject("SELECT status FROM iac_findings WHERE rule_id = 'path.imds_v1_added'",
+                String.class)).isEqualTo("FIXED");
+    }
+
+    @Test
     void simulatorOutageIsRetryableAndMissingPlansFailTheRun() {
         long run = run("ANALYZING");
         jdbc.update("INSERT INTO iac_plan_payloads (run_id, content, size_bytes, expires_at) VALUES (?, ?, 1, now() + interval '1 hour')",
@@ -193,9 +216,13 @@ class AnalyzeRunProcessorTest {
     }
 
     private long analyze(String plan, IamSimulator simulator) {
+        return analyze(resource("/plans/" + plan), simulator);
+    }
+
+    private long analyze(byte[] plan, IamSimulator simulator) {
         long run = run("ANALYZING");
         jdbc.update("INSERT INTO iac_plan_payloads (run_id, content, size_bytes, expires_at) VALUES (?, ?, ?, now() + interval '1 hour')",
-                run, resource("/plans/" + plan), resource("/plans/" + plan).length);
+                run, plan, plan.length);
         var claimed = claim(job("ANALYZE_RUN", run));
         processor(simulator).process(claimed, execution);
         assertThat(execution.complete(claimed.jobId(), claimed.leaseToken())).isTrue();
@@ -223,6 +250,16 @@ class AnalyzeRunProcessorTest {
             if (denied) return "explicitDeny";
             return PolicyEvaluator.allows(policies, action, resource) ? "allowed" : "implicitDeny";
         };
+    }
+
+    private static byte[] gzip(String json) {
+        var out = new java.io.ByteArrayOutputStream();
+        try (var zip = new java.util.zip.GZIPOutputStream(out)) {
+            zip.write(json.getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        return out.toByteArray();
     }
 
     private static List<String> list(JsonNode node) {

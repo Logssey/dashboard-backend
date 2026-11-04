@@ -70,6 +70,7 @@ public class AnalyzeRunProcessor implements IacJobProcessor {
                 // 같은 자격 증명(역할)으로 이어지는 경로들을 한 갈래로 센다 (화면의 "경로 −N")
                 "removedRoutes", removed.stream().map(AnalysisEngine.Change::roleId).filter(Objects::nonNull)
                         .distinct().count()));
+        stats.put("imdsV1Added", result.findings().size());
         stats.put("state", result.state());
         stats.put("verdict", result.verdict());
 
@@ -82,6 +83,9 @@ public class AnalyzeRunProcessor implements IacJobProcessor {
                 if (!change.change().equals("REMOVED")) {
                     findings.add(repository.upsertPathFinding(runId, change));
                 }
+            }
+            for (var finding : result.findings()) {
+                findings.add(repository.upsertResourceFinding(runId, finding));
             }
             repository.fixMissingPathFindings(runId, findings);
             repository.finishRun(runId, result.verdict(), result.highestSeverity(), repository.graphAsOf());

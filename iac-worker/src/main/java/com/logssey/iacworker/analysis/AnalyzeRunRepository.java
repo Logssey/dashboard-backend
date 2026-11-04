@@ -77,6 +77,30 @@ public class AnalyzeRunRepository {
         return fingerprint;
     }
 
+    /**
+     * 경로 없이 리소스에 걸리는 ① 발견 건 (path.imds_v1_added). 지문은 규칙 + 리소스 주소 + 레포 + PR 번호.
+     * 경로 발견 건과 같이 fixMissingPathFindings 가 닫는다.
+     */
+    String upsertResourceFinding(long runId, AnalysisEngine.Finding finding) {
+        String fingerprint = jdbc.queryForObject("""
+                SELECT encode(sha256(convert_to(? || chr(10) || ? || chr(10) || p.full_name || chr(10) || r.pr_number, 'UTF8')), 'hex')
+                FROM iac_runs r JOIN iac_repos p ON p.repo_id = r.repo_id WHERE r.run_id = ?
+                """, String.class, finding.ruleId(), finding.cause().address(), runId);
+        jdbc.update("""
+                INSERT INTO iac_findings (rule_id, source, enforcement, severity, environment, resource_address, params,
+                                          fingerprint, last_run_id, first_seen_at, last_seen_at)
+                SELECT ?, 'PATH', ?, ?, p.environment, ?, jsonb_build_object('action', ?::text), ?, r.run_id, now(), now()
+                FROM iac_runs r JOIN iac_repos p ON p.repo_id = r.repo_id WHERE r.run_id = ?
+                ON CONFLICT (fingerprint) DO UPDATE
+                SET enforcement = EXCLUDED.enforcement, severity = EXCLUDED.severity, last_run_id = EXCLUDED.last_run_id,
+                    last_seen_at = EXCLUDED.last_seen_at,
+                    status = CASE WHEN iac_findings.status = 'ACCEPTED' THEN 'ACCEPTED' ELSE 'OPEN' END,
+                    version = iac_findings.version + 1
+                """, finding.ruleId(), finding.enforcement(), finding.severity(), finding.cause().address(),
+                finding.cause().action(), fingerprint, runId);
+        return fingerprint;
+    }
+
     /** 같은 PR 의 이전 분석에서 열렸던 경로 발견 건 중 이번에 안 나온 것은 고쳐진 것으로 본다. */
     void fixMissingPathFindings(long runId, List<String> seen) {
         jdbc.update("""
