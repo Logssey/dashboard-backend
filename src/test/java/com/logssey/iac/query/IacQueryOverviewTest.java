@@ -89,6 +89,10 @@ class IacQueryOverviewTest {
         long old = run(58, "PR", "SUPERSEDED", null, null);
         long latest = run(58, "PR", "DONE", "BLOCK", "CRITICAL");
         run(60, "PR", "DONE", "INFO", null);
+        long imds = run(62, "PR", "DONE", "WARN", "MEDIUM");
+        jdbc.update("INSERT INTO iac_findings (rule_id, source, enforcement, severity, environment, resource_address, params, "
+                + "fingerprint, last_run_id, first_seen_at, last_seen_at) VALUES ('path.imds_v1_added', 'PATH', 'WARN', "
+                + "'MEDIUM', 'PROD', 'aws_instance.b', '{\"action\":\"CREATE\"}', 'fp-imds', ?, now(), now())", imds);
         jdbc.update("INSERT INTO iac_jobs (kind, trigger_type, run_id, status, finished_at, stats) VALUES ('ANALYZE_RUN', 'PR', ?, "
                 + "'SUCCEEDED', now(), '{\"paths\":{\"added\":6,\"removed\":0,\"removedRoutes\":0},"
                 + "\"state\":{\"ruleId\":\"state.reader_increase\"}}')", latest);
@@ -96,7 +100,9 @@ class IacQueryOverviewTest {
                 + "VALUES (?, 'ADDED', 'path.tier1.added', 'f', 1, 'CRITICAL', '[]')", latest);
 
         var prs = service.pullRequests(null, "admin");
-        assertThat(prs).extracting(IacPullRequestSummaryResponse::number).containsExactlyInAnyOrder(58, 60);
+        assertThat(prs).extracting(IacPullRequestSummaryResponse::number).containsExactlyInAnyOrder(58, 60, 62);
+        assertThat(prs.stream().filter(p -> p.number() == 62).findFirst().orElseThrow().reason())
+                .as("경로 없는 ① 발견 건도 대표 규칙이 된다").isEqualTo("path.imds_v1_added");
         var pr58 = prs.stream().filter(p -> p.number() == 58).findFirst().orElseThrow();
         assertThat(pr58.runId()).isEqualTo(latest).isNotEqualTo(old);
         assertThat(pr58.pathsAdded()).isEqualTo(6);

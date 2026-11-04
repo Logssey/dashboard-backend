@@ -208,8 +208,13 @@ public class IacQueryRepository {
                     SELECT rule_id, CASE change WHEN 'ADDED' THEN 1 ELSE 3 END,
                            CASE severity WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 ELSE 2 END
                     FROM iac_run_path_changes WHERE run_id = ?
+                    UNION ALL
+                    -- 경로 없는 ① 발견 건 (path.imds_v1_added): 새 경로 다음
+                    SELECT rule_id, 2, CASE severity WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 ELSE 2 END
+                    FROM iac_findings WHERE last_run_id = ? AND source = 'PATH' AND status = 'OPEN'
+                      AND params ->> 'pathFingerprint' IS NULL
                 ) r ORDER BY rank, sev, rule_id LIMIT 1
-                """, String.class, runId, runId).stream().findFirst();
+                """, String.class, runId, runId, runId).stream().findFirst();
     }
 
     record PrRow(int number, long runId, String headSha, String status, String verdict, String highestSeverity,
