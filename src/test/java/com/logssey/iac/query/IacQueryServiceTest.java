@@ -123,6 +123,15 @@ class IacQueryServiceTest {
                         '{"causeAction":"DELETE","simulator":{"before":"explicitDeny","after":"allowed"}}'),
                        (?, 'REMOVED', 'path.removed', 'old-path', 2, NULL, ?::jsonb, NULL, NULL)
                 """, latest, HOPS, latest, HOPS);
+        // 경로 발견 건(pathFingerprint 있음)은 paths 로 보이고, 경로 없는 IMDSv1 발견 건만 resourceFindings 로
+        jdbc.update("""
+                INSERT INTO iac_findings (rule_id, source, enforcement, severity, environment, resource_address, params,
+                                          fingerprint, last_run_id, first_seen_at, last_seen_at)
+                VALUES ('path.tier1.added', 'PATH', 'BLOCK', 'CRITICAL', 'PROD', 'logssey-prod-s3-tfstate',
+                        '{"tier":1,"pathFingerprint":"new-path"}', 'fp-path', ?, now(), now()),
+                       ('path.imds_v1_added', 'PATH', 'WARN', 'MEDIUM', 'PROD', 'module.compute.aws_instance.bastion',
+                        '{"action":"CREATE"}', 'fp-imds', ?, now(), now())
+                """, latest, latest);
         jdbc.update("INSERT INTO iac_jobs (kind, trigger_type, run_id, status, stats) "
                 + "VALUES ('ANALYZE_RUN', 'PR', ?, 'SUCCEEDED', '{\"resources\":{\"add\":0,\"change\":0,\"delete\":1},"
                 + "\"state\":{\"ruleId\":\"state.reader_increase\",\"severity\":\"HIGH\",\"readersBefore\":5,"
@@ -137,6 +146,8 @@ class IacQueryServiceTest {
         assertThat(pr.paths().getFirst().evidence().has("causeAction")).isFalse();
         assertThat(pr.resources().get("delete").asInt()).isEqualTo(1);
         assertThat(pr.state().get("readersAfter").asInt()).isEqualTo(6);
+        assertThat(pr.resourceFindings()).extracting(f -> f.ruleId() + "|" + f.address() + "|" + f.action())
+                .containsExactly("path.imds_v1_added|module.compute.aws_instance.bastion|CREATE");
 
         // 같은 응답이 계약 모양으로 직렬화되는지
         var mvc = MockMvcBuilders.standaloneSetup(new IacQueryController(service))
@@ -149,6 +160,7 @@ class IacQueryServiceTest {
                 .andExpect(jsonPath("$.paths[0].evidence.simulator.after").value("allowed"))
                 .andExpect(jsonPath("$.paths[0].cause.address").value("module.iam.aws_iam_role_policy.deny_tfstate"))
                 .andExpect(jsonPath("$.resources.delete").value(1))
+                .andExpect(jsonPath("$.resourceFindings[0].severity").value("MEDIUM"))
                 .andExpect(jsonPath("$.state.ruleId").value("state.reader_increase"))
                 .andExpect(jsonPath("$.state.readersBefore").value(5));
         mvc.perform(get("/api/v1/iac/prs/59").principal(new UsernamePasswordAuthenticationToken("admin", "n/a")))

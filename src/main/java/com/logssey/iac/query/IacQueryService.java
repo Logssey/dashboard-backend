@@ -59,6 +59,7 @@ public class IacQueryService {
                 repository.gateFindings(run.runId()));
         return new IacPullRequestResponse(number, null, run.runId(), run.headSha(), run.status(), run.verdict(),
                 run.highestSeverity(), run.checkedAt(), gate, repository.pathChanges(run.runId()),
+                repository.resourceFindings(run.runId()),
                 repository.analysisStats(run.runId(), "resources"), repository.analysisStats(run.runId(), "state"));
     }
 

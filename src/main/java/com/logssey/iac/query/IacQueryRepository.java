@@ -119,6 +119,17 @@ public class IacQueryRepository {
                 rs.getString("enforcement"), rs.getString("severity"), rs.getString("resource_address")), runId);
     }
 
+    /** 경로 없는 ① 발견 건. 경로 발견 건은 params 에 pathFingerprint 가 있어 빠진다. */
+    List<IacPullRequestResponse.ResourceFinding> resourceFindings(long runId) {
+        return jdbc.query("""
+                SELECT rule_id, enforcement, severity, resource_address, params ->> 'action' AS action FROM iac_findings
+                WHERE last_run_id = ? AND source = 'PATH' AND status = 'OPEN' AND params ->> 'pathFingerprint' IS NULL
+                ORDER BY rule_id, resource_address
+                """, (rs, row) -> new IacPullRequestResponse.ResourceFinding(rs.getString("rule_id"),
+                rs.getString("enforcement"), rs.getString("severity"), rs.getString("resource_address"),
+                rs.getString("action")), runId);
+    }
+
     /** evidence 의 causeAction 은 cause.action 으로 옮기고, 나머지(시뮬레이터 판정)만 evidence 로 돌려준다. */
     List<IacPullRequestResponse.PathChange> pathChanges(long runId) {
         return jdbc.query("""
