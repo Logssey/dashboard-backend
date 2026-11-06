@@ -122,24 +122,52 @@ class SecretClosureIntegrationTest {
         var after=service.checks("security",caseId);assertThat(after.closureCheckVersion()).isEqualTo(before.closureCheckVersion());
         assertThat(after.allowedCoverageLevels()).containsExactly("LIMITED");
     }
-    @Test void riskAcceptanceHasAnExplicitScopeAndNewLocationIsNotAutomaticallyCovered() {
-        var accepted=governance.approveException("security",caseId,new ExceptionRequest(List.of(first.occurrence),"BUSINESS_CONTINUITY","TICKET:SEC-1",OffsetDateTime.now().plusDays(1),version(),"risk"));
-        assertThat(service.isFullyRiskAccepted(caseId)).isTrue();assertThat(service.riskAcceptanceDeadline(caseId)).isNotNull();
-        var second=location("PRODUCTION",false);assertThat(service.isFullyRiskAccepted(caseId)).isFalse();
-        assertThat(governance.exceptions("security",caseId).items().getFirst().occurrenceIds()).containsExactly(first.occurrence);
-        governance.revoke("security",caseId,new RevokeRequest(accepted.exceptionId(),"APPROVAL_WITHDRAWN",version(),"revoke"));
+    @Test void disabledAcceptanceCannotWriteOrHideRemainingRisk() {
+        var request=new ExceptionRequest(List.of(first.occurrence),"BUSINESS_CONTINUITY","TICKET:SEC-1",OffsetDateTime.now().plusDays(1),version(),"risk");
+        code(ErrorCode.RISK_ACCEPTANCE_DISABLED,()->governance.approveException("security",caseId,request));
+        code(ErrorCode.RISK_ACCEPTANCE_DISABLED,()->governance.approveException("security",caseId,request));
+        assertThat(count("secret_exceptions")).isZero();assertThat(count("secret_command_idempotency")).isZero();
+        var view=governance.exceptions("security",caseId);
+        assertThat(view.canApprove()).isFalse();assertThat(view.fullyRiskAccepted()).isFalse();
+        assertThat(view.blockedReasonCodes()).containsExactly("RISK_ACCEPTANCE_DISABLED");
+        assertThat(view.allowedReasonCodes()).isEmpty();assertThat(view.eligibleOccurrences()).isEmpty();
+        assertThat(view.maxDurationDays()).isEqualTo(7);
+        assertThat(service.checks("security",caseId).capabilities().canApproveException()).isFalse();
         assertThat(service.isFullyRiskAccepted(caseId)).isFalse();
+    }
+    @Test void legacyAcceptanceHistoryRemainsVisibleAndRevocableWithoutSuppressingWork() {
+        long accepted=legacyException(List.of(first.occurrence));
+        var view=governance.exceptions("security",caseId);
+        assertThat(view.items().getFirst().status()).isEqualTo("POLICY_DISABLED");
+        assertThat(view.items().getFirst().currentlyApplicable()).isFalse();
+        assertThat(view.items().getFirst().canRevoke()).isTrue();
+        assertThat(service.riskAcceptanceDeadline(caseId)).isNull();
+        location("PRODUCTION",false);
+        assertThat(view.items().getFirst().occurrenceIds()).containsExactly(first.occurrence);
+        governance.revoke("security",caseId,new RevokeRequest(accepted,"APPROVAL_WITHDRAWN",version(),"revoke"));
+        assertThat(governance.exceptions("security",caseId).items().getFirst().status()).isEqualTo("REVOKED");
         assertThat(jdbc.queryForObject("SELECT action_status FROM secret_response_cases WHERE case_id=?",String.class,caseId)).isEqualTo("REVALIDATION_PENDING");
     }
-    @Test void overlappingAndExpiredOrChangedScopeAcceptancesCannotHideRemainingRisk() {
-        var request=new ExceptionRequest(List.of(first.occurrence),"COMPENSATING_CONTROL","TICKET:SEC-1",OffsetDateTime.now().plusDays(1),version(),"risk");
-        var accepted=governance.approveException("security",caseId,request);assertThat(governance.approveException("security",caseId,request)).isEqualTo(accepted);
-        code(ErrorCode.CONFLICT,()->governance.approveException("security",caseId,new ExceptionRequest(List.of(first.occurrence),"BUSINESS_CONTINUITY","TICKET:SEC-2",OffsetDateTime.now().plusDays(1),version(),"overlap")));
-        jdbc.update("UPDATE secret_connection_scopes SET revision=2 WHERE scope_id=?",first.scope);assertThat(service.isFullyRiskAccepted(caseId)).isFalse();
+    @Test void legacyExpiredOrChangedScopeAcceptancesRetainTheirAuditStatus() {
+        legacyException(List.of(first.occurrence));
+        jdbc.update("UPDATE secret_connection_scopes SET revision=2 WHERE scope_id=?",first.scope);
         assertThat(governance.exceptions("security",caseId).items().getFirst().status()).isEqualTo("SCOPE_CHANGED");
         jdbc.update("UPDATE secret_connection_scopes SET revision=1 WHERE scope_id=?",first.scope);
         jdbc.update("UPDATE secret_exceptions SET approved_at=now()-interval '2 days',expires_at=now()-interval '1 day'");
-        assertThat(service.isFullyRiskAccepted(caseId)).isFalse();assertThat(governance.exceptions("security",caseId).items().getFirst().status()).isEqualTo("EXPIRED");
+        assertThat(service.isFullyRiskAccepted(caseId)).isFalse();
+        assertThat(governance.exceptions("security",caseId).items().getFirst().status()).isEqualTo("EXPIRED");
+    }
+    long legacyException(List<Long> occurrences) {
+        long exception=jdbc.queryForObject("""
+            INSERT INTO secret_exceptions(case_id,reason_code,evidence_ref,approved_by_user_id,approved_at,expires_at,approved_case_version)
+            VALUES(?,'BUSINESS_CONTINUITY','TICKET:SEC-1',1,now(),now()+interval '1 day',?) RETURNING exception_id
+            """,Long.class,caseId,version());
+        for(long occurrence:occurrences)jdbc.update("""
+            INSERT INTO secret_exception_occurrences(exception_id,occurrence_id,scope_id,scope_revision,scope_origin_version,assessment_version)
+            SELECT ?,o.occurrence_id,s.scope_id,s.revision,s.response_origin_version,o.exposure_assessment_version
+            FROM secret_occurrences o JOIN secret_connection_scopes s ON s.scope_id=o.scope_id WHERE o.occurrence_id=?
+            """,exception,occurrence);
+        return exception;
     }
     @Test void approvedTransferCannotDismissAnActualRemainingExposureAndRequiresIndependentReview() {
         var transfer=governance.transfer("security",caseId,new TransferRequest(List.of(first.occurrence),"OWNER_TRANSFER","TICKET:SEC-1","CHANGE:SEC-2",version(),"transfer"));
@@ -216,17 +244,17 @@ class SecretClosureIntegrationTest {
     }
     @Test void aPublicRiskDeadlineRequiresAuthorityAcrossAllRelatedLocations() {
         jdbc.update("INSERT INTO secret_role_grants(user_id,role,connection_id,granted_by_user_id,grant_source) VALUES(3,'SECURITY',?,1,'MANUAL')",first.connection);
-        governance.approveException("security",caseId,new ExceptionRequest(List.of(first.occurrence),"BUSINESS_CONTINUITY","TICKET:SEC-1",OffsetDateTime.now().plusDays(1),version(),"risk"));
-        assertThat(service.riskAcceptanceDeadline(caseId,"scoped")).isNotNull();
+        legacyException(List.of(first.occurrence));
+        assertThat(service.riskAcceptanceDeadline(caseId,"scoped")).isNull();
         var hidden=location("PRODUCTION",false);
-        governance.approveException("security",caseId,new ExceptionRequest(List.of(hidden.occurrence),"BUSINESS_CONTINUITY","TICKET:SEC-2",OffsetDateTime.now().plusDays(1),version(),"hidden-risk"));
-        assertThat(service.riskAcceptanceDeadline(caseId,"security")).isNotNull();
+        legacyException(List.of(hidden.occurrence));
+        assertThat(service.riskAcceptanceDeadline(caseId,"security")).isNull();
         assertThat(service.riskAcceptanceDeadline(caseId,"scoped")).isNull();
     }
     @Test void aHiddenScopeChangeCannotAlterTheVisibleExceptionProjection() {
         var hidden=location("PRODUCTION",false);
         jdbc.update("INSERT INTO secret_role_grants(user_id,role,connection_id,granted_by_user_id,grant_source) VALUES(3,'SECURITY',?,1,'MANUAL')",first.connection);
-        governance.approveException("security",caseId,new ExceptionRequest(List.of(first.occurrence,hidden.occurrence),"BUSINESS_CONTINUITY","TICKET:SEC-1",OffsetDateTime.now().plusDays(1),version(),"risk"));
+        legacyException(List.of(first.occurrence,hidden.occurrence));
         var before=governance.exceptions("scoped",caseId);
         jdbc.update("UPDATE secret_connection_scopes SET revision=2 WHERE scope_id=?",hidden.scope);
         var after=governance.exceptions("scoped",caseId);

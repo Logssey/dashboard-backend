@@ -40,7 +40,7 @@ public final class SecretClosureContracts {
         boolean currentlyApplicable,boolean canRevoke) { }
     public record Exceptions(long caseId,Long caseVersion,List<ExceptionItem> items,boolean canApprove,
         List<String> allowedReasonCodes,List<String> allowedRevokeReasonCodes,List<Location> eligibleOccurrences,int maxDurationDays,
-        boolean fullyRiskAccepted,boolean restrictedCoverage) { }
+        boolean fullyRiskAccepted,boolean restrictedCoverage,List<String> blockedReasonCodes) { }
     public record TransferEvidence(long evidenceId,long version,String reasonCode,String evidenceRef,String acceptedTransferRef,
         List<Long> occurrenceIds,long submittedByUserId,OffsetDateTime submittedAt,String status,Long reviewedByUserId,
         boolean canReview) { }

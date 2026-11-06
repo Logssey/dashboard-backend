@@ -17,6 +17,44 @@ import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.json.JsonMapper;
 
 class SecretPermissionAssistanceIntegrationTest {
+    @Test void publicMetadataIsOnlyAPrioritySignalAndRepeatedScansDoNotPostponeItsDeadline(){
+        var runScope=jdbc.queryForMap("SELECT rs.run_scope_id,rs.run_id FROM secret_run_scopes rs JOIN secret_validation_attempts a USING(run_id) WHERE a.attempt_id=?",attempt);
+        jdbc.update("UPDATE secret_occurrences SET latest_object_version='fixture-blob',last_seen_run_id=? WHERE occurrence_id=?",runScope.get("run_id"),occurrence);
+        var writer=new SecretRiskObservationWriter(jdbc);
+        writer.githubRepositoryAccess(occurrence,((Number)runScope.get("run_scope_id")).longValue(),true,true,OffsetDateTime.now(ZoneOffset.UTC));
+        var query=new SecretRiskQueryService(jdbc,new SecretAccessService(jdbc));
+        var risk=query.risk("security",occurrence);var experience=(Map<?,?>)risk.get("riskExperience");
+        var priority=(Map<?,?>)experience.get("workPriority");
+        assertThat(priority.get("level")).isEqualTo("PRIORITY");
+        assertThat(priority.get("targetBasis")).isEqualTo("PRIORITY_SIGNAL_OBSERVED");
+        assertThat(priority.get("acknowledgeDueAt")).isNotNull();
+        var access=(Map<?,?>)((Map<?,?>)risk.get("analysisContext")).get("access");
+        assertThat(access.get("range")).isEqualTo("UNKNOWN");
+        assertThat(access.get("repositoryPublicObserved")).isEqualTo(true);
+        assertThat(access.get("coexistenceStatus")).isEqualTo("UNCONFIRMED");
+        assertThat(risk.get("severity")).isNull();
+        long next=identityProof();
+        var nextScope=jdbc.queryForMap("SELECT rs.run_scope_id,rs.run_id FROM secret_run_scopes rs JOIN secret_validation_attempts a USING(run_id) WHERE a.attempt_id=?",next);
+        jdbc.update("UPDATE secret_occurrences SET last_seen_at=clock_timestamp(),last_seen_run_id=? WHERE occurrence_id=?",nextScope.get("run_id"),occurrence);
+        writer.githubRepositoryAccess(occurrence,((Number)nextScope.get("run_scope_id")).longValue(),true,true,OffsetDateTime.now(ZoneOffset.UTC));
+        var again=(Map<?,?>)((Map<?,?>)query.risk("security",occurrence).get("riskExperience")).get("workPriority");
+        assertThat(again.get("targetBasisAt")).isEqualTo(priority.get("targetBasisAt"));
+        assertThat(again.get("acknowledgeDueAt")).isEqualTo(priority.get("acknowledgeDueAt"));
+    }
+    @Test void publicAuthenticationSignalHasAStableDeadlineWithoutInventingSeverity(){
+        var at=OffsetDateTime.now(ZoneOffset.UTC);
+        evidence.submit("security",occurrence,new SecretRiskEvidenceService.Submission(revision(),"public-source","ACCESS_SCOPE","OCCURRENCE",at,at.plusHours(1),"TICKET:SEC-123",Map.of("audienceClass","BROAD","coverageStatus","PARTIAL","publicAccessConfirmed",true,"boundedPrincipalCount",0),List.of(),null,at.minusMinutes(5),at.plusMinutes(30)));
+        var query=new SecretRiskQueryService(jdbc,new SecretAccessService(jdbc));
+        var risk=query.risk("security",occurrence);
+        var experience=(Map<?,?>)risk.get("riskExperience");var priority=(Map<?,?>)experience.get("workPriority");
+        assertThat(priority.get("level")).isEqualTo("PRIORITY");
+        assertThat(priority.get("targetBasis")).isEqualTo("PRIORITY_SIGNAL_OBSERVED");
+        assertThat(priority.get("acknowledgeDueAt")).isNotNull();
+        assertThat(risk.get("severity")).isNull();
+        var again=(Map<?,?>)((Map<?,?>)query.risk("security",occurrence).get("riskExperience")).get("workPriority");
+        assertThat(again.get("targetBasisAt")).isEqualTo(priority.get("targetBasisAt"));
+        assertThat(again.get("acknowledgeDueAt")).isEqualTo(priority.get("acknowledgeDueAt"));
+    }
     static final com.logssey.secret.testing.SecretTestPostgres DB=new com.logssey.secret.testing.SecretTestPostgres();
     static JdbcTemplate jdbc;static DataSourceTransactionManager tm;
     SecretPermissionAssistanceService service;SecretRiskEvidenceService evidence;long occurrence,attempt;
@@ -51,13 +89,13 @@ class SecretPermissionAssistanceIntegrationTest {
     }
     @Test void realManualSupplementAfterObservationCanConfirmWithoutBackdatingAndReplaysAreAclBound(){
         jdbc.update("INSERT INTO secret_exposure_assessments(occurrence_id,from_status,decision,reason_code,scope_origin,scope_revision,decision_source,evidence_refs,actor_user_id,version) VALUES(?,'UNKNOWN','ABNORMAL','UNAPPROVED_SOURCE_LOCATION','PRODUCTION',1,'HUMAN','[]',1,1)",occurrence);
-        var accessAt=OffsetDateTime.now(ZoneOffset.UTC);evidence.submit("security",occurrence,new SecretRiskEvidenceService.Submission(revision(),"access-range","ACCESS_SCOPE","OCCURRENCE",accessAt,accessAt.plusHours(1),"TICKET:SEC-123",Map.of("audienceClass","BOUNDED","coverageStatus","COMPLETE","publicAccessConfirmed",false,"boundedPrincipalCount",2)));
+        var accessAt=OffsetDateTime.now(ZoneOffset.UTC);evidence.submit("security",occurrence,new SecretRiskEvidenceService.Submission(revision(),"access-range","ACCESS_SCOPE","OCCURRENCE",accessAt,accessAt.plusHours(1),"TICKET:SEC-123",Map.of("audienceClass","BOUNDED","coverageStatus","COMPLETE","publicAccessConfirmed",false,"boundedPrincipalCount",2),List.of(),null,accessAt.minusMinutes(5),accessAt.plusHours(1)));
         var context=service.context("security",occurrence);var request=service.request("security",occurrence,new SecretPermissionAssistanceService.Request((String)context.get("contextVersion"),"request",1L));
         long observation=publish(request,List.of("RESOURCE_ADMINISTRATION"));String before=policy();
         jdbc.update("INSERT INTO secret_role_grants(user_id,role,connection_id,granted_by_user_id,grant_source) VALUES(1,'SECURITY',NULL,1,'MANUAL')");
         long asset=jdbc.queryForObject("INSERT INTO assets(name,provider,asset_type,environment) VALUES('Permission fixture','GITHUB','REPOSITORY','DEV') RETURNING asset_id",Long.class);
         var now=OffsetDateTime.now(ZoneOffset.UTC);
-        long classification=((Number)evidence.submit("security",occurrence,new SecretRiskEvidenceService.Submission(revision(),"classification","ASSET_CLASSIFICATION","OCCURRENCE",now,now.plusHours(1),"TICKET:SEC-123",Map.of("environment","DEV","sensitive",false,"important",false,"testOnly",false),List.of(),asset)).get("evidenceId")).longValue();
+        long classification=((Number)evidence.submit("security",occurrence,new SecretRiskEvidenceService.Submission(revision(),"classification","ASSET_CLASSIFICATION","OCCURRENCE",now,now.plusHours(1),"TICKET:SEC-123",Map.of("environment","DEV","sensitive",false,"important",false,"testOnly",false),List.of(),asset,now.minusMinutes(5),now.plusHours(1))).get("evidenceId")).longValue();
         long history=providerReference();var refs=List.of(new SecretRiskProvenance.Ref("VALIDATION_ATTEMPT",attempt,1,"BINDS_IDENTITY"),new SecretRiskProvenance.Ref("RISK_EVIDENCE",classification,1,"CLASSIFIES"),new SecretRiskProvenance.Ref("INVESTIGATION_HISTORY",history,2,"ASSERTS"),new SecretRiskProvenance.Ref("INVESTIGATION_HISTORY",history,2,"LIMITS"));
         var preview=service.preview("security",occurrence,observation);assertThat(preview).containsEntry("canConfirm",true);
         var body=confirm(preview,refs,"confirm");var accepted=service.confirm("security",occurrence,observation,body);assertThat(accepted).containsEntry("status","CONFIRMED");
@@ -92,7 +130,7 @@ class SecretPermissionAssistanceIntegrationTest {
         assertThat(context.toString()).doesNotContain("github-user:123","fixture-app","protected");
     }
     private long publish(Map<String,Object> request,List<String> caps){var json=new JsonMapper();return jdbc.queryForObject("INSERT INTO secret_permission_observations(request_id,status,safe_facts,observed_at,expires_at,observer_version) VALUES(?,'PARTIAL',?::jsonb,clock_timestamp(),clock_timestamp()+interval '1 hour','fixture') RETURNING observation_id",Long.class,request.get("requestId"),json.writeValueAsString(Map.of("capabilities",caps,"coverage",Map.of("permissionCoverage","PARTIAL","targetCoverage","UNKNOWN","restrictionCoverage","UNKNOWN","classificationCoverage","UNKNOWN"),"reasonCodes",List.of("EFFECTIVE_PERMISSION_NOT_PROVEN"))));}
-    private SecretPermissionAssistanceService.Confirm confirm(Map<String,Object> preview,List<SecretRiskProvenance.Ref> refs,String key){return new SecretPermissionAssistanceService.Confirm((String)preview.get("contextVersion"),((Number)preview.get("evidenceRevision")).longValue(),key,true,"TICKET:SEC-123",OffsetDateTime.now(ZoneOffset.UTC),OffsetDateTime.now(ZoneOffset.UTC).plusMinutes(30),Map.of("capability","RESOURCE_ADMINISTRATION","targetScope","ACCOUNT","permissionCoverage","COMPLETE","targetCoverage","COMPLETE","restrictionCoverage","COMPLETE","classificationCoverage","COMPLETE"),refs);}
+    private SecretPermissionAssistanceService.Confirm confirm(Map<String,Object> preview,List<SecretRiskProvenance.Ref> refs,String key){return new SecretPermissionAssistanceService.Confirm((String)preview.get("contextVersion"),((Number)preview.get("evidenceRevision")).longValue(),key,true,"TICKET:SEC-123",OffsetDateTime.now(ZoneOffset.UTC),OffsetDateTime.now(ZoneOffset.UTC).plusMinutes(30),Map.of("capability","RESOURCE_ADMINISTRATION","targetScope","ACCOUNT","permissionCoverage","COMPLETE","targetCoverage","COMPLETE","restrictionCoverage","COMPLETE","classificationCoverage","COMPLETE"),refs,OffsetDateTime.now(ZoneOffset.UTC).minusMinutes(5),OffsetDateTime.now(ZoneOffset.UTC).plusMinutes(20));}
     private long revision(){return jdbc.queryForObject("SELECT risk_evidence_revision FROM secret_occurrences WHERE occurrence_id=?",Long.class,occurrence);}
     private String policy(){return jdbc.queryForObject("SELECT policy_version||encode(content_hash,'hex')||permission_mapping_manifest::text FROM secret_severity_policies WHERE state='ACTIVE'",String.class);}
     private long providerReference(){long task=jdbc.queryForObject("INSERT INTO secret_investigation_tasks(target_type,occurrence_id,missing_reason_code,creation_source,version) VALUES('OCCURRENCE',?,'EVIDENCE_INCOMPLETE','HUMAN_HANDOFF',2) RETURNING task_id",Long.class,occurrence);long original=jdbc.queryForObject("INSERT INTO secret_investigation_history(task_id,event_type,actor_user_id,safe_changes,evidence_ref,task_version) VALUES(?,'EVIDENCE_ADDED',1,'{\"evidenceKind\":\"PROVIDER_REFERENCE\"}','TICKET:SEC-123',1) RETURNING history_id",Long.class,task);return jdbc.queryForObject("INSERT INTO secret_investigation_history(task_id,event_type,actor_user_id,safe_changes,evidence_ref,task_version) VALUES(?,'EVIDENCE_ACCEPTED',1,jsonb_build_object('acceptedHistoryId',?::bigint),'TICKET:SEC-123',2) RETURNING history_id",Long.class,task,original);}

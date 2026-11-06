@@ -65,9 +65,9 @@ class SecretAssessmentExecutorIntegrationTest {
       assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_scan_runs", Long.class)).isZero();
       jdbc.update(
           "INSERT INTO"
-              + " secret_risk_evidence(record_kind,kind,occurrence_id,credential_set_id,scope_id,source_kind,verification_level,safe_payload,observed_at,effective_from,expires_at,evidence_ref,reason_code,safe_payload_digest,ingestion_key,credential_revision,scope_revision,submitted_by_user_id)"
+              + " secret_risk_evidence(record_kind,kind,occurrence_id,credential_set_id,scope_id,source_kind,verification_level,safe_payload,observed_at,effective_from,expires_at,evidence_ref,reason_code,safe_payload_digest,ingestion_key,credential_revision,scope_revision,submitted_by_user_id,fact_valid_from,fact_valid_until,source_presence_observed_at,applicability_basis)"
               + " VALUES('ASSERTION','ACCESS_SCOPE',?,1,1,'MANUAL','MANUAL_ACCEPTED','{\"audienceClass\":\"BROAD\",\"coverageStatus\":\"COMPLETE\",\"publicAccessConfirmed\":true,\"boundedPrincipalCount\":0}',now(),now(),now()+interval"
-              + " '1 second','TICKET:SEC-123','FIXTURE',decode(repeat('01',32),'hex'),'expiry-fixture',1,1,1)",
+              + " '1 second','TICKET:SEC-123','FIXTURE',decode(repeat('01',32),'hex'),'expiry-fixture',1,1,1,now()-interval '1 minute',now()+interval '1 second',now(),'EFFECTIVE_INTERVAL')",
           occurrence);
       assertThat(executor.execute(executor.claim().orElseThrow())).isTrue();
       Thread.sleep(1100);

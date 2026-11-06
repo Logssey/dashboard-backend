@@ -3,6 +3,7 @@ package com.logssey.secret.risk;
 import com.logssey.common.error.*;
 import com.logssey.secret.access.*;
 import com.logssey.secret.risk.core.*;
+import com.logssey.secret.validation.SecretValidationService;
 import java.time.*;
 import java.util.*;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -14,11 +15,18 @@ public class SecretRiskQueryService {
   final JdbcTemplate jdbc;
   final SecretAccessService access;
   final SecretRiskAssessmentStore store;
+  final SecretValidationService validation;
 
   public SecretRiskQueryService(JdbcTemplate jdbc, SecretAccessService access) {
+    this(jdbc, access, new SecretValidationService(jdbc, access, null, false, false));
+  }
+
+  @org.springframework.beans.factory.annotation.Autowired
+  public SecretRiskQueryService(JdbcTemplate jdbc, SecretAccessService access, SecretValidationService validation) {
     this.jdbc = jdbc;
     this.access = access;
     this.store = new SecretRiskAssessmentStore(jdbc);
+    this.validation = validation;
   }
 
   @org.springframework.transaction.annotation.Transactional(
@@ -82,7 +90,7 @@ public class SecretRiskQueryService {
     for (var e :
         jdbc.queryForList(
             """
-SELECT e.evidence_id,e.kind,e.verification_level,e.observed_at,e.expires_at,e.safe_payload::text AS payload,e.evidence_ref,e.source_refs::text AS source_refs,
+SELECT e.evidence_id,e.kind,e.verification_level,e.observed_at,e.expires_at,e.fact_valid_from,e.fact_valid_until,e.source_presence_observed_at,e.applicability_basis,e.safe_payload::text AS payload,e.evidence_ref,e.source_refs::text AS source_refs,
 EXISTS(SELECT 1 FROM secret_current_risk_evidence c WHERE c.evidence_id=e.evidence_id) AS accepted,
 EXISTS(SELECT 1 FROM secret_risk_evidence r WHERE r.related_evidence_id=e.evidence_id AND r.record_kind='RETRACTION') AS retracted,(SELECT r.review_decision FROM secret_risk_evidence r WHERE r.related_evidence_id=e.evidence_id AND r.record_kind='REVIEW' ORDER BY r.evidence_id DESC LIMIT 1) AS latest_review
 FROM secret_risk_evidence e WHERE e.occurrence_id=? AND e.record_kind='ASSERTION' ORDER BY e.evidence_id DESC LIMIT 100
@@ -102,6 +110,10 @@ FROM secret_risk_evidence e WHERE e.occurrence_id=? AND e.record_kind='ASSERTION
               : e.get("verification_level"));
       item.put("observedAt", SecretRiskAssessmentStore.time(e.get("observed_at")));
       item.put("validUntil", SecretRiskAssessmentStore.time(e.get("expires_at")));
+      item.put("applicableFrom", SecretRiskAssessmentStore.time(e.get("fact_valid_from")));
+      item.put("applicableUntil", SecretRiskAssessmentStore.time(e.get("fact_valid_until")));
+      item.put("sourcePresenceObservedAt", SecretRiskAssessmentStore.time(e.get("source_presence_observed_at")));
+      item.put("applicabilityBasis", e.get("applicability_basis"));
       item.put(
           "status",
           Boolean.TRUE.equals(e.get("retracted"))
@@ -219,7 +231,11 @@ FROM secret_risk_evidence e WHERE e.occurrence_id=? AND e.record_kind='ASSERTION
                     ? "REQUEST_ASSESSMENT"
                     : conflicts.isEmpty() ? "REVIEW_EVIDENCE" : "INVESTIGATE_CONFLICT");
     var readAt = OffsetDateTime.now(ZoneOffset.UTC);
-    result.put("analysisContext", new SecretRiskAnalysisContext(jdbc, store).read(o, result, readAt));
+    var analysisContext = new SecretRiskAnalysisContext(jdbc, store).read(o, result, readAt);
+    result.put("analysisContext", analysisContext);
+    var authentication = metadata ? Map.<String, Object>of()
+        : validation.read(n(o, "credential_set_id"), occurrence, login);
+    result.put("riskExperience", new SecretRiskExperience(jdbc, store).read(actor, o, result, analysisContext, authentication, readAt));
     result.put("readAt", readAt);
     return result;
   }
@@ -244,7 +260,8 @@ SELECT v.*,o.risk_evidence_revision,k.component_state,l.evidence_revision,l.crea
 l.credential_revision AS assessment_credential_revision,k.credential_revision,l.scope_revision AS assessment_scope_revision,s.revision,
 e.created_at AS effective_at,ep.policy_version AS effective_policy,e.matched_rule_id AS effective_rule,
 e.override_expires_at,l.policy_id,coalesce(storage.policy_result='ALLOWED' AND NOT storage.requires_reassessment,false) AS current_storage_allowed,EXISTS(SELECT 1 FROM secret_severity_policies ap WHERE ap.policy_id=l.policy_id AND ap.state='ACTIVE') AS active_policy,
-(l.input_snapshot->>'evidenceValidUntil')::timestamptz<=clock_timestamp() AS expired_after_assessment
+(l.input_snapshot->>'evidenceValidUntil')::timestamptz<=clock_timestamp() AS expired_after_assessment,
+l.input_snapshot->>'applicabilityVersion' AS applicability_version
 FROM secret_occurrences o JOIN secret_credential_sets k USING(credential_set_id) JOIN secret_connection_scopes s USING(scope_id)
 JOIN secret_current_occurrence_risks v USING(occurrence_id)
 LEFT JOIN secret_occurrence_policy_results storage ON storage.occurrence_id=o.occurrence_id
@@ -266,6 +283,7 @@ WHERE o.occurrence_id IN(:ids) AND
                   r.get("assessment_credential_revision"), r.get("credential_revision"))
               && Objects.equals(r.get("assessment_scope_revision"), r.get("revision"))
               && Boolean.TRUE.equals(r.get("active_policy"))
+              && "risk-applicability-v1".equals(r.get("applicability_version"))
               && !Boolean.TRUE.equals(r.get("expired_after_assessment"))
               && (!"R00".equals(r.get("rule_id"))
                   || Boolean.TRUE.equals(r.get("current_storage_allowed")));

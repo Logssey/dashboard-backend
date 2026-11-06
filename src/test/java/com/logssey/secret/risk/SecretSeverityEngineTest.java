@@ -7,6 +7,27 @@ import java.util.*;
 import org.junit.jupiter.api.Test;
 
 class SecretSeverityEngineTest {
+  @Test void all720InputsPreserveV2AndAuthenticationIndependence() {
+    var engine = new SecretSeverityEngine();
+    var counts = new TreeMap<String, Integer>();
+    int tested = 0;
+    for (String exposure : List.of("NORMAL", "ABNORMAL", "UNKNOWN"))
+      for (String range : List.of("BROAD", "BOUNDED", "UNKNOWN"))
+        for (String credential : List.of("CONFIRMED", "CANDIDATE"))
+          for (String impact : List.of("ADMIN", "IMPORTANT", "LIMITED", "MINIMAL", "UNKNOWN"))
+            for (String abuse : List.of("CONFIRMED", "NOT_CONFIRMED")) {
+              String expectedRule = null;
+              for (String validity : List.of("VALID", "INVALID", "UNKNOWN", "UNCHECKED")) {
+                var result = engine.evaluate(input(exposure, range, credential, impact, abuse, validity), rules());
+                if (expectedRule == null) expectedRule = result.ruleId();
+                assertThat(result.ruleId()).isEqualTo(expectedRule);
+                counts.merge(result.ruleId(), 1, Integer::sum); tested++;
+              }
+            }
+    assertThat(tested).isEqualTo(720);
+    assertThat(counts).containsExactlyInAnyOrderEntriesOf(Map.of("R00",120,"R01",120,"R02",4,"R03",4,
+        "R04",8,"R05",8,"R06",4,"R07",4,"R99",448));
+  }
   static List<SecretSeverityEngine.Rule> rules() {
     return List.of(
         rule("R00", 0, "NORMAL", null, null, null, null, "NOT_APPLICABLE", null),

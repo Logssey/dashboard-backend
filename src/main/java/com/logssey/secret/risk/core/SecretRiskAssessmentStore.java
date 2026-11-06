@@ -50,6 +50,7 @@ WHERE o.occurrence_id=?
     var reasons = new TreeSet<String>();
     var heads = new TreeMap<String, Object>();
     var refs = new ArrayList<Long>();
+    var excluded = new ArrayList<Map<String, Object>>();
     OffsetDateTime evidenceValidUntil = null;
     var exposure =
         jdbc.queryForList(
@@ -140,6 +141,7 @@ ORDER BY CASE e.kind WHEN 'ASSET_CLASSIFICATION' THEN 0 ELSE 1 END,e.evidence_id
       if (number(e, "credential_revision") != number(o, "credential_revision")
           || number(e, "scope_revision") != number(o, "scope_revision")) {
         reasons.add("STALE_EVIDENCE");
+        excluded.add(excluded(e, "STALE_EVIDENCE"));
         continue;
       }
       if (!kind.equals("ABUSE_LINK")
@@ -147,6 +149,7 @@ ORDER BY CASE e.kind WHEN 'ASSET_CLASSIFICATION' THEN 0 ELSE 1 END,e.evidence_id
               || expiry == null
               || !asOf.isBefore(expiry))) {
         reasons.add("STALE_EVIDENCE");
+        excluded.add(excluded(e, "STALE_EVIDENCE"));
         continue;
       }
       long max =
@@ -161,10 +164,18 @@ ORDER BY CASE e.kind WHEN 'ASSET_CLASSIFICATION' THEN 0 ELSE 1 END,e.evidence_id
       if (observed.isAfter(
           asOf.plusSeconds(((Number) freshness.get("futureSkewSeconds")).longValue()))) {
         reasons.add("TIME_UNCERTAIN");
+        excluded.add(excluded(e, "TIME_UNCERTAIN"));
         continue;
       }
       if (!kind.equals("ABUSE_LINK") && !asOf.isBefore(observed.plusSeconds(max))) {
         reasons.add("STALE_EVIDENCE");
+        excluded.add(excluded(e, "STALE_EVIDENCE"));
+        continue;
+      }
+      String applicabilityProblem = SecretRiskApplicability.rejection(e, o, asOf);
+      if (applicabilityProblem != null) {
+        reasons.add(applicabilityProblem);
+        excluded.add(excluded(e, applicabilityProblem));
         continue;
       }
       var facts = map((String) e.get("payload"));
@@ -173,6 +184,8 @@ ORDER BY CASE e.kind WHEN 'ASSET_CLASSIFICATION' THEN 0 ELSE 1 END,e.evidence_id
       if (!kind.equals("ABUSE_LINK")) {
         var deadline = observed.plusSeconds(max);
         if (expiry.isBefore(deadline)) deadline = expiry;
+        var factUntil = time(e.get("fact_valid_until"));
+        if (factUntil != null && factUntil.isBefore(deadline)) deadline = factUntil;
         if (evidenceValidUntil == null || deadline.isBefore(evidenceValidUntil))
           evidenceValidUntil = deadline;
       }
@@ -255,7 +268,9 @@ ORDER BY CASE e.kind WHEN 'ASSET_CLASSIFICATION' THEN 0 ELSE 1 END,e.evidence_id
       }
     }
     if (ranges.size() == 1) input.put("exposureRange", ranges.iterator().next());
-    else if (ranges.size() > 1) reasons.add("CONFLICTING_EVIDENCE");
+    else if (ranges.size() > 1) {
+      reasons.add("CONFLICTING_EVIDENCE"); reasons.add("ACCESS_EVIDENCE_CONFLICT");
+    }
     if (!permissionIncomplete && !impacts.isEmpty() && classificationPresent) {
       String impact =
           impacts.stream()
@@ -271,7 +286,7 @@ ORDER BY CASE e.kind WHEN 'ASSET_CLASSIFICATION' THEN 0 ELSE 1 END,e.evidence_id
                           }))
               .orElse("UNKNOWN");
       if ((!"MINIMAL".equals(impact) || minimalAssets)) input.put("impact", impact);
-      else reasons.add("CONFLICTING_EVIDENCE");
+      else { reasons.add("CONFLICTING_EVIDENCE"); reasons.add("ASSET_CLASSIFICATION_CONFLICT"); }
     } else if (!impacts.isEmpty()) reasons.add("ASSET_CLASSIFICATION_UNKNOWN");
     if (abuse.contains(true)) {
       input.put("abuse", "CONFIRMED");
@@ -289,6 +304,7 @@ ORDER BY CASE e.kind WHEN 'ASSET_CLASSIFICATION' THEN 0 ELSE 1 END,e.evidence_id
     snapshot.put("positiveCapabilities", List.copyOf(positiveCapabilities));
     snapshot.put("sourceHeads", heads);
     snapshot.put("evidenceRefs", refs);
+    snapshot.put("excludedEvidence", excluded);
     snapshot.put(
         "evidenceValidUntil", evidenceValidUntil == null ? null : evidenceValidUntil.toString());
     snapshot.put("normalizerReasons", List.copyOf(reasons));
@@ -299,8 +315,13 @@ ORDER BY CASE e.kind WHEN 'ASSET_CLASSIFICATION' THEN 0 ELSE 1 END,e.evidence_id
     snapshot.put("policyHash", HexFormat.of().formatHex((byte[]) policy.get("content_hash")));
     snapshot.put("engineVersion", policy.get("engine_version"));
     snapshot.put("normalizerVersion", policy.get("normalizer_version"));
+    snapshot.put("applicabilityVersion", "risk-applicability-v1");
     snapshot.put("freshnessProfileVersion", policy.get("freshness_profile_version"));
     return snapshot;
+  }
+
+  private static Map<String, Object> excluded(Map<String, Object> evidence, String code) {
+    return Map.of("evidenceId", evidence.get("evidence_id"), "kind", evidence.get("kind"), "reasonCode", code);
   }
 
   @SuppressWarnings("unchecked")
