@@ -451,7 +451,7 @@ class SecretRevalidationServiceIntegrationTest {
         alerts.close("revalidation-admin",alert,new com.logssey.secret.alert.SecretCrossEnvironmentAlertRequests.Close(0L,"CREDENTIAL_RETIRED",null,null,java.util.List.of(evidence),caseId,null,"close-real-alert"));
         assertThat(jdbc.queryForObject("SELECT secret_reconcile_test_alerts(NULL)",Long.class)).isZero();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_cross_environment_alerts",Long.class)).isEqualTo(1);
-        jdbc.update("UPDATE secret_validation_attempts SET provider_checked_at=clock_timestamp(),completed_at=clock_timestamp()");
+        jdbc.update("UPDATE secret_validation_attempts SET provider_checked_at=statement_timestamp(),completed_at=statement_timestamp()");
         jdbc.queryForObject("SELECT secret_reconcile_test_alerts(NULL)",Long.class);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_cross_environment_alerts",Long.class)).isEqualTo(2);
         assertThat(jdbc.queryForObject("SELECT previous_alert_id FROM secret_cross_environment_alerts WHERE closed_at IS NULL",Long.class)).isEqualTo(alert);
