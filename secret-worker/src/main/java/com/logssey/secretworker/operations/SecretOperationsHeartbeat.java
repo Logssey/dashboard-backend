@@ -40,7 +40,9 @@ public class SecretOperationsHeartbeat implements InitializingBean, DisposableBe
         this.store=new SecretOperationsStore(jdbc,manager,grace,queueGrace,expected,deployment);this.enabled=enabled;this.deployment=deployment;
         this.interval=interval;this.cleanupEnabled=cleanupEnabled;this.cleanupInterval=cleanupInterval;
         boolean executor=env.getProperty("logssey.secret.executor.enabled",Boolean.class,false);
-        boolean sources=env.getProperty("logssey.secret.github.enabled",Boolean.class,false)||env.getProperty("logssey.secret.aws.collection.enabled",Boolean.class,false);
+        boolean sources=env.getProperty("logssey.secret.github.enabled",Boolean.class,false)
+            ||env.getProperty("logssey.secret.aws.collection.enabled",Boolean.class,false)
+            ||env.getProperty("logssey.secret.notion.collection.enabled",Boolean.class,false);
         register("SCHEDULER",env.getProperty("logssey.secret.scheduler.enabled",Boolean.class,false),pollMs(env,"logssey.secret.scheduler.poll-delay"));
         register("EXECUTOR",executor&&sources,pollMs(env,"logssey.secret.executor.poll-delay"));
         register("ASSESSMENT",executor,30_000);
