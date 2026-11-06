@@ -17,6 +17,25 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.*;
 
 class SecretConnectionTestServiceTest {
+    @Test
+    void notionProbeUsesOnlyTheConfiguredConnectionAndRequiresEveryApprovedScopeToBeSupported() {
+        var repository=mock(SecretConnectionTestRepository.class);
+        var access=mock(SecretAccessService.class);
+        var aws=mock(AwsIdentityProbe.class);var github=mock(GitHubAuthProbe.class);var notion=mock(NotionAuthProbe.class);
+        var service=new SecretConnectionTestService(repository,aws,github,notion,
+                Clock.systemUTC(),access);
+        when(access.requirePrincipal("operator")).thenReturn(new SecretPrincipal(1));
+        when(repository.connection(9)).thenReturn(Optional.of(new SecretConnectionTestRepository.Connection(
+                9,"NOTION","ACTIVE","notion-internal:default")));
+        when(repository.notionScopesSupported(9)).thenReturn(false);
+        assertThat(service.test(9,"operator").reasonCode()).isEqualTo("INVALID_APPROVED_SCOPE");
+        verifyNoInteractions(notion);
+        when(repository.notionScopesSupported(9)).thenReturn(true);
+        when(notion.probe("notion-internal:default")).thenReturn(ConnectionProbeResult.connected());
+        assertThat(service.test(9,"operator").status()).isEqualTo("CONNECTED");
+        verify(notion).probe("notion-internal:default");verifyNoInteractions(aws,github);
+    }
+
     private final SecretConnectionTestRepository repository = mock(SecretConnectionTestRepository.class);
     private final SecretAccessService access = mock(SecretAccessService.class);
     private final AwsIdentityProbe aws = mock(AwsIdentityProbe.class);

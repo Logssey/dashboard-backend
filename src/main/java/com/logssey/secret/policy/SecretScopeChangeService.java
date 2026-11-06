@@ -201,7 +201,7 @@ public class SecretScopeChangeService {
         String mode=reasons.isEmpty()?"DIRECT":"INDEPENDENT_REVIEW";
         var remaining=new ArrayList<String>();
         if(!policyChanged && policyId!=null)repository.setupReasons(scope.id()).stream().filter(r->r.startsWith("POLICY_")).forEach(remaining::add);
-        if(policyId==null && Set.of("GITHUB_REPOSITORY_FILES","AWS_SECRETS_MANAGER_VALUE","AWS_SSM_PARAMETER_VALUE","AWS_S3_OBJECT_CONTENT").contains(scope.contentType()))remaining.add("POLICY_MISSING");
+        if(policyId==null && Set.of("GITHUB_REPOSITORY_FILES","AWS_SECRETS_MANAGER_VALUE","AWS_SSM_PARAMETER_VALUE","AWS_S3_OBJECT_CONTENT","NOTION_PAGE_CONTENT").contains(scope.contentType()))remaining.add("POLICY_MISSING");
         if(mode.equals("INDEPENDENT_REVIEW"))remaining.add("PENDING_REVIEW");
         return new Preview(mode,List.copyOf(reasons),RULE,mode.equals("DIRECT")?List.of():repository.reviewers(scope.connectionId(),actor.userId()),
             repository.pending(scope.id()).isEmpty() && (access.hasConnectionRole(actor,scope.connectionId(),SecretRole.SECURITY)

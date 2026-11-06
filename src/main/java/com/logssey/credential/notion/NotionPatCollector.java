@@ -18,6 +18,7 @@ import com.logssey.credential.notion.dto.NotionRevoker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClient.RequestHeadersSpec.ConvertibleClientHttpResponse;
 
@@ -51,6 +52,7 @@ public class NotionPatCollector {
         this.settings = Objects.requireNonNull(settings, "settings");
         this.sleeper = Objects.requireNonNull(sleeper, "sleeper");
         this.restClient = RestClient.builder()
+                .requestFactory(new JdkClientHttpRequestFactory())
                 .baseUrl(settings.baseUrl())
                 .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + settings.token())
                 .defaultHeader("Notion-Version", NotionAdminSettings.NOTION_VERSION)

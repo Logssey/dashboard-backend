@@ -34,6 +34,7 @@ class SecretDetectionConfigurationTest {
 
     @Test void eitherContentPipelineGetsOneSharedDetectorAndFingerprintNamespace() {
         for (String[] flags : new String[][]{{"logssey.secret.github.enabled=true"},
+                {"logssey.secret.notion.collection.enabled=true"},
                 {"logssey.secret.aws.collection.enabled=true", "logssey.secret.aws.content.enabled=true"}}) {
             runner.withPropertyValues(flags).run(context -> {
                 assertNull(context.getStartupFailure());

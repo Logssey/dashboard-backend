@@ -81,6 +81,17 @@ class SecretRevalidationResultTest {
     }
 
     @Test
+    void aSuccessfulNotionWalkCannotProveRemovalWithoutASnapshotContract() {
+        jdbc.update("UPDATE secret_connection_scopes SET content_type='NOTION_PAGE_CONTENT' WHERE connection_id=?",
+                seed.connectionId());
+        var claim = claim();
+        completedEvidence("SUCCEEDED", "SUCCEEDED", "config-v1", "gitleaks-v1", "hmac-v1");
+
+        assertThat(execution.complete(claim.jobId(), claim.leaseToken())).isTrue();
+        assertOutcome("UNKNOWN", "REVALIDATION_INCOMPLETE", "UNKNOWN", "SUCCEEDED");
+    }
+
+    @Test
     void partialScopeCannotProveAbsenceEvenWithMatchingDetectorMetadata() {
         var claim = claim();
         completedEvidence("PARTIAL", "SUCCEEDED", "config-v1", "gitleaks-v1", "hmac-v1");

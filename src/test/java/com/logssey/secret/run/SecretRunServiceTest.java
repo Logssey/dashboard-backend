@@ -703,6 +703,39 @@ class SecretRunServiceTest {
         assertCode(ErrorCode.UNAUTHENTICATED, () -> service.list(0, 20, "unknown-user"));
     }
 
+    @Test
+    void notionManualScanRequiresOptInAnExactPageAndTheConfiguredCredentialReference() {
+        long connection=connection("NOTION","ACTIVE",null);
+        jdbc.update("UPDATE secret_connections SET auth_ref='notion-internal:default' WHERE connection_id=?",connection);
+        long scope=scope(connection,"notion-page",true);
+        jdbc.update("UPDATE secret_connection_scopes SET content_type='NOTION_PAGE_CONTENT',history_limit='CURRENT_VERSION_ONLY',"
+                +" approved_ref='notion://pages/11111111-2222-3333-4444-555555555555' WHERE scope_id=?",scope);
+        assertConflict(()->service.register(new SecretRunRequest(connection,"notion-disabled"),"admin"));
+        assertThat(count("secret_jobs")).isZero();
+        long sibling=connection("NOTION","ACTIVE",null);
+        jdbc.update("UPDATE secret_connections SET auth_ref='notion-internal:default' WHERE connection_id=?",sibling);
+        var retryAt=jdbc.queryForObject("UPDATE secret_connections SET source_retry_at=clock_timestamp()+interval '20 minutes',"
+                +" source_retry_reason='NOTION_RATE_LIMITED' WHERE connection_id=? RETURNING source_retry_at",OffsetDateTime.class,sibling);
+        long otherProvider=connection("GITHUB","ACTIVE",null);
+        jdbc.update("UPDATE secret_connections SET auth_ref='notion-internal:default',source_retry_at=clock_timestamp()+interval '4 hours',"
+                +" source_retry_reason='NOTION_RATE_LIMITED' WHERE connection_id=?",otherProvider);
+        service=new SecretRunService(new SecretRunRepository(jdbc),transactions,new SecretAccessService(jdbc),
+                new SecretCommandExecutor(jdbc,transactions),true);
+        var accepted=service.register(new SecretRunRequest(connection,"notion-approved"),"admin");
+        assertThat(accepted.status()).isEqualTo("PENDING");
+        assertThat(count("secret_scan_runs")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT snapshot_content_type FROM secret_run_scopes WHERE run_id=?",String.class,accepted.runId()))
+                .isEqualTo("NOTION_PAGE_CONTENT");
+        assertThat(jdbc.queryForObject("SELECT available_at FROM secret_jobs WHERE connection_id=?",OffsetDateTime.class,connection))
+                .isEqualTo(retryAt);
+        var extended=jdbc.queryForObject("UPDATE secret_connections SET source_retry_at=source_retry_at+interval '1 minute'"
+                +" WHERE connection_id=? RETURNING source_retry_at",OffsetDateTime.class,sibling);
+        assertThat(service.status(accepted.runId(),"admin").availableAt()).isEqualTo(extended);
+        jdbc.update("UPDATE secret_connection_scopes SET approved_ref='https://example.com/private' WHERE scope_id=?",scope);
+        assertConflict(()->service.register(new SecretRunRequest(connection,"notion-invalid"),"admin"));
+        assertThat(count("secret_scan_runs")).isEqualTo(1);
+    }
+
     private long connection(String status, OffsetDateTime nextDue) {
         return connection("GITHUB", status, nextDue);
     }

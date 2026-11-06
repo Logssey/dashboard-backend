@@ -4,6 +4,14 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SecretLocationScopePolicyTest {
+    @org.junit.jupiter.api.Test void approvedNotionPageDoesNotExtendToOtherProvidersOrHistory() {
+        String ref="notion://pages/11111111-2222-3333-4444-555555555555";
+        assertThat(SecretLocationScopePolicy.approved("NOTION","NOTION_PAGE_CONTENT","CURRENT_VERSION_ONLY",ref)).isTrue();
+        assertThat(SecretLocationScopePolicy.approved("NOTION","NOTION_PAGE_CONTENT","ALL_VERSIONS",ref)).isFalse();
+        assertThat(SecretLocationScopePolicy.approved("AWS","NOTION_PAGE_CONTENT","CURRENT_VERSION_ONLY",ref)).isFalse();
+        assertThat(SecretLocationScopePolicy.approved("NOTION","NOTION_PAGE_CONTENT","CURRENT_VERSION_ONLY",ref+"?all=true")).isFalse();
+    }
+
     @Test
     void acceptsOnlyExactCurrentAwsContentAndPreservesGithubSupport() {
         assertThat(SecretLocationScopePolicy.approved("GITHUB", "GITHUB_REPOSITORY_FILES",

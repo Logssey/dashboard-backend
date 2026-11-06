@@ -13,6 +13,27 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 import static org.assertj.core.api.Assertions.*;
 
 class SecretScanCoverageIntegrationTest {
+    @Test void notionCoverageGatesRuntimeSupportAndRetainsTheCommonStoragePolicyRequirement() {
+        long c=connection(),s=scope(c,"NOTION_PAGE_CONTENT");
+        jdbc.update("UPDATE secret_connections SET provider='NOTION',auth_ref='notion-internal:default' WHERE connection_id=?",c);
+        jdbc.update("UPDATE secret_connection_scopes SET history_limit='CURRENT_VERSION_ONLY',"
+                +" approved_ref='notion://pages/11111111-2222-3333-4444-555555555555' WHERE scope_id=?",s);
+        var disabled=items(service.connections("operator","ALL","ALL",0,20)).getFirst();
+        assertThat(((Map<?,?>)disabled.get("capabilities")).get("canRun")).isEqualTo(false);
+        assertThat(disabled.get("scanBlockedReasonCode")).isEqualTo("NOTION_COLLECTION_DISABLED");
+        service=new SecretCoverageService(jdbc,new SecretAccessService(jdbc),"6h",true);
+        var enabled=items(service.connections("operator","ALL","ALL",0,20)).getFirst();
+        assertThat(((Map<?,?>)enabled.get("capabilities")).get("canRun")).isEqualTo(true);
+        assertThat(((Map<?,?>)enabled.get("capabilities")).get("canTest")).isEqualTo(true);
+        var scope=items(service.scopes("operator",c,"ALL","ALL",false,0,20)).getFirst();
+        assertThat(scope.get("contentType")).isEqualTo("NOTION_PAGE_CONTENT");
+        assertThat(scope.get("setupReasonCodes").toString()).contains("POLICY_MISSING");
+        assertThat(scope.get("setupState")).isEqualTo("READY");
+        jdbc.update("UPDATE secret_connection_scopes SET approved_ref=approved_ref||'?all=true' WHERE scope_id=?",s);
+        assertThat(items(service.connections("operator","ALL","ALL",0,20)).getFirst().get("scanBlockedReasonCode"))
+                .isEqualTo("INVALID_APPROVED_SCOPE");
+    }
+
     static final PostgreSQLContainer POSTGRES=new PostgreSQLContainer("postgres:18.6");
     static JdbcTemplate jdbc;
     SecretCoverageService service;SecretScanFactsRepository facts;
@@ -41,6 +62,23 @@ class SecretScanCoverageIntegrationTest {
         assertThat(summary.gapScopeCount()).isEqualTo(5);assertThat(summary.unverifiedScopeCount()).isEqualTo(5);assertThat(summary.scopeStatusCounts()).containsEntry("PARTIAL",1L).containsEntry("FAILED",4L);
         assertThat(summary.scopeStatusCounts().values().stream().mapToLong(Long::longValue).sum()).isEqualTo(12);
         assertThat(summary.coverageComplete()).isFalse();assertThat(summary.findingCount()).isNull();assertThat(summary.newCredentialCount()).isNull();
+    }
+
+    @Test void excludedNotionChildrenAreReportedSeparatelyFromSuccessfulPageCoverage() {
+        long c=connection(),s=scope(c,"NOTION_PAGE_CONTENT");
+        jdbc.update("UPDATE secret_connections SET provider='NOTION' WHERE connection_id=?",c);
+        jdbc.update("UPDATE secret_connection_scopes SET history_limit='CURRENT_VERSION_ONLY',"
+                +" approved_ref='notion://pages/11111111-2222-3333-4444-555555555555' WHERE scope_id=?",s);
+        long run=run(c,"SUCCEEDED");
+        outcome(run,s,"SUCCEEDED","SKIPPED",false);
+        jdbc.update("UPDATE secret_run_scopes SET excluded_object_count=3 WHERE run_id=?",run);
+        var scope=facts.scopes(run).getFirst();
+        assertThat(scope.contentType()).isEqualTo("NOTION_PAGE_CONTENT");
+        assertThat(scope.excludedObjectCount()).isEqualTo(3);
+        assertThat(scope.scopeOutcome()).isEqualTo("SUCCEEDED");
+        assertThat(facts.runCoverage(run).coverageComplete()).isTrue();
+        jdbc.update("UPDATE secret_run_scopes SET collection_status='PARTIAL',failure_code='NOTION_TEXT_LIMIT' WHERE run_id=?",run);
+        assertThat(facts.scopes(run).getFirst().gapCode()).isEqualTo("NOTION_TEXT_LIMIT");
     }
 
     @Test void latestFailureRetainsSameRevisionLastSuccessWithoutLeakingSourceNames(){
