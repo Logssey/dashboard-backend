@@ -119,7 +119,7 @@ class SecretCaseSecurityIntegrationTest {
     }
 
     @Test
-    void closureAndExceptionEndpointsWorkThroughSpringTransactionAndRepositoryProxies() throws Exception {
+    void disabledExceptionCannotHideOpenWorkThroughSpringTransactionAndRepositoryProxies() throws Exception {
         jdbc.update("INSERT INTO secret_role_grants(user_id,role,granted_by_user_id,grant_source) VALUES (?,'SECURITY',?,'MANUAL')",actorId,actorId);
         MockMvc mvc=mvc();
         var login=mvc.perform(post("/api/v1/auth/login").with(csrf()).contentType(MediaType.APPLICATION_JSON)
@@ -131,11 +131,15 @@ class SecretCaseSecurityIntegrationTest {
         String body="{\"occurrenceIds\":["+occurrence+"],\"reasonCode\":\"BUSINESS_CONTINUITY\",\"evidenceRef\":\"TICKET:SEC-123\",\"expiresAt\":\""
             +OffsetDateTime.now(ZoneOffset.UTC).plusDays(1)+"\",\"expectedCaseVersion\":0,\"idempotencyKey\":\"http-exception-"+caseId+"\"}";
         mvc.perform(post("/api/v1/secrets/cases/"+caseId+"/exceptions").session(session).with(csrf()).contentType(MediaType.APPLICATION_JSON).content(body))
-            .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("APPROVED"));
+            .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("$.code").value("RISK_ACCEPTANCE_DISABLED"));
         mvc.perform(get("/api/v1/secrets/cases/"+caseId+"/exceptions").session(session))
-            .andExpect(status().isOk()).andExpect(jsonPath("$.fullyRiskAccepted").value(true));
+            .andExpect(status().isOk()).andExpect(jsonPath("$.fullyRiskAccepted").value(false))
+            .andExpect(jsonPath("$.canApprove").value(false))
+            .andExpect(jsonPath("$.blockedReasonCodes[0]").value("RISK_ACCEPTANCE_DISABLED"));
         mvc.perform(get("/api/v1/secrets/summary?origin=TEST").session(session))
-            .andExpect(status().isOk()).andExpect(jsonPath("$.caseSummary.actionCounts.RISK_ACCEPTED").value(1));
+            .andExpect(status().isOk()).andExpect(jsonPath("$.caseSummary.actionCounts.RISK_ACCEPTED").value(0))
+            .andExpect(jsonPath("$.caseSummary.actionCounts.OPEN").value(1));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_exceptions", Long.class)).isZero();
     }
 
     @Test

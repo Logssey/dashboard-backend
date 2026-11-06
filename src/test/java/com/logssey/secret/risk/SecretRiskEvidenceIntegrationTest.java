@@ -27,7 +27,7 @@ class SecretRiskEvidenceIntegrationTest {
             POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
     jdbc = new JdbcTemplate(ds);
     manager = new DataSourceTransactionManager(ds);
-    Flyway.configure().dataSource(ds).target("26").load().migrate();
+    Flyway.configure().dataSource(ds).load().migrate();
   }
 
   @AfterAll

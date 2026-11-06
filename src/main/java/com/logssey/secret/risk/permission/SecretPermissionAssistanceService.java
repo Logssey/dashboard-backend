@@ -18,7 +18,9 @@ import tools.jackson.databind.json.JsonMapper;
 @Service
 public class SecretPermissionAssistanceService {
     public record Request(String expectedContextVersion,String idempotencyKey,Long collectorConnectionId){}
-    public record Confirm(String expectedContextVersion,Long expectedEvidenceRevision,String idempotencyKey,Boolean attestation,String evidenceRef,OffsetDateTime observedAt,OffsetDateTime validUntil,Map<String,Object> facts,List<SecretRiskProvenance.Ref> sourceRefs){}
+    public record Confirm(String expectedContextVersion,Long expectedEvidenceRevision,String idempotencyKey,Boolean attestation,String evidenceRef,OffsetDateTime observedAt,OffsetDateTime validUntil,Map<String,Object> facts,List<SecretRiskProvenance.Ref> sourceRefs,OffsetDateTime applicableFrom,OffsetDateTime applicableUntil){
+        public Confirm(String context,Long revision,String key,Boolean attestation,String ref,OffsetDateTime observed,OffsetDateTime until,Map<String,Object> facts,List<SecretRiskProvenance.Ref> refs){this(context,revision,key,attestation,ref,observed,until,facts,refs,null,null);}
+    }
     public record Reject(String expectedContextVersion,String idempotencyKey,String reasonCode){}
     private static final Set<String> TYPES=Set.of("AWS_ACCESS_KEY_PAIR","AWS_TEMPORARY_CREDENTIALS","GITHUB_CLASSIC_PAT","GITHUB_FINE_GRAINED_PAT");
     private final JdbcTemplate jdbc;private final SecretAccessService access;private final SecretRiskCommands commands;private final SecretRiskEvidenceService evidence;
@@ -35,7 +37,7 @@ public class SecretPermissionAssistanceService {
         var latest=jdbc.queryForList("SELECT request_id FROM secret_permission_requests WHERE occurrence_id=? ORDER BY request_id DESC LIMIT 1",occurrence);
         var request=latest.isEmpty()?null:status(login,occurrence,number(latest.getFirst(),"request_id"));
         return facts("occurrenceId",occurrence,"contextVersion",version(c),"evidenceRevision",c.get("risk_evidence_revision"),
-            "support",facts("status",TYPES.contains(c.get("credential_type"))?"PARTIAL":"UNSUPPORTED","reasonCodes",List.of("AUTOMATIC_IMPACT_UNSUPPORTED","HUMAN_CONFIRMATION_REQUIRED")),
+            "support",facts("status",supported(c)?"PARTIAL":"UNSUPPORTED","reasonCodes",supported(c)?List.of("AUTOMATIC_IMPACT_UNSUPPORTED","HUMAN_CONFIRMATION_REQUIRED"):List.of("GITHUB".equals(c.get("issuer"))?"CROSS_SOURCE_PERMISSION_UNSUPPORTED":"UNSUPPORTED_TYPE")),
             "identity",facts("status",c.get("identity_id")==null?"UNAVAILABLE":"MATCHED","provider",c.get("issuer"),"principalType",c.get("principal_type"),"observedAt",time(c.get("identity_observed_at")),"validationAttemptId",c.get("validation_attempt_id")),
             "supplementation",supplementation(actor,c),
             "requestReadiness",SecretPermissionReadiness.describe(blocked,c.get("identity_id")!=null,!options.isEmpty()),
@@ -77,6 +79,7 @@ VALUES('ENRICH','PERMISSION_ASSISTANCE',?,?,?, ?,?::jsonb,?,clock_timestamp(),cl
         var actor=reader(login,occurrence);var c=current(occurrence);var o=observation(occurrence,observation);var result=publicObservation(o);var reasons=confirmBlocked(actor,c,o);
         result.put("contextVersion",version(c));result.put("evidenceRevision",c.get("risk_evidence_revision"));result.put("availableSourceRefs",new SecretRiskProvenance(jdbc).available(c));result.put("canConfirm",reasons.isEmpty());result.put("blockedReasonCodes",reasons);
         result.put("supplementation",supplementation(actor,c));
+        result.put("sourcePresenceObservedAt",time(c.get("last_seen_at")));
         result.put("canReject",access.hasConnectionRole(actor,number(c,"connection_id"),SecretRole.SECURITY)&&jdbc.queryForList("SELECT decision_id FROM secret_permission_decisions WHERE observation_id=?",observation).isEmpty());
         return result;
     }
@@ -94,7 +97,7 @@ VALUES('ENRICH','PERMISSION_ASSISTANCE',?,?,?, ?,?::jsonb,?,clock_timestamp(),cl
             // Candidate coverage and a checkbox are never a substitute for these independent facts.
             var refs=body.sourceRefs()==null?List.<SecretRiskProvenance.Ref>of():body.sourceRefs();
             if(!new SecretRiskProvenance(jdbc).permissionGrounded(c,refs)||refs.stream().noneMatch(ref->"VALIDATION_ATTEMPT".equals(ref.type())&&ref.id()==number(c,"validation_attempt_id")))throw new ApiException(ErrorCode.EVIDENCE_REQUIRED);
-            var submitted=evidence.submit(login,occurrence,new SecretRiskEvidenceService.Submission(body.expectedEvidenceRevision(),"permission-confirm:"+digest(body.idempotencyKey()),"PERMISSION_MAPPING","OCCURRENCE",body.observedAt(),body.validUntil(),body.evidenceRef(),proposed,refs));
+            var submitted=evidence.submit(login,occurrence,new SecretRiskEvidenceService.Submission(body.expectedEvidenceRevision(),"permission-confirm:"+digest(body.idempotencyKey()),"PERMISSION_MAPPING","OCCURRENCE",body.observedAt(),body.validUntil(),body.evidenceRef(),proposed,refs,null,body.applicableFrom(),body.applicableUntil()));
             jdbc.update("INSERT INTO secret_permission_decisions(observation_id,actor_user_id,decision,evidence_id,reason_code,context_version) VALUES(?,?,'CONFIRMED',?,'HUMAN_PERMISSION_ATTESTATION',?)",observation,actor.userId(),submitted.get("evidenceId"),body.expectedContextVersion());
             var result=new LinkedHashMap<String,Object>(submitted);result.put("status","CONFIRMED");result.put("observationId",observation);return result;
         });
@@ -115,7 +118,8 @@ VALUES('ENRICH','PERMISSION_ASSISTANCE',?,?,?, ?,?::jsonb,?,clock_timestamp(),cl
     private void same(String expected,Map<String,Object> c){if(expected==null||!expected.equals(version(c)))throw new ApiException(ErrorCode.CONFLICT);}
     private void security(SecretPrincipal actor,Map<String,Object> c){jdbc.queryForList("SELECT grant_id FROM secret_role_grants WHERE user_id=? AND role='SECURITY' AND revoked_at IS NULL AND(connection_id IS NULL OR connection_id=?) FOR SHARE",actor.userId(),number(c,"connection_id"));access.requireConnectionRole(actor,number(c,"connection_id"),SecretRole.SECURITY);}
     private void lockCollector(SecretPrincipal actor,long id){jdbc.queryForObject("SELECT connection_id FROM secret_connections WHERE connection_id=? FOR SHARE",Long.class,id);jdbc.queryForList("SELECT grant_id FROM secret_role_grants WHERE user_id=? AND role IN('SECURITY','OPERATIONS') AND revoked_at IS NULL AND(connection_id IS NULL OR connection_id=?) FOR SHARE",actor.userId(),id);access.requireConnectionFactsRead(actor,id);}
-    private List<String> blocked(SecretPrincipal actor,Map<String,Object> c){var result=new ArrayList<String>();if(!enabled)result.add("WORKER_NOT_CONFIGURED");if(!access.hasConnectionRole(actor,number(c,"connection_id"),SecretRole.SECURITY))result.add("SECURITY_REQUIRED");if(!TYPES.contains(c.get("credential_type")))result.add("UNSUPPORTED_TYPE");if(!"CONFIRMED".equals(c.get("component_state")))result.add("COMPLETE_IDENTITY_REQUIRED");if(c.get("identity_id")==null)result.add("FRESH_IDENTITY_VALIDATION_REQUIRED");if(!"ACTIVE".equals(c.get("connection_status"))||!Boolean.TRUE.equals(c.get("scope_enabled")))result.add("SOURCE_UNAVAILABLE");return result;}
+    private static boolean supported(Map<String,Object> c){return TYPES.contains(c.get("credential_type"))&&(!"GITHUB".equals(c.get("issuer"))||"GITHUB".equals(c.get("source_provider")));}
+    private List<String> blocked(SecretPrincipal actor,Map<String,Object> c){var result=new ArrayList<String>();if(!enabled)result.add("WORKER_NOT_CONFIGURED");if(!access.hasConnectionRole(actor,number(c,"connection_id"),SecretRole.SECURITY))result.add("SECURITY_REQUIRED");if(!TYPES.contains(c.get("credential_type")))result.add("UNSUPPORTED_TYPE");else if(!supported(c))result.add("CROSS_SOURCE_PERMISSION_UNSUPPORTED");if(!"CONFIRMED".equals(c.get("component_state")))result.add("COMPLETE_IDENTITY_REQUIRED");if(c.get("identity_id")==null)result.add("FRESH_IDENTITY_VALIDATION_REQUIRED");if(!"ACTIVE".equals(c.get("connection_status"))||!Boolean.TRUE.equals(c.get("scope_enabled")))result.add("SOURCE_UNAVAILABLE");return result;}
     private List<Map<String,Object>> collectors(SecretPrincipal actor,Map<String,Object> c){
         if(c.get("identity_id")==null)return List.of();
         String condition="AWS".equals(c.get("issuer"))?"c.provider='AWS' AND s.content_type='IAM_ACCESS_KEY_METADATA' AND s.approved_ref=? AND (s.history_limit IS NULL OR s.history_limit='CURRENT_STATE_ONLY')":"c.connection_id=? AND c.provider='GITHUB' AND s.scope_id=?";

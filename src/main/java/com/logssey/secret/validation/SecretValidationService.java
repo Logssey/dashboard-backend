@@ -108,7 +108,7 @@ public class SecretValidationService {
                                                 && !Set.of("VALID", "INVALID")
                                                         .contains(latest.get("result"))
                                         ? "UNAVAILABLE"
-                                        : now.isAfter(due) ? "STALE" : "CURRENT";
+                                        : !now.isBefore(due) ? "STALE" : "CURRENT";
         var result = new LinkedHashMap<String, Object>();
         result.put(
                 "support",

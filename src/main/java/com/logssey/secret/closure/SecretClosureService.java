@@ -45,13 +45,12 @@ public class SecretClosureService {
         }
         var options=full?inspection.options():List.<CoverageOption>of();
         var dismissal=full?inspection.dismissalEvidence():Map.<String,List<EvidenceReference>>of();
-        boolean active=active(inspection.caseRow());
         return new ClosureChecks(id,full?number(inspection.caseRow(),"version"):null,text(inspection.caseRow(),"case_origin"),
             full?inspection.version():null,repository.now(),!access.hasGlobalRole(actor,SecretRole.SECURITY),!options.isEmpty(),
             options.stream().map(CoverageOption::level).toList(),options,checks,
             group(inspection,"required",visibleIds),group(inspection,"unlinked",visibleIds),group(inspection,"unassessed",visibleIds),
             group(inspection,"authorized",visibleIds),group(inspection,"historical",visibleIds),"OTHER_ORIGINS_ARE_SEPARATE",
-            new Capabilities(!options.isEmpty(),full&&active&&!inspection.remainingRiskIds().isEmpty(),full&&!dismissal.isEmpty()),
+            new Capabilities(!options.isEmpty(),false,full&&!dismissal.isEmpty()),
             List.copyOf(dismissal.keySet()),dismissal.values().stream().flatMap(Collection::stream).map(EvidenceReference::evidenceId).distinct().sorted().toList(),
             dismissal,lastResolution(id,actor,full),lastDismissal(id,actor,full));
     }
@@ -138,19 +137,9 @@ public class SecretClosureService {
 
     @Transactional(readOnly=true)
     public OffsetDateTime riskAcceptanceDeadline(long id) {
-        var inspection=evaluator.inspect(id);if(!active(inspection.caseRow())||inspection.remainingRiskIds().isEmpty())return null;
-        OffsetDateTime deadline=null;
-        for(Long occurrence:inspection.remainingRiskIds()) {
-            OffsetDateTime expires=repository.jdbc().queryForObject("""
-                SELECT max(e.expires_at) FROM secret_exception_occurrences coverage JOIN secret_exceptions e USING(exception_id)
-                JOIN secret_occurrences o ON o.occurrence_id=coverage.occurrence_id JOIN secret_connection_scopes s ON s.scope_id=o.scope_id
-                WHERE e.case_id=? AND coverage.occurrence_id=? AND e.revoked_at IS NULL AND e.expires_at>clock_timestamp()
-                 AND coverage.scope_revision=s.revision AND coverage.scope_origin_version=s.response_origin_version
-                 AND coverage.assessment_version=o.exposure_assessment_version
-                """,OffsetDateTime.class,id,occurrence);
-            if(expires==null)return null;if(deadline==null||expires.isBefore(deadline))deadline=expires;
-        }
-        return deadline;
+        // Legacy single-review exceptions remain audit history, but cannot hide outstanding work.
+        // Activation requires a separate independently reviewed policy; no runtime bypass exists.
+        return null;
     }
 
     void requireFull(SecretPrincipal actor,long id) {

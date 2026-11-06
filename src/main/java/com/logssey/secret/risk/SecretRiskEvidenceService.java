@@ -23,12 +23,19 @@ public class SecretRiskEvidenceService {
       String evidenceRef,
       Map<String, Object> facts,
       List<SecretRiskProvenance.Ref> sourceRefs,
-      Long assetId) {
+      Long assetId,
+      OffsetDateTime applicableFrom,
+      OffsetDateTime applicableUntil) {
+    public Submission(Long revision, String key, String kind, String subject, OffsetDateTime observed,
+        OffsetDateTime until, String ref, Map<String, Object> facts,
+        List<SecretRiskProvenance.Ref> sourceRefs, Long assetId) {
+      this(revision, key, kind, subject, observed, until, ref, facts, sourceRefs, assetId, null, null);
+    }
     public Submission(
         Long revision, String key, String kind, String subject, OffsetDateTime observed,
         OffsetDateTime until, String ref, Map<String, Object> facts,
         List<SecretRiskProvenance.Ref> sourceRefs) {
-      this(revision, key, kind, subject, observed, until, ref, facts, sourceRefs, null);
+      this(revision, key, kind, subject, observed, until, ref, facts, sourceRefs, null, null, null);
     }
     public Submission(
         Long revision,
@@ -39,7 +46,7 @@ public class SecretRiskEvidenceService {
         OffsetDateTime until,
         String ref,
         Map<String, Object> facts) {
-      this(revision, key, kind, subject, observed, until, ref, facts, List.of(), null);
+      this(revision, key, kind, subject, observed, until, ref, facts, List.of(), null, null, null);
     }
   }
 
@@ -64,6 +71,12 @@ public class SecretRiskEvidenceService {
     var facts = SecretRiskFacts.validate(r.evidenceType(), r.subject(), r.facts());
     SecretRiskFacts.window(
         r.evidenceType(), r.observedAt(), r.validUntil(), OffsetDateTime.now(ZoneOffset.UTC));
+    if ((r.applicableFrom() == null) != (r.applicableUntil() == null)) throw SecretRiskFacts.invalid();
+    if (r.applicableFrom() != null
+        && (!r.applicableUntil().isAfter(r.applicableFrom())
+            || r.applicableFrom().isAfter(r.observedAt())
+            || (r.validUntil() != null && r.applicableUntil().isAfter(r.validUntil()))))
+      throw SecretRiskFacts.invalid();
     SecretEvidenceRules.reference(r.evidenceRef(), true);
     if (r.assetId() != null
         && (r.assetId() <= 0 || !"ASSET_CLASSIFICATION".equals(r.evidenceType())))
@@ -98,7 +111,8 @@ public class SecretRiskEvidenceService {
                 r.validUntil(),
                 r.evidenceRef(),
                 facts,
-                normalizedRefs));
+                normalizedRefs,
+                r.applicableFrom(), r.applicableUntil()));
     if (r.assetId() != null) safe.add(r.assetId());
     return commands.execute(
         actor,
@@ -112,6 +126,10 @@ public class SecretRiskEvidenceService {
         },
         () -> {
           var o = lock(occurrence, r.expectedEvidenceRevision());
+          var sourceSeenAt = SecretRiskAssessmentStore.time(o.get("last_seen_at"));
+          if (r.applicableFrom() != null && (sourceSeenAt == null
+              || sourceSeenAt.isBefore(r.applicableFrom()) || !sourceSeenAt.isBefore(r.applicableUntil())))
+            throw new ApiException(ErrorCode.EVIDENCE_REQUIRED);
           boolean accepted =
               access.hasConnectionRole(actor, number(o, "connection_id"), SecretRole.SECURITY);
           if (!accepted
@@ -149,8 +167,9 @@ public class SecretRiskEvidenceService {
                   """
 INSERT INTO secret_risk_evidence(record_kind,kind,occurrence_id,credential_set_id,scope_id,source_kind,verification_level,
  safe_payload,source_refs,observed_at,effective_from,expires_at,submitted_by_user_id,reviewed_by_user_id,reason_code,evidence_ref,
- safe_payload_digest,ingestion_key,credential_revision,scope_revision,source_object_version,identity_binding_status,mapping_version)
-VALUES('ASSERTION',?,?,?,?,'MANUAL',?,?::jsonb,?::jsonb,?,?,?,?,?,'EVIDENCE_SUBMITTED',?,?,?,?,?,?,?,'manual-evidence-v1') RETURNING evidence_id
+ safe_payload_digest,ingestion_key,credential_revision,scope_revision,source_object_version,identity_binding_status,mapping_version,
+ fact_valid_from,fact_valid_until,source_presence_observed_at,applicability_basis)
+VALUES('ASSERTION',?,?,?,?,'MANUAL',?,?::jsonb,?::jsonb,?,?,?,?,?,'EVIDENCE_SUBMITTED',?,?,?,?,?,?,?,'manual-evidence-v1',?,?,?,?) RETURNING evidence_id
 """,
                   Long.class,
                   r.evidenceType(),
@@ -178,7 +197,10 @@ VALUES('ASSERTION',?,?,?,?,'MANUAL',?,?::jsonb,?::jsonb,?,?,?,?,?,'EVIDENCE_SUBM
                               .anyMatch(v -> v.type().equals("VALIDATION_ATTEMPT"))
                           ? "MATCHED"
                           : "UNRESOLVED")
-                      : "NOT_APPLICABLE");
+                      : "NOT_APPLICABLE",
+                  r.applicableFrom(), r.applicableUntil(),
+                  r.applicableFrom() == null ? null : sourceSeenAt,
+                  r.applicableFrom() == null ? null : "EFFECTIVE_INTERVAL");
           var result = new LinkedHashMap<String, Object>(result(occurrence, id, accepted ? "ACCEPTED" : "PENDING"));
           if (r.assetId() != null) {
             result.put("assetId", r.assetId());

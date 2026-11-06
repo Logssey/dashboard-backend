@@ -15,7 +15,6 @@ import static com.logssey.secret.evidence.SecretEvidenceRules.*;
 
 @Service
 public class SecretGovernanceService {
-    private static final Set<String> EXCEPTION_REASONS=Set.of("BUSINESS_CONTINUITY","TEMPORARY_DEPENDENCY","COMPENSATING_CONTROL");
     private static final Set<String> REVOKE_REASONS=Set.of("RISK_REDUCED","APPROVAL_WITHDRAWN","SCOPE_CHANGED");
     private static final Set<String> TRANSFER_REASONS=Set.of("PROGRAM_SCOPE_ENDED","OWNER_TRANSFER");
     private static final Map<String,List<String>> REVIEW_REASONS=Map.of("APPROVE",List.of("TRANSFER_AND_ACCEPTANCE_CONFIRMED"),
@@ -28,58 +27,27 @@ public class SecretGovernanceService {
     public Exceptions exceptions(String login,long id) {
         var actor=closure.access().requirePrincipal(login);var inspection=closure.evaluator().inspect(id,actor);
         var visible=repository.visible(actor,inspection.rows());if(visible.isEmpty())throw new ApiException(ErrorCode.NOT_FOUND);
-        boolean full=repository.fullSecurity(actor,inspection.rows()),canApprove=full&&active(inspection.caseRow());
+        boolean full=repository.fullSecurity(actor,inspection.rows()),canRevoke=full&&active(inspection.caseRow());
         var visibleIds=new HashSet<>(visible.stream().map(row->number(row,"occurrence_id")).toList());
         var items=new ArrayList<ExceptionItem>();
         for(var e:repository.jdbc().queryForList("SELECT * FROM secret_exceptions WHERE case_id=? ORDER BY approved_at DESC,exception_id DESC",id)) {
             var covered=repository.jdbc().query("SELECT occurrence_id FROM secret_exception_occurrences WHERE exception_id=? ORDER BY occurrence_id",(rs,n)->rs.getLong(1),e.get("exception_id"))
                 .stream().filter(visibleIds::contains).toList();if(covered.isEmpty())continue;
             String status=e.get("revoked_at")!=null?"REVOKED":time(e,"expires_at").isAfter(repository.now())?"ACTIVE":"EXPIRED";
-            boolean applicable="ACTIVE".equals(status)&&!staleException(number(e,"exception_id"),visibleIds);
-            if("ACTIVE".equals(status)&&!applicable)status="SCOPE_CHANGED";
+            if("ACTIVE".equals(status))status=staleException(number(e,"exception_id"),visibleIds)?"SCOPE_CHANGED":"POLICY_DISABLED";
             items.add(new ExceptionItem(number(e,"exception_id"),text(e,"reason_code"),full?text(e,"evidence_ref"):null,
                 number(e,"approved_by_user_id"),time(e,"approved_at"),time(e,"expires_at"),time(e,"revoked_at"),status,covered,
-                applicable,canApprove&&e.get("revoked_at")==null&&time(e,"expires_at").isAfter(repository.now())));
+                false,canRevoke&&e.get("revoked_at")==null&&time(e,"expires_at").isAfter(repository.now())));
         }
-        var alreadyCovered=new HashSet<>(repository.jdbc().query("""
-            SELECT coverage.occurrence_id FROM secret_exception_occurrences coverage JOIN secret_exceptions e USING(exception_id)
-            WHERE e.case_id=? AND e.revoked_at IS NULL AND e.expires_at>clock_timestamp()
-            """,(rs,n)->rs.getLong(1),id));
-        var eligible=full?inspection.remainingRiskIds().stream().filter(occurrence->!alreadyCovered.contains(occurrence))
-            .map(occurrence->new Location(occurrence,"위치 #"+occurrence,"UNKNOWN","RISK_REMAINS")).toList():List.<Location>of();
-        return new Exceptions(id,full?number(inspection.caseRow(),"version"):null,items,canApprove,
-            EXCEPTION_REASONS.stream().sorted().toList(),REVOKE_REASONS.stream().sorted().toList(),eligible,90,
-            full&&closure.isFullyRiskAccepted(id),!closure.access().hasGlobalRole(actor,SecretRole.SECURITY));
+        return new Exceptions(id,full?number(inspection.caseRow(),"version"):null,items,false,
+            List.of(),REVOKE_REASONS.stream().sorted().toList(),List.of(),7,
+            false,!closure.access().hasGlobalRole(actor,SecretRole.SECURITY),List.of("RISK_ACCEPTANCE_DISABLED"));
     }
     public Mutation approveException(String login,long id,ExceptionRequest request) {
-        if(request==null)invalid();code(request.reasonCode(),EXCEPTION_REASONS);reference(request.evidenceRef(),true);
-        var occurrences=ids(request.occurrenceIds());if(occurrences.isEmpty()||request.expiresAt()==null)invalid();
+        // Check access before disclosing the policy result, including idempotent legacy replays.
         var actor=closure.access().requirePrincipal(login);
-        var result=closure.commands().execute(actor,SecretCommandExecutor.Kind.RISK_EXCEPTION_APPROVE,request.idempotencyKey(),
-            digest(id,occurrences,request.reasonCode(),request.evidenceRef(),request.expiresAt(),request.expectedCaseVersion()),()->closure.requireFull(actor,id),()->{
-                repository.lockUniverse(id);closure.requireFull(actor,id);var inspection=closure.evaluator().inspect(id,actor);var c=inspection.caseRow();requireActive(c);
-                SecretCommandExecutor.requireExpectedVersion(request.expectedCaseVersion(),number(c,"version"));
-                var now=repository.now();if(!request.expiresAt().isAfter(now)||request.expiresAt().isAfter(now.plusDays(90)))invalid();
-                if(!inspection.remainingRiskIds().containsAll(occurrences))throw new ApiException(ErrorCode.EVIDENCE_REQUIRED);
-                boolean overlap=occurrences.stream().anyMatch(occurrence->Boolean.TRUE.equals(repository.jdbc().queryForObject("""
-                    SELECT EXISTS(SELECT 1 FROM secret_exception_occurrences coverage JOIN secret_exceptions e USING(exception_id)
-                      WHERE e.case_id=? AND coverage.occurrence_id=? AND e.revoked_at IS NULL AND e.expires_at>clock_timestamp())
-                    """,Boolean.class,id,occurrence)));
-                if(overlap)throw new ApiException(ErrorCode.CONFLICT);
-                long version=number(c,"version")+1;
-                long exception=repository.jdbc().queryForObject("""
-                    INSERT INTO secret_exceptions(case_id,reason_code,evidence_ref,approved_by_user_id,approved_at,expires_at,approved_case_version)
-                    VALUES(?,?,?,?,?,?,?) RETURNING exception_id
-                    """,Long.class,id,request.reasonCode(),request.evidenceRef(),actor.userId(),now,request.expiresAt(),version);
-                for(Long occurrence:occurrences)repository.jdbc().update("""
-                    INSERT INTO secret_exception_occurrences(exception_id,occurrence_id,scope_id,scope_revision,scope_origin_version,assessment_version)
-                    SELECT ?,o.occurrence_id,s.scope_id,s.revision,s.response_origin_version,o.exposure_assessment_version
-                    FROM secret_occurrences o JOIN secret_connection_scopes s ON s.scope_id=o.scope_id WHERE o.occurrence_id=?
-                    """,exception,occurrence);
-                bump(id,version);closure.activity(id,"EXCEPTION_APPROVED",actor,version,exception);closure.invalidate(inspection);
-                return new SecretCommandResult(exception,version,SecretCommandResult.Status.APPROVED);
-            });
-        return new Mutation(id,result.version(),"APPROVED",null,null,null,result.targetId(),null,true);
+        closure.requireFull(actor,id);
+        throw new ApiException(ErrorCode.RISK_ACCEPTANCE_DISABLED);
     }
     public Mutation revoke(String login,long id,RevokeRequest request) {
         if(request==null||request.exceptionId()==null||request.exceptionId()<=0)invalid();code(request.reasonCode(),REVOKE_REASONS);
