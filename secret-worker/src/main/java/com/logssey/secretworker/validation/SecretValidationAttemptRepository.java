@@ -119,6 +119,18 @@ public class SecretValidationAttemptRepository {
                 sourceVersion);
     }
 
+    public CredentialValidationResult validateNotion(
+            ClaimedSecretJob job,
+            SecretFindingNormalizer.NotionCandidate candidate,
+            NotionTokenValidator validator,
+            Long sourceRunScopeId,
+            String sourceRef,
+            String sourceVersion) {
+        return validate(job, candidate.credential(), NotionTokenValidator.METHOD,
+                NotionTokenValidator.VERSION, "NOTION_SELF", false, validator.enabled(),
+                () -> validator.validate(candidate.token()), sourceRunScopeId, sourceRef, sourceVersion);
+    }
+
     public CredentialValidationResult validate(
             ClaimedSecretJob job,
             SecretFindingNormalizer.Credential credential,
@@ -272,7 +284,11 @@ public class SecretValidationAttemptRepository {
                         && Set.of("GITHUB_CLASSIC_PAT", "GITHUB_FINE_GRAINED_PAT")
                                 .contains(credential.credentialType())
                         && GitHubPatValidator.METHOD.equals(validator)
-                        && "GITHUB_USER".equals(endpoint));
+                        && "GITHUB_USER".equals(endpoint))
+                || ("NOTION".equals(credential.issuer())
+                        && "NOTION_CONNECTION_TOKEN".equals(credential.credentialType())
+                        && NotionTokenValidator.METHOD.equals(validator)
+                        && "NOTION_SELF".equals(endpoint));
     }
 
     public CredentialValidationResult recordUnsupported(
@@ -512,7 +528,8 @@ WHERE v.connection_id=j.connection_id AND k.issuer=? AND k.credential_type=? AND
                         "AWS_ACCESS_KEY_PAIR",
                         "AWS_TEMPORARY_CREDENTIALS",
                         "GITHUB_CLASSIC_PAT",
-                        "GITHUB_FINE_GRAINED_PAT")
+                        "GITHUB_FINE_GRAINED_PAT",
+                        "NOTION_CONNECTION_TOKEN")
                 .contains(c.get("credential_type"))) return "UNSUPPORTED_TYPE";
         if (!enabled || !Boolean.TRUE.equals(c.get("validation_enabled"))) return "DISABLED";
         if (!"CONFIRMED".equals(c.get("component_state")))
@@ -743,7 +760,7 @@ WHERE v.connection_id=j.connection_id AND k.issuer=? AND k.credential_type=? AND
                             String endpoint = endpoint(fresh);
                             var cooldown = jdbc.query(
                                     "SELECT reason_code,next_due_at FROM secret_validation_attempts"
-                                            + " WHERE (credential_set_id=? OR endpoint_class='GITHUB_USER')"
+                                            + " WHERE (credential_set_id=? OR endpoint_class IN('GITHUB_USER','NOTION_SELF'))"
                                             + " AND endpoint_class=?"
                                             + " AND (reason_code='RATE_LIMITED' OR"
                                             + " (reason_code='PROVIDER_UNAVAILABLE' AND http_status>=500))"
@@ -978,13 +995,21 @@ SELECT (j.requested_by_user_id IS NULL OR EXISTS(SELECT 1 FROM secret_role_grant
     }
 
     private static String method(Map<String, Object> c) {
-        return "AWS".equals(c.get("issuer"))
-                ? "AWS_STS_GET_CALLER_IDENTITY"
-                : "GITHUB_GET_AUTHENTICATED_USER";
+        return switch (Objects.toString(c.get("issuer"), "")) {
+            case "AWS" -> "AWS_STS_GET_CALLER_IDENTITY";
+            case "GITHUB" -> "GITHUB_GET_AUTHENTICATED_USER";
+            case "NOTION" -> "NOTION_GET_SELF";
+            default -> "UNSUPPORTED";
+        };
     }
 
     private static String endpoint(Map<String, Object> c) {
-        return "AWS".equals(c.get("issuer")) ? "AWS_STS" : "GITHUB_USER";
+        return switch (Objects.toString(c.get("issuer"), "")) {
+            case "AWS" -> "AWS_STS";
+            case "GITHUB" -> "GITHUB_USER";
+            case "NOTION" -> "NOTION_SELF";
+            default -> "UNSUPPORTED";
+        };
     }
 
     private static byte[] dedup(

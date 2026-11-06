@@ -10,6 +10,7 @@ import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.*;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.*;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 import java.util.*;
@@ -130,6 +131,102 @@ class SecretValidationIntegrationTest {
         assertThat(((Map<?, ?>) read.get("capabilities")).get("blockedReasonCodes").toString())
                 .contains("DISABLED");
         assertThat(read.get("lastConclusiveValidation")).isNull();
+    }
+
+    @Test
+    void notionCanBeManuallyRevalidatedFromGitHubWhenOtherValidatorsAreDisabled() {
+        useNotionCredential();
+        var read = service.read(key, occurrence, "security");
+        assertThat(((Map<?, ?>) read.get("support")).get("status"))
+                .isEqualTo("SUPPORTED");
+        assertThat(((Map<?, ?>) read.get("support")).get("methods"))
+                .isEqualTo(List.of("NOTION_GET_SELF"));
+        assertThat(((Map<?, ?>) read.get("capabilities")).get("canRequestValidation"))
+                .isEqualTo(true);
+        assertThat(service.policy(scope, "security")).containsEntry("profileStatus", "ENABLED");
+        assertThat(request("notion-github")).containsEntry("status", "PENDING");
+        assertThat(db.queryForObject("SELECT count(*) FROM secret_validation_attempts", Long.class))
+                .isZero();
+        assertThat(db.queryForObject("SELECT expected_context::text FROM secret_jobs", String.class))
+                .doesNotContain("ntn_", "secret_");
+    }
+
+    @Test
+    void notionCanBeManuallyRevalidatedFromApprovedAwsContent() {
+        useNotionCredential();
+        db.update("UPDATE secret_connections SET provider='AWS' WHERE connection_id=?", conn);
+        db.update("UPDATE secret_connection_scopes SET content_type='AWS_S3_OBJECT_CONTENT',"
+                + " approved_ref='s3://approved-bucket/config/' WHERE scope_id=?", scope);
+        assertThat(request("notion-aws")).containsEntry("status", "PENDING");
+    }
+
+    @Test
+    void notionActivationAndSourceSupportRemainIndependent() {
+        useNotionCredential();
+        var disabled = new SecretValidationService(db, new SecretAccessService(db),
+                new SecretCommandExecutor(db, tx), true, true, false, true, true);
+        assertThat(((Map<?, ?>) disabled.read(key, occurrence, "security").get("capabilities"))
+                .get("blockedReasonCodes").toString()).contains("DISABLED");
+        var sourceDisabled = new SecretValidationService(db, new SecretAccessService(db),
+                new SecretCommandExecutor(db, tx), false, false, true, false, true);
+        assertThat(((Map<?, ?>) sourceDisabled.read(key, occurrence, "security").get("capabilities"))
+                .get("blockedReasonCodes").toString()).contains("SOURCE_UNAVAILABLE");
+        db.update("UPDATE secret_connections SET provider='NOTION' WHERE connection_id=?", conn);
+        db.update("UPDATE secret_connection_scopes SET content_type='NOTION_PAGE' WHERE scope_id=?", scope);
+        assertThat(((Map<?, ?>) service.read(key, occurrence, "security").get("capabilities"))
+                .get("blockedReasonCodes").toString()).contains("UNSUPPORTED_SOURCE");
+        assertThatThrownBy(() -> request("unsupported-notion-source"))
+                .isInstanceOf(ValidationApiException.class);
+        assertThat(db.queryForObject("SELECT count(*) FROM secret_jobs", Long.class)).isZero();
+        db.update("UPDATE secret_credential_sets SET credential_type='NOTION_PAT' WHERE credential_set_id=?", key);
+        assertThat(((Map<?, ?>) service.read(key, occurrence, "security").get("support")).get("status"))
+                .isEqualTo("UNSUPPORTED");
+    }
+
+    @Test
+    void notionIdentityRequiresRegisteredCurrentAuthenticationAndVersionedSafeClaims() {
+        useNotionCredential();
+        long attempt = completedNotionObservation();
+        String botId = "11111111-2222-3333-4444-555555555555";
+        String insert = """
+                INSERT INTO secret_credential_identities(validation_attempt_id,occurrence_id,
+                  credential_set_id,credential_revision,scope_revision,provider,principal_type,
+                  principal_ref,principal_id,safe_claims,observed_at,expires_at)
+                SELECT attempt_id,occurrence_id,credential_set_id,credential_revision,scope_revision,
+                  'NOTION','NOTION_BOT',?,?,?::jsonb,provider_checked_at,provider_checked_at+interval '6 hours'
+                FROM secret_validation_attempts WHERE attempt_id=?
+                """;
+        db.update("UPDATE secret_validation_attempts SET validator_id='AWS_STS_GET_CALLER_IDENTITY' WHERE attempt_id=?", attempt);
+        assertThatThrownBy(() -> db.update(insert, "notion-bot:" + botId, botId,
+                "{\"schemaVersion\":1}", attempt))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("IDENTITY_VALIDATION_PARENT");
+        db.update("UPDATE secret_validation_attempts SET validator_id='NOTION_GET_SELF' WHERE attempt_id=?", attempt);
+        assertThatThrownBy(() -> db.update(insert, "notion-bot:" + botId, botId,
+                "{\"schemaVersion\":1,\"token\":\"SENTINEL_RAW_DO_NOT_STORE\"}", attempt))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("ck_secret_notion_identity_claims");
+        assertThatThrownBy(() -> db.update(insert, "notion-bot:66666666-7777-8888-9999-aaaaaaaaaaaa", botId,
+                "{\"schemaVersion\":1}", attempt))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("ck_secret_identity_provider_binding");
+        String expired = insert.replace("provider_checked_at+interval '6 hours'", "provider_checked_at");
+        assertThatThrownBy(() -> db.update(expired, "notion-bot:" + botId, botId,
+                "{\"schemaVersion\":1}", attempt))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("secret_credential_identities_check");
+        assertThat(db.update(insert, "notion-bot:" + botId, botId,
+                "{\"schemaVersion\":1,\"ownerType\":\"workspace\"}", attempt)).isEqualTo(1);
+        assertThat(db.queryForObject("SELECT account_ref FROM secret_credential_identities", String.class))
+                .isNull();
+        var read = service.read(key, occurrence, "security");
+        assertThat(((Map<?, ?>) read.get("latestAttempt")).get("method")).isEqualTo("NOTION_GET_SELF");
+        assertThat(((Map<?, ?>) read.get("latestAttempt")).get("result")).isEqualTo("VALID");
+        assertThat(read.get("lastAuthenticatedAt")).isNotNull();
+        var history = (List<?>) service.history(key, occurrence, 0, 20, "security").get("items");
+        assertThat(history).hasSize(1);
+        assertThat(history.getFirst().toString()).contains("NOTION_GET_SELF")
+                .doesNotContain("SENTINEL_RAW", "notion-bot:", botId);
     }
 
     @Test
@@ -324,5 +421,38 @@ class SecretValidationIntegrationTest {
                                 Long.class,
                                 key))
                 .isEqualTo(2);
+    }
+
+    private void useNotionCredential() {
+        db.update("UPDATE secret_credential_sets SET issuer='NOTION',"
+                + " credential_type='NOTION_CONNECTION_TOKEN' WHERE credential_set_id=?", key);
+        service = new SecretValidationService(db, new SecretAccessService(db),
+                new SecretCommandExecutor(db, tx), false, false, true, true, true);
+    }
+
+    private Map<String, Object> request(String idempotencyKey) {
+        var read = service.read(key, occurrence, "security");
+        return service.request(key, Map.of("occurrenceId", occurrence,
+                "expectedContextVersion", read.get("contextVersion"),
+                "idempotencyKey", idempotencyKey), "security");
+    }
+
+    private long completedNotionObservation() {
+        var request = request("notion-identity");
+        long run = ((Number) request.get("runId")).longValue();
+        long job = ((Number) request.get("jobId")).longValue();
+        var checked = java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC).minusSeconds(2);
+        long tool = db.queryForObject("INSERT INTO secret_tool_runs(run_scope_id,engine,engine_version,config_hash,status)"
+                + " SELECT run_scope_id,'GITLEAKS','query-fixture','query-fixture','SUCCEEDED'"
+                + " FROM secret_run_scopes WHERE run_id=? AND scope_id=? RETURNING tool_run_id",
+                Long.class, run, scope);
+        db.update("INSERT INTO secret_findings(occurrence_id,run_id,tool_run_id,finding_key,rule_id,rule_version,detected_at)"
+                + " VALUES(?,?,?,gen_random_uuid()::text,'query-fixture','1',?)", occurrence, run, tool, checked);
+        long attempt = SecretValidationTestFixtures.completed(db, occurrence, job, run,
+                "VALID", "AUTHENTICATED", checked, checked.plusSeconds(1), checked);
+        db.update("UPDATE secret_validation_attempts SET validator_id='NOTION_GET_SELF',"
+                + " endpoint_class='NOTION_SELF',http_status=200 WHERE attempt_id=?", attempt);
+        db.update("UPDATE secret_jobs SET status='SUCCEEDED',finished_at=clock_timestamp() WHERE job_id=?", job);
+        return attempt;
     }
 }

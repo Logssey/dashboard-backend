@@ -16,7 +16,8 @@ final class SecretRiskAnalysisContext {
       "permissionCoverage", "targetCoverage", "restrictionCoverage", "classificationCoverage");
   private static final Set<String> CREDENTIAL_TYPES = Set.of(
       "AWS_ACCESS_KEY_PAIR", "AWS_TEMPORARY_CREDENTIALS", "AWS_ACCESS_KEY_ID",
-      "GITHUB_CLASSIC_PAT", "GITHUB_FINE_GRAINED_PAT", "GITHUB_PAT", "NOTION_TOKEN");
+      "GITHUB_CLASSIC_PAT", "GITHUB_FINE_GRAINED_PAT", "GITHUB_PAT", "NOTION_TOKEN",
+      "NOTION_CONNECTION_TOKEN");
 
   SecretRiskAnalysisContext(JdbcTemplate jdbc, SecretRiskAssessmentStore store) {
     this.jdbc = jdbc;

@@ -30,8 +30,10 @@ class AwsContentConfiguration {
             SecretFindingRepository findings,
             AwsValidationService validator,
             SecretValidationAttemptRepository attempts,
-            com.logssey.secretworker.validation.GitHubPatValidator githubValidator) {
+            com.logssey.secretworker.validation.GitHubPatValidator githubValidator,
+            com.logssey.secretworker.validation.NotionTokenValidator notionValidator) {
         return new AwsContentPipeline(
-                collector, detector, normalizer, findings, validator, attempts, githubValidator);
+                collector, detector, normalizer, findings, validator, attempts, githubValidator,
+                notionValidator);
     }
 }

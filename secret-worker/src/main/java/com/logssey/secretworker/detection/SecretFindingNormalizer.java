@@ -34,7 +34,8 @@ public final class SecretFindingNormalizer {
     private static final Pattern AWS_SECRET = Pattern.compile("[A-Za-z0-9/+=]{40}");
     private static final Pattern GITHUB_CLASSIC = Pattern.compile("ghp_[A-Za-z0-9_]{36}");
     private static final Pattern GITHUB_FINE = Pattern.compile("github_pat_[A-Za-z0-9_]{70,}");
-    private static final Pattern NOTION = Pattern.compile("ntn_[A-Za-z0-9_]{46}");
+    private static final Pattern NOTION = Pattern.compile(
+            "(?<![A-Za-z0-9_])(?:ntn_[A-Za-z0-9_]{46}|secret_[A-Za-z0-9]{43})(?![A-Za-z0-9_])");
 
     private final byte[] key;
     private final String keyVersion;
@@ -102,10 +103,11 @@ public final class SecretFindingNormalizer {
         for (GitleaksFinding finding : findings) {
             if (finding == null || !seen.add(finding) || finding.startLine() != finding.endLine()
                     || finding.startLine() < 1 || finding.startLine() > lines.length) continue;
-            List<Assignment> assignments = assignments(lines[finding.startLine() - 1]);
+            String line = lines[finding.startLine() - 1];
+            List<Assignment> assignments = "notion-api-token".equals(finding.ruleId())
+                    ? notionTokens(line) : assignments(line);
             List<Assignment> matches = assignments.stream()
-                    .filter(item -> finding.startColumn() - 1 < item.end()
-                            && finding.endColumn() > item.start()
+                    .filter(item -> overlaps(finding, line, item)
                             && matches(finding.ruleId(), item)).toList();
             // Two possible values on one line cannot be attributed to one detector position safely.
             if (matches.size() != 1) continue;
@@ -121,6 +123,7 @@ public final class SecretFindingNormalizer {
         List<Credential> result = new ArrayList<>();
         List<AwsCandidate> awsCandidates = new ArrayList<>();
         List<GitHubCandidate> githubCandidates = new ArrayList<>();
+        List<NotionCandidate> notionCandidates = new ArrayList<>();
         Set<Component> pairedSecrets = new HashSet<>();
         for (Component id : ids) {
             List<Component> eligibleSecrets = secrets.stream()
@@ -198,6 +201,8 @@ public final class SecretFindingNormalizer {
             result.add(normalized);
             if ("GITHUB".equals(issuer))
                 githubCandidates.add(new GitHubCandidate(normalized, token.value()));
+            else if ("NOTION".equals(issuer))
+                notionCandidates.add(new NotionCandidate(normalized, token.value()));
         }
         return new Inspection(
                 connectionId,
@@ -205,7 +210,24 @@ public final class SecretFindingNormalizer {
                 List.copyOf(findings),
                 List.copyOf(result),
                 List.copyOf(awsCandidates),
-                List.copyOf(githubCandidates));
+                List.copyOf(githubCandidates),
+                List.copyOf(notionCandidates));
+    }
+
+    private static List<Assignment> notionTokens(String line) {
+        var tokens = new ArrayList<Assignment>();
+        var matcher = NOTION.matcher(line);
+        while (matcher.find()) {
+            tokens.add(new Assignment("NOTION_TOKEN", matcher.group(), matcher.start(), matcher.end()));
+        }
+        return tokens;
+    }
+
+    private static boolean overlaps(GitleaksFinding finding, String line, Assignment value) {
+        // Gitleaks columns are UTF-8 byte offsets, while regex offsets are Java character offsets.
+        int byteStart = line.substring(0, value.start()).getBytes(StandardCharsets.UTF_8).length;
+        int byteEnd = byteStart + value.end() - value.start(); // Supported values are ASCII.
+        return finding.startColumn() - 1 < byteEnd && finding.endColumn() > byteStart;
     }
 
     private Credential credential(long connectionId, String source, String issuer, String type,
@@ -368,7 +390,19 @@ public final class SecretFindingNormalizer {
             List<GitleaksFinding> detectorFindings,
             List<Credential> credentials,
             List<AwsCandidate> awsCandidates,
-            List<GitHubCandidate> githubCandidates) {
+            List<GitHubCandidate> githubCandidates,
+            List<NotionCandidate> notionCandidates) {
+        public Inspection(
+                long connectionId,
+                String sourceObjectRef,
+                List<GitleaksFinding> detectorFindings,
+                List<Credential> credentials,
+                List<AwsCandidate> awsCandidates,
+                List<GitHubCandidate> githubCandidates) {
+            this(connectionId, sourceObjectRef, detectorFindings, credentials,
+                    awsCandidates, githubCandidates, List.of());
+        }
+
         public Inspection(
                 long connectionId,
                 String sourceObjectRef,
@@ -389,10 +423,35 @@ public final class SecretFindingNormalizer {
             credentials = List.copyOf(credentials);
             awsCandidates = List.copyOf(awsCandidates);
             githubCandidates = List.copyOf(githubCandidates);
+            notionCandidates = List.copyOf(notionCandidates);
         }
         @Override public String toString() {
             return "Inspection[credentialCount=" + credentials.size()
                     + ", awsCandidateCount=" + awsCandidates.size() + "]";
+        }
+    }
+
+    /** In-memory only; never serialize, persist or log the token. */
+    public static final class NotionCandidate {
+        private final Credential credential;
+        private final String token;
+
+        private NotionCandidate(Credential credential, String token) {
+            this.credential = credential;
+            this.token = token;
+        }
+
+        public Credential credential() {
+            return credential;
+        }
+
+        public String token() {
+            return token;
+        }
+
+        @Override
+        public String toString() {
+            return "NotionCandidate[credentialType=" + credential.credentialType() + "]";
         }
     }
 
