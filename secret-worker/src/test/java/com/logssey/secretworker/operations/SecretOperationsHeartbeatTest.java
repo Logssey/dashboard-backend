@@ -1,7 +1,11 @@
 package com.logssey.secretworker.operations;
 import java.time.*;
+import java.util.List;
+import com.logssey.secret.operations.SecretOperationsHealth;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.*;
 import org.springframework.mock.env.MockEnvironment;
@@ -26,5 +30,54 @@ class SecretOperationsHeartbeatTest {
         var heartbeat=heartbeat(env);heartbeat.begin("SCHEDULER");heartbeat.success("SCHEDULER");heartbeat.tick();
         assertThat(jdbc.queryForObject("SELECT poll_interval_ms FROM secret_worker_heartbeats WHERE component='SCHEDULER'",Long.class)).isEqualTo(600000);
         assertThat(jdbc.queryForObject("SELECT last_success_at IS NOT NULL FROM secret_worker_heartbeats WHERE component='SCHEDULER'",Boolean.class)).isTrue();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "logssey.secret.github.enabled",
+        "logssey.secret.aws.collection.enabled",
+        "logssey.secret.notion.collection.enabled"
+    })
+    void eachConfiguredCollectionPipelineReportsAHealthyExecutorAfterPolling(String sourceProperty) {
+        var env = new MockEnvironment()
+                .withProperty("logssey.secret.executor.enabled", "true")
+                .withProperty("logssey.secret.github.enabled", "false")
+                .withProperty("logssey.secret.aws.collection.enabled", "false")
+                .withProperty("logssey.secret.notion.collection.enabled", "false")
+                .withProperty(sourceProperty, "true");
+        var heartbeat = heartbeat(env);
+        heartbeat.begin("EXECUTOR");
+        heartbeat.success("EXECUTOR");
+        heartbeat.tick();
+
+        var row = jdbc.queryForMap("SELECT * FROM secret_worker_heartbeats WHERE component='EXECUTOR'");
+        assertThat(row).containsEntry("enabled", true);
+        assertThat(row.get("last_poll_started_at")).isNotNull();
+        assertThat(row.get("last_success_at")).isNotNull();
+        assertThat(SecretOperationsHealth.component("EXECUTOR", List.of(row),
+                OffsetDateTime.now(ZoneOffset.UTC), 1, Duration.ofMinutes(2)))
+                .containsEntry("status", "HEALTHY").containsEntry("liveInstances", 1);
+    }
+
+    @Test
+    void aConfiguredNotionSourceDoesNotEnableADisabledExecutor() {
+        var env = new MockEnvironment()
+                .withProperty("logssey.secret.executor.enabled", "false")
+                .withProperty("logssey.secret.notion.collection.enabled", "true");
+        heartbeat(env).tick();
+
+        assertThat(jdbc.queryForObject(
+                "SELECT enabled FROM secret_worker_heartbeats WHERE component='EXECUTOR'", Boolean.class))
+                .isFalse();
+    }
+
+    @Test
+    void anEnabledExecutorWithoutACollectionSourceStaysDisabled() {
+        var env = new MockEnvironment().withProperty("logssey.secret.executor.enabled", "true");
+        heartbeat(env).tick();
+
+        assertThat(jdbc.queryForObject(
+                "SELECT enabled FROM secret_worker_heartbeats WHERE component='EXECUTOR'", Boolean.class))
+                .isFalse();
     }
 }
