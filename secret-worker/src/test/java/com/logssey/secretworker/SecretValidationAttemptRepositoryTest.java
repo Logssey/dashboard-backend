@@ -314,7 +314,7 @@ SELECT max(provider_checked_at) FROM secret_validation_attempts WHERE result = '
         var candidate = discovered();
         approve();
         var calls = new java.util.concurrent.atomic.AtomicInteger();
-        var until = Instant.now().plusSeconds(120);
+        var until = Instant.now().plusSeconds(120).truncatedTo(ChronoUnit.MICROS);
         java.util.function.Supplier<com.logssey.secretworker.validation.CredentialValidationResult> provider = () -> {
             calls.incrementAndGet();
             return new com.logssey.secretworker.validation.CredentialValidationResult(
@@ -342,7 +342,7 @@ SELECT max(provider_checked_at) FROM secret_validation_attempts WHERE result = '
         approve();
         manual();
         var calls = new java.util.concurrent.atomic.AtomicInteger();
-        Instant until = Instant.now().plusSeconds(1800);
+        Instant until = Instant.now().plusSeconds(1800).truncatedTo(ChronoUnit.MICROS);
         String reason = status == 429 ? "RATE_LIMITED" : "PROVIDER_UNAVAILABLE";
         java.util.function.Supplier<com.logssey.secretworker.validation.CredentialValidationResult> provider = () -> {
             calls.incrementAndGet();
@@ -396,7 +396,7 @@ SELECT max(provider_checked_at) FROM secret_validation_attempts WHERE result = '
         }
         approve();
         var calls = new java.util.concurrent.atomic.AtomicInteger();
-        Instant until = Instant.now().plusSeconds(120);
+        Instant until = Instant.now().plusSeconds(120).truncatedTo(ChronoUnit.MICROS);
         String reason = status == 429 ? "RATE_LIMITED" : "PROVIDER_UNAVAILABLE";
         java.util.function.Supplier<com.logssey.secretworker.validation.CredentialValidationResult> provider = () -> {
             calls.incrementAndGet();
