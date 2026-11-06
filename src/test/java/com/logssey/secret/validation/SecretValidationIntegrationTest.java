@@ -152,6 +152,94 @@ class SecretValidationIntegrationTest {
     }
 
     @Test
+    void credentialsFromNotionRequireAnApprovedCurrentPageAndAnIndependentCollectionOptIn() {
+        db.update(
+                "UPDATE secret_connections SET provider='NOTION',auth_ref='notion-internal:default'"
+                    + " WHERE connection_id=?",
+                conn);
+        db.update(
+                "UPDATE secret_connection_scopes SET"
+                    + " content_type='NOTION_PAGE_CONTENT',history_limit='CURRENT_VERSION_ONLY',"
+                    + " approved_ref='notion://pages/11111111-2222-3333-4444-555555555555' WHERE"
+                    + " scope_id=?",
+                scope);
+        db.update(
+                "UPDATE secret_occurrences SET"
+                    + " source_object_ref='notion/pages/11111111-2222-3333-4444-555555555555/blocks/66666666-7777-8888-9999-aaaaaaaaaaaa'"
+                    + " WHERE occurrence_id=?",
+                occurrence);
+        service =
+                new SecretValidationService(
+                        db,
+                        new SecretAccessService(db),
+                        new SecretCommandExecutor(db, tx),
+                        true,
+                        false,
+                        false,
+                        false,
+                        false,
+                        false);
+        assertThat(
+                        ((Map<?, ?>) service.read(key, occurrence, "security").get("capabilities"))
+                                .get("blockedReasonCodes")
+                                .toString())
+                .contains("SOURCE_UNAVAILABLE");
+        service =
+                new SecretValidationService(
+                        db,
+                        new SecretAccessService(db),
+                        new SecretCommandExecutor(db, tx),
+                        true,
+                        false,
+                        false,
+                        false,
+                        false,
+                        true);
+        assertThat(
+                        ((Map<?, ?>) service.read(key, occurrence, "security").get("capabilities"))
+                                .get("canRequestValidation"))
+                .isEqualTo(true);
+        var retryAt =
+                db.queryForObject(
+                        """
+                        INSERT INTO secret_connections(provider,display_name,auth_ref,status,scope_version,source_retry_at,source_retry_reason)
+                        VALUES('NOTION','Other page source','notion-internal:default','ACTIVE',1,
+                          clock_timestamp()+interval '20 minutes','NOTION_RATE_LIMITED') RETURNING source_retry_at
+                        """,
+                        java.time.OffsetDateTime.class);
+        var request = request("notion-source-aws-key");
+        assertThat(request).containsEntry("status", "PENDING");
+        assertThat(((java.sql.Timestamp) request.get("availableAt")).toInstant())
+                .isEqualTo(retryAt.toInstant());
+        assertThat(
+                        db.queryForObject(
+                                "SELECT available_at FROM secret_jobs WHERE connection_id=?",
+                                java.time.OffsetDateTime.class,
+                                conn))
+                .isEqualTo(retryAt);
+        var extended =
+                db.queryForObject(
+                        "UPDATE secret_connections SET source_retry_at=source_retry_at+interval '1"
+                            + " minute' WHERE connection_id<>? RETURNING source_retry_at",
+                        java.time.OffsetDateTime.class,
+                        conn);
+        var status = service.requestStatus(((Number) request.get("jobId")).longValue(), "security");
+        assertThat(((java.sql.Timestamp) status.get("availableAt")).toInstant())
+                .isEqualTo(extended.toInstant());
+        var latest = (Map<?, ?>) service.read(key, occurrence, "security").get("latestRequest");
+        assertThat(((java.sql.Timestamp) latest.get("availableAt")).toInstant())
+                .isEqualTo(extended.toInstant());
+        db.update(
+                "UPDATE secret_connection_scopes SET history_limit='ALL_VERSIONS' WHERE scope_id=?",
+                scope);
+        assertThat(
+                        ((Map<?, ?>) service.read(key, occurrence, "security").get("capabilities"))
+                                .get("blockedReasonCodes")
+                                .toString())
+                .contains("UNSUPPORTED_SOURCE");
+    }
+
+    @Test
     void notionCanBeManuallyRevalidatedFromApprovedAwsContent() {
         useNotionCredential();
         db.update("UPDATE secret_connections SET provider='AWS' WHERE connection_id=?", conn);

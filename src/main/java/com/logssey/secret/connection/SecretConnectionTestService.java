@@ -18,21 +18,35 @@ public class SecretConnectionTestService {
     private final SecretConnectionTestRepository repository;
     private final AwsIdentityProbe aws;
     private final GitHubAuthProbe github;
+    private final NotionAuthProbe notion;
     private final Clock clock;
     private final SecretAccessService access;
 
-    @Autowired
     SecretConnectionTestService(SecretConnectionTestRepository repository,
                                 AwsIdentityProbe aws, GitHubAuthProbe github, SecretAccessService access) {
         this(repository, aws, github, Clock.systemUTC(), access);
     }
 
+    @Autowired
+    SecretConnectionTestService(SecretConnectionTestRepository repository,
+                                AwsIdentityProbe aws, GitHubAuthProbe github,
+                                NotionAuthProbe notion, SecretAccessService access) {
+        this(repository, aws, github, notion, Clock.systemUTC(), access);
+    }
+
     SecretConnectionTestService(SecretConnectionTestRepository repository,
                                 AwsIdentityProbe aws, GitHubAuthProbe github, Clock clock,
                                 SecretAccessService access) {
+        this(repository, aws, github, new NotionAuthProbe(false, ""), clock, access);
+    }
+
+    SecretConnectionTestService(SecretConnectionTestRepository repository,
+                                AwsIdentityProbe aws, GitHubAuthProbe github, NotionAuthProbe notion,
+                                Clock clock, SecretAccessService access) {
         this.repository = repository;
         this.aws = aws;
         this.github = github;
+        this.notion = notion;
         this.clock = clock;
         this.access = access;
     }
@@ -47,6 +61,7 @@ public class SecretConnectionTestService {
         ConnectionProbeResult result = switch (connection.provider()) {
             case "AWS" -> testAws(connection);
             case "GITHUB" -> testGitHub(connection);
+            case "NOTION" -> testNotion(connection);
             default -> throw new ApiException(ErrorCode.CONFLICT);
         };
         var response = new SecretConnectionTestResponse(id, connection.provider(),
@@ -73,6 +88,13 @@ public class SecretConnectionTestService {
         var scope = repository.firstEnabledScope(connection.id());
         if (scope.isEmpty()) return ConnectionProbeResult.failed("INVALID_APPROVED_SCOPE");
         return github.probe(scope.orElseThrow());
+    }
+
+    private ConnectionProbeResult testNotion(SecretConnectionTestRepository.Connection connection) {
+        if (!com.logssey.secret.notion.SecretNotionSourceCredentials.isReference(connection.authRef())
+                || !repository.notionScopesSupported(connection.id()))
+            return ConnectionProbeResult.failed("INVALID_APPROVED_SCOPE");
+        return notion.probe(connection.authRef());
     }
 
 }

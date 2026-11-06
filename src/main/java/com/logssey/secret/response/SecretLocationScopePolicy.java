@@ -20,11 +20,14 @@ public final class SecretLocationScopePolicy {
                                    String approvedRef) {
         if ("GITHUB".equals(provider))
             return SecretGithubScopePolicy.approved(contentType, historyLimit, approvedRef);
+        if ("NOTION".equals(provider))
+            return com.logssey.secret.notion.NotionScopeSql.valid(contentType, approvedRef, historyLimit);
         return "AWS".equals(provider) && awsApproved(contentType, historyLimit, approvedRef);
     }
 
     static boolean approved(String contentType, String historyLimit, String approvedRef) {
         if (SecretGithubScopePolicy.approved(contentType, historyLimit, approvedRef)) return true;
+        if (com.logssey.secret.notion.NotionScopeSql.valid(contentType, approvedRef, historyLimit)) return true;
         return awsApproved(contentType, historyLimit, approvedRef);
     }
 

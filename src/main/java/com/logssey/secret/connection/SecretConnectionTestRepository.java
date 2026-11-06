@@ -61,6 +61,15 @@ class SecretConnectionTestRepository {
                 """, connectionId, probe.status(), probe.reasonCode(), probe.checkedAt(), loginId);
     }
 
+    boolean notionScopesSupported(long connectionId) {
+        String valid = com.logssey.secret.notion.NotionScopeSql.predicate("s");
+        return Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT EXISTS(SELECT 1 FROM secret_connection_scopes s WHERE s.connection_id=? AND s.enabled)"
+                    + " AND NOT EXISTS(SELECT 1 FROM secret_connection_scopes s WHERE s.connection_id=?"
+                    + " AND s.enabled AND (" + valid + ") IS NOT TRUE)",
+                Boolean.class, connectionId, connectionId));
+    }
+
     record Connection(long id, String provider, String status, String authRef) { }
     record Scope(String contentType, String approvedRef, String historyLimit) { }
     record AwsScopeSummary(long count, long invalidCount, long accountCount, String accountId) { }

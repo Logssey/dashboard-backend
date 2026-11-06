@@ -758,6 +758,17 @@ WHERE v.connection_id=j.connection_id AND k.issuer=? AND k.credential_type=? AND
                                 return;
                             }
                             String endpoint = endpoint(fresh);
+                            if ("NOTION_SELF".equals(endpoint)) {
+                                var sourceWait = jdbc.queryForObject(
+                                        "SELECT max(source_retry_at) FROM secret_connections WHERE provider='NOTION'"
+                                                + " AND source_retry_at>clock_timestamp()",
+                                        java.time.OffsetDateTime.class);
+                                if (sourceWait != null) {
+                                    reason.set(new CredentialValidationResult("UNCHECKED", "RATE_LIMITED",
+                                            null, null, sourceWait.toInstant()));
+                                    return;
+                                }
+                            }
                             var cooldown = jdbc.query(
                                     "SELECT reason_code,next_due_at FROM secret_validation_attempts"
                                             + " WHERE (credential_set_id=? OR endpoint_class IN('GITHUB_USER','NOTION_SELF'))"

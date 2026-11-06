@@ -12,15 +12,16 @@ public class SecretScanFactsRepository {
 
     public List<SecretRunScopeResultResponse> scopes(long runId) {
         return jdbc.query("""
-            SELECT o.*, s.content_type AS fallback_type, s.approved_ref
+            SELECT o.*, s.content_type AS fallback_type, s.approved_ref,r.excluded_object_count
             FROM secret_scope_outcomes o JOIN secret_connection_scopes s ON s.scope_id=o.scope_id
+            JOIN secret_run_scopes r ON r.run_scope_id=o.run_scope_id
             WHERE o.run_id=? ORDER BY o.run_scope_id
             """, (rs,n) -> {
             boolean recorded=rs.getObject("evidence_version")!=null;
             String type=recorded?rs.getString("snapshot_content_type"):rs.getString("fallback_type");
             if (!Set.of("GITHUB_REPOSITORY_FILES","IAM_ACCESS_KEY_METADATA","AWS_SECRETS_MANAGER_METADATA",
                 "AWS_SSM_PARAMETER_METADATA","AWS_S3_BUCKET_METADATA","AWS_SECRETS_MANAGER_VALUE",
-                "AWS_SSM_PARAMETER_VALUE","AWS_S3_OBJECT_CONTENT").contains(type)) type="UNSUPPORTED";
+                "AWS_SSM_PARAMETER_VALUE","AWS_S3_OBJECT_CONTENT","NOTION_PAGE_CONTENT").contains(type)) type="UNSUPPORTED";
             var at=rs.getObject("finished_at",OffsetDateTime.class);
             String collection=rs.getString("collection_status");
             String failure=safeCode(rs.getString("failure_code")==null?rs.getString("unsupported_reason"):rs.getString("failure_code"));
@@ -36,7 +37,7 @@ public class SecretScanFactsRepository {
                     stageReason(recorded,rs.getString("detection_stage_status"),rs.getString("detection_reason_code")),!type.endsWith("_METADATA"),at),
                 new SecretRunScopeResultResponse.Stage(recorded?Objects.requireNonNullElse(rs.getString("validation_stage_status"),"UNKNOWN"):"UNKNOWN",
                     stageReason(recorded,rs.getString("validation_stage_status"),rs.getString("validation_reason_code")),rs.getBoolean("validation_required"),at),
-                rs.getObject("started_at",OffsetDateTime.class),at,false);
+                rs.getObject("started_at",OffsetDateTime.class),at,false,rs.getInt("excluded_object_count"));
         },runId);
     }
 

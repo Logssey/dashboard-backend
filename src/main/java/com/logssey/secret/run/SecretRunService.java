@@ -35,7 +35,7 @@ public class SecretRunService {
             "GITHUB_REPOSITORY_FILES", "IAM_ACCESS_KEY_METADATA",
             "AWS_SECRETS_MANAGER_METADATA", "AWS_SSM_PARAMETER_METADATA",
             "AWS_S3_BUCKET_METADATA", "AWS_SECRETS_MANAGER_VALUE",
-            "AWS_SSM_PARAMETER_VALUE", "AWS_S3_OBJECT_CONTENT");
+            "AWS_SSM_PARAMETER_VALUE", "AWS_S3_OBJECT_CONTENT", "NOTION_PAGE_CONTENT");
     private static final Set<String> PUBLIC_SCOPE_GAPS = Set.of(
             "INVALID_APPROVED_SCOPE", "AWS_INVALID_APPROVED_SCOPE", "AWS_SERVICE_UNSUPPORTED",
             "AWS_ACCOUNT_MISMATCH", "AWS_ACCESS_DENIED", "AWS_RATE_LIMITED",
@@ -59,7 +59,14 @@ public class SecretRunService {
             "GITHUB_TREE_TRUNCATED", "GITHUB_TREE_LIMIT", "GITHUB_FILE_LIMIT",
             "GITHUB_FILE_TOO_LARGE", "GITHUB_TOTAL_BYTES_LIMIT",
             "GITHUB_BINARY_FILE", "GITHUB_GIT_LFS_POINTER",
-            "GITHUB_UNSUPPORTED_OBJECT", "GITHUB_DEPTH_LIMIT", "GITHUB_CONSUMER_FAILED");
+            "GITHUB_UNSUPPORTED_OBJECT", "GITHUB_DEPTH_LIMIT", "GITHUB_CONSUMER_FAILED",
+            "NOTION_CONFIGURATION_ERROR", "NOTION_ACCESS_DENIED", "NOTION_NOT_FOUND",
+            "NOTION_RATE_LIMITED", "NOTION_PROVIDER_ACCESS_BLOCKED", "NOTION_SOURCE_UNAVAILABLE",
+            "NOTION_TIMEOUT", "NOTION_MALFORMED_RESPONSE", "NOTION_RESPONSE_TOO_LARGE",
+            "NOTION_IN_TRASH", "NOTION_CONTENT_CHANGED", "NOTION_UNSUPPORTED_BLOCK",
+            "NOTION_BLOCK_LIMIT", "NOTION_DEPTH_LIMIT", "NOTION_TEXT_LIMIT",
+            "NOTION_REQUEST_LIMIT", "NOTION_CURSOR_LOOP", "NOTION_COLLECTION_DISABLED",
+            "NOTION_CREDENTIALS_UNAVAILABLE", "NOTION_CONTENT_PROCESSING_FAILED");
     private static final String REGION = "[a-z]{2}(?:-[a-z0-9]+){1,3}-[0-9]+";
     private static final Pattern SECRETS_REF = Pattern.compile(
             "^aws://[0-9]{12}/(" + REGION + ")/secrets-manager/all$");
@@ -82,13 +89,23 @@ public class SecretRunService {
     private final TransactionTemplate transaction;
     private final SecretAccessService access;
     private final SecretCommandExecutor commands;
+    private final boolean notionCollectionEnabled;
 
     public SecretRunService(SecretRunRepository repository, PlatformTransactionManager transactionManager,
                             SecretAccessService access, SecretCommandExecutor commands) {
+        this(repository, transactionManager, access, commands, false);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public SecretRunService(SecretRunRepository repository, PlatformTransactionManager transactionManager,
+                            SecretAccessService access, SecretCommandExecutor commands,
+                            @org.springframework.beans.factory.annotation.Value("${logssey.secret.notion.collection.enabled:false}")
+                            boolean notionCollectionEnabled) {
         this.repository = repository;
         this.transaction = new TransactionTemplate(transactionManager);
         this.access = access;
         this.commands = commands;
+        this.notionCollectionEnabled = notionCollectionEnabled;
     }
 
     public SecretRunAcceptedResponse register(SecretRunRequest request, String loginId) {
@@ -264,8 +281,9 @@ public class SecretRunService {
         return match.matches() ? match.group(1) : null;
     }
 
-    private static boolean supportedProvider(String provider) {
-        return "GITHUB".equals(provider) || "AWS".equals(provider);
+    private boolean supportedProvider(String provider) {
+        return "GITHUB".equals(provider) || "AWS".equals(provider)
+                || notionCollectionEnabled && "NOTION".equals(provider);
     }
 
     private static String hashIdempotencyKey(long actorId, String key) {

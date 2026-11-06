@@ -133,6 +133,29 @@ class SecretStoragePolicyIntegrationTest {
         assertThat(service.classification(scope,"policy-operator").storagePolicy()).isNull();
     }
 
+    @Test void notionWholePagePolicyCoversOnlyBlocksOfTheApprovedCurrentPage() {
+        String page="11111111-2222-3333-4444-555555555555";
+        jdbc.update("UPDATE secret_connections SET provider='NOTION',auth_ref='notion-internal:default' WHERE connection_id=?",connection);
+        jdbc.update("UPDATE secret_connection_scopes SET content_type='NOTION_PAGE_CONTENT',"
+                +" approved_ref=?,history_limit='CURRENT_VERSION_ONLY' WHERE scope_id=?","notion://pages/"+page,scope);
+        jdbc.update("UPDATE secret_occurrences SET source_object_ref=? WHERE occurrence_id=?",
+                "notion/pages/"+page+"/blocks/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",occurrence);
+        var request=new DraftRequest(null,null,"AUTHORIZED_STORAGE","TICKET:SEC-123",now().minusHours(1),null,
+                List.of(new RuleRequest(connection,scope,"NOTION_PAGE_CONTENT","ALLOW","SCOPE",null,null)));
+        var draft=service.draft(request,"policy-creator");
+        var active=service.approvePolicy(draft.policyId(),draft.version(),new VersionRequest(draft.version()),"policy-reviewer");
+        bind(active);
+        assertThat(service.evaluateOccurrence(occurrence,"policy-creator").policyResult()).isEqualTo("ALLOWED");
+        jdbc.update("UPDATE secret_occurrences SET source_object_ref=? WHERE occurrence_id=?",
+                "notion/pages/"+page+"/title",occurrence);
+        assertThat(service.evaluateOccurrence(occurrence,"policy-creator").reasonCode()).isEqualTo("EXPLICIT_ALLOW");
+        jdbc.update("UPDATE secret_occurrences SET source_object_ref=? WHERE occurrence_id=?",
+                "notion/pages/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/title",occurrence);
+        assertThat(service.evaluateOccurrence(occurrence,"policy-creator").reasonCode()).isEqualTo("NO_MATCHING_RULE");
+        jdbc.update("UPDATE secret_connection_scopes SET history_limit='ALL_VERSIONS' WHERE scope_id=?",scope);
+        assertCode(ErrorCode.CONFLICT,()->service.draft(request,"policy-creator"));
+    }
+
     @Test void policyExpiryRetirementAndScopeMutationInvalidateAllowAndRequireRecheck() {
         var policy=activate("ALLOW"); bind(policy);
         var evaluation=service.evaluateOccurrence(occurrence,"policy-creator");

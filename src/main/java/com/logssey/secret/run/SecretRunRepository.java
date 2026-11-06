@@ -16,7 +16,11 @@ class SecretRunRepository {
             SELECT r.run_id, r.connection_id, r.trigger_type, r.collection_status,
                    r.detection_status, r.validation_status, r.result_status,
                    r.requested_at, r.started_at, r.finished_at, r.failure_code,
-                   j.status AS job_status, j.attempt_no, j.max_attempts, j.available_at,
+                   j.status AS job_status, j.attempt_no, j.max_attempts,
+                   CASE WHEN j.status='PENDING' THEN GREATEST(j.available_at,(
+                       SELECT max(retry.source_retry_at) FROM secret_connections retry
+                       WHERE c.provider='NOTION' AND retry.provider='NOTION' AND retry.auth_ref=c.auth_ref
+                   )) ELSE j.available_at END AS available_at,
                    j.last_error_code, c.provider, c.display_name,
                    scope_totals.scope_count, scope_totals.completed_count,
                    scope_totals.incomplete_count, scope_totals.object_count
@@ -102,6 +106,16 @@ class SecretRunRepository {
     }
 
     boolean hasSupportedScope(Connection connection) {
+        if ("NOTION".equals(connection.provider())) {
+            String valid = com.logssey.secret.notion.NotionScopeSql.predicate("s");
+            return Boolean.TRUE.equals(jdbc.queryForObject(
+                    "SELECT EXISTS(SELECT 1 FROM secret_connections WHERE connection_id=?"
+                        + " AND auth_ref='notion-internal:default')"
+                        + " AND EXISTS(SELECT 1 FROM secret_connection_scopes s WHERE s.connection_id=? AND s.enabled)"
+                        + " AND NOT EXISTS(SELECT 1 FROM secret_connection_scopes s WHERE s.connection_id=?"
+                        + " AND s.enabled AND (" + valid + ") IS NOT TRUE)",
+                    Boolean.class, connection.id(), connection.id(), connection.id()));
+        }
         String query = """
                 SELECT (? = 'GITHUB' OR EXISTS (
                     SELECT 1 FROM secret_connections c
@@ -132,9 +146,13 @@ class SecretRunRepository {
                 INSERT INTO secret_jobs
                     (kind, connection_id, requested_by_user_id, idempotency_key, scheduled_at,
                      available_at, attempt_no, max_attempts, status, created_at)
-                VALUES ('FULL_SCAN', ?, ?, ?, ?, ?, 0, 3, 'PENDING', ?)
+                VALUES ('FULL_SCAN', ?, ?, ?, ?, GREATEST(?::timestamptz,(
+                    SELECT max(retry.source_retry_at) FROM secret_connections source
+                    JOIN secret_connections retry ON retry.provider='NOTION' AND retry.auth_ref=source.auth_ref
+                    WHERE source.connection_id=? AND source.provider='NOTION'
+                )), 0, 3, 'PENDING', ?)
                 RETURNING job_id
-                """, Long.class, connection.id(), actorId, idempotencyKey, now, now, now);
+                """, Long.class, connection.id(), actorId, idempotencyKey, now, now, connection.id(), now);
         Long runId = jdbc.queryForObject("""
                 INSERT INTO secret_scan_runs
                     (job_id, connection_id, trigger_type, scope_version, scheduled_at, requested_at,

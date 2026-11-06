@@ -32,8 +32,8 @@ public final class SecretFindingNormalizer {
                     "(?:^|[^A-Za-z0-9_])[\\\"']?(?<name>[A-Za-z][A-Za-z0-9_]*)[\\\"']?\\s*[:=]\\s*[\\\"']?(?<value>[A-Za-z0-9_+/=.\\-]+)");
     private static final Pattern AWS_ID = Pattern.compile("(?:AKIA|ASIA)[A-Z0-9]{16}");
     private static final Pattern AWS_SECRET = Pattern.compile("[A-Za-z0-9/+=]{40}");
-    private static final Pattern GITHUB_CLASSIC = Pattern.compile("ghp_[A-Za-z0-9_]{36}");
-    private static final Pattern GITHUB_FINE = Pattern.compile("github_pat_[A-Za-z0-9_]{70,}");
+    private static final Pattern GITHUB_CLASSIC = Pattern.compile("(?<![A-Za-z0-9_])ghp_[A-Za-z0-9_]{36}(?![A-Za-z0-9_])");
+    private static final Pattern GITHUB_FINE = Pattern.compile("(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9_]{70,}(?![A-Za-z0-9_])");
     private static final Pattern NOTION = Pattern.compile(
             "(?<![A-Za-z0-9_])(?:ntn_[A-Za-z0-9_]{46}|secret_[A-Za-z0-9]{43})(?![A-Za-z0-9_])");
 
@@ -104,8 +104,14 @@ public final class SecretFindingNormalizer {
             if (finding == null || !seen.add(finding) || finding.startLine() != finding.endLine()
                     || finding.startLine() < 1 || finding.startLine() > lines.length) continue;
             String line = lines[finding.startLine() - 1];
-            List<Assignment> assignments = "notion-api-token".equals(finding.ruleId())
-                    ? notionTokens(line) : assignments(line);
+            Pattern tokenPattern = switch (finding.ruleId()) {
+                case "notion-api-token" -> NOTION;
+                case "github-pat" -> GITHUB_CLASSIC;
+                case "github-fine-grained-pat" -> GITHUB_FINE;
+                default -> null;
+            };
+            List<Assignment> assignments = tokenPattern == null
+                    ? assignments(line) : tokenValues(line, tokenPattern);
             List<Assignment> matches = assignments.stream()
                     .filter(item -> overlaps(finding, line, item)
                             && matches(finding.ruleId(), item)).toList();
@@ -214,11 +220,11 @@ public final class SecretFindingNormalizer {
                 List.copyOf(notionCandidates));
     }
 
-    private static List<Assignment> notionTokens(String line) {
+    private static List<Assignment> tokenValues(String line, Pattern pattern) {
         var tokens = new ArrayList<Assignment>();
-        var matcher = NOTION.matcher(line);
+        var matcher = pattern.matcher(line);
         while (matcher.find()) {
-            tokens.add(new Assignment("NOTION_TOKEN", matcher.group(), matcher.start(), matcher.end()));
+            tokens.add(new Assignment("CONTENT_TOKEN", matcher.group(), matcher.start(), matcher.end()));
         }
         return tokens;
     }

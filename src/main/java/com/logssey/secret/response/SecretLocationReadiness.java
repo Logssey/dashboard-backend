@@ -8,12 +8,18 @@ import static com.logssey.secret.snapshot.SecretReadSnapshots.facts;
 @Service
 public class SecretLocationReadiness {
  private final JdbcTemplate jdbc; private final SecretAccessService access;
- public SecretLocationReadiness(JdbcTemplate jdbc,SecretAccessService access){this.jdbc=jdbc;this.access=access;}
+ private final boolean notionCollectionEnabled;
+ public SecretLocationReadiness(JdbcTemplate jdbc,SecretAccessService access){this(jdbc,access,false);}
+ @org.springframework.beans.factory.annotation.Autowired
+ public SecretLocationReadiness(JdbcTemplate jdbc,SecretAccessService access,
+   @org.springframework.beans.factory.annotation.Value("${logssey.secret.notion.collection.enabled:false}") boolean notionCollectionEnabled){
+  this.jdbc=jdbc;this.access=access;this.notionCollectionEnabled=notionCollectionEnabled;
+ }
  public Map<String,Object> capabilities(SecretPrincipal actor,long caseId,long occurrence){
   var rows=jdbc.queryForList("""
    SELECT c.is_current,c.disposition,c.action_status,c.case_origin,co.response_status,co.action_cycle,
     co.actions_completed_at,co.last_material_action_at,co.assigned_user_id,co.assigned_team,
-    o.connection_id,o.presence_status,o.last_seen_at,(k.fingerprint=v.baseline_identity AND k.fingerprint_key_version=v.baseline_fingerprint_version) AS same_identity,k.component_state,k.fingerprint_key_version,cn.provider,cn.status AS connection_status,
+    o.connection_id,o.presence_status,o.last_seen_at,(k.fingerprint=v.baseline_identity AND k.fingerprint_key_version=v.baseline_fingerprint_version) AS same_identity,k.component_state,k.fingerprint_key_version,cn.provider,cn.auth_ref,cn.status AS connection_status,
     s.enabled,s.content_type,s.history_limit,s.approved_ref,s.response_origin,s.revision,s.response_origin_version,v.scope_origin_version AS revalidation_origin_version,
     v.scope_revision AS revalidation_revision,v.occurrence_version AS revalidation_occurrence_version,co.version AS location_version,
     EXISTS(SELECT 1 FROM secret_jobs j WHERE j.connection_id=o.connection_id AND j.kind IN ('FULL_SCAN','REVALIDATE') AND j.status IN ('PENDING','LEASED')) AS busy,
@@ -40,13 +46,15 @@ public class SecretLocationReadiness {
   else if(!"REVALIDATION_PENDING".equals(o.get("response_status"))||o.get("actions_completed_at")==null||o.get("last_material_action_at")==null)reason="COMPLETE_ACTIONS_REQUIRED";
   else if(!"CONFIRMED".equals(o.get("component_state"))||o.get("fingerprint_key_version")==null)reason="COMPLETE_IDENTITY_REQUIRED";
   else if(!SecretLocationScopePolicy.approved((String)o.get("provider"),(String)o.get("content_type"),(String)o.get("history_limit"),(String)o.get("approved_ref")))reason="SOURCE_REVALIDATION_UNSUPPORTED";
+  else if("NOTION".equals(o.get("provider"))&&!notionCollectionEnabled)reason="SOURCE_REVALIDATION_UNSUPPORTED";
+  else if("NOTION".equals(o.get("provider"))&&!com.logssey.secret.notion.SecretNotionSourceCredentials.isReference((String)o.get("auth_ref")))reason="SCOPE_UNAVAILABLE";
   else if(!Boolean.TRUE.equals(o.get("enabled"))||!"ACTIVE".equals(o.get("connection_status"))||!Objects.equals(o.get("case_origin"),o.get("response_origin")))reason="SCOPE_UNAVAILABLE";
   else if(Boolean.TRUE.equals(o.get("busy")))reason="ACTIVE_JOB_EXISTS";
   boolean canResume=assigned&&Boolean.TRUE.equals(o.get("is_current"))&&"IN_SCOPE".equals(o.get("disposition"))
    &&"REVALIDATION_PENDING".equals(o.get("response_status"))&&"PRESENT".equals(o.get("revalidation_status"))
    &&Objects.equals(o.get("action_cycle"),o.get("revalidation_cycle"))&&Objects.equals(o.get("case_origin"),o.get("response_origin"))&&o.get("last_material_action_at")!=null
    &&Objects.equals(o.get("last_material_action_at"),o.get("revalidation_action_at"))&&!Boolean.TRUE.equals(o.get("busy"));
-  boolean missing="MISSING".equals(o.get("revalidation_status"))&&"MISSING".equals(o.get("presence_status"))
+  boolean missing=!"NOTION".equals(o.get("provider"))&&"MISSING".equals(o.get("revalidation_status"))&&"MISSING".equals(o.get("presence_status"))
    &&Boolean.TRUE.equals(o.get("is_current"))&&Boolean.TRUE.equals(o.get("same_identity"))&&"IN_SCOPE".equals(o.get("disposition"))&&"REVALIDATION_PENDING".equals(o.get("response_status"))
    &&Objects.equals(o.get("scope_version"),o.get("revalidation_connection_version"))&&!Boolean.TRUE.equals(o.get("later_incomplete"))
    &&Objects.equals(o.get("latest_scope_run_id"),o.get("revalidation_run_id"))

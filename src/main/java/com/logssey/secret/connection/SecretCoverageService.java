@@ -16,11 +16,19 @@ public class SecretCoverageService {
     private final JdbcTemplate jdbc;
     private final SecretAccessService access;
     private final Duration scanInterval;
+    private final boolean notionCollectionEnabled;
     public SecretCoverageService(JdbcTemplate jdbc, SecretAccessService access) { this(jdbc,access,"6h"); }
-    @org.springframework.beans.factory.annotation.Autowired
     public SecretCoverageService(JdbcTemplate jdbc, SecretAccessService access,
             @org.springframework.beans.factory.annotation.Value("${logssey.secret.scheduler.scan-interval:${SECRET_SCAN_INTERVAL:6h}}") String interval) {
+        this(jdbc, access, interval, false);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public SecretCoverageService(JdbcTemplate jdbc, SecretAccessService access,
+            @org.springframework.beans.factory.annotation.Value("${logssey.secret.scheduler.scan-interval:${SECRET_SCAN_INTERVAL:6h}}") String interval,
+            @org.springframework.beans.factory.annotation.Value("${logssey.secret.notion.collection.enabled:false}") boolean notionCollectionEnabled) {
         this.jdbc=jdbc;this.access=access;
+        this.notionCollectionEnabled=notionCollectionEnabled;
         this.scanInterval=org.springframework.boot.convert.DurationStyle.detectAndParse(interval);
         if(scanInterval.isZero()||scanInterval.isNegative())throw new IllegalArgumentException("SCAN_INTERVAL_INVALID");
     }
@@ -72,11 +80,14 @@ public class SecretCoverageService {
             }
             item.put("scopeStatusCounts",counts);
             boolean operations=access.hasConnectionRole(a,id,SecretRole.OPERATIONS);
-            boolean supported=Set.of("GITHUB","AWS").contains(c.get("provider"));
+            boolean supported=Set.of("GITHUB","AWS").contains(c.get("provider"))
+                    || notionCollectionEnabled&&"NOTION".equals(c.get("provider"));
+            String unsupportedReason="NOTION".equals(c.get("provider"))
+                    ?"NOTION_COLLECTION_DISABLED":"PROVIDER_UNSUPPORTED";
             item.put("capabilities",Map.of("canTest",operations&&supported&&"ACTIVE".equals(c.get("status")),
                 "canRun",operations&&supported&&"ACTIVE".equals(c.get("status"))&&!scopes.isEmpty()&&isExecutable(id,(String)c.get("provider"))));
-            item.put("testBlockedReasonCode",!operations?"OPERATIONS_ROLE_REQUIRED":!supported?"PROVIDER_UNSUPPORTED":!"ACTIVE".equals(c.get("status"))?"CONNECTION_PAUSED":null);
-            item.put("scanBlockedReasonCode",!operations?"OPERATIONS_ROLE_REQUIRED":!supported?"PROVIDER_UNSUPPORTED":!"ACTIVE".equals(c.get("status"))?"CONNECTION_PAUSED":scopes.isEmpty()?"NO_SCAN_TARGETS":!isExecutable(id,(String)c.get("provider"))?"INVALID_APPROVED_SCOPE":null);
+            item.put("testBlockedReasonCode",!operations?"OPERATIONS_ROLE_REQUIRED":!supported?unsupportedReason:!"ACTIVE".equals(c.get("status"))?"CONNECTION_PAUSED":null);
+            item.put("scanBlockedReasonCode",!operations?"OPERATIONS_ROLE_REQUIRED":!supported?unsupportedReason:!"ACTIVE".equals(c.get("status"))?"CONNECTION_PAUSED":scopes.isEmpty()?"NO_SCAN_TARGETS":!isExecutable(id,(String)c.get("provider"))?"INVALID_APPROVED_SCOPE":null);
             result.add(item);
         }
         return page(result,page,size,"Connection",Map.of("status",status,"origin",origin));
@@ -122,6 +133,14 @@ public class SecretCoverageService {
     }
 
     private boolean isExecutable(long connectionId,String provider) {
+        if ("NOTION".equals(provider)) {
+            String valid=com.logssey.secret.notion.NotionScopeSql.predicate("s");
+            return notionCollectionEnabled&&Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT EXISTS(SELECT 1 FROM secret_connections WHERE connection_id=? AND auth_ref='notion-internal:default')"
+                +" AND EXISTS(SELECT 1 FROM secret_connection_scopes s WHERE s.connection_id=? AND s.enabled)"
+                +" AND NOT EXISTS(SELECT 1 FROM secret_connection_scopes s WHERE s.connection_id=? AND s.enabled AND ("+valid+") IS NOT TRUE)",
+                Boolean.class,connectionId,connectionId,connectionId));
+        }
         String valid=provider.equals("AWS")?com.logssey.secret.run.AwsScopeSql.predicate("s"):
             "(s.content_type='GITHUB_REPOSITORY_FILES' AND s.history_limit='CURRENT_COMMIT_ONLY' AND s.approved_ref ~ '^github://[^/]+/[^/]+/[^/]+/.+$')";
         String sql="SELECT EXISTS(SELECT 1 FROM secret_connection_scopes s WHERE s.connection_id=? AND s.enabled)"
@@ -209,7 +228,10 @@ FROM secret_scope_classification_proposals q WHERE q.scope_id=? AND q.status='PE
                                         (String) s.get("approved_ref"))
                                 && !s.get("approved_ref").toString().contains("..")
                                 && !s.get("approved_ref").toString().contains("\\")
-                        : "AWS".equals(c.get("provider"))
+                        : "NOTION".equals(c.get("provider"))
+                                ? com.logssey.secret.notion.NotionScopeSql.valid(
+                                        (String)s.get("content_type"),(String)s.get("approved_ref"),(String)s.get("history_limit"))
+                                : "AWS".equals(c.get("provider"))
                                 && Boolean.TRUE.equals(
                                         jdbc.queryForObject(
                                                 "SELECT "
@@ -222,7 +244,7 @@ FROM secret_scope_classification_proposals q WHERE q.scope_id=? AND q.status='PE
                                 "GITHUB_REPOSITORY_FILES",
                                 "AWS_SECRETS_MANAGER_VALUE",
                                 "AWS_SSM_PARAMETER_VALUE",
-                                "AWS_S3_OBJECT_CONTENT")
+                                "AWS_S3_OBJECT_CONTENT", "NOTION_PAGE_CONTENT")
                         .contains(s.get("content_type"));
         String blocked =
                 !available
@@ -328,7 +350,12 @@ FROM secret_scope_classification_proposals q WHERE q.scope_id=? AND q.status='PE
     }
     private Map<String,Object> activeJob(long id) {
         var list=jdbc.queryForList("""
-            SELECT r.run_id,j.status,j.available_at FROM secret_jobs j JOIN secret_scan_runs r ON r.job_id=j.job_id
+            SELECT r.run_id,j.status,CASE WHEN j.status='PENDING' THEN GREATEST(j.available_at,(
+                SELECT max(retry.source_retry_at) FROM secret_connections source
+                JOIN secret_connections retry ON retry.provider='NOTION' AND retry.auth_ref=source.auth_ref
+                WHERE source.connection_id=j.connection_id AND source.provider='NOTION'
+            )) ELSE j.available_at END AS available_at
+            FROM secret_jobs j JOIN secret_scan_runs r ON r.job_id=j.job_id
             WHERE j.connection_id=? AND j.kind='FULL_SCAN' AND j.status IN ('PENDING','LEASED') ORDER BY j.job_id LIMIT 1
             """,id);
         if(list.isEmpty())return null;var row=list.getFirst();return Map.of("runId",row.get("run_id"),"status",row.get("status"),"availableAt",time(row,"available_at"));
@@ -350,6 +377,6 @@ FROM secret_scope_classification_proposals q WHERE q.scope_id=? AND q.status='PE
     private static void validatePage(int page,int size){if(page<0||page>1_000_000||size<1||size>100)throw new ApiException(ErrorCode.INVALID_INPUT);}
     private static void validateOrigin(String origin){validate(origin,Set.of("ALL","PRODUCTION","TEST","UNCLASSIFIED"));}
     private static void validate(String value,Set<String> allowed){if(value==null||!allowed.contains(value))throw new ApiException(ErrorCode.INVALID_INPUT);}
-    private static String safeType(String type){return Set.of("GITHUB_REPOSITORY_FILES","IAM_ACCESS_KEY_METADATA","AWS_SECRETS_MANAGER_METADATA","AWS_SSM_PARAMETER_METADATA","AWS_S3_BUCKET_METADATA","AWS_SECRETS_MANAGER_VALUE","AWS_SSM_PARAMETER_VALUE","AWS_S3_OBJECT_CONTENT").contains(type)?type:"UNSUPPORTED";}
-    private static String safeProbeCode(String code){return code==null?null:Set.of("INVALID_APPROVED_SCOPE","AWS_ACCOUNT_MISMATCH","AWS_ACCESS_DENIED","AWS_RATE_LIMITED","AWS_UNAVAILABLE","GITHUB_APP_UNAVAILABLE","GITHUB_ACCESS_DENIED","GITHUB_RATE_LIMITED","GITHUB_UNAVAILABLE").contains(code)?code:"PROBE_UNAVAILABLE";}
+    private static String safeType(String type){return Set.of("GITHUB_REPOSITORY_FILES","IAM_ACCESS_KEY_METADATA","AWS_SECRETS_MANAGER_METADATA","AWS_SSM_PARAMETER_METADATA","AWS_S3_BUCKET_METADATA","AWS_SECRETS_MANAGER_VALUE","AWS_SSM_PARAMETER_VALUE","AWS_S3_OBJECT_CONTENT","NOTION_PAGE_CONTENT").contains(type)?type:"UNSUPPORTED";}
+    private static String safeProbeCode(String code){return code==null?null:Set.of("INVALID_APPROVED_SCOPE","AWS_ACCOUNT_MISMATCH","AWS_ACCESS_DENIED","AWS_RATE_LIMITED","AWS_UNAVAILABLE","GITHUB_APP_UNAVAILABLE","GITHUB_ACCESS_DENIED","GITHUB_RATE_LIMITED","GITHUB_UNAVAILABLE","NOTION_COLLECTION_DISABLED","NOTION_CREDENTIALS_UNAVAILABLE","NOTION_ACCESS_DENIED","NOTION_RATE_LIMITED","NOTION_UNAVAILABLE").contains(code)?code:"PROBE_UNAVAILABLE";}
 }

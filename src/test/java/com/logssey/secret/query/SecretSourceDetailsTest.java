@@ -4,6 +4,20 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SecretSourceDetailsTest {
+    @Test void notionLinksAreBoundToTheApprovedPageAndAnExactBlock() {
+        String page="11111111-2222-3333-4444-555555555555",block="66666666-7777-8888-9999-aaaaaaaaaaaa";
+        String ref="notion://pages/"+page;
+        var value=SecretSourceDetails.describe("NOTION",ref,"notion/pages/"+page+"/blocks/"+block,"L2");
+        assertThat(value).containsEntry("kind","NOTION_PAGE").containsEntry("pageId",page).containsEntry("blockId",block)
+                .containsEntry("sourceUrl","https://www.notion.so/"+page.replace("-","")+"#"+block.replace("-",""));
+        assertThat(SecretSourceDetails.describe("NOTION",ref,"notion/pages/"+block+"/blocks/"+block,"L2"))
+                .containsEntry("status","UNAVAILABLE");
+        assertThat(SecretSourceDetails.describe("NOTION",ref,"notion/pages/"+page+"/blocks/https://example.com","L2"))
+                .containsEntry("status","UNAVAILABLE");
+        assertThat(SecretSourceDetails.describe("NOTION",ref,"notion/pages/"+page+"/title","L1"))
+                .containsEntry("sourceUrl","https://www.notion.so/"+page.replace("-",""));
+    }
+
     @Test void restoresApprovedRepositoryFileBranchAndLineWithoutContents() {
         var value=SecretSourceDetails.describe("GITHUB","github://Logssey/test-find-key/main/fixtures/","Logssey/test-find-key/fixtures/config/sample.env","L4-7");
         assertThat(value).containsEntry("repository","Logssey/test-find-key").containsEntry("branch","main")

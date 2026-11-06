@@ -22,9 +22,18 @@ class SecretInventoryRepository {
             "INCOMPLETE_CREDENTIAL", "NOT_APPROVED", "RATE_BUDGET_EXHAUSTED", "SOURCE_VALUE_UNAVAILABLE",
             "SOURCE_UNAVAILABLE", "CREDENTIAL_MISMATCH", "APPROVAL_CHANGED", "PROFILE_UNCONFIGURED");
     private final JdbcTemplate jdbc;
+    private final boolean notionCollectionEnabled;
 
     SecretInventoryRepository(JdbcTemplate jdbc) {
+        this(jdbc, false);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    SecretInventoryRepository(JdbcTemplate jdbc,
+            @org.springframework.beans.factory.annotation.Value("${logssey.secret.notion.collection.enabled:false}")
+            boolean notionCollectionEnabled) {
         this.jdbc = jdbc;
+        this.notionCollectionEnabled = notionCollectionEnabled;
     }
 
     Optional<String> actorRole(String loginId) {
@@ -111,18 +120,22 @@ class SecretInventoryRepository {
                        COUNT(s.scope_id) AS approved_scope_count
                 FROM secret_connections c
                 JOIN secret_connection_scopes s ON s.connection_id = c.connection_id AND s.enabled
-                WHERE c.status = 'ACTIVE' AND c.provider IN ('GITHUB', 'AWS')
+                WHERE c.status = 'ACTIVE' AND c.provider IN ('GITHUB', 'AWS', 'NOTION')
                 GROUP BY c.connection_id, c.provider, c.display_name, c.status
                 HAVING c.provider = 'GITHUB'
-                    OR ((c.auth_ref ~ '^aws-profile:[A-Za-z0-9._-]{1,100}$' OR c.auth_ref='aws-workload:default')
+                    OR (c.provider='AWS' AND (c.auth_ref ~ '^aws-profile:[A-Za-z0-9._-]{1,100}$' OR c.auth_ref='aws-workload:default')
                         AND COUNT(*) FILTER (WHERE AWS_SCOPE_VALID) > 0
                         AND COUNT(*) FILTER (WHERE NOT AWS_SCOPE_VALID) = 0)
+                    OR (? AND c.provider='NOTION' AND c.auth_ref='notion-internal:default'
+                        AND COUNT(*) FILTER (WHERE NOTION_SCOPE_VALID) > 0
+                        AND COUNT(*) FILTER (WHERE (NOTION_SCOPE_VALID) IS NOT TRUE) = 0)
                 ORDER BY c.display_name, c.connection_id
-                """.replace("AWS_SCOPE_VALID", AwsScopeSql.predicate("s"));
+                """.replace("AWS_SCOPE_VALID", AwsScopeSql.predicate("s"))
+                .replace("NOTION_SCOPE_VALID", com.logssey.secret.notion.NotionScopeSql.predicate("s"));
         return jdbc.query(query, (rs, row) -> new SecretConnectionResponse(
                 rs.getLong("connection_id"), rs.getString("provider"),
                 rs.getString("display_name"), rs.getString("status"),
-                rs.getLong("approved_scope_count")));
+                rs.getLong("approved_scope_count")), notionCollectionEnabled);
     }
 
     private List<SecretOccurrenceResponse> occurrences(long credentialSetId) {

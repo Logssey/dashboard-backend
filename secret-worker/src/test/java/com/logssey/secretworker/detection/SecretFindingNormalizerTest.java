@@ -205,6 +205,24 @@ class SecretFindingNormalizerTest {
         assertThat(inspection.notionCandidates()).isEmpty();
     }
 
+    @Test
+    void githubPatValuesInNotionProseKeepTheSameIdentityAsConfigurationValues() {
+        for (String token : List.of("ghp_" + "G".repeat(36), "github_pat_" + "H".repeat(70))) {
+            String rule = token.startsWith("ghp_") ? "github-pat" : "github-fine-grained-pat";
+            String prefix = "이 문서의 연결 정보를 확인할 때 사용하는 시험용 토큰입니다. 값은 `";
+            int start = prefix.getBytes(StandardCharsets.UTF_8).length + 1;
+            var prose = normalizer.inspect(1, "notion/pages/example/blocks/local",
+                    (prefix + token + "`").getBytes(StandardCharsets.UTF_8),
+                    List.of(new GitleaksFinding(rule, 1, 1, start, start + token.length() - 1)));
+            var config = normalizer.inspect(1, "repo/config", ("TOKEN=" + token).getBytes(StandardCharsets.UTF_8),
+                    List.of(new GitleaksFinding(rule, 1, 1, 7, 6 + token.length())));
+            assertThat(prose.githubCandidates()).hasSize(1);
+            assertThat(prose.credentials().getFirst().fingerprint())
+                    .isEqualTo(config.credentials().getFirst().fingerprint());
+            assertThat(prose.toString() + prose.githubCandidates()).doesNotContain(token);
+        }
+    }
+
     private static String awsId(String label, String prefix) {
         byte[] digest = sha(label);
         String alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
