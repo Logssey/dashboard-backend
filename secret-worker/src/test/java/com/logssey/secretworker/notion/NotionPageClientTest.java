@@ -45,6 +45,53 @@ class NotionPageClientTest {
   }
 
   @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void readsCurrentPageStatusWithoutTheLegacyArchivedField(boolean inTrash) {
+    route(
+        exchange ->
+            NotionCollectorTest.reply(
+                exchange, 200, metadataWithStatus("\"in_trash\":" + inTrash)));
+
+    try (var metadata = client.metadata(SCOPE, Duration.ofSeconds(2))) {
+      assertThat(metadata.pageId()).isEqualTo(PAGE);
+      assertThat(metadata.inTrash()).isEqualTo(inTrash);
+      assertThat(metadata.titleUtf8()).isEmpty();
+    }
+    assertThat(requests).hasValue(1);
+  }
+
+  @Test
+  void preservesTheLegacyArchivedFlagWhenTheProviderStillReturnsIt() {
+    route(
+        exchange ->
+            NotionCollectorTest.reply(
+                exchange, 200, metadataWithStatus("\"archived\":true,\"in_trash\":false")));
+
+    try (var metadata = client.metadata(SCOPE, Duration.ofSeconds(2))) {
+      assertThat(metadata.inTrash()).isTrue();
+    }
+    assertThat(requests).hasValue(1);
+  }
+
+  @ParameterizedTest
+  @ValueSource(
+      strings = {
+        "\"archived\":\"false\",\"in_trash\":false",
+        "\"archived\":null,\"in_trash\":false",
+        "\"archived\":false",
+        "\"in_trash\":\"false\"",
+        "\"in_trash\":null"
+      })
+  void rejectsMalformedOrMissingStatusFlags(String statusFields) {
+    route(exchange -> NotionCollectorTest.reply(exchange, 200, metadataWithStatus(statusFields)));
+
+    assertThatThrownBy(() -> client.metadata(SCOPE, Duration.ofSeconds(2)))
+        .isInstanceOf(NotionSourceException.class)
+        .hasMessage("MALFORMED_RESPONSE");
+    assertThat(requests).hasValue(1);
+  }
+
+  @ParameterizedTest
   @ValueSource(ints = {401, 403, 404, 429, 500, 503, 529})
   void classifiesProviderErrorsWithoutEchoingTheirMessages(int status) {
     route(
@@ -254,6 +301,14 @@ class NotionPageClientTest {
     assertThat(client.children(PAGE, "opaque cursor?x#fragment", Duration.ofSeconds(2)).blocks())
         .isEmpty();
     assertThat(requests).hasValue(1);
+  }
+
+  private static String metadataWithStatus(String statusFields) {
+    return """
+    {"object":"page","id":"%s","last_edited_time":"2026-01-01T00:00:00.000Z",%s,
+     "properties":{"title":{"type":"title","title":[]}}}
+    """
+        .formatted(PAGE, statusFields);
   }
 
   private void route(com.sun.net.httpserver.HttpHandler handler) {

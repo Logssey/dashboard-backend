@@ -107,8 +107,9 @@ public final class NotionPageClient {
     } catch (RuntimeException ignored) {
       throw malformed();
     }
+    JsonNode archived = page.path("archived");
     if (edited.length() > 64
-        || !page.path("archived").isBoolean()
+        || (!archived.isMissingNode() && !archived.isBoolean())
         || !page.path("in_trash").isBoolean()) throw malformed();
     JsonNode properties = page.path("properties");
     if (!properties.isObject()) throw malformed();
@@ -127,7 +128,7 @@ public final class NotionPageClient {
     return new PageMetadata(
         scope.pageId(),
         edited,
-        page.path("archived").asBoolean() || page.path("in_trash").asBoolean(),
+        archived.asBoolean(false) || page.path("in_trash").asBoolean(),
         published,
         text.getBytes(StandardCharsets.UTF_8));
   }
