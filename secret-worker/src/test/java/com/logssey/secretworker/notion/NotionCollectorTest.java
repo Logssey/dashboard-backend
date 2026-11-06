@@ -475,7 +475,6 @@ class NotionCollectorTest {
     map.put("object", "page");
     map.put("id", PAGE);
     map.put("last_edited_time", edited);
-    map.put("archived", false);
     map.put("in_trash", false);
     map.put("public_url", null);
     map.put("properties", Map.of("title", Map.of("type", "title", "title", rich(title))));
