@@ -741,6 +741,22 @@ WHERE v.connection_id=j.connection_id AND k.issuer=? AND k.credential_type=? AND
                                 return;
                             }
                             String endpoint = endpoint(fresh);
+                            var cooldown = jdbc.query(
+                                    "SELECT reason_code,next_due_at FROM secret_validation_attempts"
+                                            + " WHERE (credential_set_id=? OR endpoint_class='GITHUB_USER')"
+                                            + " AND endpoint_class=?"
+                                            + " AND (reason_code='RATE_LIMITED' OR"
+                                            + " (reason_code='PROVIDER_UNAVAILABLE' AND http_status>=500))"
+                                            + " AND next_due_at>clock_timestamp() AND attempt_id<>?"
+                                            + " ORDER BY next_due_at DESC LIMIT 1",
+                                    (rs, row) -> new CredentialValidationResult("UNCHECKED",
+                                            rs.getString("reason_code"), null, null,
+                                            rs.getObject("next_due_at", java.time.OffsetDateTime.class).toInstant()),
+                                    num(fresh, "credential_set_id"), endpoint, reservation.id());
+                            if (!cooldown.isEmpty()) {
+                                reason.set(cooldown.getFirst());
+                                return;
+                            }
                             long minute =
                                     jdbc.queryForObject(
                                             "SELECT count(*) FROM secret_validation_attempts WHERE"

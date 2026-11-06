@@ -111,9 +111,8 @@ public class SecretValidationService {
                                                         : "NO_CURRENT_CONCLUSIVE_RESULT"),
                         "checkDueAt",
                         due));
-        result.put(
-                "nextDueAt",
-                latest != null && latest.get("nextDueAt") != null ? latest.get("nextDueAt") : due);
+        // Observation freshness is independent of whether a retry is actually queued.
+        result.put("nextDueAt", due);
         result.put("postActionValidationPending", post);
         result.put(
                 "capabilities",
@@ -245,7 +244,7 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
         var rows =
                 jdbc.queryForList(
                         "SELECT"
-                            + " j.job_id,j.target_occurrence_id,j.status,j.created_at,j.available_at,j.finished_at,j.last_error_code,r.run_id,r.started_at"
+                            + " j.job_id,j.target_occurrence_id,j.status,j.created_at,j.available_at,j.finished_at,j.last_error_code,j.attempt_no,j.max_attempts,r.run_id,r.started_at"
                             + " FROM secret_jobs j JOIN secret_scan_runs r ON r.job_id=j.job_id"
                             + " WHERE j.job_id=? AND j.purpose='CREDENTIAL_VALIDITY'",
                         id);
@@ -269,6 +268,15 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
                 row.get("started_at"),
                 "completedAt",
                 row.get("finished_at"),
+                "attemptNo",
+                row.get("attempt_no"),
+                "maxAttempts",
+                row.get("max_attempts"),
+                "availableAt",
+                "PENDING".equals(row.get("status")) ? row.get("available_at") : null,
+                "nextRetryAt",
+                "PENDING".equals(row.get("status")) && num(row, "attempt_no") > 0
+                        ? row.get("available_at") : null,
                 "reasonCode",
                 row.get("last_error_code"));
     }
@@ -509,9 +517,9 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
     private Map<String, Object> latestRequest(long oid) {
         var list =
                 jdbc.queryForList(
-                        "SELECT job_id,status,created_at,available_at FROM secret_jobs WHERE"
-                            + " target_occurrence_id=? AND purpose='CREDENTIAL_VALIDITY' AND status"
-                            + " IN('PENDING','LEASED') ORDER BY job_id DESC LIMIT 1",
+                        "SELECT job_id,status,created_at,available_at,finished_at,attempt_no,max_attempts,last_error_code FROM secret_jobs WHERE"
+                            + " target_occurrence_id=? AND purpose='CREDENTIAL_VALIDITY'"
+                            + " ORDER BY job_id DESC LIMIT 1",
                         oid);
         return list.isEmpty()
                 ? null
@@ -523,7 +531,22 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
                         "requestedAt",
                         list.getFirst().get("created_at"),
                         "scheduledAt",
-                        list.getFirst().get("available_at"));
+                        list.getFirst().get("available_at"),
+                        "completedAt",
+                        list.getFirst().get("finished_at"),
+                        "attemptNo",
+                        list.getFirst().get("attempt_no"),
+                        "maxAttempts",
+                        list.getFirst().get("max_attempts"),
+                        "availableAt",
+                        "PENDING".equals(list.getFirst().get("status"))
+                                ? list.getFirst().get("available_at") : null,
+                        "nextRetryAt",
+                        "PENDING".equals(list.getFirst().get("status"))
+                                        && num(list.getFirst(), "attempt_no") > 0
+                                ? list.getFirst().get("available_at") : null,
+                        "reasonCode",
+                        list.getFirst().get("last_error_code"));
     }
 
     private List<Map<String, Object>> attempts(

@@ -163,6 +163,40 @@ class SecretValidationIntegrationTest {
     }
 
     @Test
+    void retryProgressAndTerminalRequestsAreVisibleWithoutAnInventedFutureRetry() {
+        var before = service.read(key, occurrence, "security");
+        var request = service.request(key, Map.of("occurrenceId", occurrence,
+                "expectedContextVersion", before.get("contextVersion"), "idempotencyKey", "retry-progress"), "security");
+        long job = ((Number)request.get("requestId")).longValue();
+        assertThat(request).containsEntry("attemptNo", 0).containsEntry("maxAttempts", 3)
+                .containsEntry("nextRetryAt", null);
+        db.update("UPDATE secret_jobs SET attempt_no=1,available_at=clock_timestamp()+interval '2 minutes' WHERE job_id=?", job);
+        var retry = service.requestStatus(job, "security");
+        assertThat(retry).containsEntry("attemptNo", 1);
+        assertThat(retry.get("nextRetryAt")).isEqualTo(retry.get("availableAt")).isNotNull();
+        var observationTime = java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC).minusSeconds(2);
+        long run = ((Number)request.get("runId")).longValue();
+        // Registration already snapshotted the scope. Attach source evidence to that snapshot.
+        long tool = db.queryForObject("INSERT INTO secret_tool_runs(run_scope_id,engine,engine_version,config_hash,status)"
+                + " SELECT run_scope_id,'GITLEAKS','query-fixture','query-fixture','SUCCEEDED'"
+                + " FROM secret_run_scopes WHERE run_id=? AND scope_id=? RETURNING tool_run_id",
+                Long.class, run, scope);
+        db.update("INSERT INTO secret_findings(occurrence_id,run_id,tool_run_id,finding_key,rule_id,rule_version,detected_at)"
+                + " VALUES(?,?,?,gen_random_uuid()::text,'query-fixture','1',?)", occurrence, run, tool, observationTime);
+        long attempt = SecretValidationTestFixtures.completed(db, occurrence, job,
+                run, "UNKNOWN", "PROVIDER_UNAVAILABLE",
+                observationTime, observationTime.plusSeconds(1), observationTime);
+        db.update("UPDATE secret_validation_attempts SET next_due_at=clock_timestamp()+interval '2 minutes' WHERE attempt_id=?", attempt);
+        db.update("UPDATE secret_jobs SET status='FAILED',finished_at=clock_timestamp(),last_error_code='VALIDATOR_TEMPORARY' WHERE job_id=?", job);
+        var terminal = service.requestStatus(job, "security");
+        assertThat(terminal).containsEntry("status", "FAILED").containsEntry("nextRetryAt", null)
+                .containsEntry("availableAt", null);
+        var read = service.read(key, occurrence, "security");
+        assertThat(read.get("nextDueAt")).isNull();
+        assertThat(((Map<?,?>)read.get("latestRequest")).get("status")).isEqualTo("FAILED");
+    }
+
+    @Test
     void contextApprovalAndUnknownInputAreCheckedBeforeWork() {
         var read = service.read(key, occurrence, "security");
         var body =

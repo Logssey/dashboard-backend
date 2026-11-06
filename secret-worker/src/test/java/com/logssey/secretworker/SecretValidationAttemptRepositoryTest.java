@@ -310,6 +310,111 @@ SELECT max(provider_checked_at) FROM secret_validation_attempts WHERE result = '
     }
 
     @Test
+    void aProviderCooldownSurvivesWorkerRetriesWithoutAnotherSend() {
+        var candidate = discovered();
+        approve();
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var until = Instant.now().plusSeconds(120).truncatedTo(ChronoUnit.MICROS);
+        java.util.function.Supplier<com.logssey.secretworker.validation.CredentialValidationResult> provider = () -> {
+            calls.incrementAndGet();
+            return new com.logssey.secretworker.validation.CredentialValidationResult(
+                    "UNKNOWN", "RATE_LIMITED", Instant.now(), 429, until);
+        };
+        var initial = attempts.validate(claim,candidate.credential(),AwsValidationResult.METHOD,
+                AwsValidationResult.VERSION,"AWS_STS",false,true,provider);
+        assertThat(initial.nextDueAt()).isEqualTo(until);
+        jobs.fail(claim.jobId(),claim.leaseToken(),SecretJobFailureCode.VALIDATOR_TEMPORARY,true);
+        jdbc.update("UPDATE secret_jobs SET available_at=clock_timestamp()-interval '1 second' WHERE job_id=?",claim.jobId());
+        var retry = jobs.claimNextJob().orElseThrow();
+        var blocked = attempts.validate(retry,candidate.credential(),AwsValidationResult.METHOD,
+                AwsValidationResult.VERSION,"AWS_STS",false,true,provider);
+        assertThat(blocked.result()).isEqualTo("UNCHECKED");
+        assertThat(blocked.reasonCode()).isEqualTo("RATE_LIMITED");
+        assertThat(blocked.nextDueAt()).isEqualTo(until.truncatedTo(java.time.temporal.ChronoUnit.MICROS));
+        assertThat(blocked.providerCheckedAt()).isNull();
+        assertThat(calls).hasValue(1);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints={429,503})
+    void aNewManualRequestKeepsTheProviderCooldownAfterThePreviousRunExpires(int status) {
+        var candidate = discovered();
+        approve();
+        manual();
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        Instant until = Instant.now().plusSeconds(1800).truncatedTo(ChronoUnit.MICROS);
+        String reason = status == 429 ? "RATE_LIMITED" : "PROVIDER_UNAVAILABLE";
+        java.util.function.Supplier<com.logssey.secretworker.validation.CredentialValidationResult> provider = () -> {
+            calls.incrementAndGet();
+            return new com.logssey.secretworker.validation.CredentialValidationResult(
+                    "UNKNOWN",reason,Instant.now(),status,until);
+        };
+        attempts.validate(claim,candidate.credential(),AwsValidationResult.METHOD,
+                AwsValidationResult.VERSION,"AWS_STS",false,true,provider);
+        jobs.fail(claim.jobId(),claim.leaseToken(),SecretJobFailureCode.VALIDATOR_TEMPORARY,true);
+        assertThat(jdbc.queryForObject("SELECT last_error_code FROM secret_jobs WHERE job_id=?",String.class,claim.jobId()))
+                .isEqualTo("VALIDATION_DEADLINE_EXCEEDED");
+        assertThat(jdbc.queryForObject("SELECT max(next_due_at) FROM secret_validation_attempts",OffsetDateTime.class).toInstant())
+                .isEqualTo(until.truncatedTo(ChronoUnit.MICROS));
+        long nextJob = jdbc.queryForObject("""
+                INSERT INTO secret_jobs(kind,purpose,connection_id,target_occurrence_id,requested_by_user_id,
+                    idempotency_key,expected_context,scheduled_at,available_at,attempt_no,max_attempts,status)
+                SELECT kind,purpose,connection_id,target_occurrence_id,requested_by_user_id,
+                    gen_random_uuid()::text,expected_context,clock_timestamp(),clock_timestamp(),0,3,'PENDING'
+                FROM secret_jobs WHERE job_id=? RETURNING job_id
+                """,Long.class,claim.jobId());
+        long nextRun = jdbc.queryForObject("""
+                INSERT INTO secret_scan_runs(job_id,connection_id,trigger_type,scope_version,scheduled_at,requested_at,
+                    collection_status,detection_status,validation_status,result_status)
+                SELECT ?,connection_id,'REVALIDATION',scope_version,clock_timestamp(),clock_timestamp(),
+                    'PENDING','PENDING','PENDING','PENDING' FROM secret_scan_runs WHERE run_id=? RETURNING run_id
+                """,Long.class,nextJob,claim.runId());
+        jdbc.update("INSERT INTO secret_run_scopes(run_id,scope_id,collection_status) SELECT ?,scope_id,'PENDING' FROM secret_run_scopes WHERE run_id=?",nextRun,claim.runId());
+        var next = jobs.claimNextJob().orElseThrow();
+        assertThat(next.jobId()).isEqualTo(nextJob);
+        var result = attempts.validate(next,candidate.credential(),AwsValidationResult.METHOD,
+                AwsValidationResult.VERSION,"AWS_STS",false,true,provider);
+        assertThat(result.result()).isEqualTo("UNCHECKED");
+        assertThat(result.reasonCode()).isEqualTo(reason);
+        assertThat(result.nextDueAt()).isEqualTo(until.truncatedTo(ChronoUnit.MICROS));
+        assertThat(calls).hasValue(1);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints={429,503})
+    void aDifferentPatCannotBypassTheSharedGithubEndpointCooldown(int status) {
+        var candidates = new java.util.ArrayList<SecretFindingNormalizer.GitHubCandidate>();
+        var scan = new GitleaksScanResult("8.30.1",CONFIG_HASH,
+                List.of(new GitleaksFinding("github-pat",1,1,14,54)));
+        long tool = findings.beginGitleaksRun(runScopeId,scan.engineVersion(),scan.configHash(),Instant.now());
+        for (String suffix : List.of("A", "B")) {
+            byte[] bytes = ("GITHUB_TOKEN=ghp_"+suffix.repeat(36)+"\n").getBytes(StandardCharsets.UTF_8);
+            String path = "repo/"+suffix+".env";
+            var inspection = normalizer.inspect(claim.connectionId(),path,bytes,scan.findings());
+            findings.recordInspection(tool,path,"test-blob",inspection,scan,Instant.now());
+            candidates.add(inspection.githubCandidates().getFirst());
+        }
+        approve();
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        Instant until = Instant.now().plusSeconds(120).truncatedTo(ChronoUnit.MICROS);
+        String reason = status == 429 ? "RATE_LIMITED" : "PROVIDER_UNAVAILABLE";
+        java.util.function.Supplier<com.logssey.secretworker.validation.CredentialValidationResult> provider = () -> {
+            calls.incrementAndGet();
+            return new com.logssey.secretworker.validation.CredentialValidationResult(
+                    "UNKNOWN",reason,Instant.now(),status,until);
+        };
+        for (var candidate : candidates) {
+            var result = attempts.validate(claim,candidate.credential(),
+                    com.logssey.secretworker.validation.GitHubPatValidator.METHOD,
+                    com.logssey.secretworker.validation.GitHubPatValidator.VERSION,
+                    "GITHUB_USER",false,true,provider);
+            assertThat(result.reasonCode()).isEqualTo(reason);
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_credential_sets",Long.class)).isEqualTo(2);
+        assertThat(calls).hasValue(1);
+    }
+
+    @Test
     void approvalRevokedDuringProviderResponsePreservesOnlyHistoricalResult() {
         var candidate = discovered();
         approve();

@@ -174,16 +174,24 @@ WHERE job_id = ? AND status = 'LEASED' AND lease_owner = ?
                 row.runId());
     }
 
-    void retry(JobRow row, OffsetDateTime now, OffsetDateTime availableAt, String code) {
+    boolean retry(JobRow row, OffsetDateTime now, OffsetDateTime availableAt, String code) {
+        var retryAt = jdbc.queryForObject(
+                "SELECT GREATEST(?::timestamptz,COALESCE((SELECT max(next_due_at)"
+                        + " FROM secret_validation_attempts WHERE run_id=?),?::timestamptz))",
+                OffsetDateTime.class, availableAt, row.runId(), availableAt);
+        // Leave the registered maximum request duration inside the validation run's budget.
+        if ("VALIDATOR_TEMPORARY".equals(code) && Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT ?::timestamptz+interval '8 seconds'>=started_at+interval '30 minutes'"
+                        + " FROM secret_scan_runs WHERE run_id=?",
+                Boolean.class, retryAt, row.runId()))) return false;
         jdbc.update(
                 """
 UPDATE secret_jobs
-SET status = 'PENDING', available_at = GREATEST(?::timestamptz,COALESCE((SELECT max(next_due_at) FROM secret_validation_attempts WHERE run_id=?),?::timestamptz)), lease_owner = NULL, lease_until = NULL,
+SET status = 'PENDING', available_at = ?, lease_owner = NULL, lease_until = NULL,
     last_error_code = ?
 WHERE job_id = ?
 """,
-                availableAt,
-                row.runId(), availableAt, code, row.jobId());
+                retryAt, code, row.jobId());
         jdbc.update("""
                 UPDATE secret_scan_runs SET
                     collection_status = CASE WHEN collection_status IN ('RUNNING', 'PARTIAL', 'FAILED')
@@ -204,6 +212,7 @@ WHERE job_id = ?
         new SecretFullScanPresence(jdbc).reconcile(row.runId(),now);
         // A completed collection remains evidence of success even when a later stage needs a retry.
         updateLastCollectionSuccess(row);
+        return true;
     }
 
     void failPermanently(JobRow row, OffsetDateTime now, String code) {

@@ -149,6 +149,17 @@ class SecretJobExecutionServiceTest {
     }
 
     @Test
+    void validationRetryStopsWhenTheNextRequestWouldExceedTheRunBudget() {
+        long job = scheduledJob(1);
+        var first = onlyClaim();
+        jdbc.update("UPDATE secret_scan_runs SET started_at=clock_timestamp()-interval '29 minutes 59 seconds' WHERE run_id=?", first.runId());
+        assertThat(service.fail(job, first.leaseToken(), SecretJobFailureCode.VALIDATOR_TEMPORARY, true)).isTrue();
+        assertThat(jdbc.queryForMap("SELECT status,last_error_code FROM secret_jobs WHERE job_id=?",job))
+                .containsEntry("status", "FAILED").containsEntry("last_error_code", "VALIDATION_DEADLINE_EXCEEDED");
+        assertThat(service.claimNextJob()).isEmpty();
+    }
+
+    @Test
     void completedZeroObjectScanRequiresTerminalStagesAndScopes() {
         long jobId = scheduledJob(1);
         var claim = onlyClaim();
