@@ -805,7 +805,8 @@ SELECT max(provider_checked_at) FROM secret_validation_attempts WHERE result = '
         org.mockito.Mockito.verifyNoInteractions(github);
         assertThat(jdbc.queryForList("SELECT result FROM secret_validation_attempts ORDER BY attempt_id", String.class))
                 .containsExactly("VALID", "INVALID");
-        assertThat(jdbc.queryForObject("SELECT result FROM secret_current_validation_attempts", String.class))
+        assertThat(jdbc.queryForObject("SELECT result FROM secret_current_validation_attempts"
+                + " ORDER BY completed_at DESC,attempt_id DESC LIMIT 1", String.class))
                 .isEqualTo("INVALID");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_credential_identities", Integer.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_credential_lifecycle_evidence", Integer.class)).isZero();
