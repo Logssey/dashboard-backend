@@ -23,6 +23,7 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-json'
     implementation 'software.amazon.awssdk:sts:2.55.12'
     implementation 'software.amazon.awssdk:apache5-client:2.55.12'
+    implementation 'org.apache.httpcomponents.client5:httpclient5'
     implementation 'software.amazon.awssdk:iam:2.55.12'
     implementation 'software.amazon.awssdk:secretsmanager:2.55.12'
     implementation 'software.amazon.awssdk:ssm:2.55.12'
