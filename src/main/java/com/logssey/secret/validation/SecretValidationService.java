@@ -21,7 +21,7 @@ public class SecretValidationService {
     private final JdbcTemplate jdbc;
     private final SecretAccessService access;
     private final SecretCommandExecutor commands;
-    private final boolean awsEnabled, githubEnabled, githubSourceEnabled, awsSourceEnabled;
+    private final boolean awsEnabled, githubEnabled, notionEnabled, githubSourceEnabled, awsSourceEnabled;
 
     public SecretValidationService(
             JdbcTemplate jdbc,
@@ -32,6 +32,18 @@ public class SecretValidationService {
         this(jdbc, access, commands, awsEnabled, githubEnabled, true, true);
     }
 
+    public SecretValidationService(
+            JdbcTemplate jdbc,
+            SecretAccessService access,
+            SecretCommandExecutor commands,
+            @Value("${logssey.secret.validation.aws.enabled:false}") boolean awsEnabled,
+            @Value("${logssey.secret.validation.github.enabled:false}") boolean githubEnabled,
+            @Value("${logssey.secret.github.enabled:false}") boolean githubSourceEnabled,
+            @Value("${logssey.secret.aws.content.enabled:false}") boolean awsSourceEnabled) {
+        this(jdbc, access, commands, awsEnabled, githubEnabled, false,
+                githubSourceEnabled, awsSourceEnabled);
+    }
+
     @org.springframework.beans.factory.annotation.Autowired
     public SecretValidationService(
             JdbcTemplate jdbc,
@@ -39,6 +51,7 @@ public class SecretValidationService {
             SecretCommandExecutor commands,
             @Value("${logssey.secret.validation.aws.enabled:false}") boolean awsEnabled,
             @Value("${logssey.secret.validation.github.enabled:false}") boolean githubEnabled,
+            @Value("${logssey.secret.validation.notion.enabled:false}") boolean notionEnabled,
             @Value("${logssey.secret.github.enabled:false}") boolean githubSourceEnabled,
             @Value("${logssey.secret.aws.content.enabled:false}") boolean awsSourceEnabled) {
         this.githubSourceEnabled = githubSourceEnabled;
@@ -48,6 +61,7 @@ public class SecretValidationService {
         this.commands = commands;
         this.awsEnabled = awsEnabled;
         this.githubEnabled = githubEnabled;
+        this.notionEnabled = notionEnabled;
     }
 
     @Transactional(readOnly = true)
@@ -433,7 +447,7 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
         var reasons = new ArrayList<String>();
         if (!configure) reasons.add("SECURITY_REQUIRED");
         if (!PROFILE.equals(c.get("connection_profile"))) reasons.add("PROFILE_UNCONFIGURED");
-        if (!Boolean.TRUE.equals(c.get("validation_enabled")) || !(awsEnabled || githubEnabled))
+        if (!Boolean.TRUE.equals(c.get("validation_enabled")) || !(awsEnabled || githubEnabled || notionEnabled))
             reasons.add("DISABLED");
         return reasons;
     }
@@ -469,7 +483,12 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
     }
 
     private boolean global(Map<String, Object> c) {
-        return "AWS".equals(c.get("issuer")) ? awsEnabled : githubEnabled;
+        return switch (Objects.toString(c.get("issuer"), "")) {
+            case "AWS" -> awsEnabled;
+            case "GITHUB" -> githubEnabled;
+            case "NOTION" -> notionEnabled;
+            default -> false;
+        };
     }
 
     private boolean canRequest(SecretPrincipal actor, Map<String, Object> c) {
@@ -479,18 +498,23 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
     }
 
     private boolean supported(Map<String, Object> c) {
-        return Set.of(
-                        "AWS_ACCESS_KEY_PAIR",
-                        "AWS_TEMPORARY_CREDENTIALS",
-                        "GITHUB_CLASSIC_PAT",
-                        "GITHUB_FINE_GRAINED_PAT")
-                .contains(c.get("credential_type"));
+        return switch (Objects.toString(c.get("issuer"), "")) {
+            case "AWS" -> Set.of("AWS_ACCESS_KEY_PAIR", "AWS_TEMPORARY_CREDENTIALS")
+                    .contains(c.get("credential_type"));
+            case "GITHUB" -> Set.of("GITHUB_CLASSIC_PAT", "GITHUB_FINE_GRAINED_PAT")
+                    .contains(c.get("credential_type"));
+            case "NOTION" -> "NOTION_CONNECTION_TOKEN".equals(c.get("credential_type"));
+            default -> false;
+        };
     }
 
     private String method(Map<String, Object> c) {
-        return "AWS".equals(c.get("issuer"))
-                ? "AWS_STS_GET_CALLER_IDENTITY"
-                : "GITHUB_GET_AUTHENTICATED_USER";
+        return switch (Objects.toString(c.get("issuer"), "")) {
+            case "AWS" -> "AWS_STS_GET_CALLER_IDENTITY";
+            case "GITHUB" -> "GITHUB_GET_AUTHENTICATED_USER";
+            case "NOTION" -> "NOTION_GET_SELF";
+            default -> throw new IllegalArgumentException("UNSUPPORTED_VALIDATION_ISSUER");
+        };
     }
 
     private Map<String, Object> policyFor(Map<String, Object> c, SecretPrincipal actor) {
@@ -505,7 +529,7 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
                 !PROFILE.equals(c.get("connection_profile"))
                         ? "UNCONFIGURED"
                         : Boolean.TRUE.equals(c.get("validation_enabled"))
-                                        && (awsEnabled || githubEnabled)
+                                        && (awsEnabled || githubEnabled || notionEnabled)
                                 ? "ENABLED"
                                 : "DISABLED",
                 "canConfigure",
