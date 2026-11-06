@@ -255,6 +255,45 @@ class SecretInventoryServiceTest {
         assertThat(service.list(0, 20, "AWS", "ALL", "admin").items()).isEmpty();
     }
 
+    @Test
+    void manualScanPickerIncludesOnlyExecutableNotionConnectionsTheOperatorCanUse() {
+        long connection = connection("NOTION", "ACTIVE", "Approved Notion");
+        jdbc.update("UPDATE secret_connections SET auth_ref='notion-internal:default' WHERE connection_id=?",
+                connection);
+        long approved = scope(connection, "page", true);
+        jdbc.update("""
+                UPDATE secret_connection_scopes SET content_type='NOTION_PAGE_CONTENT',
+                    history_limit='CURRENT_VERSION_ONLY',
+                    approved_ref='notion://pages/11111111-2222-3333-4444-555555555555'
+                WHERE scope_id=?
+                """, approved);
+        assertThat(service.connections("admin").items()).isEmpty();
+        service = new SecretInventoryService(new SecretInventoryRepository(jdbc, true),
+                new SecretAccessService(jdbc));
+        assertThat(service.connections("admin").items()).singleElement().satisfies(item -> {
+            assertThat(item.connectionId()).isEqualTo(connection);
+            assertThat(item.provider()).isEqualTo("NOTION");
+            assertThat(item.approvedScopeCount()).isEqualTo(1);
+        });
+        long unsupported = scope(connection, "unsupported", true);
+        assertThat(service.connections("admin").items()).isEmpty();
+        jdbc.update("UPDATE secret_connection_scopes SET enabled=false WHERE scope_id=?", unsupported);
+        assertThat(service.connections("admin").items()).hasSize(1);
+        jdbc.update("UPDATE secret_connection_scopes SET history_limit=NULL WHERE scope_id=?", approved);
+        assertThat(service.connections("admin").items()).isEmpty();
+        jdbc.update("UPDATE secret_connection_scopes SET history_limit='CURRENT_VERSION_ONLY' WHERE scope_id=?",
+                approved);
+        jdbc.update("UPDATE secret_connections SET auth_ref='notion-internal:unregistered' WHERE connection_id=?",
+                connection);
+        assertThat(service.connections("admin").items()).isEmpty();
+        jdbc.update("UPDATE secret_connections SET auth_ref='notion-internal:default',status='PAUSED' WHERE connection_id=?",
+                connection);
+        assertThat(service.connections("admin").items()).isEmpty();
+        jdbc.update("UPDATE secret_connections SET status='ACTIVE' WHERE connection_id=?", connection);
+        jdbc.update("UPDATE secret_role_grants SET revoked_at=clock_timestamp() WHERE role='OPERATIONS'");
+        assertThat(service.connections("admin").items()).isEmpty();
+    }
+
     private long connection(String status, String name) {
         return connection("GITHUB", status, name);
     }
