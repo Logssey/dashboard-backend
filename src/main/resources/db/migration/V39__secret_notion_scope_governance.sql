@@ -114,4 +114,3 @@ SELECT occurrence_id,scope_id,binding_id,policy_id,policy_version,reason_code,
            OR (binding_id IS NOT NULL AND reason_code NOT IN ('EXPLICIT_ALLOW','EXPLICIT_DENY'))
        ))) AS requires_reassessment
 FROM evaluated;
-
