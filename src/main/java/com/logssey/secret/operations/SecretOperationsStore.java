@@ -85,12 +85,11 @@ public final class SecretOperationsStore {
                 String name=(String)c.get("component"),s=(String)c.get("status");
                 if("STALE".equals(s)||"FAILED".equals(s))add(active,new Alert("COMPONENT:"+name,"STALE".equals(s)?"COMPONENT_STALE":"POLL_FAILED","COMPONENT",name,name+":"+s,"STALE".equals(s)?"WORKER_HEARTBEAT_STALE":"POLL_PROGRESS_FAILED"));
             }
-            boolean executor=enabled(components,"EXECUTOR"),assessment=enabled(components,"ASSESSMENT"),permissions=enabled(components,"PERMISSIONS");
             var old=jdbc.queryForList("""
-              SELECT job_id,kind,extract(epoch FROM clock_timestamp()-available_at)*1000 AS waiting_ms FROM secret_jobs WHERE status='PENDING' AND available_at<clock_timestamp()-(? * interval '1 millisecond') ORDER BY available_at LIMIT 100
+              SELECT job_id,kind,purpose,extract(epoch FROM clock_timestamp()-available_at)*1000 AS waiting_ms FROM secret_jobs WHERE status='PENDING' AND available_at<clock_timestamp()-(? * interval '1 millisecond') ORDER BY available_at LIMIT 100
               """,queueGrace.toMillis());
             var stalled=old.stream().filter(j->{
-                String component="ASSESS".equals(j.get("kind"))?"ASSESSMENT":"ENRICH".equals(j.get("kind"))?"PERMISSIONS":"EXECUTOR";
+                String component=jobComponent(j);
                 if(!enabled(components,component))return false;
                 var healthComponent=components.stream().filter(c->component.equals(c.get("component"))).findFirst().orElseThrow();
                 if(((Number)healthComponent.get("activeJobs")).longValue()>0)return false;
@@ -98,8 +97,8 @@ public final class SecretOperationsStore {
                 return ((Number)j.get("waiting_ms")).longValue()>Math.max(queueGrace.toMillis(),poll==null?0:poll*3);
             }).findFirst();
             stalled.ifPresent(j->add(active,new Alert("GLOBAL:QUEUE","QUEUE_STALLED","GLOBAL","QUEUE",j.get("job_id").toString(),"READY_JOB_OVERDUE")));
-            var leases=jdbc.queryForList("SELECT job_id,kind FROM secret_jobs WHERE status='LEASED' AND lease_until<clock_timestamp()-(? * interval '1 millisecond') ORDER BY lease_until LIMIT 100",grace.toMillis());
-            leases.stream().filter(j->"ASSESS".equals(j.get("kind"))?assessment:"ENRICH".equals(j.get("kind"))?permissions:executor).findFirst().ifPresent(j->add(active,new Alert("GLOBAL:LEASES","LEASE_EXPIRED","GLOBAL","LEASES",j.get("job_id").toString(),"EXPIRED_LEASE_NOT_RECOVERED")));
+            var leases=jdbc.queryForList("SELECT job_id,kind,purpose FROM secret_jobs WHERE status='LEASED' AND lease_until<clock_timestamp()-(? * interval '1 millisecond') ORDER BY lease_until LIMIT 100",grace.toMillis());
+            leases.stream().filter(j->enabled(components,jobComponent(j))).findFirst().ifPresent(j->add(active,new Alert("GLOBAL:LEASES","LEASE_EXPIRED","GLOBAL","LEASES",j.get("job_id").toString(),"EXPIRED_LEASE_NOT_RECOVERED")));
             var runs=jdbc.queryForList("""
               SELECT * FROM(SELECT DISTINCT ON(r.connection_id) r.connection_id,r.run_id,r.result_status,r.failure_code
                 FROM secret_scan_runs r JOIN secret_jobs j ON j.job_id=r.job_id JOIN secret_connections c ON c.connection_id=r.connection_id
@@ -132,6 +131,7 @@ public final class SecretOperationsStore {
             }
         });
     }
+    private static String jobComponent(Map<String,Object> job){return "ASSESS".equals(job.get("kind"))?"ASSESSMENT":"ENRICH".equals(job.get("kind"))?("USAGE_OBSERVATION".equals(job.get("purpose"))?"USAGE":"PERMISSIONS"):"EXECUTOR";}
     private static boolean enabled(List<Map<String,Object>> c,String name){return c.stream().anyMatch(v->name.equals(v.get("component"))&&Boolean.TRUE.equals(v.get("enabled")));}
     private static void add(Map<String,Alert> map,Alert a){map.put(a.key(),a);}
     private void open(Alert a){

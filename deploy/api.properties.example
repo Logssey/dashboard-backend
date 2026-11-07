@@ -30,6 +30,7 @@ logssey.notion.collector.token=
 logssey.secret.operations.deployment-key=secret-worker
 logssey.secret.operations.expected-instances=1
 logssey.secret.permissions.enabled=false
+logssey.secret.usage.cloudtrail-enabled=false
 # Connection tests use the API's identity only. Give it STS identity access, not source-value access.
 # When enabling GitHub connection tests, also mount github-app.pem and set real numeric IDs:
 # SECRET_GITHUB_APP_ID=0

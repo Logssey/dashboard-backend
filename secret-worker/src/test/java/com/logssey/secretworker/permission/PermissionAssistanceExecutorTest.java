@@ -56,6 +56,20 @@ VALUES(1,?,?,'FIXTURE_IDENTITY','1','FIXTURE_IDENTITY',now()-interval '2 hours',
         assertThat(executor.execute(lease)).isFalse();assertThat(jdbc.queryForObject("SELECT status FROM secret_jobs WHERE job_id=?",String.class,lease.jobId())).isEqualTo("CANCELLED");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_permission_observations",Long.class)).isZero();
     }
+    @Test void permissionRecoveryLeavesExpiredUsageJobsForTheirOwnExecutor(){
+        var token=UUID.randomUUID();
+        long usageJob=jdbc.queryForObject("""
+INSERT INTO secret_jobs(kind,purpose,connection_id,target_occurrence_id,requested_by_user_id,
+scheduled_at,available_at,attempt_no,max_attempts,status,lease_owner,lease_token,lease_generation,lease_until)
+VALUES('ENRICH','USAGE_OBSERVATION',1,?,1,clock_timestamp(),clock_timestamp(),1,3,'LEASED',?,?,1,clock_timestamp()-interval '1 second') RETURNING job_id
+""",Long.class,occurrence,token.toString(),token);
+        assertThat(executor.claim()).isEmpty();
+        var untouched=jdbc.queryForMap("SELECT status,attempt_no,lease_token,last_error_code FROM secret_jobs WHERE job_id=?",usageJob);
+        assertThat(untouched.get("status")).isEqualTo("LEASED");
+        assertThat(untouched.get("attempt_no")).isEqualTo(1);
+        assertThat(untouched.get("lease_token")).isEqualTo(token);
+        assertThat(untouched.get("last_error_code")).isNull();
+    }
     @Test void anExpiredLeaseCannotPublishAndRecoveryUsesANewGeneration(){
         request();var first=executor.claim().orElseThrow();jdbc.update("UPDATE secret_jobs SET lease_until=clock_timestamp()-interval '1 second' WHERE job_id=?",first.jobId());
         assertThat(executor.execute(first)).isFalse();var second=executor.claim().orElseThrow();assertThat(second.generation()).isGreaterThan(first.generation());assertThat(second.token()).isNotEqualTo(first.token());

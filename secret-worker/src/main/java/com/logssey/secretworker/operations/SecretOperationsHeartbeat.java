@@ -47,6 +47,7 @@ public class SecretOperationsHeartbeat implements InitializingBean, DisposableBe
         register("EXECUTOR",executor&&sources,pollMs(env,"logssey.secret.executor.poll-delay"));
         register("ASSESSMENT",executor,30_000);
         register("PERMISSIONS",env.getProperty("logssey.secret.permissions.enabled",Boolean.class,false),pollMs(env,"logssey.secret.permissions.poll-delay"));
+        register("USAGE",env.getProperty("logssey.secret.usage.cloudtrail-enabled",Boolean.class,false),pollMs(env,"logssey.secret.usage.poll-delay"));
         register("MAINTENANCE",cleanupEnabled,cleanupInterval.toMillis());
     }
     private void register(String component,boolean on,long pollMs){states.put(component,new State(on,pollMs));}
