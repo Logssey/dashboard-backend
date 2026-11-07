@@ -46,7 +46,7 @@ public class UsageObservationExecutor {
         var timer=thread.scheduleWithFixedDelay(()->{try{if(!renew(lease))lost.set(true);}catch(RuntimeException failure){lost.set(true);}},interval,interval,TimeUnit.MILLISECONDS);
         try{
             var request=contexts.request(lease.requestId());Runnable guard=()->{if(lost.get()||!owned(lease)||!contexts.current(request))throw new ContextChanged();};guard.run();
-            int remainingPages=100-((Number)request.get("page_count")).intValue();
+            int remainingPages=100-Math.max(((Number)request.get("page_count")).intValue(),((Number)request.get("lookup_budget_used")).intValue());
             int remainingEvents=5000-((Number)request.get("event_count")).intValue();
             if(remainingPages<=0||remainingEvents<=0)return commit(lease,request,new AwsUsageObserver.Result("UNAVAILABLE","PARTIAL",List.of(remainingPages<=0?"USAGE_PAGE_LIMIT":"USAGE_EVENT_LIMIT"),0,0,List.of(),null),"EXACT_CREDENTIAL".equals(request.get("binding_level")));
             var c=contexts.occurrence(lease.occurrenceId());var target=contexts.target(number(request,"target_id"));var source=credentials.getIfAvailable();
@@ -55,13 +55,22 @@ public class UsageObservationExecutor {
                 guard.run();String account=gateway.accountId();if(!Objects.equals(account,target.get("account_ref")))return finishUnavailable(lease,request,"COLLECTOR_ACCOUNT_MISMATCH");
                 String key=new AwsUsageKeyResolver(normalizers.getIfAvailable(),metadata.getIfAvailable()).resolve(c,account,gateway,guard);
                 String region=target.get("region").toString();
-                var result=observer.withBudget(remainingPages,remainingEvents).observe(gateway,region,key,time(request.get("window_start")).toInstant(),time(request.get("window_end")).toInstant(),guard,()->reserve(account,region,guard));
+                var result=observer.withBudget(remainingPages,remainingEvents).observe(gateway,region,key,time(request.get("window_start")).toInstant(),time(request.get("window_end")).toInstant(),guard,()->{reserveBudget(lease);reserve(account,region,guard);});
                 return commit(lease,request,result,true);
             }
         }catch(ContextChanged invalid){cancel(lease,"USAGE_BASELINE_CHANGED");return false;}
         catch(AwsUsageFailure failure){var request=contexts.request(lease.requestId());return finishUnavailable(lease,request,failure.code());}
         catch(RuntimeException failure){var request=contexts.request(lease.requestId());return finishUnavailable(lease,request,"USAGE_OBSERVER_FAILED");}
         finally{timer.cancel(true);thread.shutdownNow();}
+    }
+    private void reserveBudget(Lease lease){
+        int reserved=jdbc.update("""
+UPDATE secret_usage_requests r SET lookup_budget_used=lookup_budget_used+1
+WHERE r.request_id=? AND r.lookup_budget_used<100 AND EXISTS(
+ SELECT 1 FROM secret_jobs j WHERE j.job_id=r.job_id AND j.purpose='USAGE_OBSERVATION'
+ AND j.status='LEASED' AND j.lease_token=? AND j.lease_generation=? AND j.lease_until>clock_timestamp())
+""",lease.requestId(),lease.token(),lease.generation());
+        if(reserved==0){if(!owned(lease))throw new ContextChanged();throw new AwsUsageFailure("USAGE_PAGE_LIMIT",false,null);}
     }
     private void reserve(String account,String region,Runnable guard){
         OffsetDateTime slot=tx.execute(status->jdbc.queryForObject("""

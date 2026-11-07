@@ -91,4 +91,28 @@ VALUES(?,1,1,'123456789012','ap-northeast-2',1,1,1,1,1,'aws-profile:fixture','aw
         jdbc.update("UPDATE secret_jobs SET attempt_no=max_attempts,lease_until=clock_timestamp()-interval '1 second' WHERE job_id=?",last.jobId());assertThat(executor.claim()).isEmpty();
         var row=context.request(id);assertThat(row.get("status")).isEqualTo("PARTIAL");assertThat(row.get("observation_status")).isEqualTo("OBSERVED");assertThat(row.get("coverage_status")).isEqualTo("PARTIAL");assertThat(row.get("event_count")).isEqualTo(1);assertThat(row.get("binding_level")).isEqualTo("EXACT_CREDENTIAL");
     }
+    @Test void staleTargetsAtTheBatchFrontDoNotStarveALaterApprovedTarget(){
+        jdbc.update("UPDATE secret_usage_targets SET next_scheduled_at=clock_timestamp()-interval '1 minute' WHERE target_id=?",target);
+        jdbc.update("""
+INSERT INTO secret_usage_targets(occurrence_id,collector_connection_id,collector_scope_id,account_ref,region,credential_revision,scope_revision,source_scope_version,collector_scope_version,collector_scope_revision,collector_auth_ref,collector_approved_ref,approved_by_user_id,enabled,schedule_enabled,next_scheduled_at)
+SELECT ?,1,1,lpad(n::text,12,'0'),'ap-northeast-2',1,1,999,1,1,'aws-profile:fixture','aws://123456789012/global/iam/access-keys',1,true,true,clock_timestamp()-interval '2 minutes' FROM generate_series(1,100) n
+""",occurrence);
+        var scheduler=new UsageObservationScheduler(jdbc,tm);
+        assertThat(scheduler.reserveDue()).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_usage_requests",Long.class)).isZero();
+        assertThat(scheduler.reserveDue()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT target_id FROM secret_usage_requests",Long.class)).isEqualTo(target);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_usage_targets WHERE enabled AND schedule_enabled",Long.class)).isEqualTo(101);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_usage_targets WHERE source_scope_version=999",Long.class)).isEqualTo(100);
+    }
+    @Test void reservedLookupBudgetSurvivesWorkerDeathBeforePageCommit(){
+        long id=request();var crashed=executor.claim().orElseThrow();
+        jdbc.update("UPDATE secret_usage_requests SET lookup_budget_used=99 WHERE request_id=?",id);
+        jdbc.update("UPDATE secret_jobs SET lease_until=clock_timestamp()-interval '1 second' WHERE job_id=?",crashed.jobId());
+        var recovered=executor.claim().orElseThrow();
+        when(gateway.lookup(anyString(),anyString(),any(),any(),isNull())).thenReturn(page("more"));
+        assertThat(executor.execute(recovered)).isFalse();
+        var row=context.request(id);assertThat(row.get("lookup_budget_used")).isEqualTo(100);assertThat(row.get("page_count")).isEqualTo(1);assertThat(row.get("coverage_status")).isEqualTo("PARTIAL");assertThat(row.get("observation_status")).isEqualTo("OBSERVED");
+        verify(gateway,times(1)).lookup(anyString(),anyString(),any(),any(),isNull());verify(gateway,never()).lookup(anyString(),anyString(),any(),any(),eq("more"));
+    }
 }

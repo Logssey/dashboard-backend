@@ -69,6 +69,7 @@ CREATE TABLE secret_usage_requests (
  binding_level VARCHAR(20) NOT NULL DEFAULT 'UNRESOLVED' CHECK(binding_level IN('EXACT_CREDENTIAL','PRINCIPAL_ONLY','UNRESOLVED')),
  reason_codes TEXT[] NOT NULL DEFAULT '{}',
  page_count INT NOT NULL DEFAULT 0 CHECK(page_count BETWEEN 0 AND 100),
+ lookup_budget_used INT NOT NULL DEFAULT 0 CHECK(lookup_budget_used BETWEEN 0 AND 100),
  event_count INT NOT NULL DEFAULT 0 CHECK(event_count BETWEEN 0 AND 5000),
  requested_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
  started_at TIMESTAMPTZ,
