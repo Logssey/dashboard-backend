@@ -139,6 +139,28 @@ class SecretUsageIntegrationTest {
         assertThatThrownBy(()->service.submit("remediator",1,manual("another-requester"))).isInstanceOf(ApiException.class);
         assertThat(items(service.read("security",1,1,1,20))).hasSize(2);
     }
+    @Test void closingCasePreservesSecurityHistoryAndWithdrawalButNeverExtendsHistoricalAccessToRemediator(){
+        long caseId=jdbc.queryForObject("INSERT INTO secret_response_cases(credential_set_id,opening_occurrence_id,opened_by_user_id,opening_reason,case_origin,version) VALUES(1,1,1,'UNAPPROVED_SOURCE_LOCATION','PRODUCTION',1) RETURNING case_id",Long.class);
+        jdbc.update("INSERT INTO secret_case_occurrences(case_id,occurrence_id,credential_set_id) VALUES(?,1,1)",caseId);
+        long action=jdbc.queryForObject("INSERT INTO secret_action_records(case_id,occurrence_id,action_type,performed_at,recorded_by_user_id,evidence_ref,case_version) VALUES(?,1,'PERMISSION_REDUCED',clock_timestamp(),1,'TICKET:SEC-123',1) RETURNING action_id",Long.class,caseId);
+        var body=new SecretUsageContracts.Manual(1L,1L,1L,new SecretUsageContracts.Ref("ACTION_RECORD",action),new SecretUsageContracts.Ref("APPROVED_SCOPE",1L),start,end,end.minusHours(1),"API_CALL","SUCCESS","UNATTRIBUTED","action-history");
+        long id=number(service.submit("security",1,body),"observationId");service.decide("security",id,new SecretUsageContracts.Decision("ACCEPT",0L,"REVIEWED_USAGE","accept-history"));
+        jdbc.update("UPDATE secret_response_cases SET is_current=false,disposition='OUT_OF_SCOPE',closed_at=clock_timestamp() WHERE case_id=?",caseId);
+        var historical=service.read("security",1,1,1,20);assertThat(items(historical)).hasSize(1);
+        var observed=(Map<?,?>)items(historical).getFirst();assertThat(observed.get("reviewStatus")).isEqualTo("ACCEPTED");assertThat((List<?>)observed.get("decisionHistory")).hasSize(1);assertThat(observed.get("allowedDecisions")).isEqualTo(List.of("WITHDRAW"));
+        assertThat(((List<?>)historical.get("availableSourceRefs")).stream().map(Object::toString)).noneMatch(ref->ref.contains("type=ACTION_RECORD"));
+        var newSubmission=new SecretUsageContracts.Manual(1L,1L,1L,body.sourceRef(),body.targetRef(),start,end,body.eventAt(),body.actionCode(),body.actionResult(),body.actorAttribution(),"new-from-closed-case");
+        assertThatThrownBy(()->service.submit("security",1,newSubmission)).isInstanceOf(ApiException.class);
+        var withdrawn=service.decide("security",id,new SecretUsageContracts.Decision("WITHDRAW",1L,"WITHDRAWN_BY_REVIEWER","withdraw-history"));
+        assertThat(withdrawn.get("reviewStatus")).isEqualTo("WITHDRAWN");assertThat((List<?>)withdrawn.get("decisionHistory")).hasSize(2);
+        long next=jdbc.queryForObject("INSERT INTO secret_response_cases(credential_set_id,previous_case_id,opening_occurrence_id,opened_by_user_id,opening_reason,case_origin,assigned_user_id) VALUES(1,?,1,1,'UNAPPROVED_SOURCE_LOCATION','PRODUCTION',1) RETURNING case_id",Long.class,caseId);
+        jdbc.update("INSERT INTO secret_case_occurrences(case_id,occurrence_id,credential_set_id,assigned_user_id) VALUES(?,1,1,1)",next);
+        jdbc.update("INSERT INTO secret_role_grants(user_id,role,connection_id,granted_by_user_id,grant_source) VALUES(1,'REMEDIATOR',1,1,'MANUAL')");
+        jdbc.update("UPDATE secret_role_grants SET revoked_at=clock_timestamp() WHERE user_id=1 AND role='SECURITY' AND connection_id=1");
+        assertThat(new SecretAccessService(jdbc).canReadOccurrence(new com.logssey.secret.access.SecretPrincipal(1),1)).isTrue();
+        assertThat(items(service.read("security",1,1,1,20))).isEmpty();
+        assertThatThrownBy(()->service.decide("security",id,new SecretUsageContracts.Decision("WITHDRAW",2L,"WITHDRAWN_BY_REVIEWER","denied-history"))).isInstanceOf(ApiException.class);
+    }
     @Test void credentialAndSourceVersionChangesNeverTransferHistoryToNewKey(){
         long id=number(service.request("security",1,request("old-key")),"requestId");provider(id,UUID.randomUUID(),end.minusMinutes(1));complete(id,"COMPLETE","OBSERVED",1);
         jdbc.update("UPDATE secret_credential_sets SET fingerprint=decode(repeat('03',32),'hex') WHERE credential_set_id=1");

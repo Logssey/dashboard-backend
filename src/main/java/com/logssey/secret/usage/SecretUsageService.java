@@ -110,7 +110,8 @@ VALUES('MANUAL',?,?,?,?,?, ?,?,'UNKNOWN',?,?,?,?,?,?,?,?,?,?) RETURNING observat
             var c=lock(number(row,"occurrence_id"),number(row,"credential_set_id"));security(actor,c);
             if(!"MANUAL".equals(row.get("source_kind")))throw invalid();
             if(!observationCurrent(c,row))throw conflict();
-            sourceRef(actor,c,new Ref((String)row.get("source_ref_type"),number(row,"source_ref_id")));targetRef(c,new Ref((String)row.get("target_ref_type"),number(row,"target_ref_id")));
+            if(!sourceVisible(actor,c,new Ref((String)row.get("source_ref_type"),number(row,"source_ref_id")),"WITHDRAW".equals(body.decision())))throw invalid();
+            targetRef(c,new Ref((String)row.get("target_ref_type"),number(row,"target_ref_id")));
         },()->{
             // The row lock serializes append-only decisions; expected revision is a CAS token.
             jdbc.queryForObject("SELECT observation_id FROM secret_usage_observations WHERE observation_id=? FOR UPDATE",Long.class,id);
@@ -154,7 +155,7 @@ VALUES('MANUAL',?,?,?,?,?, ?,?,'UNKNOWN',?,?,?,?,?,?,?,?,?,?) RETURNING observat
     }
     private record Filter(String sql,List<Object> args){}
     private Filter observationFilter(SecretPrincipal actor,Map<String,Object> c,List<Map<String,Object>> targets){
-        var args=new ArrayList<Object>();args.add(number(c,"occurrence_id"));StringBuilder sql=new StringBuilder("u.occurrence_id=? AND ((u.source_kind='MANUAL' AND "+sourceVisibility("u",actor,c)+")");
+        var args=new ArrayList<Object>();args.add(number(c,"occurrence_id"));StringBuilder sql=new StringBuilder("u.occurrence_id=? AND ((u.source_kind='MANUAL' AND "+sourceVisibility("u",actor,c,true)+")");
         for(var t:targets){
             var latest=jdbc.queryForList("""
 SELECT r.window_start,r.window_end FROM secret_usage_requests r WHERE r.target_id=? AND r.baseline=?::jsonb
@@ -171,7 +172,7 @@ SELECT r.window_start,r.window_end FROM secret_usage_requests r WHERE r.target_i
         sql.append(')');return new Filter(sql.toString(),args);
     }
     private Map<String,Object> publicObservation(SecretPrincipal actor,Map<String,Object> c,Map<String,Object> row){
-        if("MANUAL".equals(row.get("source_kind"))&&!sourceVisible(actor,c,new Ref((String)row.get("source_ref_type"),number(row,"source_ref_id"))))throw new ApiException(ErrorCode.NOT_FOUND);
+        if("MANUAL".equals(row.get("source_kind"))&&!sourceVisible(actor,c,new Ref((String)row.get("source_ref_type"),number(row,"source_ref_id")),true))throw new ApiException(ErrorCode.NOT_FOUND);
         long id=number(row,"observation_id");var decisions=jdbc.queryForList("SELECT observation_revision,decision,reason_code,created_at FROM secret_usage_decisions WHERE observation_id=? ORDER BY observation_revision",id);
         String review="PROVIDER".equals(row.get("source_kind"))?"NOT_REQUIRED":decisions.isEmpty()?"PENDING":switch((String)decisions.getLast().get("decision")){case "ACCEPT"->"ACCEPTED";case "REJECT"->"REJECTED";default->"WITHDRAWN";};
         return facts("observationId",id,"credentialId",row.get("credential_set_id"),"occurrenceId",row.get("occurrence_id"),"evidenceRevision",c.get("risk_evidence_revision"),
@@ -186,9 +187,9 @@ SELECT r.window_start,r.window_end FROM secret_usage_requests r WHERE r.target_i
     private long decisionRevision(long observation){return jdbc.queryForObject("SELECT COALESCE(max(observation_revision),0) FROM secret_usage_decisions WHERE observation_id=?",Long.class,observation);}
     private List<String> allowedDecisions(SecretPrincipal actor,Map<String,Object> c,Map<String,Object> row){
         if(!"MANUAL".equals(row.get("source_kind"))||!observationCurrent(c,row)||!access.hasConnectionRole(actor,number(c,"connection_id"),SecretRole.SECURITY)
-            ||!sourceVisible(actor,c,new Ref((String)row.get("source_ref_type"),number(row,"source_ref_id"))))return List.of();
+            ||!sourceVisible(actor,c,new Ref((String)row.get("source_ref_type"),number(row,"source_ref_id")),true))return List.of();
         var previous=jdbc.queryForList("SELECT decision FROM secret_usage_decisions WHERE observation_id=? ORDER BY observation_revision DESC LIMIT 1",number(row,"observation_id"));
-        if(previous.isEmpty())return List.of("ACCEPT","REJECT","WITHDRAW");return "WITHDRAW".equals(previous.getFirst().get("decision"))?List.of():List.of("WITHDRAW");
+        if(previous.isEmpty())return sourceVisible(actor,c,new Ref((String)row.get("source_ref_type"),number(row,"source_ref_id")))?List.of("ACCEPT","REJECT","WITHDRAW"):List.of("WITHDRAW");return "WITHDRAW".equals(previous.getFirst().get("decision"))?List.of():List.of("WITHDRAW");
     }
     private List<Map<String,Object>> sourceRefs(SecretPrincipal actor,Map<String,Object> c){
         var refs=new ArrayList<Map<String,Object>>();
@@ -199,11 +200,17 @@ SELECT r.window_start,r.window_end FROM secret_usage_requests r WHERE r.target_i
     private List<Map<String,Object>> targetRefs(Map<String,Object> c){var refs=new ArrayList<Map<String,Object>>();refs.add(facts("type","APPROVED_SCOPE","id",c.get("scope_id")));if(c.get("asset_id")!=null)refs.add(facts("type","ASSET","id",c.get("asset_id")));return refs;}
     private void sourceRef(SecretPrincipal actor,Map<String,Object> c,Ref ref){if(!sourceVisible(actor,c,ref))throw invalid();}
     private boolean sourceVisible(SecretPrincipal actor,Map<String,Object> c,Ref ref){
+        return sourceVisible(actor,c,ref,false);
+    }
+    private boolean sourceVisible(SecretPrincipal actor,Map<String,Object> c,Ref ref,boolean historicalRead){
         if(ref==null||ref.id()==null||ref.id()<=0||!Set.of("INVESTIGATION_HISTORY","ACTION_RECORD").contains(Objects.toString(ref.type(),"")))return false;
-        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM(VALUES(?::varchar,?::bigint))q(source_ref_type,source_ref_id) WHERE "+sourceVisibility("q",actor,c)+")",Boolean.class,ref.type(),ref.id()));
+        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM(VALUES(?::varchar,?::bigint))q(source_ref_type,source_ref_id) WHERE "+sourceVisibility("q",actor,c,historicalRead)+")",Boolean.class,ref.type(),ref.id()));
     }
     /** Mirrors investigation visibility and current per-location action access. Only authenticated numeric IDs enter this SQL. */
     private String sourceVisibility(String alias,SecretPrincipal actor,Map<String,Object> c){
+        return sourceVisibility(alias,actor,c,false);
+    }
+    private String sourceVisibility(String alias,SecretPrincipal actor,Map<String,Object> c,boolean historicalRead){
         if(!Set.of("q","u").contains(alias))throw new IllegalArgumentException("INTERNAL_ALIAS");
         boolean security=access.hasConnectionRole(actor,number(c,"connection_id"),SecretRole.SECURITY);
         boolean operations=access.hasConnectionRole(actor,number(c,"connection_id"),SecretRole.OPERATIONS);
@@ -213,8 +220,8 @@ SELECT r.window_start,r.window_end FROM secret_usage_requests r WHERE r.target_i
  WHERE h.history_id=%1$s.source_ref_id AND (t.occurrence_id=%2$d OR(t.target_type='SCOPE' AND t.scope_id=%3$d))
  AND (%4$s OR(t.target_type='SCOPE' AND %5$s) OR(t.creation_source='HUMAN_HANDOFF' AND t.requested_by_user_id=%6$d AND t.occurrence_id=%2$d))))
  OR(%1$s.source_ref_type='ACTION_RECORD' AND EXISTS(SELECT 1 FROM secret_action_records a JOIN secret_response_cases rc USING(case_id)
- WHERE a.action_id=%1$s.source_ref_id AND a.occurrence_id=%2$d AND rc.is_current)))
-""".formatted(alias,number(c,"occurrence_id"),number(c,"scope_id"),security,operations,actor.userId());
+ WHERE a.action_id=%1$s.source_ref_id AND a.occurrence_id=%2$d AND (rc.is_current OR %7$s))))
+""".formatted(alias,number(c,"occurrence_id"),number(c,"scope_id"),security,operations,actor.userId(),historicalRead&&security);
     }
     private void targetRef(Map<String,Object> c,Ref ref){if(ref==null||ref.id()==null||ref.type()==null||!("APPROVED_SCOPE".equals(ref.type())&&ref.id()==number(c,"scope_id")||"ASSET".equals(ref.type())&&c.get("asset_id")!=null&&ref.id()==number(c,"asset_id")))throw invalid();}
     private Map<String,Object> iamMetadata(SecretPrincipal actor,Map<String,Object> c){
