@@ -44,6 +44,13 @@ public final class SecretFindingNormalizer {
         return keyVersion;
     }
 
+    /** A separate domain: a whole-credential fingerprint cannot identify an IAM key ID. */
+    public byte[] keyIdentifierFingerprint(String accessKeyId) {
+        if (accessKeyId == null || !AWS_ID.matcher(accessKeyId).matches())
+            throw new IllegalArgumentException("AWS_KEY_IDENTIFIER_INVALID");
+        return hmac(List.of("AWS_KEY_IDENTIFIER_V1", accessKeyId));
+    }
+
     public SecretFindingNormalizer(byte[] fingerprintKey, String keyVersion) {
         if (fingerprintKey == null || fingerprintKey.length < 32 || keyVersion == null
                 || !keyVersion.matches("[A-Za-z0-9_.-]{1,40}")) {
@@ -260,7 +267,8 @@ public final class SecretFindingNormalizer {
             }
         }
         return new Credential(issuer, type, complete ? "CONFIRMED" : "CANDIDATE",
-                complete ? digest : null, complete ? null : digest, keyVersion, label, location, evidence,promotionLocators);
+                complete ? digest : null, complete ? null : digest, keyVersion, label, location, evidence,promotionLocators,
+                "AWS".equals(issuer) && values.containsKey("ACCESS_KEY_ID") ? keyIdentifierFingerprint(values.get("ACCESS_KEY_ID")) : null);
     }
 
     private byte[] hmac(List<String> fields) {
@@ -374,15 +382,21 @@ public final class SecretFindingNormalizer {
 
     public record Credential(String issuer, String credentialType, String componentState,
                              byte[] fingerprint, byte[] candidateLocator, String fingerprintKeyVersion,
-                             String maskedLabel, String locationKey, List<GitleaksFinding> findings,List<byte[]> promotionLocators) {
+                             String maskedLabel, String locationKey, List<GitleaksFinding> findings,List<byte[]> promotionLocators,
+                             byte[] awsKeyIdFingerprint) {
+        public Credential(String issuer,String credentialType,String componentState,byte[] fingerprint,byte[] candidateLocator,String fingerprintKeyVersion,String maskedLabel,String locationKey,List<GitleaksFinding> findings,List<byte[]> promotionLocators) {
+            this(issuer,credentialType,componentState,fingerprint,candidateLocator,fingerprintKeyVersion,maskedLabel,locationKey,findings,promotionLocators,null);
+        }
         public Credential {
             fingerprint = fingerprint == null ? null : fingerprint.clone();
             candidateLocator = candidateLocator == null ? null : candidateLocator.clone();
             findings = List.copyOf(findings);
             promotionLocators=promotionLocators.stream().map(byte[]::clone).toList();
+            awsKeyIdFingerprint = awsKeyIdFingerprint == null ? null : awsKeyIdFingerprint.clone();
         }
         @Override public byte[] fingerprint() { return fingerprint == null ? null : fingerprint.clone(); }
         @Override public byte[] candidateLocator() { return candidateLocator == null ? null : candidateLocator.clone(); }
+        @Override public byte[] awsKeyIdFingerprint() { return awsKeyIdFingerprint == null ? null : awsKeyIdFingerprint.clone(); }
         @Override public List<byte[]> promotionLocators(){return promotionLocators.stream().map(byte[]::clone).toList();}
         @Override public String toString() {
             return "Credential[issuer=" + issuer + ", credentialType=" + credentialType

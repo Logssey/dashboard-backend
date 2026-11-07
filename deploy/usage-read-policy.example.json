@@ -1,0 +1,30 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ApprovedRegionalManagementHistory",
+      "Effect": "Allow",
+      "Action": "cloudtrail:LookupEvents",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": ["ap-northeast-2"],
+          "aws:PrincipalAccount": "000000000000"
+        }
+      }
+    },
+    {
+      "Sid": "ApprovedAccountKeyIdentity",
+      "Effect": "Allow",
+      "Action": ["iam:GetUser", "iam:ListAccessKeys", "iam:GetAccessKeyLastUsed"],
+      "Resource": "arn:aws:iam::000000000000:user/*"
+    },
+    {
+      "Sid": "ApprovedAccountUserInventory",
+      "Effect": "Allow",
+      "Action": "iam:ListUsers",
+      "Resource": "*",
+      "Condition": {"StringEquals": {"aws:PrincipalAccount": "000000000000"}}
+    }
+  ]
+}

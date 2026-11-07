@@ -7,7 +7,7 @@ import java.util.*;
 /** Pure health interpretation. A live process does not prove that its pollers progressed. */
 public final class SecretOperationsHealth {
     private SecretOperationsHealth() {}
-    public static final List<String> COMPONENTS = List.of("SCHEDULER","EXECUTOR","ASSESSMENT","PERMISSIONS");
+    public static final List<String> COMPONENTS = List.of("SCHEDULER","EXECUTOR","ASSESSMENT","PERMISSIONS","USAGE");
 
     public static Map<String,Object> component(String name, List<Map<String,Object>> rows,
                                                OffsetDateTime now, int expected, Duration grace) {

@@ -170,6 +170,9 @@ public final class SecretFindingRepository {
         int storedFindings = 0;
         for (SecretFindingNormalizer.Credential credential : normalized) {
             long credentialSetId = upsertCredential(credential, context.runId(), now);
+            if (credential.awsKeyIdFingerprint() != null)
+                jdbc.update("UPDATE secret_credential_sets SET aws_key_id_fingerprint=? WHERE credential_set_id=? AND fingerprint_key_version=?",
+                        credential.awsKeyIdFingerprint(), credentialSetId, credential.fingerprintKeyVersion());
             long occurrenceId = upsertOccurrence(credentialSetId, context, sourceObjectRef,
                     credential.locationKey(), objectVersion, now);
             for (GitleaksFinding finding : credential.findings()) {

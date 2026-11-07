@@ -6,8 +6,8 @@ API grants remain a shared-CNAPP responsibility, not a Secret-only blanket grant
 import argparse
 import re
 
-INSERT = "secret_aws_access_key_observations secret_credential_identities secret_credential_sets secret_findings secret_fixture_match_evidence secret_jobs secret_occurrences secret_operations_alert_events secret_operations_alerts secret_permission_observations secret_risk_evidence secret_run_scopes secret_scan_runs secret_severity_assessments secret_snapshot_retirements secret_test_fixture_attestations secret_tool_runs secret_validation_attempts secret_worker_heartbeats".split()
-UPDATE = "secret_aws_access_key_observations secret_case_revalidations secret_credential_sets secret_fixture_match_evidence secret_jobs secret_occurrences secret_operations_alerts secret_run_scopes secret_scan_runs secret_tool_runs secret_validation_attempts secret_worker_heartbeats".split()
+INSERT = "secret_aws_access_key_observations secret_credential_identities secret_credential_sets secret_findings secret_fixture_match_evidence secret_jobs secret_occurrences secret_operations_alert_events secret_operations_alerts secret_permission_observations secret_risk_evidence secret_run_scopes secret_scan_runs secret_severity_assessments secret_snapshot_retirements secret_test_fixture_attestations secret_tool_runs secret_usage_requests secret_usage_observations secret_usage_rate_limits secret_validation_attempts secret_worker_heartbeats".split()
+UPDATE = "secret_aws_access_key_observations secret_case_revalidations secret_credential_sets secret_fixture_match_evidence secret_jobs secret_occurrences secret_operations_alerts secret_run_scopes secret_scan_runs secret_tool_runs secret_usage_requests secret_usage_rate_limits secret_validation_attempts secret_worker_heartbeats".split()
 DELETE = "secret_findings secret_query_snapshots secret_snapshot_retirements".split()
 
 
@@ -30,6 +30,10 @@ def render(role):
         for table in sorted(set(tables) & optional):
             lines.append("DO $optional$ BEGIN IF to_regclass('public." + table + "') IS NOT NULL THEN EXECUTE 'GRANT " + operation + " ON public." + table + " TO " + quoted + "'; END IF; END $optional$;")
     lines += [f"GRANT UPDATE(next_due_at,last_collection_success_at) ON secret_connections TO {quoted};",
+              f"REVOKE INSERT,UPDATE,DELETE,TRUNCATE ON secret_usage_targets FROM {quoted};",
+              f"GRANT UPDATE(next_scheduled_at) ON secret_usage_targets TO {quoted};",
+              f"REVOKE INSERT,UPDATE,DELETE,TRUNCATE ON secret_usage_decisions FROM {quoted};",
+              f"REVOKE UPDATE,DELETE,TRUNCATE ON secret_usage_observations FROM {quoted};",
               f"REVOKE UPDATE,DELETE,TRUNCATE ON secret_audit_events,secret_risk_evidence,secret_severity_assessments,secret_operations_alert_events FROM {quoted};",
               f"REVOKE INSERT,UPDATE,DELETE,TRUNCATE ON secret_role_grants,secret_severity_policies,secret_severity_rules,secret_connection_scopes FROM {quoted};",
               "COMMIT;", "-- Check effective privileges, memberships, ownership and PUBLIC grants separately."]
