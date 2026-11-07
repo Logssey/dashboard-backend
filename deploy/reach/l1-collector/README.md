@@ -15,7 +15,8 @@ Re:Used 클러스터 안에서 CronJob으로 돌며, 지정한 네임스페이�
 ## 동작
 
 1. 파드에 자동으로 붙는 서비스 계정 토큰으로 `GET /api/v1/namespaces/<ns>/pods`를 부른다. 필요한 권한은 그 네임스페이스의 pods `list` 하나다.
-2. `Running` 파드만 골라 소유자 ReplicaSet 이름에서 `pod-template-hash`를 떼어 Deployment 이름을 얻고, 같은 워크로드끼리 묶는다. 이미지를 아직 받지 않아 `imageID`가 없는 컨테이너는 뺀다.
+2. `Running` 파드만 골라 소유자 ReplicaSet 이름에서 `pod-template-hash`를 떼어 Deployment 이름을 얻고, 같은 워크로드끼리 묶는다. 워크로드 안에서는 컨테이너를 (컨테이너 이름, digest)로 묶고 묶음마다 Ready 파드 수(`readyReplicas`)를 센다. 롤아웃 중이면 digest마다 항목이 따로 나온다. 이미지를 아직 받지 않아 `imageID`가 없는 컨테이너는 뺀다.
+   - digest는 `status.containerStatuses[].imageID`에서, `image`는 파드 spec(`spec.containers[].image`, 컨테이너 이름으로 짝지음)에서 읽는다. `status.containerStatuses[].image`는 노드가 그 이미지에 붙여 둔 이름 중 사전순 첫 번째라 spec과 다를 수 있다. 같은 digest에 spec 이름이 여럿이면 사전순 첫 번째를 쓴다.
 3. Reach 전용 토큰(`/var/run/secrets/reach/token`, audience `logssey-reach-l1`)으로 `PUT $REACH_URL/internal/v1/reach/l1/workloads`에 보낸다. 대시보드는 네임스페이스 단위로 기록을 통째로 바꾼다.
 
 한 네임스페이스가 실패해도 나머지는 보내고, 실패가 있었으면 종료 코드 1로 끝난다(Job 실패로 기록되고 `backoffLimit`만큼 다시 시도한다).
