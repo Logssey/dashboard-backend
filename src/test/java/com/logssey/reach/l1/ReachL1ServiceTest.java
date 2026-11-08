@@ -226,6 +226,33 @@ class ReachL1ServiceTest {
     }
 
     @Test
+    void recomputeWithoutUploadTurnsStaleObservationsUnknown() {
+        long running = finding(target(A, now.minusDays(1)));
+        long absent = finding(target(B, now.minusDays(1)));
+        service.upload("admin", upload(now, c(A, 1)));
+        assertThat(service.recompute(null)).isZero();   // 아직 신선하면 바뀌는 것이 없다
+
+        jdbc.update("UPDATE reach_workload_observations SET observed_at = now() - interval '49 hours'");   // 수집이 끊김
+
+        assertThat(service.recompute(null)).isEqualTo(2);
+        assertThat(deployment(running)).isEqualTo("UNKNOWN");
+        assertThat(deployment(absent)).isEqualTo("UNKNOWN");
+    }
+
+    @Test
+    void recomputeCanTouchOneTarget() {
+        long targetA = target(A, now.minusDays(1));
+        long a = finding(targetA);
+        long b = finding(target(B, now.minusDays(1)));
+        service.upload("admin", upload(now, c(A, 1), c(B, 1)));
+        jdbc.update("UPDATE reach_workload_observations SET observed_at = now() - interval '49 hours'");
+
+        assertThat(service.recompute(targetA)).isEqualTo(1);
+        assertThat(deployment(a)).isEqualTo("UNKNOWN");
+        assertThat(deployment(b)).isEqualTo("RUNNING");
+    }
+
+    @Test
     void rejectsAnEmptyAllowList() {
         assertThatThrownBy(() -> service("reused-prod", List.of(), "48 hours"))
                 .isInstanceOf(IllegalArgumentException.class);

@@ -194,64 +194,67 @@ VALUES
      'REVOKED', 'API', now() - interval '150 days', 'FIXED', now() + interval '30 days', now() - interval '40 days', now());
 
 -- Reach 샘플: PoC api 이미지 1개, 스캔 1개, Finding 23개 (프론트 src/api/reachSample.ts와 같은 값)
--- 샘플 대상(digest sha256:sample-reach-api)에 딸린 행만 지운다. 실제 스캔 결과는 남는다
+-- 샘플 대상(digest sha256:5a를 32번)에 딸린 행만 지운다. 실제 스캔 결과는 남는다
+-- 샘플 digest를 형식에 맞는 값으로 바꿨다(11/08). 예전 값으로 남은 샘플 대상을 새 값으로 옮겨 아래 삭제에서 같이 지운다
+UPDATE reach_targets SET image_digest = 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a'
+WHERE image_repository = 'logssey/reused-api' AND image_digest = 'sha256:sample-reach-api';
 -- 실제 결과가 샘플을 가리키면(샘플 검토를 이어받음, 샘플 스캔을 재대조·기준 스캔으로 씀) 그 연결을 먼저 끊는다. 안 끊으면 아래 삭제가 FK에 막힌다
 UPDATE reach_reviews SET carried_from_finding_id = NULL, carried_from_scan_id = NULL
 WHERE carried_from_scan_id IN (SELECT s.scan_id FROM reach_scans s
                                JOIN reach_targets t ON t.target_id = s.target_id
-                               WHERE t.image_digest = 'sha256:sample-reach-api');
+                               WHERE t.image_digest = 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a');
 UPDATE reach_scans SET rescan_of_scan_id = NULL
 WHERE rescan_of_scan_id IN (SELECT s.scan_id FROM reach_scans s
                             JOIN reach_targets t ON t.target_id = s.target_id
-                            WHERE t.image_digest = 'sha256:sample-reach-api');
+                            WHERE t.image_digest = 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a');
 UPDATE reach_ci_checks SET baseline_scan_id = NULL
 WHERE baseline_scan_id IN (SELECT s.scan_id FROM reach_scans s
                            JOIN reach_targets t ON t.target_id = s.target_id
-                           WHERE t.image_digest = 'sha256:sample-reach-api');
+                           WHERE t.image_digest = 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a');
 -- 샘플 스캔을 재대조한 검사(API-01 rescanOf)는 샘플 대상의 스캔을 가리키니 같이 지운다
 DELETE FROM reach_ci_checks
 WHERE scan_id IN (SELECT s.scan_id FROM reach_scans s
                   JOIN reach_targets t ON t.target_id = s.target_id
-                  WHERE t.image_digest = 'sha256:sample-reach-api');
+                  WHERE t.image_digest = 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a');
 DELETE FROM reach_review_history
 WHERE finding_id IN (SELECT f.finding_id FROM reach_findings f
                      JOIN reach_targets t ON t.target_id = f.target_id
-                     WHERE t.image_digest = 'sha256:sample-reach-api');
+                     WHERE t.image_digest = 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a');
 DELETE FROM reach_reviews
 WHERE finding_id IN (SELECT f.finding_id FROM reach_findings f
                      JOIN reach_targets t ON t.target_id = f.target_id
-                     WHERE t.image_digest = 'sha256:sample-reach-api');
+                     WHERE t.image_digest = 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a');
 DELETE FROM reach_evidence
 WHERE verdict_id IN (SELECT v.verdict_id FROM reach_verdicts v
                      JOIN reach_findings f ON f.finding_id = v.finding_id
                      JOIN reach_targets t ON t.target_id = f.target_id
-                     WHERE t.image_digest = 'sha256:sample-reach-api');
+                     WHERE t.image_digest = 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a');
 DELETE FROM reach_verdicts
 WHERE finding_id IN (SELECT f.finding_id FROM reach_findings f
                      JOIN reach_targets t ON t.target_id = f.target_id
-                     WHERE t.image_digest = 'sha256:sample-reach-api');
+                     WHERE t.image_digest = 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a');
 DELETE FROM reach_findings
-WHERE target_id IN (SELECT target_id FROM reach_targets WHERE image_digest = 'sha256:sample-reach-api');
+WHERE target_id IN (SELECT target_id FROM reach_targets WHERE image_digest = 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a');
 DELETE FROM reach_scans
-WHERE target_id IN (SELECT target_id FROM reach_targets WHERE image_digest = 'sha256:sample-reach-api');
+WHERE target_id IN (SELECT target_id FROM reach_targets WHERE image_digest = 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a');
 DELETE FROM reach_targets
-WHERE image_repository = 'logssey/reused-api' AND image_digest = 'sha256:sample-reach-api';
+WHERE image_repository = 'logssey/reused-api' AND image_digest = 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a';
 
 INSERT INTO reach_targets (target_type, app, image_repository, image_digest, display_name)
-VALUES ('IMAGE', 'API', 'logssey/reused-api', 'sha256:sample-reach-api', 'reused-api');
+VALUES ('IMAGE', 'API', 'logssey/reused-api', 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a', 'reused-api');
 
 INSERT INTO reach_scans
     (target_id, scan_status, trigger_type, requested_by_kind, tools, created_at, started_at, finished_at)
 SELECT target_id, 'SUCCEEDED', 'MANUAL', 'SYSTEM', '{"reach": "v0", "scanner": "trivy"}',
        now() - interval '1 hour', now() - interval '1 hour', now() - interval '55 minutes'
-FROM reach_targets WHERE image_digest = 'sha256:sample-reach-api';
+FROM reach_targets WHERE image_digest = 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a';
 
 -- 아래 INSERT들이 같이 쓰는 샘플 스캔과 Finding 원본. 행을 늘릴 때는 reach_sample_rows의 VALUES만 늘린다
 DROP TABLE IF EXISTS reach_sample_scan;
 CREATE TEMP TABLE reach_sample_scan AS
 SELECT s.scan_id, s.target_id, s.finished_at
 FROM reach_scans s JOIN reach_targets t ON t.target_id = s.target_id
-WHERE t.image_digest = 'sha256:sample-reach-api';
+WHERE t.image_digest = 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a';
 
 DROP TABLE IF EXISTS reach_sample_rows;
 CREATE TEMP TABLE reach_sample_rows (
@@ -371,6 +374,17 @@ JOIN reach_findings f ON f.last_scan_id = s.scan_id AND f.component_name = r.nam
                      AND f.component_version = r.version AND f.vulnerability_id = r.cve
 JOIN reach_verdicts v ON v.finding_id = f.finding_id AND v.is_current
 LEFT JOIN LATERAL (SELECT user_id FROM dashboard_users WHERE role = 'ADMIN' ORDER BY user_id LIMIT 1) u ON TRUE;
+
+-- L1 샘플: 방금 클러스터를 조회했더니 샘플 digest가 돌고 있었다는 기록. 없으면 정기 재계산(6시간마다)이 샘플 Finding을 UNKNOWN으로 바꾼다
+-- 띄울 때마다 observed_at이 지금으로 다시 찍혀 48시간 동안 RUNNING으로 계산된다
+DELETE FROM reach_workloads WHERE image_digest = 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a';
+INSERT INTO reach_workload_observations (cluster, namespace, observed_at, source, reported_by)
+VALUES ('reused-prod', 'reused', now(), 'MANUAL', 'SAMPLE')
+ON CONFLICT (cluster, namespace) DO UPDATE
+SET observed_at = EXCLUDED.observed_at, received_at = now(),
+    source = EXCLUDED.source, reported_by = EXCLUDED.reported_by;
+INSERT INTO reach_workloads (cluster, namespace, kind, name, container, image, image_digest, ready_replicas)
+VALUES ('reused-prod', 'reused', 'Deployment', 'reused-api', 'api', 'logssey/reused-api:sample', 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a', 2);
 
 DROP TABLE reach_sample_rows;
 DROP TABLE reach_sample_scan;

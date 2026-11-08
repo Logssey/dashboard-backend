@@ -74,6 +74,16 @@ public class ReachL1Service {
     }
 
     /**
+     * Finding deployment만 다시 계산한다(6시간마다 작업, API-13 업로드 끝). targetId가 null이면 모든 이미지 대상.
+     * 업로드가 없어도 조회가 48시간을 넘기면 RUNNING·NOT_RUNNING이 UNKNOWN으로 바뀌어야 한다(PRD FR-04).
+     * 부르는 쪽 트랜잭션에 합류하므로, 잠금은 그 트랜잭션이 끝날 때 풀린다. 바뀐 Finding 수를 돌려준다
+     */
+    public int recompute(Long targetId) {
+        repository.lockRecompute();
+        return repository.recompute(cluster, namespaces, fresh, targetId);
+    }
+
+    /**
      * 빈 workloads·containers는 받는다(파드가 없는 네임스페이스, 이미지를 아직 못 받은 컨테이너).
      * 길이는 V38 칸 길이다. 넘기면 DB에서 500이 나니 여기서 400으로 막는다
      */

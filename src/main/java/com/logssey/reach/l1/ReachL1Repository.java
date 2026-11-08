@@ -58,7 +58,7 @@ public class ReachL1Repository {
                 .optional();
     }
 
-    /** 재계산(업로드·매시간 작업·API-13 업로드)은 한 번에 하나만. 트랜잭션이 끝나면 풀린다 */
+    /** 재계산(업로드·6시간마다 작업·API-13 업로드)은 한 번에 하나만. 트랜잭션이 끝나면 풀린다 */
     void lockRecompute() {
         jdbcClient.sql("SELECT pg_advisory_xact_lock(hashtextextended('reach-l1-recompute', 0))")
                 .query((rs, i) -> true)   // 반환 칸이 void라 읽지 않는다
