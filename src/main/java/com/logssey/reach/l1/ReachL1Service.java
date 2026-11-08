@@ -84,6 +84,14 @@ public class ReachL1Service {
     }
 
     /**
+     * 재계산 잠금만 잡는다. reach_findings를 고치는 다른 쪽(API-13 결과 업로드)이 Finding을 건드리기 전에 부른다.
+     * 정기 작업은 잠금 → Finding 순서라, 반대 순서로 잡으면 서로 기다리다 교착한다. 부르는 트랜잭션이 끝나면 풀린다
+     */
+    public void lockRecompute() {
+        repository.lockRecompute();
+    }
+
+    /**
      * 빈 workloads·containers는 받는다(파드가 없는 네임스페이스, 이미지를 아직 못 받은 컨테이너).
      * 길이는 V38 칸 길이다. 넘기면 DB에서 500이 나니 여기서 400으로 막는다
      */

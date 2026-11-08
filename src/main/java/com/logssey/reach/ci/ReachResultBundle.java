@@ -22,7 +22,10 @@ public record ReachResultBundle(
         List<JsonNode> stages,
         Failure failure) {
 
-    /** Finding 하나. deployment가 없으면 UNKNOWN(L1 자동화 전), proposal은 새 Finding의 검토 전 제안 */
+    /**
+     * Finding 하나. deployment는 새 Finding을 만들 때만 쓰고 없으면 UNKNOWN이다. 이미지 대상은 업로드 끝에서 L1 조회로 다시 계산한다.
+     * proposal은 새 Finding의 검토 전 제안
+     */
     public record Item(Component component, Vulnerability vulnerability, List<String> sources, String deployment,
                        JsonNode upgrade, Verdict verdict, Proposal proposal) {}
 
