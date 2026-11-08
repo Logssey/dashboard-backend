@@ -93,7 +93,7 @@ public class ReachL1Service {
 
     /**
      * 빈 workloads·containers는 받는다(파드가 없는 네임스페이스, 이미지를 아직 못 받은 컨테이너).
-     * 길이는 V38 칸 길이다. 넘기면 DB에서 500이 나니 여기서 400으로 막는다
+     * 길이는 V42 칸 길이다. 넘기면 DB에서 500이 나니 여기서 400으로 막는다
      */
     private void validate(ReachInventoryRequest request) {
         if (request == null || !cluster.equals(request.cluster()) || !in(request.namespace(), namespaces)
