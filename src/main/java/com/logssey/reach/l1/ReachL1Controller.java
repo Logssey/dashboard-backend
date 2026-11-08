@@ -1,12 +1,16 @@
 package com.logssey.reach.l1;
 
 import java.security.Principal;
+import java.util.List;
 
 import com.logssey.reach.l1.dto.ReachInventoryResponse;
+import com.logssey.reach.l1.dto.ReachWorkloadPageResponse;
 
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -16,6 +20,21 @@ public class ReachL1Controller {
 
     public ReachL1Controller(ReachL1Service service) {
         this.service = service;
+    }
+
+    /** API-07. 쉼표로 준 값은 Spring이 목록으로 나눈다 (app=API,WEB) */
+    @GetMapping("/workloads")
+    public ReachWorkloadPageResponse workloads(
+            Principal principal,
+            @RequestParam(required = false) List<String> namespace,
+            @RequestParam(required = false) List<String> app,
+            @RequestParam(required = false) String digest,
+            @RequestParam(required = false) List<String> deployment,
+            @RequestParam(required = false) Integer size,
+            @RequestParam(required = false) String cursor,
+            @RequestParam(required = false) String include) {
+        var filter = new ReachWorkloadFilter(namespace, app, digest, deployment);
+        return service.workloads(principal == null ? null : principal.getName(), filter, size, cursor, include);
     }
 
     /** L1 수동 업로드 (ADMIN 세션). 수집기 경로 /internal/v1/reach/l1/workloads는 따로 둔다 */

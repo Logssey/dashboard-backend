@@ -1,8 +1,15 @@
 package com.logssey.reach.l1;
 
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.time.OffsetDateTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+
+import com.logssey.reach.l1.dto.ReachWorkloadPageResponse;
+import com.logssey.reach.l1.dto.ReachWorkloadResponse;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -44,6 +51,58 @@ public class ReachL1Repository {
         WHERE f.finding_id = c.finding_id
           AND f.deployment IS DISTINCT FROM c.next_deployment
         """;
+
+    /**
+     * API-07 항목과 스캔 연결. %s는 필터·커서 조건이다.
+     * - repository: 파드 이미지에서 @digest, :태그(마지막 / 뒤의 :만), 레지스트리(첫 칸에 . 또는 :가 있거나 localhost)를 뗀 값
+     * - revision: 태그. 없으면 null
+     * - app: 이 digest의 이미지 대상, 없으면 repository가 같은 이미지 대상(둘 다 최신 대상). 없으면 null
+     * - match_scan_id: 이 digest의 이미지 대상에서 PR이 아닌 최신 SUCCEEDED 스캔 (MATCH)
+     * - app_scan_id: MATCH가 아닐 때 같은 app 이미지 대상의 기본 범위 스캔 (MISMATCH). 순서는 query 기준 범위와 같다
+     * - fresh: 재계산(RECOMPUTE)과 같은 식이라 Finding deployment와 어긋나지 않는다
+     */
+    private static final String WORKLOADS = """
+        WITH base AS (
+            SELECT w.workload_id, w.cluster, w.namespace, w.kind, w.name, w.container,
+                   w.image_digest, w.ready_replicas, o.observed_at, o.source,
+                   o.observed_at > now() - CAST(:fresh AS interval) AS fresh,
+                   regexp_replace(regexp_replace(split_part(w.image, '@', 1), ':[^/:]*$', ''),
+                                  '^(localhost|[^/]*[.:][^/]*)/', '') AS repository,
+                   substring(split_part(w.image, '@', 1) from ':([^/:]*)$') AS revision
+            FROM reach_workloads w
+            JOIN reach_workload_observations o ON o.cluster = w.cluster AND o.namespace = w.namespace
+            WHERE w.cluster = :cluster AND w.namespace IN (:namespaces)
+        ), linked AS (
+            SELECT b.*,
+                   COALESCE(
+                       (SELECT t.app FROM reach_targets t
+                        WHERE t.target_type = 'IMAGE' AND t.image_digest = b.image_digest
+                        ORDER BY t.created_at DESC, t.target_id DESC LIMIT 1),
+                       (SELECT t.app FROM reach_targets t
+                        WHERE t.target_type = 'IMAGE' AND t.image_repository = b.repository
+                        ORDER BY t.created_at DESC, t.target_id DESC LIMIT 1)) AS app,
+                   (SELECT s.scan_id FROM reach_scans s JOIN reach_targets t ON t.target_id = s.target_id
+                    WHERE t.target_type = 'IMAGE' AND t.image_digest = b.image_digest
+                      AND s.scan_status = 'SUCCEEDED' AND s.trigger_type <> 'PR'
+                    ORDER BY s.finished_at DESC, s.scan_id DESC LIMIT 1) AS match_scan_id
+            FROM base b
+        ), matched AS (
+            SELECT l.*,
+                   CASE WHEN l.fresh THEN 'RUNNING' ELSE 'UNKNOWN' END AS deployment,
+                   CASE WHEN l.match_scan_id IS NULL AND l.app IS NOT NULL THEN
+                       (SELECT s.scan_id FROM reach_scans s JOIN reach_targets t ON t.target_id = s.target_id
+                        WHERE t.target_type = 'IMAGE' AND t.app = l.app
+                          AND s.scan_status = 'SUCCEEDED' AND s.trigger_type <> 'PR'
+                        ORDER BY s.finished_at DESC, s.scan_id DESC LIMIT 1)
+                   END AS app_scan_id
+            FROM linked l
+        )
+        SELECT * FROM matched
+        WHERE true %s
+        """;
+
+    /** 순서는 명세대로 고정. 커서 행 비교와 칸·순서가 같아야 한다 */
+    private static final String WORKLOAD_ORDER = " ORDER BY namespace, name, kind, container, image_digest LIMIT :limit";
 
     private final JdbcClient jdbcClient;
 
@@ -109,6 +168,98 @@ public class ReachL1Repository {
                 .param("imageDigest", imageDigest)
                 .param("readyReplicas", readyReplicas)
                 .update();
+    }
+
+    /** API-07 observations. namespaces는 허용 목록과 namespace 필터가 겹치는 것(비지 않음) */
+    List<ReachWorkloadPageResponse.Observation> observations(String cluster, List<String> namespaces, String fresh) {
+        return jdbcClient.sql("""
+                SELECT cluster, namespace, observed_at, source,
+                       observed_at > now() - CAST(:fresh AS interval) AS fresh
+                FROM reach_workload_observations
+                WHERE cluster = :cluster AND namespace IN (:namespaces)
+                ORDER BY namespace
+                """)
+                .param("cluster", cluster)
+                .param("namespaces", namespaces)
+                .param("fresh", fresh)
+                .query((rs, i) -> new ReachWorkloadPageResponse.Observation(rs.getString("cluster"),
+                        rs.getString("namespace"), rs.getObject("observed_at", OffsetDateTime.class),
+                        rs.getString("source"), rs.getBoolean("fresh")))
+                .list();
+    }
+
+    /** API-07 한 페이지. limit은 페이지 크기 + 1(다음 페이지 확인용) */
+    List<ReachWorkloadResponse> workloads(String cluster, List<String> namespaces, String fresh,
+                                          ReachWorkloadFilter filter, ReachWorkloadCursor after, int limit) {
+        var params = params(cluster, namespaces, fresh, filter);
+        var where = new StringBuilder(conditions(filter));
+        if (after != null) {
+            where.append(" AND (namespace, name, kind, container, image_digest)"
+                    + " > (:afterNamespace, :afterName, :afterKind, :afterContainer, :afterDigest)");
+            params.put("afterNamespace", after.namespace());
+            params.put("afterName", after.name());
+            params.put("afterKind", after.kind());
+            params.put("afterContainer", after.container());
+            params.put("afterDigest", after.digest());
+        }
+        params.put("limit", limit);
+        return jdbcClient.sql(WORKLOADS.formatted(where) + WORKLOAD_ORDER)
+                .params(params)
+                .query((rs, i) -> workload(rs))
+                .list();
+    }
+
+    long countWorkloads(String cluster, List<String> namespaces, String fresh, ReachWorkloadFilter filter) {
+        return jdbcClient.sql("SELECT count(*) FROM (" + WORKLOADS.formatted(conditions(filter)) + ") c")
+                .params(params(cluster, namespaces, fresh, filter))
+                .query(Long.class)
+                .single();
+    }
+
+    private static Map<String, Object> params(String cluster, List<String> namespaces, String fresh,
+                                              ReachWorkloadFilter filter) {
+        var params = new HashMap<String, Object>();
+        params.put("cluster", cluster);
+        params.put("namespaces", namespaces);
+        params.put("fresh", fresh);
+        if (!filter.app().isEmpty()) params.put("app", filter.app());
+        if (filter.digest() != null) params.put("digest", filter.digest());
+        if (!filter.deployment().isEmpty()) params.put("deployment", filter.deployment());
+        return params;
+    }
+
+    /** namespace 필터는 Service가 namespaces에 반영해서 여기서는 보지 않는다 */
+    private static String conditions(ReachWorkloadFilter filter) {
+        var where = new StringBuilder();
+        if (!filter.app().isEmpty()) where.append(" AND app IN (:app)");
+        if (filter.digest() != null) where.append(" AND image_digest = :digest");
+        if (!filter.deployment().isEmpty()) where.append(" AND deployment IN (:deployment)");
+        return where.toString();
+    }
+
+    private static ReachWorkloadResponse workload(ResultSet rs) throws SQLException {
+        long matchScan = rs.getLong("match_scan_id");
+        boolean matched = !rs.wasNull();
+        long appScan = rs.getLong("app_scan_id");
+        boolean appScanned = !rs.wasNull();
+        var scanMatch = matched ? new ReachWorkloadResponse.ScanMatch("MATCH", matchScan, "DIGEST")
+                : appScanned ? new ReachWorkloadResponse.ScanMatch("MISMATCH", appScan, null)
+                : new ReachWorkloadResponse.ScanMatch("NO_SCAN", null, null);
+        return new ReachWorkloadResponse(
+                rs.getLong("workload_id"),
+                rs.getString("cluster"),
+                rs.getString("namespace"),
+                rs.getString("kind"),
+                rs.getString("name"),
+                rs.getString("container"),
+                rs.getString("app"),
+                new ReachWorkloadResponse.Image(rs.getString("repository"), rs.getString("image_digest"),
+                        rs.getString("revision")),
+                new ReachWorkloadResponse.Replicas(rs.getInt("ready_replicas")),
+                rs.getString("deployment"),
+                scanMatch,
+                rs.getObject("observed_at", OffsetDateTime.class),
+                rs.getString("source"));
     }
 
     /** targetId가 없으면 모든 이미지 대상. 바뀐 행 수를 돌려준다 */
