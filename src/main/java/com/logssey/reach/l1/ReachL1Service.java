@@ -1,0 +1,122 @@
+package com.logssey.reach.l1;
+
+import java.time.Duration;
+import java.time.OffsetDateTime;
+import java.util.HashSet;
+import java.util.List;
+import java.util.regex.Pattern;
+
+import com.logssey.common.error.ApiException;
+import com.logssey.common.error.ErrorCode;
+import com.logssey.reach.l1.dto.ReachInventoryResponse;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+/** Reach L1 워크로드 수동 업로드와 Finding deployment 재계산. 권한은 ADMIN (Reach API 명세 2-2) */
+@Service
+@Transactional   // 쓰기라 readOnly가 아니다. 조회 행 덮어쓰기·워크로드 교체·재계산이 한 트랜잭션
+public class ReachL1Service {
+
+    /** 운영 기본값. 설정으로 뺄 때 application.properties(공용 파일)는 동의를 받는다 */
+    static final String CLUSTER = "reused-prod";
+    static final List<String> NAMESPACES = List.of("reused");
+    /** 이 안의 조회만 믿는다. 하루 한 번 수집이 한 번 빠져도 UNKNOWN이 안 되게 */
+    static final String FRESH = "48 hours";
+    /** 명세에 없어 정한 것: 한 번에 받는 컨테이너 수 상한 */
+    static final int MAX_CONTAINERS = 1000;
+    /** 명세에 없어 정한 것: observedAt이 이만큼까지 미래인 것은 시계 차이로 보고 받는다 */
+    static final Duration CLOCK_SKEW = Duration.ofMinutes(5);
+    private static final Pattern DIGEST = Pattern.compile("^sha256:[0-9a-f]{64}$");
+
+    private final ReachL1Repository repository;
+    private final String cluster;
+    private final List<String> namespaces;
+    private final String fresh;
+
+    @Autowired   // 생성자가 둘이라 Spring이 쓸 쪽을 표시한다. 없으면 기동 실패
+    public ReachL1Service(ReachL1Repository repository) {
+        this(repository, CLUSTER, NAMESPACES, FRESH);
+    }
+
+    /** 테스트와 나중 설정용. namespaces가 비면 재계산 SQL의 IN ()이 깨진다 */
+    ReachL1Service(ReachL1Repository repository, String cluster, List<String> namespaces, String fresh) {
+        if (namespaces.isEmpty()) {
+            throw new IllegalArgumentException("namespaces must not be empty");
+        }
+        this.repository = repository;
+        this.cluster = cluster;
+        this.namespaces = List.copyOf(namespaces);
+        this.fresh = fresh;
+    }
+
+    /** L1 수동 업로드. 그 (cluster, namespace)의 워크로드를 통째로 바꾸고 deployment를 다시 계산한다 */
+    public ReachInventoryResponse upload(String loginId, ReachInventoryRequest request) {
+        long userId = requireAdmin(loginId);
+        validate(request);
+        repository.lockRecompute();   // Finding을 고치기 전에 잡는다. 재계산하는 쪽이 모두 같은 순서라 교착이 없다
+        // 저장된 것보다 오래된 조회는 거절한다(늦게 온 재시도가 최신 상태를 되돌리지 않게). 같은 시각은 받는다
+        if (repository.saveObservation(request.cluster(), request.namespace(), request.observedAt(),
+                "MANUAL", "USER:" + userId) == 0) {
+            throw new ApiException(ErrorCode.CONFLICT);
+        }
+        repository.deleteWorkloads(request.cluster(), request.namespace());
+        for (var workload : request.workloads()) {
+            for (var container : workload.containers()) {
+                repository.insertWorkload(request.cluster(), request.namespace(), workload.kind(), workload.name(),
+                        container.name(), container.image(), container.imageDigest(), container.readyReplicas());
+            }
+        }
+        int updated = repository.recompute(cluster, namespaces, fresh, null);
+        return new ReachInventoryResponse(request.cluster(), request.namespace(), request.observedAt(),
+                request.workloads().size(), updated);
+    }
+
+    /**
+     * 빈 workloads·containers는 받는다(파드가 없는 네임스페이스, 이미지를 아직 못 받은 컨테이너).
+     * 길이는 V38 칸 길이다. 넘기면 DB에서 500이 나니 여기서 400으로 막는다
+     */
+    private void validate(ReachInventoryRequest request) {
+        if (request == null || !cluster.equals(request.cluster()) || !in(request.namespace(), namespaces)
+                || request.observedAt() == null || request.observedAt().isAfter(OffsetDateTime.now().plus(CLOCK_SKEW))
+                || request.workloads() == null) {
+            throw new ApiException(ErrorCode.INVALID_INPUT);
+        }
+        int containers = 0;
+        var seen = new HashSet<String>();
+        for (var workload : request.workloads()) {
+            if (workload == null || badText(workload.kind(), 30) || badText(workload.name(), 253)
+                    || workload.containers() == null) {
+                throw new ApiException(ErrorCode.INVALID_INPUT);
+            }
+            for (var container : workload.containers()) {
+                if (container == null || badText(container.name(), 253) || badText(container.image(), 512)
+                        || container.imageDigest() == null || !DIGEST.matcher(container.imageDigest()).matches()
+                        || container.readyReplicas() == null || container.readyReplicas() < 0
+                        // 같은 워크로드·컨테이너·digest가 두 번이면 uq_reach_workloads에서 500이 난다
+                        || !seen.add(workload.kind() + "\n" + workload.name() + "\n" + container.name() + "\n" + container.imageDigest())
+                        || ++containers > MAX_CONTAINERS) {
+                    throw new ApiException(ErrorCode.INVALID_INPUT);
+                }
+            }
+        }
+    }
+
+    /** List.of(...).contains(null)은 NullPointerException이라 null을 먼저 거른다 */
+    private static boolean in(String value, List<String> allowed) {
+        return value != null && allowed.contains(value);
+    }
+
+    /** DB VARCHAR 길이는 글자(code point) 수라 Java length()(UTF-16 단위)가 아니라 codePointCount로 센다 */
+    private static boolean badText(String value, int max) {
+        return value == null || value.isBlank() || value.codePointCount(0, value.length()) > max;
+    }
+
+    private long requireAdmin(String loginId) {
+        if (loginId == null) {
+            throw new ApiException(ErrorCode.UNAUTHENTICATED);
+        }
+        return repository.adminUserId(loginId).orElseThrow(() -> new ApiException(ErrorCode.FORBIDDEN));
+    }
+}

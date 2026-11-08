@@ -3,7 +3,8 @@
 -- 업로드는 (cluster, namespace) 단위로 통째로 바꾼다. 조회 행을 덮어쓰고 그 네임스페이스의 워크로드를 지운 뒤 다시 넣는다
 -- Finding의 deployment는 이 두 테이블로 다시 계산한다. 조회가 오래됐거나 없으면 NOT_RUNNING으로 추정하지 않고 UNKNOWN (PRD FR-04)
 
--- 네임스페이스별 마지막 조회. 신선도 판단과 동시 업로드 잠금(FOR UPDATE)에 쓴다
+-- 네임스페이스별 마지막 조회. 신선도 판단에 쓴다. 저장된 것보다 오래된 observed_at 업로드는 거절한다(409)
+-- 동시 업로드·재계산은 트랜잭션 advisory 잠금(pg_advisory_xact_lock)으로 하나씩 처리한다
 CREATE TABLE reach_workload_observations (
     cluster      VARCHAR(100) NOT NULL,
     namespace    VARCHAR(63)  NOT NULL,
@@ -27,6 +28,7 @@ CREATE TABLE reach_workloads (
     -- 파드에 적힌 이미지 그대로 (레지스트리 주소·태그 포함). API-07 image.repository는 조회 때 잘라 준다
     image           VARCHAR(512) NOT NULL,
     image_digest    VARCHAR(71)  NOT NULL CHECK (image_digest ~ '^sha256:[0-9a-f]{64}$'),
+    -- 이 digest를 돌리는 Ready 파드 수 (워크로드 전체가 아니라 digest마다. 롤아웃 중이면 행마다 다르다)
     ready_replicas  INTEGER      NOT NULL CHECK (ready_replicas >= 0),
     CONSTRAINT fk_reach_workloads_observation FOREIGN KEY (cluster, namespace)
         REFERENCES reach_workload_observations (cluster, namespace) ON DELETE CASCADE,
