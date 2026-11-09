@@ -73,3 +73,11 @@ tasks.register('fixtureTest', Exec) {
     environment 'FIXTURE_BUILD', layout.buildDirectory.dir('fixtures').get().asFile.path
     commandLine 'bash', 'run-tests.sh'
 }
+
+// verdict/bundle.py (API-13 result bundle) unit tests. Needs python3, so it is not part of `check` either.
+tasks.register('verdictTest', Exec) {
+    group = 'verification'
+    description = 'Runs the Python unit tests in verdict/ (bundle.py).'
+    workingDir file('verdict')
+    commandLine 'python3', '-B', '-m', 'unittest', 'discover', '-s', '.', '-v'
+}
