@@ -2,6 +2,8 @@ package com.logssey.reach.ci;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
+import com.logssey.reach.l1.ReachL1Repository;
+import com.logssey.reach.l1.ReachL1Service;
 import com.logssey.reach.review.ReachReviewRepository;
 import com.logssey.reach.review.ReachReviewRequest;
 import com.logssey.reach.review.ReachReviewService;
@@ -36,6 +38,7 @@ class ReachResultServiceTest {
     private static JdbcTemplate jdbc;
     private static DataSourceTransactionManager manager;
     private ReachResultService service;
+    private ReachL1Service l1;
     private ReachCiCheckService checks;
     private ReachReviewService reviews;
 
@@ -55,12 +58,14 @@ class ReachResultServiceTest {
 
     @BeforeEach
     void reset() {
-        jdbc.execute("TRUNCATE reach_ci_checks, reach_review_history, reach_reviews, reach_evidence, reach_verdicts, "
-                + "reach_findings, reach_scans, reach_targets, dashboard_users RESTART IDENTITY CASCADE");
+        jdbc.execute("TRUNCATE reach_workloads, reach_workload_observations, reach_ci_checks, reach_review_history, "
+                + "reach_reviews, reach_evidence, reach_verdicts, reach_findings, reach_scans, reach_targets, dashboard_users "
+                + "RESTART IDENTITY CASCADE");
         jdbc.update("INSERT INTO dashboard_users (login_id, password_hash, display_name, role) "
                 + "VALUES ('admin', 'h', 'Admin', 'ADMIN')");
         var client = JdbcClient.create(jdbc);
-        service = new ReachResultService(new ReachResultRepository(client), manager);
+        l1 = new ReachL1Service(new ReachL1Repository(client));
+        service = new ReachResultService(new ReachResultRepository(client), l1, manager);
         checks = new ReachCiCheckService(new ReachCiCheckRepository(client));
         reviews = new ReachReviewService(new ReachReviewRepository(client));
     }
@@ -314,6 +319,40 @@ class ReachResultServiceTest {
     }
 
     @Test
+    void imageFindingsTakeDeploymentFromL1AndKeepItOnReupload() {
+        observe("a");   // 클러스터에서 digest a가 돌고 있다
+        var item = item("a", "CVE-2026-1", "HIGH", "REACHABLE", "CALLGRAPH", null, List.of());
+
+        upload(check("a"), item);   // 묶음에는 deployment가 없다(UNKNOWN)
+        long a = finding("a");
+        assertThat(deployment(a)).isEqualTo("RUNNING");   // 새 Finding도 업로드 끝에서 바로 계산된다
+
+        item.put("deployment", "not_running");
+        upload(check("a"), item);   // 같은 대상을 다시 스캔해도 묶음 값으로 덮지 않는다
+        assertThat(deployment(a)).isEqualTo("RUNNING");
+
+        long b = upload(check("b"), item("b", "CVE-2026-2", "HIGH", "REACHABLE", "CALLGRAPH", null, List.of()));
+        observe("a");   // 대상 b가 생긴 뒤의 조회에도 b는 없다
+        l1.recompute(null);
+        assertThat(jdbc.queryForObject("SELECT deployment FROM reach_findings WHERE last_scan_id = ?", String.class, b))
+                .isEqualTo("NOT_RUNNING");
+    }
+
+    @Test
+    void repoFindingsKeepTheBundleDeploymentFromTheFirstUpload() {
+        observe("d");
+        var item = item("a", "CVE-2026-1", "HIGH", "REACHABLE", "CALLGRAPH", null, List.of());
+        item.put("deployment", "running");
+        upload(repoCheck("SCHEDULE", "d"), item);   // L1 재계산은 이미지 대상만 본다
+        long a = finding("a");
+        assertThat(deployment(a)).isEqualTo("RUNNING");
+
+        item.put("deployment", "unknown");
+        upload(repoCheck("SCHEDULE", "d"), item);
+        assertThat(deployment(a)).isEqualTo("RUNNING");
+    }
+
+    @Test
     void serverErrorRollsBackTheResultsAndLeavesTheScanFailed() {
         var broken = new ReachResultRepository(JdbcClient.create(jdbc)) {
             @Override
@@ -321,7 +360,7 @@ class ReachResultServiceTest {
                 throw new IllegalStateException("boom");
             }
         };
-        service = new ReachResultService(broken, manager);
+        service = new ReachResultService(broken, l1, manager);
         long check = check("a");
         byte[] body = gzip(bundle(List.of(item("a", "CVE-2026-1", "HIGH", "REACHABLE", "CALLGRAPH", null, List.of()))));
         assertThatThrownBy(() -> service.upload("admin", check, "gzip", body)).isInstanceOf(IllegalStateException.class);
@@ -332,6 +371,20 @@ class ReachResultServiceTest {
                 .containsEntry("scan_status", "FAILED").containsEntry("failure_code", "INTERNAL_ERROR")
                 .containsEntry("failure_stage", "REPORT");
         assertError(() -> service.upload("admin", check, "gzip", body), ErrorCode.CONFLICT);
+    }
+
+    /** 지금 시각의 L1 조회. check(tag)의 digest를 돌리는 워크로드 하나만 있다 */
+    private static void observe(String tag) {
+        jdbc.update("INSERT INTO reach_workload_observations (cluster, namespace, observed_at, source, reported_by) "
+                + "VALUES ('reused-prod', 'reused', clock_timestamp(), 'MANUAL', 'USER:1') ON CONFLICT (cluster, namespace) "
+                + "DO UPDATE SET observed_at = EXCLUDED.observed_at");
+        jdbc.update("DELETE FROM reach_workloads");
+        jdbc.update("INSERT INTO reach_workloads (cluster, namespace, kind, name, container, image, image_digest, ready_replicas) "
+                + "VALUES ('reused-prod', 'reused', 'Deployment', 'reused-api', 'api', 'r/api:x', ?, 1)", "sha256:" + tag.repeat(64));
+    }
+
+    private static String deployment(long findingId) {
+        return jdbc.queryForObject("SELECT deployment FROM reach_findings WHERE finding_id = ?", String.class, findingId);
     }
 
     /** 이미지 digest가 다르면 대상이 다르다. 같은 tag면 같은 대상의 새 스캔이다 */

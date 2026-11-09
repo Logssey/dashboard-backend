@@ -151,7 +151,8 @@ public class ReachResultRepository {
 
     /**
      * (대상, purl, 취약점 ID)로 찾아 있으면 스캐너 값과 마지막 스캔·시각을 바꾸고, 없으면 만든다 (DB 스키마 4절 3단계).
-     * first_seen_at은 처음 만들 때만 쓴다. xmax = 0이면 이번에 새로 넣은 행이다(PostgreSQL에서 갱신한 행은 xmax가 채워진다)
+     * first_seen_at은 처음 만들 때만 쓴다. xmax = 0이면 이번에 새로 넣은 행이다(PostgreSQL에서 갱신한 행은 xmax가 채워진다).
+     * deployment도 처음 만들 때만 쓴다. 이미 있는 Finding의 값은 L1 재계산이 정하므로 묶음 값(기본 UNKNOWN)으로 덮지 않는다
      */
     UpsertedFinding upsertFinding(FindingInput f) {
         return jdbcClient.sql("""
@@ -174,7 +175,7 @@ public class ReachResultRepository {
                             vuln_title = EXCLUDED.vuln_title, vuln_description = EXCLUDED.vuln_description,
                             affected_feature = EXCLUDED.affected_feature, fixed_versions = EXCLUDED.fixed_versions,
                             cwe_ids = EXCLUDED.cwe_ids, reference_urls = EXCLUDED.reference_urls,
-                            sources = EXCLUDED.sources, deployment = EXCLUDED.deployment, upgrade = EXCLUDED.upgrade,
+                            sources = EXCLUDED.sources, upgrade = EXCLUDED.upgrade,
                             last_scan_id = EXCLUDED.last_scan_id, last_seen_at = EXCLUDED.last_seen_at
                         RETURNING finding_id, xmax = 0 AS inserted
                         """)

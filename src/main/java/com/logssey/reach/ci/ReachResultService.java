@@ -16,6 +16,7 @@ import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
 import com.logssey.reach.ReachCodes;
 import com.logssey.reach.ci.dto.ReachResultUploadResponse;
+import com.logssey.reach.l1.ReachL1Service;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -51,6 +52,7 @@ public class ReachResultService {
     private static final int SUMMARY_MAX = 500;
 
     private final ReachResultRepository repository;
+    private final ReachL1Service l1;
     private final TransactionTemplate tx;
     private final JsonMapper mapper = JsonMapper.builder()
             .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)   // 러너가 칸을 더해도 받는다
@@ -60,8 +62,9 @@ public class ReachResultService {
             .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
             .build();
 
-    public ReachResultService(ReachResultRepository repository, PlatformTransactionManager manager) {
+    public ReachResultService(ReachResultRepository repository, ReachL1Service l1, PlatformTransactionManager manager) {
         this.repository = repository;
+        this.l1 = l1;
         this.tx = new TransactionTemplate(manager);
     }
 
@@ -102,6 +105,8 @@ public class ReachResultService {
             return new ReachResultUploadResponse(checkId, scanId, "FAILED");
         }
 
+        // Finding을 고치기 전에 L1 재계산 잠금을 잡는다. 정기 재계산과 순서를 맞춰야 교착하지 않는다
+        l1.lockRecompute();
         repository.startScan(scanId, scanRecord);
         boolean pr = "PR".equals(check.mode());
         for (var row : rows) {
@@ -120,6 +125,8 @@ public class ReachResultService {
             repository.insertEvidence(verdictId, row.evidence());
             review(check, scanId, row, findingId, upserted.inserted(), verdictId);
         }
+        // 묶음의 deployment는 새 Finding을 만들 때만 쓴다. 이미지 대상은 여기서 L1 조회로 다시 계산한다(PRD FR-04)
+        l1.recompute(check.targetId());
         repository.succeedScan(scanId);
         repository.markUploaded(checkId);
         return new ReachResultUploadResponse(checkId, scanId, "SUCCEEDED");
