@@ -13,11 +13,11 @@ mkdir -p "$B"
 FIXTURE_BUILD="$B" bash ./build-fixtures.sh > "$B/build-fixtures.log" 2>&1 || { cat "$B/build-fixtures.log"; exit 1; }
 python3 make_fixture_spec.py >/dev/null
 fail=0
-for app in app-like app-positive app-tokens app-indirect app-blindspots; do
+for app in app-like app-positive app-tokens app-indirect app-blindspots app-boot2; do
   java -jar "$REACH_JAR" --app "$B/$app.jar" --spec spec-fixture.json --rules "$RULES" \
        --out "$B/$app.reach.json" 2> "$B/$app.reach.log"
   python3 "$VERDICT" --reach "$B/$app.reach.json" --spec spec-fixture.json --rules "$RULES" \
-       --repo "fixture-src/$app" --out "$B/$app.verdicts.json" --md "$B/$app.verdicts.md" > /dev/null 2>&1
+       --repo "fixture-src/${app/app-boot2/app-like}" --out "$B/$app.verdicts.json" --md "$B/$app.verdicts.md" > /dev/null 2>&1
   python3 - "$app" "$B" <<'PY' || fail=1
 import json, sys
 app, build = sys.argv[1], sys.argv[2]

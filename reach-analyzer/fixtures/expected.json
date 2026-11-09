@@ -80,5 +80,10 @@
       "CVE-2026-89407": "KNOWN MISS: readValue(json, Class.forName(name)); the BigDecimal type is never named in bytecode",
       "CVE-2026-91777": "@JsonIdentityInfo only on a mix-in, single Node read (no collection/map) -> unknown via jsonIdentityInfo.any; was over-reported as reachable before the fix because the mix-in class literal became a root and a type-level annotation counted without a container"
     }
+  },
+  "app-boot2": {
+    "CVE-2026-65182": "unknown",
+    "CVE-2026-65905": "unknown",
+    "CVE-2026-68525": "unknown"
   }
 }
