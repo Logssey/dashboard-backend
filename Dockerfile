@@ -10,6 +10,7 @@ COPY secret-worker/build.gradle secret-worker/build.gradle
 COPY secret-worker/src/ secret-worker/src/
 COPY iac-worker/build.gradle iac-worker/build.gradle
 COPY iac-worker/src/ iac-worker/src/
+COPY reach-analyzer/build.gradle reach-analyzer/build.gradle
 RUN chmod 755 gradlew && ./gradlew --no-daemon :bootJar :secret-worker:bootJar
 
 FROM eclipse-temurin:21-jdk-jammy@sha256:4b1a74fbffbe6b4e7b6f0171a472478282fb463790a51edf10e465d578f22b69 AS detector

@@ -1,0 +1,84 @@
+{
+  "note": "Expected verdicts, decided by hand from the fixture source code before running the tool.",
+  "app-like": {
+    "CVE-2026-65182": "unreachable",
+    "CVE-2026-65905": "unreachable",
+    "CVE-2026-68525": "unreachable",
+    "CVE-2025-14813": "unreachable",
+    "CVE-2026-8763": "unreachable",
+    "CVE-2026-89407": "unreachable",
+    "CVE-2026-89425": "unreachable",
+    "CVE-2026-68497": "unreachable",
+    "CVE-2026-91776": "unreachable",
+    "CVE-2026-91777": "unreachable",
+    "CVE-2026-13506": "unreachable",
+    "CVE-2026-0636": "unreachable",
+    "CVE-2026-19032": "unreachable",
+    "CVE-2026-83557": "unreachable"
+  },
+  "app-positive": {
+    "CVE-2026-65182": "unknown",
+    "CVE-2026-65905": "reachable",
+    "CVE-2026-68525": "reachable",
+    "CVE-2025-14813": "reachable",
+    "CVE-2026-8763": "reachable",
+    "CVE-2026-89407": "reachable",
+    "CVE-2026-89425": "reachable",
+    "CVE-2026-68497": "reachable",
+    "CVE-2026-91776": "reachable",
+    "CVE-2026-91777": "reachable",
+    "CVE-2026-13506": "reachable",
+    "CVE-2026-0636": "reachable",
+    "CVE-2026-19032": "reachable",
+    "CVE-2026-83557": "reachable"
+  },
+  "app-tokens": {
+    "CVE-2026-89407": "unknown"
+  },
+  "app-indirect": {
+    "CVE-2026-65182": "unknown",
+    "CVE-2026-65905": "reachable",
+    "CVE-2026-68525": "reachable",
+    "CVE-2025-14813": "reachable",
+    "CVE-2026-8763": "reachable",
+    "CVE-2026-89407": "reachable",
+    "CVE-2026-89425": "reachable",
+    "CVE-2026-68497": "reachable",
+    "CVE-2026-91776": "reachable",
+    "CVE-2026-91777": "reachable",
+    "CVE-2026-0636": "unknown",
+    "CVE-2026-83557": "unknown"
+  },
+  "app-blindspots": {
+    "CVE-2025-14813": "unreachable",
+    "CVE-2026-89407": "unreachable",
+    "CVE-2026-91777": "unknown"
+  },
+  "why": {
+    "app-like": {
+      "CVE-2026-89407": "BigDecimal exists only in a response DTO (ProductResponse) that is built with new and returned; nothing names it to Jackson (no root, class literal, TypeReference, Jackson annotation value or @Cacheable) -> unreachable",
+      "CVE-2025-14813/CVE-2026-8763": "bcprov is reachable through Spring Security Argon2, but not the GOST CTR / name-constraint code"
+    },
+    "app-positive": {
+      "CVE-2026-65182": "app adds container constraints; whether the misordered pattern shape matters needs a human -> unknown by design",
+      "CVE-2026-13506": "Asn1Lazy parses with ASN1InputStream(der, true) and walks ASN1Sequence.getObjects() -> LazyEncodedSequence.getObjects/force",
+      "CVE-2026-0636": "LdapCertLookup creates LDAPStoreHelper and searches by subject",
+      "CVE-2026-19032": "ExtraController.export binds ExportRequest with a java.nio.file.Path field",
+      "CVE-2026-83557": "ExtraController.sort binds SortRequest with @JsonTypeInfo on a Comparable field"
+    },
+    "app-tokens": {
+      "CVE-2026-89407": "PriceQuote (BigDecimal) is deserialised through a generic helper; no root sees it, but the class literal in QuoteConsumer names it -> unknown, a human must check where the JSON comes from"
+    },
+    "app-indirect": {
+      "all": "same conditions as app-positive reached a different way: DigestAuthenticator/FormAuthenticator subclasses, HttpMethodConstraintElement, @ServletSecurity, JCE name GOST3412-2015/CTR, addProvider(BC) + CertPathBuilder 'BC', BigDecimal in List<Line>, Duration in a nested record, @JsonTypeInfo(defaultImpl) on a field, ObjectReader.readValue(DataInput)",
+      "CVE-2026-91777": "the @RequestBody root itself is Map<String, Account> with @JsonIdentityInfo on Account (container root, no wrapper DTO)",
+      "CVE-2026-0636": "CertStore.getInstance(\"LDAP\", JDK LDAPCertStoreParameters, \"BC\"): the provider table picks the vulnerable store by reflection and no BC LDAP class is referenced, so unknown (not unreachable)",
+      "CVE-2026-83557": "@JsonTypeInfo is used (PetRequest.pet) but on a non-Comparable base type: a human must check base types and validators -> unknown"
+    },
+    "app-blindspots": {
+      "CVE-2025-14813": "KNOWN MISS: G3413CTRBlockCipher created by Class.forName; reflection is not modelled. If this starts failing, the limitation was lifted: update README",
+      "CVE-2026-89407": "KNOWN MISS: readValue(json, Class.forName(name)); the BigDecimal type is never named in bytecode",
+      "CVE-2026-91777": "@JsonIdentityInfo only on a mix-in, single Node read (no collection/map) -> unknown via jsonIdentityInfo.any; was over-reported as reachable before the fix because the mix-in class literal became a root and a type-level annotation counted without a container"
+    }
+  }
+}

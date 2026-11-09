@@ -1,3 +1,4 @@
 rootProject.name = 'dashboard-backend'
 include 'secret-worker'
 include 'iac-worker'
+include 'reach-analyzer'

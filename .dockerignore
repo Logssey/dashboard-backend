@@ -17,6 +17,8 @@
 !iac-worker/build.gradle
 !iac-worker/src/
 !iac-worker/src/**
+!reach-analyzer/
+!reach-analyzer/build.gradle
 !deploy/
 !deploy/install-gitleaks.sh
 
