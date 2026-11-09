@@ -66,7 +66,8 @@ class ReachRuleServiceTest {
         assertThat(tomcat.packages()).containsExactly("pkg:maven/org.apache.tomcat.embed/tomcat-embed-core");
         // 조건 순서대로, 호출 그래프 결과(sink, sink_weak)는 빼고
         assertThat(tomcat.facts()).containsExactly("F-tomcat.addConstraint", "F-tomcat.securityCollection",
-                "F-tomcat.servletSecurityAnn", "F-tomcat.setServletSecurity", "F-repo.webxml.securityConstraint");
+                "F-tomcat.servletSecurityAnn", "F-tomcat.setServletSecurity", "F-repo.webxml.securityConstraint",
+                "F-jar.springBoot4");
         assertThat(tomcat.evaluationOrder()).containsExactly("REACHABLE", "UNREACHABLE", "UNKNOWN", "DEFAULT");
         assertThat(tomcat.defaultStatus()).isEqualTo("UNREACHABLE");
         assertThat(tomcat.reasons()).containsOnlyKeys("UNREACHABLE", "UNKNOWN");
