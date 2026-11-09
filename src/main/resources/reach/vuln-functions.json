@@ -1,0 +1,670 @@
+{
+  "schema": "reach-spec/v0",
+  "note": "Sink methods were identified by diffing the vulnerable and fixed releases (see data/research/*-notes.md).",
+  "generated": "2026-10-10",
+  "cves": [
+    {
+      "cve": "CVE-2026-65182",
+      "ghsa": "GHSA-gcx9-497g-6cp6",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.25",
+          "10.1.59",
+          "9.0.121"
+        ]
+      },
+      "severity": "CRITICAL",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "보안 제약(security-constraint) 경로 매칭에서, 같은 컬렉션 안에 긴 경로가 짧은 하위 경로보다 먼저 선언되면 더 엄격한 제약이 밀려나 접근 제어가 우회된다.",
+      "summary_en": "RealmBase.findSecurityConstraints() records the length of the LAST matching '/x/*' pattern in a web-resource-collection rather than the longest one. When a longer prefix is listed before a shorter overlapping prefix in one collection, a later constraint with an overlapping prefix can displace the more restrictive constraint, or be combined with it, and access is granted (NVD/CISA-ADP CVSS 9.1; Apache rates it Important).",
+      "sinks": [
+        {
+          "class": "org.apache.catalina.realm.RealmBase",
+          "method": "findSecurityConstraints",
+          "desc": "(Lorg/apache/catalina/connector/Request;Lorg/apache/catalina/Context;)[Lorg/apache/tomcat/util/descriptor/web/SecurityConstraint;",
+          "confidence": "high"
+        }
+      ],
+      "sources": [
+        "https://raw.githubusercontent.com/apache/tomcat/11.0.24/java/org/apache/catalina/realm/RealmBase.java",
+        "https://raw.githubusercontent.com/apache/tomcat/11.0.25/java/org/apache/catalina/realm/RealmBase.java",
+        "https://raw.githubusercontent.com/apache/tomcat/8bafd79a3b54684e80e9cb1bafd4746aede7d3f5/java/org/apache/catalina/realm/RealmBase.java",
+        "https://raw.githubusercontent.com/apache/tomcat/2c2c510ab10ae7796de6c6f7b70abae85c99d30d/java/org/apache/catalina/realm/RealmBase.java",
+        "https://raw.githubusercontent.com/apache/tomcat/11.0.25/test/org/apache/catalina/realm/TestRealmBase.java",
+        "https://raw.githubusercontent.com/apache/tomcat/11.0.25/webapps/docs/changelog.xml"
+      ]
+    },
+    {
+      "cve": "CVE-2026-65905",
+      "ghsa": "GHSA-9xv2-5v5q-p794",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.25",
+          "10.1.59",
+          "9.0.121"
+        ]
+      },
+      "severity": "CRITICAL",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "Tomcat DIGEST 인증의 nonce count 재전송 창 계산 순서가 틀려, 창 상한값의 요청을 한 번 재전송할 수 있다.",
+      "summary_en": "DigestAuthenticator$NonceInfo.nonceCountValid() clears the 'seen' slot for the current count BEFORE incrementing it. A DIGEST request whose nc sits exactly at the upper boundary of the replay window therefore has its own seen-flag cleared and can be replayed once while that nc stays in the window. The same off-by-one also causes false rejections (NVD/CISA-ADP CVSS 9.8; Apache rates it Low).",
+      "sinks": [
+        {
+          "class": "org.apache.catalina.authenticator.DigestAuthenticator$NonceInfo",
+          "method": "nonceCountValid",
+          "desc": "(J)Z",
+          "confidence": "high"
+        },
+        {
+          "class": "org.apache.catalina.authenticator.DigestAuthenticator",
+          "method": "doAuthenticate",
+          "desc": "(Lorg/apache/catalina/connector/Request;Ljakarta/servlet/http/HttpServletResponse;)Z",
+          "confidence": "medium"
+        }
+      ],
+      "sources": [
+        "https://raw.githubusercontent.com/apache/tomcat/11.0.24/java/org/apache/catalina/authenticator/DigestAuthenticator.java",
+        "https://raw.githubusercontent.com/apache/tomcat/11.0.25/java/org/apache/catalina/authenticator/DigestAuthenticator.java",
+        "https://raw.githubusercontent.com/apache/tomcat/c5f94ad1726e8399b77eb3fd69c811c1103894d6/java/org/apache/catalina/authenticator/DigestAuthenticator.java",
+        "https://raw.githubusercontent.com/apache/tomcat/11.0.25/test/org/apache/catalina/authenticator/TestDigestAuthenticatorNonceInfo.java",
+        "https://raw.githubusercontent.com/apache/tomcat/11.0.25/webapps/docs/changelog.xml",
+        "https://raw.githubusercontent.com/apache/tomcat-site/trunk/xdocs/security-11.xml"
+      ]
+    },
+    {
+      "cve": "CVE-2026-68525",
+      "ghsa": "GHSA-h3x4-894j-xpx5",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.25",
+          "10.1.59",
+          "9.0.121"
+        ]
+      },
+      "severity": "CRITICAL",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "Tomcat FORM 인증 후 저장된 POST 요청을 복원할 때, GET 기준으로 계산한 보안 제약을 그대로 써서 POST 전용 제약이 우회된다.",
+      "summary_en": "With FORM auth, AuthenticatorBase.invoke() computes the security constraints for the post-login redirect GET. FormAuthenticator.restoreRequest() then swaps in the saved POST (method and body), and authorization runs against the stale GET constraints. If POST is role-restricted but GET is not, any user who can log in gets the POST processed without the required role (NVD/CISA-ADP CVSS 9.1; Apache rates it Low).",
+      "sinks": [
+        {
+          "class": "org.apache.catalina.authenticator.FormAuthenticator",
+          "method": "restoreRequest",
+          "desc": "(Lorg/apache/catalina/connector/Request;Lorg/apache/catalina/Session;)Z",
+          "confidence": "high"
+        },
+        {
+          "class": "org.apache.catalina.authenticator.FormAuthenticator",
+          "method": "doAuthenticate",
+          "desc": "(Lorg/apache/catalina/connector/Request;Ljakarta/servlet/http/HttpServletResponse;)Z",
+          "confidence": "high"
+        }
+      ],
+      "sources": [
+        "https://raw.githubusercontent.com/apache/tomcat/11.0.24/java/org/apache/catalina/authenticator/AuthenticatorBase.java",
+        "https://raw.githubusercontent.com/apache/tomcat/11.0.25/java/org/apache/catalina/authenticator/AuthenticatorBase.java",
+        "https://raw.githubusercontent.com/apache/tomcat/11.0.24/java/org/apache/catalina/authenticator/FormAuthenticator.java",
+        "https://raw.githubusercontent.com/apache/tomcat/11.0.25/java/org/apache/catalina/authenticator/FormAuthenticator.java",
+        "https://raw.githubusercontent.com/apache/tomcat/10d048e16034ddf12055e0cede0da05b15c823b8/java/org/apache/catalina/authenticator/AuthenticatorBase.java",
+        "https://raw.githubusercontent.com/apache/tomcat/10d048e16034ddf12055e0cede0da05b15c823b8/java/org/apache/catalina/authenticator/FormAuthenticator.java"
+      ]
+    },
+    {
+      "cve": "CVE-2025-14813",
+      "ghsa": "GHSA-574f-3g2m-x479",
+      "package": {
+        "coordinates": "org.bouncycastle:bcprov-jdk18on",
+        "artifact": "bcprov-jdk18on",
+        "installed": "1.81",
+        "fixed": [
+          "1.81.1",
+          "1.80.2",
+          "1.84"
+        ]
+      },
+      "severity": "HIGH",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+      "invocation_kind": "app_calls_library",
+      "summary_ko": "GOST R 34.13-2015 CTR 모드(G3413CTRBlockCipher)가 카운터의 마지막 1바이트만 증가시켜, 256블록 이후 키스트림이 반복된다.",
+      "summary_en": "G3413CTRBlockCipher, BC's GOST R 34.13-2015 CTR mode (algorithm name '<cipher>/GCTR'), increments only the last byte of the counter. After 256 blocks the counter wraps and the keystream repeats (two-time pad), leaking the XOR of plaintext blocks. Affects 1.59-1.80.1, 1.81 and 1.82-1.83, so the installed 1.81 is affected (fixed in 1.81.1).",
+      "sinks": [
+        {
+          "class": "org.bouncycastle.crypto.modes.G3413CTRBlockCipher",
+          "method": "generateCRT",
+          "desc": "()V",
+          "confidence": "high"
+        },
+        {
+          "class": "org.bouncycastle.crypto.modes.G3413CTRBlockCipher",
+          "method": "calculateByte",
+          "desc": "(B)B",
+          "confidence": "high"
+        },
+        {
+          "class": "org.bouncycastle.crypto.modes.G3413CTRBlockCipher",
+          "method": "processBlock",
+          "desc": "([BI[BI)I",
+          "confidence": "high"
+        }
+      ],
+      "sources": [
+        "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81/core/src/main/java/org/bouncycastle/crypto/modes/G3413CTRBlockCipher.java",
+        "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81v1/core/src/main/java/org/bouncycastle/crypto/modes/G3413CTRBlockCipher.java",
+        "https://raw.githubusercontent.com/bcgit/bc-java/r1rv84/core/src/main/java/org/bouncycastle/crypto/modes/G3413CTRBlockCipher.java",
+        "https://raw.githubusercontent.com/bcgit/bc-java/r1rv80v2/core/src/main/java/org/bouncycastle/crypto/modes/G3413CTRBlockCipher.java",
+        "https://raw.githubusercontent.com/bcgit/bc-java/r1rv59/core/src/main/java/org/bouncycastle/crypto/modes/G3413CTRBlockCipher.java",
+        "https://raw.githubusercontent.com/bcgit/bc-java/701686cb0184cd9ae103c801b3581fdf95c6d4f3/core/src/main/java/org/bouncycastle/crypto/modes/G3413CTRBlockCipher.java"
+      ]
+    },
+    {
+      "cve": "CVE-2026-8763",
+      "ghsa": "GHSA-9pwp-9qqc-pr26",
+      "package": {
+        "coordinates": "org.bouncycastle:bcprov-jdk18on",
+        "artifact": "bcprov-jdk18on",
+        "installed": "1.81",
+        "fixed": [
+          "1.85"
+        ]
+      },
+      "severity": "CRITICAL",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+      "invocation_kind": "both",
+      "summary_ko": "인증서 이름 제약(Name Constraints) 검사에서 rfc822Name·URI 호스트 끝의 점(.)을 정규화하지 않아, 제외 목록(excluded subtree)을 우회할 수 있다.",
+      "summary_en": "BC's PKIXNameConstraintValidator compares rfc822Name hosts/mailboxes and URI hosts against name constraints with a bare equalsIgnoreCase or a label split, without removing an RFC 1034 trailing dot. A leaf with SAN 'ceo@bank.com.' or 'https://competitor.example./' therefore escapes an excludedSubtrees entry for bank.com / competitor.example, and BC's PKIX CertPathValidator/CertPathBuilder accepts the chain. Affects all bcprov before 1.85, with no 1.81.x backport.",
+      "sinks": [
+        {
+          "class": "org.bouncycastle.asn1.x509.PKIXNameConstraintValidator",
+          "method": "emailIsConstrained",
+          "desc": "(Ljava/lang/String;Ljava/lang/String;)Z",
+          "confidence": "high"
+        },
+        {
+          "class": "org.bouncycastle.asn1.x509.PKIXNameConstraintValidator",
+          "method": "isUriConstrained",
+          "desc": "(Ljava/lang/String;Ljava/lang/String;)Z",
+          "confidence": "high"
+        },
+        {
+          "class": "org.bouncycastle.asn1.x509.PKIXNameConstraintValidator",
+          "method": "withinDomain",
+          "desc": "(Ljava/lang/String;Ljava/lang/String;)Z",
+          "confidence": "high"
+        },
+        {
+          "class": "org.bouncycastle.asn1.x509.PKIXNameConstraintValidator",
+          "method": "checkExcludedEmail",
+          "desc": "(Ljava/util/Set;Ljava/lang/String;)V",
+          "confidence": "high"
+        },
+        {
+          "class": "org.bouncycastle.asn1.x509.PKIXNameConstraintValidator",
+          "method": "checkExcludedURI",
+          "desc": "(Ljava/util/Set;Ljava/lang/String;)V",
+          "confidence": "high"
+        },
+        {
+          "class": "org.bouncycastle.asn1.x509.PKIXNameConstraintValidator",
+          "method": "checkExcluded",
+          "desc": "(Lorg/bouncycastle/asn1/x509/GeneralName;)V",
+          "confidence": "high"
+        },
+        {
+          "class": "org.bouncycastle.jce.provider.PKIXNameConstraintValidator",
+          "method": "checkExcluded",
+          "desc": "(Lorg/bouncycastle/asn1/x509/GeneralName;)V",
+          "confidence": "high"
+        },
+        {
+          "class": "org.bouncycastle.asn1.x509.PKIXNameConstraintValidator",
+          "method": "checkExcludedDNS",
+          "desc": "(Ljava/util/Set;Ljava/lang/String;)V",
+          "confidence": "medium"
+        },
+        {
+          "class": "org.bouncycastle.asn1.x509.PKIXNameConstraintValidator",
+          "method": "isEmailConstrained",
+          "desc": "(Ljava/lang/String;Ljava/lang/String;)Z",
+          "confidence": "high",
+          "note": "1.84+ name"
+        },
+        {
+          "class": "org.bouncycastle.asn1.x509.PKIXNameConstraintValidator",
+          "method": "isURIConstrained",
+          "desc": "(Ljava/lang/String;Ljava/lang/String;)Z",
+          "confidence": "high",
+          "note": "1.84+ name"
+        }
+      ],
+      "sources": [
+        "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81/core/src/main/java/org/bouncycastle/asn1/x509/PKIXNameConstraintValidator.java",
+        "https://raw.githubusercontent.com/bcgit/bc-java/r1rv84/core/src/main/java/org/bouncycastle/asn1/x509/PKIXNameConstraintValidator.java",
+        "https://raw.githubusercontent.com/bcgit/bc-java/r1rv85/core/src/main/java/org/bouncycastle/asn1/x509/PKIXNameConstraintValidator.java",
+        "https://raw.githubusercontent.com/bcgit/bc-java/2c28b253a44681fbbc562561eab6ad383d2ae558/core/src/main/java/org/bouncycastle/asn1/x509/PKIXNameConstraintValidator.java",
+        "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81v1/core/src/main/java/org/bouncycastle/asn1/x509/PKIXNameConstraintValidator.java",
+        "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81/prov/src/main/java/org/bouncycastle/jce/provider/PKIXNameConstraintValidator.java"
+      ]
+    },
+    {
+      "cve": "CVE-2026-13506",
+      "ghsa": "GHSA-qp49-qgx5-5m26",
+      "package": {
+        "coordinates": "org.bouncycastle:bcprov-jdk18on",
+        "artifact": "bcprov-jdk18on",
+        "installed": "1.81",
+        "fixed": [
+          "1.85"
+        ]
+      },
+      "severity": "HIGH",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+      "invocation_kind": "app_calls_library",
+      "summary_ko": "ASN.1을 지연 파싱(lazyEvaluate)할 때, 지연된 SEQUENCE를 펼칠 때마다 중첩 깊이 제한이 초기화된다. 깊게 중첩된 입력을 끝까지 순회하면 StackOverflowError로 서비스가 멈춘다(DoS).",
+      "summary_en": "ASN1InputStream in lazy mode captures a SEQUENCE as LazyEncodedSequence; force()/getObjects() re-parse the contents with a fresh ASN1InputStream whose nesting-depth guard starts at the maximum again, so a crafted deeply nested SEQUENCE defeats the StreamUtil depth limit and a whole-tree walk overflows the stack (DoS). Fixed in 1.85 by carrying the remaining depth.",
+      "sinks": [
+        {
+          "class": "org.bouncycastle.asn1.LazyEncodedSequence",
+          "method": "force",
+          "desc": "()V",
+          "confidence": "high"
+        },
+        {
+          "class": "org.bouncycastle.asn1.LazyEncodedSequence",
+          "method": "getObjects",
+          "desc": "()Ljava/util/Enumeration;",
+          "confidence": "high"
+        },
+        {
+          "class": "org.bouncycastle.asn1.LazyConstructionEnumeration",
+          "method": "<init>",
+          "desc": "([B)V",
+          "confidence": "high"
+        }
+      ],
+      "sources": [
+        "https://github.com/bcgit/bc-java/commit/77454da9b3dcaaa2991412d1c3c1a6e1a338ff84",
+        "https://github.com/bcgit/bc-java/wiki/CVE-2026-13506",
+        "https://github.com/advisories/GHSA-qp49-qgx5-5m26"
+      ]
+    },
+    {
+      "cve": "CVE-2026-0636",
+      "ghsa": "GHSA-c3fc-8qff-9hwx",
+      "package": {
+        "coordinates": "org.bouncycastle:bcprov-jdk18on",
+        "artifact": "bcprov-jdk18on",
+        "installed": "1.81",
+        "fixed": [
+          "1.80.2",
+          "1.81.1",
+          "1.84"
+        ]
+      },
+      "severity": "MEDIUM",
+      "cvss_vector": null,
+      "invocation_kind": "app_calls_library",
+      "summary_ko": "BouncyCastle LDAP 인증서 저장소가 인증서 DN에서 뽑은 값을 이스케이프하지 않고 LDAP 검색 필터에 넣어, 조작한 DN으로 필터를 바꿀 수 있다(LDAP 인젝션).",
+      "summary_en": "LDAP injection in BC's LDAP certificate store: LDAPStoreHelper and X509LDAPCertStoreSpi extract an RDN value from a certificate subject/issuer DN with parseDN and put it into an LDAP search filter without RFC 2254 escaping, so a crafted DN changes the filter. Affects 1.74-1.80.1, 1.81 and 1.82-1.83. The fix moves parseDN to LDAPUtils, which escapes * ( ) \\\\ and NUL.",
+      "sinks": [
+        {
+          "class": "org.bouncycastle.x509.util.LDAPStoreHelper",
+          "method": "parseDN",
+          "desc": "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+          "confidence": "high"
+        },
+        {
+          "class": "org.bouncycastle.jce.provider.X509LDAPCertStoreSpi",
+          "method": "parseDN",
+          "desc": "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+          "confidence": "high"
+        },
+        {
+          "class": "org.bouncycastle.x509.util.LDAPStoreHelper",
+          "method": "search",
+          "desc": "([Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;)Ljava/util/List;",
+          "confidence": "medium"
+        },
+        {
+          "class": "org.bouncycastle.jce.provider.X509LDAPCertStoreSpi",
+          "method": "search",
+          "desc": "(Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;)Ljava/util/Set;",
+          "confidence": "medium"
+        }
+      ],
+      "sources": [
+        "https://github.com/bcgit/bc-java/commit/d20cdb8430e09224114fec0179a71859929fcbde",
+        "https://github.com/bcgit/bc-java/wiki/CVE%E2%80%902026%E2%80%900636",
+        "https://github.com/advisories/GHSA-c3fc-8qff-9hwx"
+      ]
+    },
+    {
+      "cve": "CVE-2026-89407",
+      "ghsa": "GHSA-p6pp-m3f8-5c89",
+      "package": {
+        "coordinates": "tools.jackson.core:jackson-core",
+        "artifact": "jackson-core",
+        "installed": "3.1.5",
+        "fixed": [
+          "3.1.7",
+          "3.2.2"
+        ]
+      },
+      "severity": "HIGH",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "숫자 문자열 검사 정규식(NumberInput.looksLikeValidNumber)의 백트래킹 때문에, 문자열로 들어온 값을 float/double/BigDecimal/Number로 변환할 때 CPU를 과도하게 쓴다(ReDoS).",
+      "summary_en": "ReDoS (CWE-1333/CWE-400) in NumberInput.looksLikeValidNumber(): the pre-validation regex PATTERN_FLOAT = [+-]?[0-9]*[.]?[0-9]+(...)? has adjacent quantifiers over the digit class, so a long run of digits that ultimately fails to match backtracks in O(n^2). jackson-databind calls this method during String-to-number coercion before any length limit applies, so a single long JSON string value bound to a number type pins a CPU thread (reporter measured ~74s for a 160,000-char string).",
+      "sinks": [
+        {
+          "class": "tools.jackson.core.io.NumberInput",
+          "method": "looksLikeValidNumber",
+          "desc": "(Ljava/lang/String;)Z",
+          "confidence": "high"
+        },
+        {
+          "class": "tools.jackson.databind.deser.std.StdDeserializer",
+          "method": "_parseFloatPrimitive",
+          "desc": "(Ltools/jackson/core/JsonParser;Ltools/jackson/databind/DeserializationContext;Ljava/lang/String;)F",
+          "confidence": "high"
+        },
+        {
+          "class": "tools.jackson.databind.deser.jdk.NumberDeserializers$FloatDeserializer",
+          "method": "_parseFloat",
+          "desc": "(Ltools/jackson/core/JsonParser;Ltools/jackson/databind/DeserializationContext;)Ljava/lang/Float;",
+          "confidence": "high"
+        },
+        {
+          "class": "tools.jackson.databind.deser.jdk.NumberDeserializers$DoubleDeserializer",
+          "method": "_parseDouble",
+          "desc": "(Ltools/jackson/core/JsonParser;Ltools/jackson/databind/DeserializationContext;)Ljava/lang/Double;",
+          "confidence": "high"
+        },
+        {
+          "class": "tools.jackson.databind.deser.jdk.NumberDeserializers$NumberDeserializer",
+          "method": "deserialize",
+          "desc": "(Ltools/jackson/core/JsonParser;Ltools/jackson/databind/DeserializationContext;)Ljava/lang/Object;",
+          "confidence": "high"
+        },
+        {
+          "class": "tools.jackson.databind.deser.jdk.NumberDeserializers$BigDecimalDeserializer",
+          "method": "deserialize",
+          "desc": "(Ltools/jackson/core/JsonParser;Ltools/jackson/databind/DeserializationContext;)Ljava/math/BigDecimal;",
+          "confidence": "high"
+        },
+        {
+          "class": "tools.jackson.databind.node.StringNode",
+          "method": "_tryParseAsDouble",
+          "desc": "()Ljava/lang/Double;",
+          "confidence": "high"
+        }
+      ],
+      "sources": [
+        "jackson-core release-notes/VERSION (3.1.7, 3.2.2 entries) via raw.githubusercontent.com",
+        "source diff jackson-core-3.1.5 vs jackson-core-3.1.7 NumberInput.java + databind-3.1.5 call sites",
+        "GHSA-p6pp-m3f8-5c89",
+        "https://nvd.nist.gov/vuln/detail/CVE-2026-89407",
+        "https://www.tenable.com/cve/CVE-2026-89407",
+        "https://app.opencve.io/cve/CVE-2026-89407"
+      ]
+    },
+    {
+      "cve": "CVE-2026-89425",
+      "ghsa": "GHSA-7hhh-6rmp-j9qf",
+      "package": {
+        "coordinates": "tools.jackson.core:jackson-core",
+        "artifact": "jackson-core",
+        "installed": "3.1.5",
+        "fixed": [
+          "3.1.7",
+          "3.2.3"
+        ]
+      },
+      "severity": "HIGH",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+      "invocation_kind": "app_calls_library",
+      "summary_ko": "DataInput 기반 파서(UTF8DataInputJsonParser)가 오류 토큰 길이 제한을 적용하지 않아, 매우 긴 오류 메시지를 만든다.",
+      "summary_en": "Unbounded error-token growth (CWE-770/CWE-400) in UTF8DataInputJsonParser: its _reportInvalidToken() builds the error-message token in a loop that never checks ErrorReportConfiguration.getMaxErrorTokenLength() (default 256), unlike the InputStream/Reader parsers. A malformed token on a DataInput-backed parser is copied in full into the exception message, so a ~20M-char bogus token yields a ~20M-char message and can trigger OutOfMemoryError; no StreamReadConstraints setting mitigates it.",
+      "sinks": [
+        {
+          "class": "tools.jackson.core.json.UTF8DataInputJsonParser",
+          "method": "_reportInvalidToken",
+          "desc": "(ILjava/lang/String;Ljava/lang/String;)V",
+          "confidence": "high"
+        },
+        {
+          "class": "tools.jackson.core.json.UTF8DataInputJsonParser",
+          "method": "_reportInvalidToken",
+          "desc": "(ILjava/lang/String;)V",
+          "confidence": "high"
+        },
+        {
+          "class": "tools.jackson.core.json.UTF8DataInputJsonParser",
+          "method": "_handleUnexpectedValue",
+          "desc": "(I)Ltools/jackson/core/JsonToken;",
+          "confidence": "high"
+        }
+      ],
+      "sources": [
+        "jackson-core release-notes/VERSION (3.1.7, 3.2.3 entries) via raw.githubusercontent.com",
+        "source diff jackson-core-3.1.5 vs jackson-core-3.1.7 UTF8DataInputJsonParser.java",
+        "core-3.1.5 JsonFactory._createParser(DataInput) -> new UTF8DataInputJsonParser; TextualTSFactory.createParser(DataInput)",
+        "GHSA-7hhh-6rmp-j9qf",
+        "https://app.opencve.io/cve/CVE-2026-89425",
+        "https://www.wiz.io/vulnerability-database/cve/cve-2026-89425"
+      ]
+    },
+    {
+      "cve": "CVE-2026-68497",
+      "ghsa": "GHSA-q4xh-88c3-wmh7",
+      "package": {
+        "coordinates": "tools.jackson.core:jackson-databind",
+        "artifact": "jackson-databind",
+        "installed": "3.1.5",
+        "fixed": [
+          "3.1.6",
+          "3.2.2"
+        ]
+      },
+      "severity": "HIGH",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+      "invocation_kind": "both",
+      "summary_ko": "javax.xml.datatype Duration·XMLGregorianCalendar 역직렬화에 숫자 길이 제한이 없어, 큰 입력으로 CPU를 과도하게 쓴다.",
+      "summary_en": "CPU DoS (CWE-400) when binding a JSON string to a javax.xml.datatype.Duration or javax.xml.datatype.XMLGregorianCalendar field: CoreXMLDeserializers$Std._deserialize() passes the attacker string straight to DatatypeFactory.newDuration()/newXMLGregorianCalendar(), which parse numeric components with the O(n^2) BigInteger(String)/BigDecimal(String) constructors. The usual number-length limit is not applied, so a long digit run ties up a CPU thread for seconds to minutes.",
+      "sinks": [
+        {
+          "class": "tools.jackson.databind.ext.CoreXMLDeserializers$Std",
+          "method": "_deserialize",
+          "desc": "(Ljava/lang/String;Ltools/jackson/databind/DeserializationContext;)Ljava/lang/Object;",
+          "confidence": "high"
+        },
+        {
+          "class": "tools.jackson.databind.ext.CoreXMLDeserializers$Std",
+          "method": "deserialize",
+          "desc": "(Ltools/jackson/core/JsonParser;Ltools/jackson/databind/DeserializationContext;)Ljava/lang/Object;",
+          "confidence": "high"
+        }
+      ],
+      "sources": [
+        "jackson-databind release-notes/VERSION (3.1.6, 3.2.2 entries) via raw.githubusercontent.com",
+        "source diff jackson-databind-3.1.5 vs 3.1.6 CoreXMLDeserializers.java + StdDeserializer._validateTimestampLength",
+        "databind-3.1.5 OptionalHandlerFactory/BasicDeserializerFactory default registration of CoreXMLDeserializers",
+        "GHSA-q4xh-88c3-wmh7",
+        "https://www.tenable.com/cve/CVE-2026-68497",
+        "https://app.opencve.io/cve/CVE-2026-68497"
+      ]
+    },
+    {
+      "cve": "CVE-2026-91776",
+      "ghsa": "GHSA-wv8q-qhhj-9h54",
+      "package": {
+        "coordinates": "tools.jackson.core:jackson-databind",
+        "artifact": "jackson-databind",
+        "installed": "3.1.5",
+        "fixed": [
+          "3.1.7",
+          "3.2.3"
+        ]
+      },
+      "severity": "HIGH",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+      "invocation_kind": "both",
+      "summary_ko": "다형성 역직렬화에서 알 수 없는 type id가 기본 구현으로 대체될 때, type id 캐시가 제한 없이 커진다(메모리 고갈).",
+      "summary_en": "Memory-exhaustion DoS (CWE-400) via unbounded growth of the per-TypeDeserializer type-id cache. TypeDeserializerBase._findDeserializer() caches the resolved deserializer keyed by the raw, attacker-supplied type id in an unbounded ConcurrentHashMap (_deserializers). With name-based polymorphism plus a fallback (defaultImpl / problem handler), each distinct unknown id becomes its own permanent cache entry on a long-lived ObjectMapper, so a stream of unique ids grows the heap until OOM.",
+      "sinks": [
+        {
+          "class": "tools.jackson.databind.jsontype.impl.TypeDeserializerBase",
+          "method": "_findDeserializer",
+          "desc": "(Ltools/jackson/databind/DeserializationContext;Ljava/lang/String;)Ltools/jackson/databind/ValueDeserializer;",
+          "confidence": "high"
+        },
+        {
+          "class": "tools.jackson.databind.jsontype.impl.AsPropertyTypeDeserializer",
+          "method": "_deserializeTypedForId",
+          "desc": "(Ltools/jackson/core/JsonParser;Ltools/jackson/databind/DeserializationContext;Ltools/jackson/databind/util/TokenBuffer;Ljava/lang/String;)Ljava/lang/Object;",
+          "confidence": "high"
+        }
+      ],
+      "sources": [
+        "jackson-databind release-notes/VERSION (3.1.7, 3.2.3 entries) via raw.githubusercontent.com",
+        "source diff jackson-databind-3.1.5 vs 3.1.7 TypeDeserializerBase.java; call sites in AsProperty/AsArray/AsWrapperTypeDeserializer",
+        "local PoC on com.fasterxml jackson 2.16.1: 10000 distinct unknown Id.NAME ids retained 10000 entries in TypeDeserializerBase._deserializers",
+        "GHSA-wv8q-qhhj-9h54",
+        "https://app.opencve.io/cve/CVE-2026-91776",
+        "https://www.wiz.io/vulnerability-database/cve/cve-2026-91776"
+      ]
+    },
+    {
+      "cve": "CVE-2026-91777",
+      "ghsa": "GHSA-cxp5-3px4-pw24",
+      "package": {
+        "coordinates": "tools.jackson.core:jackson-databind",
+        "artifact": "jackson-databind",
+        "installed": "3.1.5",
+        "fixed": [
+          "3.1.7",
+          "3.2.3"
+        ]
+      },
+      "severity": "HIGH",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+      "invocation_kind": "both",
+      "summary_ko": "@JsonIdentityInfo를 쓰는 컬렉션·맵에서 전방 참조가 많으면, 참조 해결이 제곱 시간이 걸린다.",
+      "summary_en": "Quadratic-complexity CPU DoS (CWE-400) in @JsonIdentityInfo forward-reference completion for Collection and Map deserializers. Unresolved object-id references are kept in an ArrayList and each resolution does a linear scan plus addAll merge; when N references are created and then their ids are defined in reverse order, completion costs O(N^2) (reporter measured ~2,003,000 ID comparisons at N=2000).",
+      "sinks": [
+        {
+          "class": "tools.jackson.databind.deser.jdk.CollectionDeserializer$CollectionReferringAccumulator",
+          "method": "resolveForwardReference",
+          "desc": "(Ltools/jackson/databind/DeserializationContext;Ljava/lang/Object;Ljava/lang/Object;)V",
+          "confidence": "high"
+        },
+        {
+          "class": "tools.jackson.databind.deser.jdk.MapDeserializer$MapReferringAccumulator",
+          "method": "resolveForwardReference",
+          "desc": "(Ltools/jackson/databind/DeserializationContext;Ljava/lang/Object;Ljava/lang/Object;)V",
+          "confidence": "high"
+        },
+        {
+          "class": "tools.jackson.databind.deser.jdk.CollectionDeserializer",
+          "method": "_deserializeWithObjectId",
+          "desc": "(Ltools/jackson/core/JsonParser;Ltools/jackson/databind/DeserializationContext;Ljava/util/Collection;)Ljava/util/Collection;",
+          "confidence": "high"
+        },
+        {
+          "class": "tools.jackson.databind.deser.jdk.MapDeserializer",
+          "method": "_readAndBind",
+          "desc": "(Ltools/jackson/core/JsonParser;Ltools/jackson/databind/DeserializationContext;Ljava/util/Map;)Ljava/util/Map;",
+          "confidence": "high"
+        }
+      ],
+      "sources": [
+        "jackson-databind release-notes/VERSION (3.1.7, 3.2.3 entries) via raw.githubusercontent.com",
+        "source diff jackson-databind-3.1.5 vs 3.1.7 CollectionDeserializer.java / MapDeserializer.java / ObjectArrayDeserializer.java",
+        "local PoC on com.fasterxml jackson 2.16.1: reverse-order forward refs scale quadratically (683->3422->13798 ms for N=8k/16k/32k)",
+        "GHSA-cxp5-3px4-pw24",
+        "https://app.opencve.io/cve/CVE-2026-91777",
+        "https://www.wiz.io/vulnerability-database/cve/cve-2026-91777"
+      ]
+    },
+    {
+      "cve": "CVE-2026-19032",
+      "ghsa": "GHSA-wjgm-6hv5-3cvf",
+      "package": {
+        "coordinates": "tools.jackson.core:jackson-databind",
+        "artifact": "jackson-databind",
+        "installed": "3.1.5",
+        "fixed": [
+          "3.1.6",
+          "3.2.2"
+        ]
+      },
+      "severity": "MEDIUM",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L",
+      "invocation_kind": "framework_calls_library",
+      "summary_ko": "java.nio.file.Path 역직렬화가 입력 URI의 스킴을 제한하지 않아, 외부 JSON이 등록된 아무 FileSystemProvider나 고르고 호출하게 할 수 있다.",
+      "summary_en": "The java.nio.file.Path deserializer passes an attacker-supplied string to new URI(value) and Path.of(uri), and on FileSystemNotFoundException walks ServiceLoader<FileSystemProvider> and calls getPath on the provider for the attacker-chosen scheme. Untrusted JSON can drive any registered FileSystemProvider during readValue. With only JDK providers the result is inert.",
+      "sinks": [
+        {
+          "class": "tools.jackson.databind.deser.jdk.JDKFromStringDeserializer$NioPathHelper",
+          "method": "deserialize",
+          "desc": "(Ltools/jackson/databind/DeserializationContext;Ljava/lang/String;)Ljava/nio/file/Path;",
+          "confidence": "high"
+        }
+      ],
+      "sources": [
+        "https://github.com/FasterXML/jackson-databind/security/advisories/GHSA-wjgm-6hv5-3cvf",
+        "https://github.com/FasterXML/jackson-databind/pull/6129",
+        "https://github.com/FasterXML/jackson-databind/commit/ce26eda3481cd796f76ba4c53ffe1da23b53f166",
+        "https://github.com/FasterXML/jackson-databind/commit/d94bb632becfe0ba96926b9909ab06d1f87aad6d",
+        "https://github.com/FasterXML/jackson-databind/commit/cc6756b61ed90b6b9227f670e0408d5d9bd48551"
+      ]
+    },
+    {
+      "cve": "CVE-2026-83557",
+      "ghsa": "GHSA-gx83-3vf8-gh7j",
+      "package": {
+        "coordinates": "tools.jackson.core:jackson-databind",
+        "artifact": "jackson-databind",
+        "installed": "3.1.5",
+        "fixed": [
+          "3.1.6",
+          "3.2.2"
+        ]
+      },
+      "severity": "MEDIUM",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:L/A:L",
+      "invocation_kind": "framework_calls_library",
+      "summary_ko": "@JsonTypeInfo의 기본 검증기가 java.lang.Comparable을 위험한 기반 타입으로 보지 않아, Comparable 타입 속성에 거의 모든 클래스(예: 임의 경로의 java.io.File)를 만들 수 있다.",
+      "summary_en": "DefaultBaseTypeLimitingValidator, the validator used for @JsonTypeInfo without a custom PolymorphicTypeValidator, did not treat java.lang.Comparable as an unsafe base type, so a @JsonTypeInfo property typed Comparable accepts almost any class (e.g. java.io.File with an attacker-chosen path). Global default typing is not affected (it requires an explicit validator).",
+      "sinks": [
+        {
+          "class": "tools.jackson.databind.jsontype.DefaultBaseTypeLimitingValidator",
+          "method": "isUnsafeBaseType",
+          "desc": "(Ltools/jackson/databind/DatabindContext;Ltools/jackson/databind/JavaType;)Z",
+          "confidence": "medium"
+        },
+        {
+          "class": "tools.jackson.databind.jsontype.DefaultBaseTypeLimitingValidator",
+          "method": "isSafeSubType",
+          "desc": "(Ltools/jackson/databind/DatabindContext;Ltools/jackson/databind/JavaType;Ltools/jackson/databind/JavaType;)Z",
+          "confidence": "medium"
+        }
+      ],
+      "sources": [
+        "https://github.com/FasterXML/jackson-databind/security/advisories/GHSA-gx83-3vf8-gh7j",
+        "https://github.com/FasterXML/jackson-databind/pull/6155",
+        "https://github.com/FasterXML/jackson-databind/commit/eb3b7fc0f9c0d27f471550ac3316b17d1987388f"
+      ]
+    }
+  ]
+}
