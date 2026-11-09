@@ -9,6 +9,7 @@ import java.util.regex.Pattern;
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
 import com.logssey.reach.l1.dto.ReachInventoryResponse;
+import com.logssey.reach.l1.dto.ReachWorkloadPageResponse;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -29,6 +30,9 @@ public class ReachL1Service {
     /** 명세에 없어 정한 것: observedAt이 이만큼까지 미래인 것은 시계 차이로 보고 받는다 */
     static final Duration CLOCK_SKEW = Duration.ofMinutes(5);
     private static final Pattern DIGEST = Pattern.compile("^sha256:[0-9a-f]{64}$");
+    /** 목록 페이지 크기 (명세 2-4) */
+    static final int DEFAULT_SIZE = 20;
+    static final int MAX_SIZE = 100;
 
     private final ReachL1Repository repository;
     private final String cluster;
@@ -71,6 +75,44 @@ public class ReachL1Service {
         int updated = repository.recompute(cluster, namespaces, fresh, null);
         return new ReachInventoryResponse(request.cluster(), request.namespace(), request.observedAt(),
                 request.workloads().size(), updated);
+    }
+
+    /**
+     * API-07 워크로드 목록. 저장된 조회 결과를 주고 클러스터를 직접 조회하지 않는다.
+     * 허용한 (cluster, namespace)만 본다. namespace 필터가 허용 목록과 겹치지 않으면 400이 아니라 빈 결과다.
+     * 조회 기록이 없어도 503이 아니라 빈 observations·items로 200이다
+     */
+    @Transactional(readOnly = true)
+    public ReachWorkloadPageResponse workloads(String loginId, ReachWorkloadFilter filter,
+                                               Integer size, String cursor, String include) {
+        requireAdmin(loginId);
+        int limit = size == null ? DEFAULT_SIZE : size;
+        if (limit < 1 || limit > MAX_SIZE) throw new ApiException(ErrorCode.INVALID_INPUT);
+        if (include != null && !include.equals("total")) throw new ApiException(ErrorCode.INVALID_INPUT);
+        var after = cursor == null ? null : ReachWorkloadCursor.decode(cursor);
+        if (after != null && after.filter() != filter.fingerprint()) throw new ApiException(ErrorCode.INVALID_INPUT);
+
+        var scope = filter.namespace().isEmpty() ? namespaces
+                : namespaces.stream().filter(filter.namespace()::contains).toList();
+        Long total = "total".equals(include) ? 0L : null;
+        if (scope.isEmpty()) {   // 빈 IN ()은 SQL 오류라 묻지 않는다
+            return new ReachWorkloadPageResponse(List.of(), List.of(), null, false, total);
+        }
+
+        var rows = repository.workloads(cluster, scope, fresh, filter, after, limit + 1);   // 하나 더 가져와 다음 페이지 확인
+        boolean hasNext = rows.size() > limit;
+        var page = hasNext ? rows.subList(0, limit) : rows;
+        String nextCursor = null;
+        if (hasNext) {
+            var last = page.get(page.size() - 1);
+            nextCursor = new ReachWorkloadCursor(last.namespace(), last.name(), last.kind(), last.container(),
+                    last.image().digest(), filter.fingerprint()).encode();
+        }
+        if (total != null) {
+            total = repository.countWorkloads(cluster, scope, fresh, filter);
+        }
+        return new ReachWorkloadPageResponse(repository.observations(cluster, scope, fresh), page,
+                nextCursor, hasNext, total);
     }
 
     /**
