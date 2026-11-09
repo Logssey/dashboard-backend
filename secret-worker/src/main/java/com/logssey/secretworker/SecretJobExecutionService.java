@@ -136,7 +136,8 @@ public class SecretJobExecutionService {
     private void transitionFailure(SecretJobRepository.JobRow row, OffsetDateTime now,
                                    String code, boolean retryable) {
         if (retryable && row.attemptNo() < row.maxAttempts()) {
-            repository.retry(row, now, now.plus(properties.retryDelay(row.attemptNo())), code);
+            if (!repository.retry(row, now, now.plus(properties.retryDelay(row.attemptNo())), code))
+                repository.failPermanently(row, now, SecretJobFailureCode.VALIDATION_DEADLINE_EXCEEDED.name());
         } else {
             repository.failPermanently(row, now, code);
         }

@@ -27,6 +27,7 @@ public final class CredentialRevalidationProcessor {
     private final SecretValidationAttemptRepository attempts;
     private final AwsValidationService aws;
     private final GitHubPatValidator github;
+    private final NotionTokenValidator notion;
 
     public CredentialRevalidationProcessor(
             JdbcTemplate jdbc,
@@ -44,7 +45,19 @@ public final class CredentialRevalidationProcessor {
             SecretValidationAttemptRepository attempts,
             AwsValidationService aws,
             GitHubPatValidator github) {
+        this(jdbc, normalizer, detector, attempts, aws, github, new NotionTokenValidator(false));
+    }
+
+    public CredentialRevalidationProcessor(
+            JdbcTemplate jdbc,
+            SecretFindingNormalizer normalizer,
+            SecretContentDetector detector,
+            SecretValidationAttemptRepository attempts,
+            AwsValidationService aws,
+            GitHubPatValidator github,
+            NotionTokenValidator notion) {
         this.github = github;
+        this.notion = notion;
         this.jdbc = jdbc;
         this.normalizer = normalizer;
         this.detector = detector;
@@ -63,9 +76,12 @@ public final class CredentialRevalidationProcessor {
                         : attempts.manualBlockReason(
                                 job,
                                 target,
-                                "AWS".equals(target.get("issuer"))
-                                        ? aws.enabled()
-                                        : github.enabled());
+                                switch (Objects.toString(target.get("issuer"), "")) {
+                                    case "AWS" -> aws.enabled();
+                                    case "GITHUB" -> github.enabled();
+                                    case "NOTION" -> notion.enabled();
+                                    default -> false;
+                                });
         if (blocked != null) {
             attempts.recordManualBlocked(job, blocked);
             finish(job, execution, false, CredentialValidationResult.unchecked(blocked));
@@ -125,6 +141,12 @@ public final class CredentialRevalidationProcessor {
                                                 attempts.validateGitHub(
                                                         job, candidate, github, null, source,
                                                         version));
+                                        break;
+                                    }
+                                for (var candidate : inspected.notionCandidates())
+                                    if (attempts.matchesTarget(target, candidate.credential())) {
+                                        outcome.set(attempts.validateNotion(
+                                                job, candidate, notion, null, source, version));
                                         break;
                                     }
                             });

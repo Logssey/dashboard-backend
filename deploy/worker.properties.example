@@ -18,13 +18,16 @@ logssey.secret.github.installation-id=0
 logssey.secret.github.private-key-path=/run/secrets/github-app.pem
 logssey.secret.detection.gitleaks-path=/usr/local/bin/gitleaks
 logssey.secret.detection.fingerprint-key-version=replace-approved-hmac-version
-# Required when content pipelines are enabled:
+# Required for content pipelines or exact usage lookup of detected AWS key pairs:
 # /run/secrets/logssey.secret.detection.fingerprint-key (base64, at least 32 decoded bytes)
 logssey.secret.aws.collection.identity-key-version=replace-approved-metadata-key-version
-# Required when AWS collection is enabled:
+# Required for AWS metadata collection or usage lookup of metadata-only key records:
 # /run/secrets/logssey.secret.aws.collection.identity-key (base64, at least 32 decoded bytes)
 logssey.secret.validation.aws.enabled=false
 logssey.secret.validation.github.enabled=false
+logssey.secret.validation.notion.enabled=false
+logssey.secret.notion.collection.enabled=false
+logssey.secret.notion.token-file=
 logging.level.software.amazon.awssdk=OFF
 logging.level.org.apache.hc.client5.http.wire=OFF
 logging.level.org.apache.hc.client5.http.headers=OFF
@@ -34,3 +37,7 @@ logssey.secret.operations.expected-instances=1
 logssey.secret.operations.snapshot-cleanup.enabled=true
 logssey.secret.permissions.enabled=false
 logssey.secret.permissions.poll-delay=30s
+logssey.secret.usage.cloudtrail-enabled=false
+logssey.secret.usage.poll-delay=30s
+# Register an approved account/region target before enabling usage lookup.
+# CloudTrail LookupEvents reads management events; it does not cover all key usage.

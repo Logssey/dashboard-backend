@@ -42,6 +42,7 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
     private final SecretValidationAttemptRepository attempts;
     private final SecretJobProperties jobs;
     private final GitHubPatValidator githubValidator;
+    private final com.logssey.secretworker.validation.NotionTokenValidator notionValidator;
     private final List<GitHubRepositoryAccessSink> accessSinks;
 
     GitHubSecretJobProcessor(JdbcTemplate jdbc, GitHubCollector collector,
@@ -72,7 +73,25 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
             SecretJobProperties jobs,
             GitHubPatValidator githubValidator,
             List<GitHubRepositoryAccessSink> accessSinks) {
+        this(jdbc, collector, detector, findings, normalizer, validator, attempts, jobs,
+                githubValidator, accessSinks,
+                new com.logssey.secretworker.validation.NotionTokenValidator(false));
+    }
+
+    GitHubSecretJobProcessor(
+            JdbcTemplate jdbc,
+            GitHubCollector collector,
+            SecretContentDetector detector,
+            SecretFindingRepository findings,
+            SecretFindingNormalizer normalizer,
+            AwsValidationService validator,
+            SecretValidationAttemptRepository attempts,
+            SecretJobProperties jobs,
+            GitHubPatValidator githubValidator,
+            List<GitHubRepositoryAccessSink> accessSinks,
+            com.logssey.secretworker.validation.NotionTokenValidator notionValidator) {
         this.githubValidator = githubValidator;
+        this.notionValidator = notionValidator;
         this.accessSinks = List.copyOf(accessSinks);
         this.jdbc = jdbc;
         this.collector = collector;
@@ -93,7 +112,7 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
     public void process(ClaimedSecretJob job, SecretJobExecutionService execution) {
         if (attempts.isManual(job)) {
             new com.logssey.secretworker.validation.CredentialRevalidationProcessor(
-                            jdbc, normalizer, detector, attempts, validator, githubValidator)
+                            jdbc, normalizer, detector, attempts, validator, githubValidator, notionValidator)
                     .process(
                             job,
                             execution,
@@ -355,8 +374,21 @@ WHERE run_scope_id = ?
                                         validation.failed();
                                     }
                                 }
+                                for (var candidate : inspection.notionCandidates()) {
+                                    if (!validation.firstEncounter(candidate.credential(), syntheticFixture))
+                                        continue;
+                                    try {
+                                        validation.record(attempts.validateNotion(
+                                                job, candidate, notionValidator, scope.id(),
+                                                sourceRef, source.blobSha()));
+                                    } catch (SecretJobFailure error) {
+                                        throw error;
+                                    } catch (RuntimeException ignored) {
+                                        validation.failed();
+                                    }
+                                }
                                 for (var credential : inspection.credentials()) {
-                                    if (Set.of("AWS", "GITHUB").contains(credential.issuer()))
+                                    if (Set.of("AWS", "GITHUB", "NOTION").contains(credential.issuer()))
                                         continue;
                                     if (!validation.firstEncounter(credential, syntheticFixture))
                                         continue;

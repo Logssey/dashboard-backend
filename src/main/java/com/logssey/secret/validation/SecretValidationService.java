@@ -21,7 +21,8 @@ public class SecretValidationService {
     private final JdbcTemplate jdbc;
     private final SecretAccessService access;
     private final SecretCommandExecutor commands;
-    private final boolean awsEnabled, githubEnabled, githubSourceEnabled, awsSourceEnabled;
+    private final boolean awsEnabled, githubEnabled, notionEnabled, githubSourceEnabled, awsSourceEnabled;
+    private final boolean notionSourceEnabled;
 
     public SecretValidationService(
             JdbcTemplate jdbc,
@@ -32,7 +33,6 @@ public class SecretValidationService {
         this(jdbc, access, commands, awsEnabled, githubEnabled, true, true);
     }
 
-    @org.springframework.beans.factory.annotation.Autowired
     public SecretValidationService(
             JdbcTemplate jdbc,
             SecretAccessService access,
@@ -41,6 +41,32 @@ public class SecretValidationService {
             @Value("${logssey.secret.validation.github.enabled:false}") boolean githubEnabled,
             @Value("${logssey.secret.github.enabled:false}") boolean githubSourceEnabled,
             @Value("${logssey.secret.aws.content.enabled:false}") boolean awsSourceEnabled) {
+        this(jdbc, access, commands, awsEnabled, githubEnabled, false,
+                githubSourceEnabled, awsSourceEnabled);
+    }
+
+    public SecretValidationService(
+            JdbcTemplate jdbc,
+            SecretAccessService access,
+            SecretCommandExecutor commands,
+            @Value("${logssey.secret.validation.aws.enabled:false}") boolean awsEnabled,
+            @Value("${logssey.secret.validation.github.enabled:false}") boolean githubEnabled,
+            @Value("${logssey.secret.validation.notion.enabled:false}") boolean notionEnabled,
+            @Value("${logssey.secret.github.enabled:false}") boolean githubSourceEnabled,
+            @Value("${logssey.secret.aws.content.enabled:false}") boolean awsSourceEnabled) {
+        this(jdbc, access, commands, awsEnabled, githubEnabled, notionEnabled,
+                githubSourceEnabled, awsSourceEnabled, false);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public SecretValidationService(
+            JdbcTemplate jdbc, SecretAccessService access, SecretCommandExecutor commands,
+            @Value("${logssey.secret.validation.aws.enabled:false}") boolean awsEnabled,
+            @Value("${logssey.secret.validation.github.enabled:false}") boolean githubEnabled,
+            @Value("${logssey.secret.validation.notion.enabled:false}") boolean notionEnabled,
+            @Value("${logssey.secret.github.enabled:false}") boolean githubSourceEnabled,
+            @Value("${logssey.secret.aws.content.enabled:false}") boolean awsSourceEnabled,
+            @Value("${logssey.secret.notion.collection.enabled:false}") boolean notionSourceEnabled) {
         this.githubSourceEnabled = githubSourceEnabled;
         this.awsSourceEnabled = awsSourceEnabled;
         this.jdbc = jdbc;
@@ -48,6 +74,8 @@ public class SecretValidationService {
         this.commands = commands;
         this.awsEnabled = awsEnabled;
         this.githubEnabled = githubEnabled;
+        this.notionEnabled = notionEnabled;
+        this.notionSourceEnabled = notionSourceEnabled;
     }
 
     @Transactional(readOnly = true)
@@ -80,7 +108,7 @@ public class SecretValidationService {
                                                 && !Set.of("VALID", "INVALID")
                                                         .contains(latest.get("result"))
                                         ? "UNAVAILABLE"
-                                        : now.isAfter(due) ? "STALE" : "CURRENT";
+                                        : !now.isBefore(due) ? "STALE" : "CURRENT";
         var result = new LinkedHashMap<String, Object>();
         result.put(
                 "support",
@@ -111,9 +139,8 @@ public class SecretValidationService {
                                                         : "NO_CURRENT_CONCLUSIVE_RESULT"),
                         "checkDueAt",
                         due));
-        result.put(
-                "nextDueAt",
-                latest != null && latest.get("nextDueAt") != null ? latest.get("nextDueAt") : due);
+        // Observation freshness is independent of whether a retry is actually queued.
+        result.put("nextDueAt", due);
         result.put("postActionValidationPending", post);
         result.put(
                 "capabilities",
@@ -198,7 +225,10 @@ public class SecretValidationService {
                                             """
 INSERT INTO secret_jobs(kind,purpose,connection_id,target_occurrence_id,requested_by_user_id,idempotency_key,expected_context,
  scheduled_at,available_at,attempt_no,max_attempts,status)
-VALUES('REVALIDATE','CREDENTIAL_VALIDITY',?,?,?, ?,jsonb_build_object('contextVersion',?::text,'credentialRevision',?::bigint,'scopeId',?::bigint,'scopeRevision',?::bigint,'validationRevision',?::bigint,'validationApprovalRevision',?::bigint,'profileVersion',?::text,'actionId',?::bigint,'occurrenceRevision',?::bigint,'validatorVersion','1'),clock_timestamp(),clock_timestamp(),0,3,'PENDING') RETURNING job_id
+VALUES('REVALIDATE','CREDENTIAL_VALIDITY',?,?,?, ?,jsonb_build_object('contextVersion',?::text,'credentialRevision',?::bigint,'scopeId',?::bigint,'scopeRevision',?::bigint,'validationRevision',?::bigint,'validationApprovalRevision',?::bigint,'profileVersion',?::text,'actionId',?::bigint,'occurrenceRevision',?::bigint,'validatorVersion','1'),clock_timestamp(),
+ GREATEST(clock_timestamp(),(SELECT max(retry.source_retry_at) FROM secret_connections source
+ JOIN secret_connections retry ON retry.provider='NOTION' AND retry.auth_ref=source.auth_ref
+ WHERE source.connection_id=? AND source.provider='NOTION')),0,3,'PENDING') RETURNING job_id
 """,
                                             Long.class,
                                             num(c, "connection_id"),
@@ -213,7 +243,8 @@ VALUES('REVALIDATE','CREDENTIAL_VALIDITY',?,?,?, ?,jsonb_build_object('contextVe
                                             num(c, "validation_approval_revision"),
                                             c.get("connection_profile"),
                                             num(c, "action_id"),
-                                            num(c, "occurrence_revision"));
+                                            num(c, "occurrence_revision"),
+                                            num(c, "connection_id"));
                             long run =
                                     jdbc.queryForObject(
                                             """
@@ -244,8 +275,15 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
         var actor = access.requirePrincipal(login);
         var rows =
                 jdbc.queryForList(
-                        "SELECT"
-                            + " j.job_id,j.target_occurrence_id,j.status,j.created_at,j.available_at,j.finished_at,j.last_error_code,r.run_id,r.started_at"
+                        """
+                        SELECT j.job_id,j.target_occurrence_id,j.status,j.created_at,
+                         CASE WHEN j.status='PENDING' THEN GREATEST(j.available_at,(
+                          SELECT max(retry.source_retry_at) FROM secret_connections source
+                          JOIN secret_connections retry ON retry.provider='NOTION' AND retry.auth_ref=source.auth_ref
+                          WHERE source.connection_id=j.connection_id AND source.provider='NOTION'
+                         )) ELSE j.available_at END AS available_at,
+                         j.finished_at,j.last_error_code,j.attempt_no,j.max_attempts,r.run_id,r.started_at
+                        """
                             + " FROM secret_jobs j JOIN secret_scan_runs r ON r.job_id=j.job_id"
                             + " WHERE j.job_id=? AND j.purpose='CREDENTIAL_VALIDITY'",
                         id);
@@ -269,6 +307,15 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
                 row.get("started_at"),
                 "completedAt",
                 row.get("finished_at"),
+                "attemptNo",
+                row.get("attempt_no"),
+                "maxAttempts",
+                row.get("max_attempts"),
+                "availableAt",
+                "PENDING".equals(row.get("status")) ? row.get("available_at") : null,
+                "nextRetryAt",
+                "PENDING".equals(row.get("status")) && num(row, "attempt_no") > 0
+                        ? row.get("available_at") : null,
                 "reasonCode",
                 row.get("last_error_code"));
     }
@@ -387,8 +434,9 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
         if (key <= 0 || oid != null && oid <= 0) throw new ApiException(ErrorCode.NOT_FOUND);
         var rows =
                 jdbc.queryForList(
-                        "SELECT v.*,s.content_type FROM secret_validation_context v JOIN"
-                                + " secret_connection_scopes s USING(scope_id) WHERE"
+                        "SELECT v.*,s.content_type,s.approved_ref,s.history_limit,source.auth_ref AS source_auth_ref"
+                                + " FROM secret_validation_context v JOIN secret_connection_scopes s USING(scope_id)"
+                                + " JOIN secret_connections source ON source.connection_id=v.connection_id WHERE"
                                 + " credential_set_id=? AND (?::bigint IS NULL OR occurrence_id=?)"
                                 + " ORDER BY occurrence_id",
                         key,
@@ -404,9 +452,13 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
         var reasons = new ArrayList<String>();
         if (!supported(c)) reasons.add("UNSUPPORTED_TYPE");
         if (!sourceSupported(c)) reasons.add("UNSUPPORTED_SOURCE");
-        else if (!("GITHUB".equals(c.get("source_provider"))
-                ? githubSourceEnabled
-                : awsSourceEnabled)) reasons.add("SOURCE_UNAVAILABLE");
+        else if (!(switch (Objects.toString(c.get("source_provider"), "")) {
+            case "GITHUB" -> githubSourceEnabled;
+            case "AWS" -> awsSourceEnabled;
+            case "NOTION" -> notionSourceEnabled
+                    && com.logssey.secret.notion.SecretNotionSourceCredentials.isReference((String)c.get("source_auth_ref"));
+            default -> false;
+        })) reasons.add("SOURCE_UNAVAILABLE");
         if (!"CONFIRMED".equals(c.get("component_state"))) reasons.add("INCOMPLETE_PAIR");
         if (Boolean.TRUE.equals(c.get("synthetic_fixture"))) reasons.add("SYNTHETIC_FIXTURE");
         if (Boolean.TRUE.equals(c.get("source_guard_blocked"))) reasons.add("SOURCE_GUARD_BLOCKED");
@@ -425,12 +477,15 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
         var reasons = new ArrayList<String>();
         if (!configure) reasons.add("SECURITY_REQUIRED");
         if (!PROFILE.equals(c.get("connection_profile"))) reasons.add("PROFILE_UNCONFIGURED");
-        if (!Boolean.TRUE.equals(c.get("validation_enabled")) || !(awsEnabled || githubEnabled))
+        if (!Boolean.TRUE.equals(c.get("validation_enabled")) || !(awsEnabled || githubEnabled || notionEnabled))
             reasons.add("DISABLED");
         return reasons;
     }
 
     private boolean sourceSupported(Map<String, Object> c) {
+        if ("NOTION".equals(c.get("source_provider")))
+            return com.logssey.secret.notion.NotionScopeSql.valid((String)c.get("content_type"),
+                    (String)c.get("approved_ref"),(String)c.get("history_limit"));
         return "GITHUB".equals(c.get("source_provider"))
                 ? "GITHUB_REPOSITORY_FILES".equals(c.get("content_type"))
                 : "AWS".equals(c.get("source_provider"))
@@ -461,7 +516,12 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
     }
 
     private boolean global(Map<String, Object> c) {
-        return "AWS".equals(c.get("issuer")) ? awsEnabled : githubEnabled;
+        return switch (Objects.toString(c.get("issuer"), "")) {
+            case "AWS" -> awsEnabled;
+            case "GITHUB" -> githubEnabled;
+            case "NOTION" -> notionEnabled;
+            default -> false;
+        };
     }
 
     private boolean canRequest(SecretPrincipal actor, Map<String, Object> c) {
@@ -471,18 +531,23 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
     }
 
     private boolean supported(Map<String, Object> c) {
-        return Set.of(
-                        "AWS_ACCESS_KEY_PAIR",
-                        "AWS_TEMPORARY_CREDENTIALS",
-                        "GITHUB_CLASSIC_PAT",
-                        "GITHUB_FINE_GRAINED_PAT")
-                .contains(c.get("credential_type"));
+        return switch (Objects.toString(c.get("issuer"), "")) {
+            case "AWS" -> Set.of("AWS_ACCESS_KEY_PAIR", "AWS_TEMPORARY_CREDENTIALS")
+                    .contains(c.get("credential_type"));
+            case "GITHUB" -> Set.of("GITHUB_CLASSIC_PAT", "GITHUB_FINE_GRAINED_PAT")
+                    .contains(c.get("credential_type"));
+            case "NOTION" -> "NOTION_CONNECTION_TOKEN".equals(c.get("credential_type"));
+            default -> false;
+        };
     }
 
     private String method(Map<String, Object> c) {
-        return "AWS".equals(c.get("issuer"))
-                ? "AWS_STS_GET_CALLER_IDENTITY"
-                : "GITHUB_GET_AUTHENTICATED_USER";
+        return switch (Objects.toString(c.get("issuer"), "")) {
+            case "AWS" -> "AWS_STS_GET_CALLER_IDENTITY";
+            case "GITHUB" -> "GITHUB_GET_AUTHENTICATED_USER";
+            case "NOTION" -> "NOTION_GET_SELF";
+            default -> throw new IllegalArgumentException("UNSUPPORTED_VALIDATION_ISSUER");
+        };
     }
 
     private Map<String, Object> policyFor(Map<String, Object> c, SecretPrincipal actor) {
@@ -497,7 +562,7 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
                 !PROFILE.equals(c.get("connection_profile"))
                         ? "UNCONFIGURED"
                         : Boolean.TRUE.equals(c.get("validation_enabled"))
-                                        && (awsEnabled || githubEnabled)
+                                        && (awsEnabled || githubEnabled || notionEnabled)
                                 ? "ENABLED"
                                 : "DISABLED",
                 "canConfigure",
@@ -509,9 +574,17 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
     private Map<String, Object> latestRequest(long oid) {
         var list =
                 jdbc.queryForList(
-                        "SELECT job_id,status,created_at,available_at FROM secret_jobs WHERE"
-                            + " target_occurrence_id=? AND purpose='CREDENTIAL_VALIDITY' AND status"
-                            + " IN('PENDING','LEASED') ORDER BY job_id DESC LIMIT 1",
+                        """
+                        SELECT j.job_id,j.status,j.created_at,
+                         CASE WHEN j.status='PENDING' THEN GREATEST(j.available_at,(
+                          SELECT max(retry.source_retry_at) FROM secret_connections source
+                          JOIN secret_connections retry ON retry.provider='NOTION' AND retry.auth_ref=source.auth_ref
+                          WHERE source.connection_id=j.connection_id AND source.provider='NOTION'
+                         )) ELSE j.available_at END AS available_at,
+                         j.finished_at,j.attempt_no,j.max_attempts,j.last_error_code FROM secret_jobs j WHERE
+                        """
+                            + " target_occurrence_id=? AND purpose='CREDENTIAL_VALIDITY'"
+                            + " ORDER BY job_id DESC LIMIT 1",
                         oid);
         return list.isEmpty()
                 ? null
@@ -523,7 +596,22 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
                         "requestedAt",
                         list.getFirst().get("created_at"),
                         "scheduledAt",
-                        list.getFirst().get("available_at"));
+                        list.getFirst().get("available_at"),
+                        "completedAt",
+                        list.getFirst().get("finished_at"),
+                        "attemptNo",
+                        list.getFirst().get("attempt_no"),
+                        "maxAttempts",
+                        list.getFirst().get("max_attempts"),
+                        "availableAt",
+                        "PENDING".equals(list.getFirst().get("status"))
+                                ? list.getFirst().get("available_at") : null,
+                        "nextRetryAt",
+                        "PENDING".equals(list.getFirst().get("status"))
+                                        && num(list.getFirst(), "attempt_no") > 0
+                                ? list.getFirst().get("available_at") : null,
+                        "reasonCode",
+                        list.getFirst().get("last_error_code"));
     }
 
     private List<Map<String, Object>> attempts(

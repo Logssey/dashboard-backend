@@ -16,7 +16,8 @@ final class SecretRiskAnalysisContext {
       "permissionCoverage", "targetCoverage", "restrictionCoverage", "classificationCoverage");
   private static final Set<String> CREDENTIAL_TYPES = Set.of(
       "AWS_ACCESS_KEY_PAIR", "AWS_TEMPORARY_CREDENTIALS", "AWS_ACCESS_KEY_ID",
-      "GITHUB_CLASSIC_PAT", "GITHUB_FINE_GRAINED_PAT", "GITHUB_PAT", "NOTION_TOKEN");
+      "GITHUB_CLASSIC_PAT", "GITHUB_FINE_GRAINED_PAT", "GITHUB_PAT", "NOTION_TOKEN",
+      "NOTION_CONNECTION_TOKEN");
 
   SecretRiskAnalysisContext(JdbcTemplate jdbc, SecretRiskAssessmentStore store) {
     this.jdbc = jdbc;
@@ -46,11 +47,31 @@ final class SecretRiskAnalysisContext {
     result.put("evidenceRevision", o.get("risk_evidence_revision"));
     result.put("profileVersion", "risk-context-v1");
     result.put("readAt", now);
+    result.put("currentInputs", inputs);
+    result.put("currentReasonCodes", safeCodes(current.get("normalizerReasons")));
+    result.put("excludedEvidence", current.getOrDefault("excludedEvidence", List.of()));
     result.put("source", Map.of("provider", code(source.get("provider"), "UNKNOWN"),
         "issuer", code(o.get("issuer"), "UNKNOWN"),
         "credentialType", CREDENTIAL_TYPES.contains(o.get("credential_type"))
             ? o.get("credential_type") : "UNKNOWN"));
-    result.put("access", access(accepted, inputs));
+    var access = access(accepted, inputs);
+    access.put("repositoryPublicObserved", false);
+    access.put("publicObservationAt", null);
+    access.put("coexistenceStatus", "CONFIRMED".equals(access.get("status")) ? "CONFIRMED" : "UNKNOWN");
+    if (!"METADATA_ONLY".equals(o.get("component_state"))) {
+      var observations = jdbc.queryForList("SELECT safe_payload::text AS facts,observed_at FROM secret_current_risk_evidence"
+          + " WHERE occurrence_id=? AND kind='ACCESS_SCOPE' AND source_kind='PROVIDER_OBSERVATION'"
+          + " AND writer_service_id='GITHUB_REPOSITORY_METADATA_V1' AND credential_revision=? AND scope_revision=?"
+          + " AND source_object_version IS NOT DISTINCT FROM ? AND expires_at>? AND observed_at<=?"
+          + " ORDER BY observed_at DESC,evidence_id DESC LIMIT 1", occurrence, o.get("credential_revision"),
+          o.get("scope_revision"), o.get("latest_object_version"), now, now.plusMinutes(5));
+      if (!observations.isEmpty() && Boolean.TRUE.equals(store.map(observations.getFirst().get("facts").toString()).get("publicAccessConfirmed"))) {
+        access.put("repositoryPublicObserved", true);
+        access.put("publicObservationAt", SecretRiskAssessmentStore.time(observations.getFirst().get("observed_at")));
+        if (!"CONFIRMED".equals(access.get("status"))) access.put("coexistenceStatus", "UNCONFIRMED");
+      }
+    }
+    result.put("access", access);
     result.put("permissions", permissions(o, accepted,
         "METADATA_ONLY".equals(o.get("component_state")) ? Map.of() : current, inputs));
     result.put("asset", asset(o, accepted));
@@ -87,6 +108,8 @@ final class SecretRiskAnalysisContext {
     var result = common(rows);
     result.put("status", Set.of("BROAD", "BOUNDED").contains(range) ? "CONFIRMED" : "UNKNOWN");
     result.put("range", range);
+    result.put("publicAccessConfirmed", rows.stream()
+        .anyMatch(r -> Boolean.TRUE.equals(store.map((String) r.get("payload")).get("publicAccessConfirmed"))));
     result.put("verificationLevel", rows.isEmpty() || "UNKNOWN".equals(range) ? null
         : rows.stream().allMatch(r -> "PROVIDER_OBSERVED".equals(r.get("verification_level")))
             ? "PROVIDER_OBSERVED" : "MANUAL_ACCEPTED");

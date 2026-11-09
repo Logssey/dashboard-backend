@@ -110,6 +110,9 @@ class SecretFindingRepositoryTest {
         assertThat(count("secret_credential_sets")).isEqualTo(3);
         assertThat(count("secret_occurrences")).isEqualTo(4);
         assertThat(count("secret_findings")).isEqualTo(6);
+        byte[] keyOnly = new SecretFindingNormalizer(new byte[32], "test-v1").keyIdentifierFingerprint(id);
+        assertThat(jdbc.queryForObject("SELECT aws_key_id_fingerprint FROM secret_credential_sets WHERE component_state='CONFIRMED'",byte[].class)).isEqualTo(keyOnly);
+        assertThat(jdbc.queryForObject("SELECT fingerprint FROM secret_credential_sets WHERE component_state='CONFIRMED'",byte[].class)).isNotEqualTo(keyOnly);
         assertThat(jdbc.queryForObject("SELECT finding_count FROM secret_tool_runs", Long.class)).isEqualTo(6);
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM secret_occurrences o

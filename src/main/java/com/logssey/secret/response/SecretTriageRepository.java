@@ -14,10 +14,13 @@ class SecretTriageRepository {
     private static final String VISIBLE_OCCURRENCE = """
             JOIN secret_connections conn ON conn.connection_id = o.connection_id
             JOIN secret_connection_scopes scope ON scope.scope_id = o.scope_id
-            WHERE conn.provider = 'GITHUB' AND conn.status = 'ACTIVE' AND scope.enabled
-              AND scope.content_type = 'GITHUB_REPOSITORY_FILES'
-              AND scope.history_limit = 'CURRENT_COMMIT_ONLY'
-              AND scope.approved_ref ~ '^github://[A-Za-z0-9-]{1,39}/[A-Za-z0-9_.-]{1,100}/[^/?#]+/([^/?#]+/)+$'
+            WHERE conn.status = 'ACTIVE' AND scope.enabled
+              AND ((conn.provider = 'GITHUB' AND scope.content_type = 'GITHUB_REPOSITORY_FILES'
+                AND scope.history_limit = 'CURRENT_COMMIT_ONLY'
+                AND scope.approved_ref ~ '^github://[A-Za-z0-9-]{1,39}/[A-Za-z0-9_.-]{1,100}/[^/?#]+/([^/?#]+/)+$')
+                OR (conn.provider = 'NOTION' AND scope.content_type = 'NOTION_PAGE_CONTENT'
+                AND scope.history_limit = 'CURRENT_VERSION_ONLY'
+                AND scope.approved_ref ~ '^notion://pages/([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$'))
               AND EXISTS (SELECT 1 FROM secret_role_grants g
                           WHERE g.user_id = ? AND g.role = 'SECURITY'
                             AND g.revoked_at IS NULL
@@ -110,7 +113,7 @@ class SecretTriageRepository {
                 nullableLong(rs, "response_origin_set_by_user_id"),
                 rs.getObject("response_origin_set_at", OffsetDateTime.class), rs.getBoolean("enabled"),
                 rs.getString("provider"), rs.getString("connection_status"),
-                SecretGithubScopePolicy.approved(rs.getString("content_type"),
+                SecretLocationScopePolicy.approved(rs.getString("provider"),rs.getString("content_type"),
                         rs.getString("history_limit"), rs.getString("approved_ref")),
                 SecretGithubScopePolicy.syntheticFixture(rs.getString("approved_ref"))), scopeId)
                 .stream().findFirst();
@@ -164,7 +167,7 @@ class SecretTriageRepository {
                 rs.getString("provider"), rs.getString("connection_status"),
                 rs.getBoolean("scope_enabled"), rs.getString("response_origin"),
                 rs.getLong("response_origin_version"),
-                SecretGithubScopePolicy.approved(rs.getString("content_type"),
+                SecretLocationScopePolicy.approved(rs.getString("provider"),rs.getString("content_type"),
                         rs.getString("history_limit"), rs.getString("approved_ref"))),
                 occurrenceId).stream().findFirst();
     }
@@ -265,7 +268,7 @@ class SecretTriageRepository {
                       boolean approved,
                       boolean syntheticFixture) {
         boolean activeGithub() {
-            return enabled && "GITHUB".equals(provider) && "ACTIVE".equals(connectionStatus)
+            return enabled && java.util.Set.of("GITHUB","NOTION").contains(provider) && "ACTIVE".equals(connectionStatus)
                     && approved;
         }
     }
@@ -276,7 +279,7 @@ class SecretTriageRepository {
                            boolean scopeEnabled, String scopeOrigin, long scopeOriginVersion,
                            boolean approvedScope) {
         boolean visibleSource() {
-            return "GITHUB".equals(provider) && "ACTIVE".equals(connectionStatus)
+            return java.util.Set.of("GITHUB","NOTION").contains(provider) && "ACTIVE".equals(connectionStatus)
                     && scopeEnabled && approvedScope;
         }
 

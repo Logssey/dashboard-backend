@@ -26,6 +26,7 @@ public class SecretDetectionConfiguration {
         @Override public boolean matches(ConditionContext context, AnnotatedTypeMetadata metadata) {
             Environment environment = context.getEnvironment();
             return Boolean.parseBoolean(environment.getProperty("logssey.secret.github.enabled", "false"))
+                    || Boolean.parseBoolean(environment.getProperty("logssey.secret.notion.collection.enabled", "false"))
                     || (Boolean.parseBoolean(environment.getProperty("logssey.secret.aws.collection.enabled", "false"))
                     && Boolean.parseBoolean(environment.getProperty("logssey.secret.aws.content.enabled", "false")));
         }

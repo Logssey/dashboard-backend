@@ -28,6 +28,7 @@ public final class AwsContentPipeline {
     private final AwsValidationService validator;
     private final SecretValidationAttemptRepository attempts;
     private final com.logssey.secretworker.validation.GitHubPatValidator githubValidator;
+    private final com.logssey.secretworker.validation.NotionTokenValidator notionValidator;
 
     public AwsContentPipeline(AwsContentCollector collector, SecretContentDetector detector,
                               SecretFindingNormalizer normalizer, SecretFindingRepository findings,
@@ -50,7 +51,21 @@ public final class AwsContentPipeline {
             AwsValidationService validator,
             SecretValidationAttemptRepository attempts,
             com.logssey.secretworker.validation.GitHubPatValidator githubValidator) {
+        this(collector, detector, normalizer, findings, validator, attempts, githubValidator,
+                new com.logssey.secretworker.validation.NotionTokenValidator(false));
+    }
+
+    public AwsContentPipeline(
+            AwsContentCollector collector,
+            SecretContentDetector detector,
+            SecretFindingNormalizer normalizer,
+            SecretFindingRepository findings,
+            AwsValidationService validator,
+            SecretValidationAttemptRepository attempts,
+            com.logssey.secretworker.validation.GitHubPatValidator githubValidator,
+            com.logssey.secretworker.validation.NotionTokenValidator notionValidator) {
         this.githubValidator = githubValidator;
+        this.notionValidator = notionValidator;
         this.collector = collector;
         this.detector = detector;
         this.normalizer = normalizer;
@@ -83,7 +98,8 @@ public final class AwsContentPipeline {
                         detector,
                         attempts,
                         validator,
-                        githubValidator)
+                        githubValidator,
+                        notionValidator)
                 .process(
                         job,
                         execution,
@@ -241,8 +257,19 @@ public final class AwsContentPipeline {
                                         validation.failed();
                                     }
                                 }
+                                for (var candidate : inspection.notionCandidates()) {
+                                    if (!validation.firstEncounter(candidate.credential())) continue;
+                                    try {
+                                        validation.record(attempts.validateNotion(
+                                                job, candidate, notionValidator, runScopeId, sourceRef, null));
+                                    } catch (SecretJobFailure error) {
+                                        throw error;
+                                    } catch (RuntimeException ignored) {
+                                        validation.failed();
+                                    }
+                                }
                                 for (var credential : inspection.credentials()) {
-                                    if (Set.of("AWS", "GITHUB").contains(credential.issuer()))
+                                    if (Set.of("AWS", "GITHUB", "NOTION").contains(credential.issuer()))
                                         continue;
                                     if (!validation.firstEncounter(credential)) continue;
                                     validation.record(

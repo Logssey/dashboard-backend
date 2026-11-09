@@ -359,6 +359,51 @@ class SecretScheduleServiceTest {
         }
     }
 
+    @Test
+    void notionSchedulingRequiresItsOptInAndAnExactApprovedPage() {
+        long id = notionConnection("CURRENT_VERSION_ONLY", "notion-internal:default");
+        assertThat(service.reserveDueJobs()).isZero();
+        var notion = new SecretScheduleService(new SecretScheduleRepository(jdbc, false, true),
+                properties(true, 100), transactions);
+        assertThat(notion.reserveDueJobs()).isEqualTo(1);
+        assertThat(nextDue(id)).isAfter(pastDue());
+        assertThat(jdbc.queryForObject("SELECT snapshot_content_type FROM secret_run_scopes", String.class))
+                .isEqualTo("NOTION_PAGE_CONTENT");
+    }
+
+    @Test
+    void notionMixedEnabledScopeWithMissingHistoryCannotBypassApproval() {
+        long id = notionConnection("CURRENT_VERSION_ONLY", "notion-internal:default");
+        jdbc.update("INSERT INTO secret_connection_scopes(connection_id,scope_key,revision,content_type,approved_ref,history_limit,enabled)"
+                + " VALUES(?,'unapproved',1,'NOTION_PAGE_CONTENT',?,NULL,true)", id,
+                "notion://pages/22222222-2222-2222-2222-222222222222");
+        var notion = new SecretScheduleService(new SecretScheduleRepository(jdbc, false, true),
+                properties(true, 100), transactions);
+        assertThat(notion.reserveDueJobs()).isZero();
+    }
+
+    @Test
+    void notionSharedSourceCooldownAlsoHoldsAnotherConnection() {
+        long first = notionConnection("CURRENT_VERSION_ONLY", "notion-internal:default");
+        notionConnection("CURRENT_VERSION_ONLY", "notion-internal:default");
+        jdbc.update("UPDATE secret_connections SET source_retry_at=clock_timestamp()+interval '20 minutes',"
+                + "source_retry_reason='NOTION_RATE_LIMITED' WHERE connection_id=?", first);
+        var notion = new SecretScheduleService(new SecretScheduleRepository(jdbc, false, true),
+                properties(true, 100), transactions);
+        assertThat(notion.reserveDueJobs()).isZero();
+        jdbc.update("UPDATE secret_connections SET source_retry_at=clock_timestamp()-interval '1 second' WHERE connection_id=?", first);
+        assertThat(notion.reserveDueJobs()).isEqualTo(2);
+    }
+
+    private long notionConnection(String history, String reference) {
+        long id = connection("NOTION", "ACTIVE", pastDue(), false);
+        jdbc.update("UPDATE secret_connections SET auth_ref=? WHERE connection_id=?", reference, id);
+        jdbc.update("INSERT INTO secret_connection_scopes(connection_id,scope_key,revision,content_type,approved_ref,history_limit,enabled)"
+                + " VALUES(?,'approved-page',1,'NOTION_PAGE_CONTENT',?,?,true)", id,
+                "notion://pages/11111111-1111-1111-1111-111111111111", history);
+        return id;
+    }
+
     private SecretScheduleService newService(boolean enabled, int batchSize) {
         return new SecretScheduleService(new SecretScheduleRepository(jdbc), properties(enabled, batchSize), transactions);
     }

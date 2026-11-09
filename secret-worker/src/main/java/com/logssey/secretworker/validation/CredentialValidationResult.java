@@ -31,7 +31,8 @@ public record CredentialValidationResult(
     }
 
     public boolean retryable() {
-        return "UNCHECKED".equals(result) && "RATE_BUDGET_EXHAUSTED".equals(reasonCode)
+        return "UNCHECKED".equals(result)
+                        && Set.of("RATE_BUDGET_EXHAUSTED", "RATE_LIMITED", "PROVIDER_UNAVAILABLE").contains(reasonCode)
                 || "UNKNOWN".equals(result)
                         && Set.of(
                                         "RATE_LIMITED",

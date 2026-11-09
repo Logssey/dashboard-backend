@@ -23,10 +23,10 @@ import org.springframework.transaction.annotation.Transactional;
 public class SecretStoragePolicyService {
     private static final Set<SecretRole> READ_ROLES=Set.of(SecretRole.SECURITY,SecretRole.OPERATIONS);
     private static final Set<String> CONTENT_TYPES=Set.of("GITHUB_REPOSITORY_FILES","AWS_SECRETS_MANAGER_VALUE",
-            "AWS_SSM_PARAMETER_VALUE","AWS_S3_OBJECT_CONTENT");
+            "AWS_SSM_PARAMETER_VALUE","AWS_S3_OBJECT_CONTENT","NOTION_PAGE_CONTENT");
     private static final Set<String> SOURCE_TYPES=Set.of("GITHUB_REPOSITORY_FILES","AWS_SECRETS_MANAGER_VALUE",
             "AWS_SSM_PARAMETER_VALUE","AWS_S3_OBJECT_CONTENT","IAM_ACCESS_KEY_METADATA",
-            "AWS_SECRETS_MANAGER_METADATA","AWS_SSM_PARAMETER_METADATA","AWS_S3_BUCKET_METADATA");
+            "AWS_SECRETS_MANAGER_METADATA","AWS_SSM_PARAMETER_METADATA","AWS_S3_BUCKET_METADATA","NOTION_PAGE_CONTENT");
     private static final Pattern EVIDENCE=Pattern.compile("^((TICKET|CHANGE):[A-Z]{2,10}-[1-9][0-9]{0,9}|POLICY:SECRET-[1-9][0-9]{0,9})$");
     private static final Pattern GITHUB=Pattern.compile("^github://([A-Za-z0-9-]{1,39})/([A-Za-z0-9_.-]{1,100})/([^/?#]+)/(.+/)$");
     private static final Pattern SENSITIVE_VALUE=Pattern.compile(".*(?:AKIA[A-Z0-9]{16}|ASIA[A-Z0-9]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|(?:secret_|ntn_)[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AIza[A-Za-z0-9_-]{30,}).*");
@@ -395,6 +395,8 @@ public class SecretStoragePolicyService {
         if ("GITHUB_REPOSITORY_FILES".equals(scope.contentType())) {
             if (!"CURRENT_COMMIT_ONLY".equals(scope.historyLimit()) || !GITHUB.matcher(scope.approvedRef()).matches()
                     || scope.approvedRef().contains("..") || scope.approvedRef().contains("\\")) conflict();
+        } else if ("NOTION_PAGE_CONTENT".equals(scope.contentType())) {
+            if (!com.logssey.secret.notion.NotionScopeSql.valid(scope.contentType(),scope.approvedRef(),scope.historyLimit())) conflict();
         } else if (!Boolean.TRUE.equals(jdbc.queryForObject("SELECT "
                 +com.logssey.secret.run.AwsScopeSql.predicate("s")+" FROM secret_connection_scopes s WHERE scope_id=?",
                 Boolean.class,scope.id()))) conflict();

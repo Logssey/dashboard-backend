@@ -29,6 +29,7 @@ dependencies {
 	}
 	implementation 'software.amazon.awssdk:url-connection-client:2.55.12'
 	implementation 'tools.jackson.core:jackson-databind'
+	implementation 'org.apache.httpcomponents.client5:httpclient5'
 	implementation 'org.yaml:snakeyaml:2.6'
 	implementation 'org.flywaydb:flyway-database-postgresql'
 	compileOnly 'org.projectlombok:lombok'

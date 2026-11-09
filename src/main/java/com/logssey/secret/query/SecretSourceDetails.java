@@ -24,6 +24,9 @@ public final class SecretSourceDetails {
             var uri=URI.create(approvedRef);
             if(uri.getRawUserInfo()!=null||uri.getPort()!=-1||uri.getRawQuery()!=null||uri.getRawFragment()!=null)return "검사 대상 #"+scopeId;
             var p=uri.getRawPath().split("/",-1);
+            if("NOTION".equals(provider)&&approvedRef.matches(com.logssey.secret.notion.NotionScopeSql.REFERENCE_PATTERN)) {
+                return "Notion 페이지 "+com.logssey.secret.notion.NotionScopeSql.pageId(approvedRef).substring(0,8);
+            }
             if("GITHUB".equals(provider)&&"github".equals(uri.getScheme())&&uri.getHost()!=null&&p.length>=5) {
                 String label=safe(uri.getHost()+"/"+decode(p[1])+" · "+decode(p[2])+" · "+String.join("/",Arrays.stream(p).skip(3).map(SecretSourceDetails::decode).toList()));
                 if(label!=null)return label;
@@ -40,6 +43,22 @@ public final class SecretSourceDetails {
         try {
             var uri=URI.create(approvedRef);
             if(uri.getUserInfo()!=null||uri.getPort()!=-1||uri.getQuery()!=null||uri.getFragment()!=null) return unavailable;
+            if("NOTION".equals(provider)&&approvedRef.matches(com.logssey.secret.notion.NotionScopeSql.REFERENCE_PATTERN)) {
+                String page=com.logssey.secret.notion.NotionScopeSql.pageId(approvedRef);
+                String prefix="notion/pages/"+page+"/";
+                if(sourceRef==null||!sourceRef.startsWith(prefix))return unavailable;
+                String location=sourceRef.substring(prefix.length());
+                String block=null;
+                if(location.startsWith("blocks/")) {
+                    block=location.substring("blocks/".length());
+                    if(!block.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"))return unavailable;
+                } else if(!"title".equals(location))return unavailable;
+                String link="https://www.notion.so/"+page.replace("-","")
+                        +(block==null?"":"#"+block.replace("-",""));
+                String line=lineRef!=null&&lineRef.matches("L[1-9][0-9]{0,8}(?:-L?[1-9][0-9]{0,8})?")?lineRef:null;
+                return facts("status","AVAILABLE","kind","NOTION_PAGE","label","Notion 페이지 "+page.substring(0,8)
+                        +(block==null?" · 제목":" · 블록"),"pageId",page,"blockId",block,"line",line,"sourceUrl",link);
+            }
             if("GITHUB".equals(provider)&&"github".equals(uri.getScheme())) {
                 String[] parts=uri.getRawPath().split("/",-1);
                 if(parts.length<5 || !parts[parts.length-1].isEmpty() || uri.getHost()==null) return unavailable;

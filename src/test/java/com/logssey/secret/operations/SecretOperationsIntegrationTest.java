@@ -60,6 +60,20 @@ class SecretOperationsIntegrationTest {
             terminal("ENRICH","PERMISSION_ASSISTANCE",target,"SUCCEEDED",null,0);store.monitor();assertThat(openCount()).isZero();
         }
     }
+    @Test void usageQueueProgressIsMonitoredIndependentlyFromPermissionEnrichment(){
+        store.heartbeat(new SecretOperationsStore.Beat(instance,"secret-worker","PERMISSIONS",false,"IDLE",30000,null,null,OffsetDateTime.now(ZoneOffset.UTC),null,null));
+        store.heartbeat(new SecretOperationsStore.Beat(instance,"secret-worker","USAGE",true,"IDLE",30000,null,null,OffsetDateTime.now(ZoneOffset.UTC),null,null));
+        long target=occurrence();
+        long id=jdbc.queryForObject("INSERT INTO secret_jobs(kind,purpose,connection_id,target_occurrence_id,scheduled_at,available_at,attempt_no,max_attempts,status) VALUES('ENRICH','USAGE_OBSERVATION',?,?,now()-interval '5 minutes',now()-interval '5 minutes',0,3,'PENDING') RETURNING job_id",Long.class,connection,target);
+        store.monitor();
+        assertThat(store.alerts("OPEN",0,20).toString()).contains("QUEUE_STALLED");
+        jdbc.update("UPDATE secret_jobs SET status='SUCCEEDED',finished_at=clock_timestamp() WHERE job_id=?",id);
+        store.monitor();assertThat(openCount()).isZero();
+        terminal("ENRICH","USAGE_OBSERVATION",target,"FAILED","USAGE_PROVIDER_UNAVAILABLE",0);store.monitor();
+        assertThat(store.alerts("OPEN",0,20).toString()).contains("USAGE_OBSERVATION_JOB_FAILED");
+        terminal("ENRICH","PERMISSION_ASSISTANCE",target,"SUCCEEDED",null,0);store.monitor();assertThat(openCount()).isEqualTo(1);
+        terminal("ENRICH","USAGE_OBSERVATION",target,"SUCCEEDED",null,0);store.monitor();assertThat(openCount()).isZero();
+    }
     @Test void readyQueueAlertsDeduplicateAndRecoverWithoutAnyExternalMessages(){
         beat(true);long id=job(-5);store.monitor();store.monitor();
         assertThat(openCount()).isEqualTo(1);

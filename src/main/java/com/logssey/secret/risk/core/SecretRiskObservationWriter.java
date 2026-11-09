@@ -20,8 +20,8 @@ public final class SecretRiskObservationWriter {
   }
 
   /**
-   * A successful public repository metadata observation proves BROAD. Private alone never proves
-   * BOUNDED.
+   * Public repository metadata is an observation, not proof that the key was public at the same time.
+   * Private metadata alone never proves BOUNDED access.
    */
   public long githubRepositoryAccess(
       long occurrence,
@@ -45,7 +45,7 @@ public final class SecretRiskObservationWriter {
     var o = store.location(occurrence, true);
     var scopes =
         jdbc.queryForList(
-            "SELECT rs.run_scope_id,rs.scope_id,rs.scope_revision,r.connection_id,c.status AS"
+            "SELECT rs.run_scope_id,rs.scope_id,rs.scope_revision,r.run_id,r.connection_id,c.status AS"
                 + " connection_status,s.enabled FROM secret_run_scopes rs JOIN secret_scan_runs r"
                 + " USING(run_id) JOIN secret_connections c ON c.connection_id=r.connection_id JOIN"
                 + " secret_connection_scopes s ON s.scope_id=rs.scope_id WHERE rs.run_scope_id=?"
@@ -66,6 +66,7 @@ public final class SecretRiskObservationWriter {
             != SecretRiskAssessmentStore.number(o, "connection_id")
         || !"ACTIVE".equals(source.get("connection_status"))
         || !Boolean.TRUE.equals(source.get("enabled"))
+        || !Objects.equals(o.get("last_seen_run_id"), source.get("run_id"))
         || !observedAt.plusHours(6).isAfter(now)) return 0;
     String ingestion =
         HexFormat.of()
@@ -99,8 +100,9 @@ public final class SecretRiskObservationWriter {
         """
 INSERT INTO secret_risk_evidence(record_kind,kind,occurrence_id,credential_set_id,scope_id,source_kind,verification_level,
  source_refs,safe_payload,observed_at,effective_from,expires_at,writer_service_id,reason_code,safe_payload_digest,
- ingestion_key,credential_revision,scope_revision,source_object_version,collector_connection_id,collector_identity_ref,identity_binding_status)
-VALUES('ASSERTION','ACCESS_SCOPE',?,?,?,'PROVIDER_OBSERVATION','PROVIDER_OBSERVED',?::jsonb,?::jsonb,?,?,?,'GITHUB_REPOSITORY_METADATA_V1',?,?, ?,?,?,?,?,?,'NOT_APPLICABLE') RETURNING evidence_id
+ ingestion_key,credential_revision,scope_revision,source_object_version,collector_connection_id,collector_identity_ref,identity_binding_status,
+ fact_valid_from,fact_valid_until,source_presence_observed_at,applicability_basis)
+VALUES('ASSERTION','ACCESS_SCOPE',?,?,?,'PROVIDER_OBSERVATION','PROVIDER_OBSERVED',?::jsonb,?::jsonb,?,?,?,'GITHUB_REPOSITORY_METADATA_V1',?,?, ?,?,?,?,?,?,'NOT_APPLICABLE',NULL,NULL,?,'OBSERVATION_ONLY') RETURNING evidence_id
 """,
         Long.class,
         occurrence,
@@ -128,6 +130,7 @@ VALUES('ASSERTION','ACCESS_SCOPE',?,?,?,'PROVIDER_OBSERVATION','PROVIDER_OBSERVE
         SecretRiskAssessmentStore.number(o, "scope_revision"),
         o.get("latest_object_version"),
         SecretRiskAssessmentStore.number(o, "connection_id"),
-        "CONNECTION:" + SecretRiskAssessmentStore.number(o, "connection_id"));
+        "CONNECTION:" + SecretRiskAssessmentStore.number(o, "connection_id"),
+        o.get("last_seen_at"));
   }
 }

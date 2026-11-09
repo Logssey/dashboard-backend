@@ -18,7 +18,7 @@ final class SecretPermissionReadiness {
                 "CONTACT_OPERATIONS", false));
         checks.add(check("SECURITY_ROLE", reasons.contains("SECURITY_REQUIRED"),
                 "CONTACT_SECURITY", false));
-        checks.add(check("SUPPORTED_CREDENTIAL", reasons.contains("UNSUPPORTED_TYPE"),
+        checks.add(check("SUPPORTED_CREDENTIAL", reasons.contains("UNSUPPORTED_TYPE") || reasons.contains("CROSS_SOURCE_PERMISSION_UNSUPPORTED"),
                 "MANUAL_PERMISSION_REVIEW", true));
         checks.add(check("COMPLETE_CREDENTIAL", reasons.contains("COMPLETE_IDENTITY_REQUIRED"),
                 "COLLECT_COMPLETE_CREDENTIAL", false));

@@ -36,6 +36,19 @@ public final class GitleaksDetector implements SecretContentDetector {
     private static final Duration TIMEOUT = Duration.ofSeconds(20);
     private static final Pattern SAFE_RULE_ID = Pattern.compile("[A-Za-z0-9_.-]{1,120}");
     private static final JsonMapper JSON = JsonMapper.builder().build();
+    // Extending a default rule by ID preserves the other pinned built-in rules.
+    private static final String CONFIG_TOML = """
+            title = "Logssey pinned detection rules"
+            [extend]
+            useDefault = true
+            [[rules]]
+            id = "notion-api-token"
+            description = "Notion content API token"
+            regex = '''(?:^|[^A-Za-z0-9_])(ntn_[A-Za-z0-9_]{46}|secret_[A-Za-z0-9]{43})'''
+            secretGroup = 1
+            entropy = 4
+            keywords = ["ntn_", "secret_"]
+            """;
 
     private final Path executable;
     private final String configHash;
@@ -177,6 +190,7 @@ public final class GitleaksDetector implements SecretContentDetector {
         ProcessBuilder builder = new ProcessBuilder(command).redirectError(ProcessBuilder.Redirect.DISCARD);
         builder.environment().remove("GITLEAKS_CONFIG");
         builder.environment().remove("GITLEAKS_CONFIG_TOML");
+        builder.environment().put("GITLEAKS_CONFIG_TOML", CONFIG_TOML);
         return builder;
     }
 
@@ -207,7 +221,8 @@ public final class GitleaksDetector implements SecretContentDetector {
     private String configurationHash() {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            digest.update("stdin:embedded-defaults:decode-depth-0:redact-100:".getBytes(StandardCharsets.UTF_8));
+            digest.update("stdin:pinned-notion-config:decode-depth-0:redact-100:".getBytes(StandardCharsets.UTF_8));
+            digest.update(CONFIG_TOML.getBytes(StandardCharsets.UTF_8));
             try (InputStream binary = Files.newInputStream(executable)) {
                 byte[] chunk = new byte[8192];
                 int read;

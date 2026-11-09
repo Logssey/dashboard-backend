@@ -15,6 +15,111 @@ class SecretSeverityAssessmentIntegrationTest extends SecretRiskEvidenceIntegrat
   SecretRiskAssessmentStore store;
   SecretRiskQueryService query;
 
+  @Test void aSupersededExpiredFactDoesNotCreateAnEndlessCurrentQuestion() {
+    var at = OffsetDateTime.now(ZoneOffset.UTC);
+    accessObservation(false, true, at.minusHours(3), "expired-access");
+    submit("ACCESS_SCOPE", Map.of("audienceClass", "BROAD", "coverageStatus", "PARTIAL", "publicAccessConfirmed", true, "boundedPrincipalCount", 0));
+    var experience = part(query.risk("security", occurrence), "riskExperience");
+    assertThat(experience.get("missingFacts").toString()).doesNotContain("STALE_EVIDENCE", "EXPOSURERANGE_REQUIRED");
+    var access = ((List<Map<String,Object>>)experience.get("criteria")).stream().filter(c -> c.get("axis").equals("exposureRange")).findFirst().orElseThrow();
+    assertThat(access).containsEntry("status", "CONFIRMED").containsEntry("reasonCodes", List.of());
+    assertThat(context(query.risk("security", occurrence)).get("excludedEvidence").toString()).contains("STALE_EVIDENCE");
+  }
+
+  @Test void staleOrPostActionAuthenticationCannotBecomeACurrentValidPrioritySignal() {
+    accessObservation(true, true, OffsetDateTime.now(ZoneOffset.UTC).minusMinutes(1), "public-observation");
+    var validation = org.mockito.Mockito.mock(com.logssey.secret.validation.SecretValidationService.class);
+    var reader = new SecretRiskQueryService(jdbc, new SecretAccessService(jdbc), validation);
+    for (String freshness : List.of("STALE", "POST_ACTION_REQUIRED", "UNAVAILABLE")) {
+      org.mockito.Mockito.when(validation.read(1L, occurrence, "security")).thenReturn(Map.of(
+          "latestAttempt", Map.of("result", "VALID"),
+          "freshness", Map.of("status", freshness, "reasonCodes", List.of("CHECK_PERIOD_EXCEEDED"))));
+      var experience = part(reader.risk("security", occurrence), "riskExperience");
+      assertThat(part(experience,"authentication")).containsEntry("currentResult", "UNKNOWN");
+      assertThat(part(experience,"workPriority")).containsEntry("level", "GENERAL");
+    }
+  }
+
+  @Test void malformedPartiallyNullApplicabilityIsRejectedByTheDatabase() {
+    assertThatThrownBy(() -> jdbc.update("""
+INSERT INTO secret_risk_evidence(record_kind,kind,occurrence_id,credential_set_id,scope_id,source_kind,verification_level,
+ safe_payload,observed_at,effective_from,expires_at,submitted_by_user_id,reason_code,evidence_ref,
+ safe_payload_digest,ingestion_key,credential_revision,scope_revision,fact_valid_from,fact_valid_until,
+ source_presence_observed_at,applicability_basis)
+VALUES('ASSERTION','ACCESS_SCOPE',?,1,1,'MANUAL','MANUAL_ACCEPTED','{}',now(),now(),now()+interval '1 hour',1,
+ 'FIXTURE','TICKET:SEC-123',decode(repeat('01',32),'hex'),'bad-interval',1,1,now(),NULL,now(),'EFFECTIVE_INTERVAL')
+""", occurrence)).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+  }
+
+  @Test void legacyEvidenceStaysVisibleButCannotInventFactApplicability() {
+    var at = OffsetDateTime.now(ZoneOffset.UTC);
+    service.submit("security", occurrence, new SecretRiskEvidenceService.Submission(revision(), "legacy-period",
+        "ACCESS_SCOPE", "OCCURRENCE", at, at.plusHours(1), "TICKET:SEC-123",
+        Map.of("audienceClass", "BROAD", "coverageStatus", "COMPLETE", "publicAccessConfirmed", true, "boundedPrincipalCount", 0)));
+    var risk = query.risk("security", occurrence);
+    assertThat(part(context(risk), "access")).containsEntry("range", "UNKNOWN");
+    assertThat(context(risk).get("currentReasonCodes").toString()).contains("EVIDENCE_APPLICABILITY_UNCONFIRMED");
+    var evidence = (Map<?, ?>) ((List<?>) risk.get("evidenceSummary")).getFirst();
+    assertThat(evidence.get("applicableFrom")).isNull();
+    assertThat(evidence.get("status")).isEqualTo("ACCEPTED");
+    assertThat(part(part(risk, "riskExperience"), "riskAcceptance")).containsEntry("enabled", false);
+    assertThatThrownBy(() -> query.risk("outsider", occurrence)).isInstanceOf(com.logssey.common.error.ApiException.class);
+  }
+
+  @Test void declaredFactIntervalMustContainTheObservedSourceAndCannotBeChangedByReplay() {
+    var at = OffsetDateTime.now(ZoneOffset.UTC);
+    var facts = Map.<String, Object>of("audienceClass", "BROAD", "coverageStatus", "PARTIAL", "publicAccessConfirmed", true, "boundedPrincipalCount", 0);
+    var invalid = new SecretRiskEvidenceService.Submission(revision(), "wrong-period", "ACCESS_SCOPE", "OCCURRENCE",
+        at, at.plusHours(1), "TICKET:SEC-123", facts, List.of(), null, at.minusHours(3), at.minusHours(2));
+    assertThatThrownBy(() -> service.submit("security", occurrence, invalid)).isInstanceOf(com.logssey.common.error.ApiException.class);
+    assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_risk_evidence", Long.class)).isZero();
+    var body = new SecretRiskEvidenceService.Submission(revision(), "declared-period", "ACCESS_SCOPE", "OCCURRENCE",
+        at, at.plusHours(1), "TICKET:SEC-123", facts, List.of(), null, at.minusMinutes(5), at.plusMinutes(30));
+    service.submit("security", occurrence, body);
+    assertThat(part(context(query.risk("security", occurrence)), "access")).containsEntry("range", "BROAD");
+    var different = new SecretRiskEvidenceService.Submission(body.expectedEvidenceRevision(), "declared-period", "ACCESS_SCOPE", "OCCURRENCE",
+        at, at.plusHours(1), "TICKET:SEC-123", facts, List.of(), null, at.minusMinutes(5), at.plusMinutes(20));
+    assertThatThrownBy(() -> service.submit("security", occurrence, different)).isInstanceOf(com.logssey.common.error.ApiException.class);
+  }
+
+  @Test void oldAssessmentIsHistoricalEvenWhenItsOtherRevisionsAndFreshnessMatch() {
+    long first = evaluate();
+    jdbc.update("""
+INSERT INTO secret_severity_assessments(record_kind,occurrence_id,credential_set_id,scope_id,occurrence_sequence,
+ policy_id,matched_rule_id,assessment_status,severity,input_snapshot,evidence_refs,reason_codes,missing_reason_codes,
+ input_digest,evaluation_as_of,evidence_revision,credential_revision,scope_revision,reason_code,writer_service_id)
+SELECT record_kind,occurrence_id,credential_set_id,scope_id,
+ (SELECT max(occurrence_sequence)+1 FROM secret_severity_assessments WHERE occurrence_id=?),
+ policy_id,matched_rule_id,assessment_status,severity,input_snapshot-'applicabilityVersion',evidence_refs,reason_codes,missing_reason_codes,
+ decode(repeat('ab',32),'hex'),evaluation_as_of,evidence_revision,credential_revision,scope_revision,reason_code,writer_service_id
+FROM secret_severity_assessments WHERE assessment_id=?
+""", occurrence, first);
+    var risk = query.risk("security", occurrence);
+    assertThat(risk).containsEntry("currentEligible", false);
+    assertThat(part(part(risk, "riskExperience"), "summary")).containsEntry("status", "STALE");
+    assertThat(part(risk, "riskExperience").get("missingFacts").toString()).contains("ASSESSMENT_REFRESH_REQUIRED");
+    assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_severity_assessments WHERE record_kind='AUTO_RESULT'", Long.class)).isEqualTo(2);
+  }
+
+  @Test void repeatedAssessmentsKeepTheOriginalGradeTargetAndHeldGradeVisible() {
+    exposure("ABNORMAL", 1);
+    submit("ACCESS_SCOPE", Map.of("audienceClass", "BOUNDED", "coverageStatus", "COMPLETE", "publicAccessConfirmed", false, "boundedPrincipalCount", 2));
+    submit("ASSET_CLASSIFICATION", Map.of("environment", "PROD", "sensitive", true, "important", true, "testOnly", false));
+    submit("PERMISSION_MAPPING", completePermission());
+    evaluate();
+    var before = part(part(query.risk("security", occurrence), "riskExperience"), "workPriority");
+    assertThat(before).containsEntry("level", "PRIORITY").containsEntry("targetBasis", "GRADE_ACTIVATED");
+    assertThat(before.get("targetBasisAt")).isNotNull();
+    evaluate();
+    var after = part(part(query.risk("security", occurrence), "riskExperience"), "workPriority");
+    assertThat(after.get("targetBasisAt")).isEqualTo(before.get("targetBasisAt"));
+    assertThat(after.get("acknowledgeDueAt")).isEqualTo(before.get("acknowledgeDueAt"));
+    jdbc.update("UPDATE secret_connection_scopes SET revision=revision+1 WHERE scope_id=1");
+    evaluate();
+    var summary = part(part(query.risk("security", occurrence), "riskExperience"), "summary");
+    assertThat(summary).containsEntry("severity", "HIGH").containsEntry("automaticSeverity", null).containsEntry("held", true);
+  }
+
   @BeforeAll
   static void upgrade() {
     Flyway.configure().dataSource(jdbc.getDataSource()).load().migrate();
@@ -187,7 +292,7 @@ VALUES('ASSERTION','ABUSE_LINK',?,1,1,'PROVIDER_OBSERVATION','PROVIDER_OBSERVED'
                         now.plusHours(1),
                         "TICKET:SEC-123",
                         facts,
-                        refs))
+                        refs, null, now.minusMinutes(5), now.plusHours(1)))
                 .get("evidenceId"))
         .longValue();
   }
@@ -411,6 +516,7 @@ VALUES(1,?,?,'FIXTURE_IDENTITY','1','FIXTURE_IDENTITY',now(),now(),now(),'VALID'
             attempt);
     var writer = new SecretRiskObservationWriter(jdbc);
     var at = OffsetDateTime.now(ZoneOffset.UTC).withNano(0);
+    jdbc.update("UPDATE secret_occurrences SET last_seen_run_id=(SELECT run_id FROM secret_run_scopes WHERE run_scope_id=?) WHERE occurrence_id=?", runScope, occurrence);
     long first = writer.githubRepositoryAccess(occurrence, runScope, true, true, at);
     long changed = revision();
     assertThat(writer.githubRepositoryAccess(occurrence, runScope, true, true, at))
@@ -421,7 +527,8 @@ VALUES(1,?,?,'FIXTURE_IDENTITY','1','FIXTURE_IDENTITY',now(),now(),now(),'VALID'
     var snap =
         store.snapshot(
             store.location(occurrence, false), store.activePolicy(), OffsetDateTime.now());
-    assertThat(((Map<?, ?>) snap.get("inputs")).get("exposureRange")).isEqualTo("BROAD");
+    assertThat(((Map<?, ?>) snap.get("inputs")).get("exposureRange")).isEqualTo("UNKNOWN");
+    assertThat(snap.get("normalizerReasons").toString()).contains("ACCESS_COEXISTENCE_UNCONFIRMED");
     long newer = identityProof();
     long newScope =
         jdbc.queryForObject(
@@ -429,6 +536,7 @@ VALUES(1,?,?,'FIXTURE_IDENTITY','1','FIXTURE_IDENTITY',now(),now(),now(),'VALID'
                 + " USING(run_id) WHERE a.attempt_id=?",
             Long.class,
             newer);
+    jdbc.update("UPDATE secret_occurrences SET last_seen_run_id=(SELECT run_id FROM secret_run_scopes WHERE run_scope_id=?) WHERE occurrence_id=?", newScope, occurrence);
     writer.githubRepositoryAccess(occurrence, newScope, false, true, at.plusSeconds(1));
     snap =
         store.snapshot(
@@ -582,7 +690,7 @@ VALUES('ASSERTION','ACCESS_SCOPE',?,1,1,'MANUAL','MANUAL_SUBMITTED',
     var context = context(query.risk("security", occurrence));
     assertThat(part(context, "access")).containsEntry("status", "UNKNOWN")
         .containsEntry("range", "UNKNOWN").containsEntry("evidenceIds", List.of());
-    assertThat(part(context, "permissions")).containsEntry("status", "PARTIAL")
+    assertThat(part(context, "permissions")).containsEntry("status", "UNKNOWN")
         .containsEntry("capabilities", List.of()).containsEntry("evidenceIds", List.of());
     assertThat(part(context, "asset")).containsEntry("status", "UNLINKED");
   }
@@ -690,11 +798,12 @@ VALUES('ASSERTION','ACCESS_SCOPE',?,1,1,'MANUAL','MANUAL_SUBMITTED',
     long proof = accessObservation(true, true, observed, "proof");
     long unsupported = accessObservation(false, false, observed.plusMinutes(10), "unsupported");
     var access = part(context(query.risk("security", occurrence)), "access");
-    assertThat(access).containsEntry("status", "CONFIRMED").containsEntry("range", "BROAD")
-        .containsEntry("verificationLevel", "PROVIDER_OBSERVED");
-    assertThat(access.get("evidenceIds")).isEqualTo(List.of(proof));
+    assertThat(access).containsEntry("status", "UNKNOWN").containsEntry("range", "UNKNOWN")
+        .containsEntry("verificationLevel", null).containsEntry("repositoryPublicObserved", true)
+        .containsEntry("coexistenceStatus", "UNCONFIRMED");
+    assertThat(access.get("evidenceIds")).isEqualTo(List.of());
     assertThat(access.get("evidenceIds").toString()).doesNotContain(Long.toString(unsupported));
-    assertThat(((OffsetDateTime) access.get("observedAt")).toInstant())
+    assertThat(((OffsetDateTime) access.get("publicObservationAt")).toInstant())
         .isEqualTo(observed.toInstant().truncatedTo(java.time.temporal.ChronoUnit.MICROS));
   }
 
@@ -728,7 +837,8 @@ RETURNING evidence_id
     var now = OffsetDateTime.now(ZoneOffset.UTC);
     return new SecretRiskEvidenceService.Submission(revision(), key, "ASSET_CLASSIFICATION", "OCCURRENCE",
         now, now.plusHours(1), "TICKET:SEC-123",
-        Map.of("environment", environment, "sensitive", false, "important", false, "testOnly", false), refs, asset);
+        Map.of("environment", environment, "sensitive", false, "important", false, "testOnly", false), refs, asset,
+        now.minusMinutes(5), now.plusHours(1));
   }
 
   private String policyDefinition() {

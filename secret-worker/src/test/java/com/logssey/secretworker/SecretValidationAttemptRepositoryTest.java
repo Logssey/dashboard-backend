@@ -310,6 +310,111 @@ SELECT max(provider_checked_at) FROM secret_validation_attempts WHERE result = '
     }
 
     @Test
+    void aProviderCooldownSurvivesWorkerRetriesWithoutAnotherSend() {
+        var candidate = discovered();
+        approve();
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var until = Instant.now().plusSeconds(120).truncatedTo(ChronoUnit.MICROS);
+        java.util.function.Supplier<com.logssey.secretworker.validation.CredentialValidationResult> provider = () -> {
+            calls.incrementAndGet();
+            return new com.logssey.secretworker.validation.CredentialValidationResult(
+                    "UNKNOWN", "RATE_LIMITED", Instant.now(), 429, until);
+        };
+        var initial = attempts.validate(claim,candidate.credential(),AwsValidationResult.METHOD,
+                AwsValidationResult.VERSION,"AWS_STS",false,true,provider);
+        assertThat(initial.nextDueAt()).isEqualTo(until);
+        jobs.fail(claim.jobId(),claim.leaseToken(),SecretJobFailureCode.VALIDATOR_TEMPORARY,true);
+        jdbc.update("UPDATE secret_jobs SET available_at=clock_timestamp()-interval '1 second' WHERE job_id=?",claim.jobId());
+        var retry = jobs.claimNextJob().orElseThrow();
+        var blocked = attempts.validate(retry,candidate.credential(),AwsValidationResult.METHOD,
+                AwsValidationResult.VERSION,"AWS_STS",false,true,provider);
+        assertThat(blocked.result()).isEqualTo("UNCHECKED");
+        assertThat(blocked.reasonCode()).isEqualTo("RATE_LIMITED");
+        assertThat(blocked.nextDueAt()).isEqualTo(until.truncatedTo(java.time.temporal.ChronoUnit.MICROS));
+        assertThat(blocked.providerCheckedAt()).isNull();
+        assertThat(calls).hasValue(1);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints={429,503})
+    void aNewManualRequestKeepsTheProviderCooldownAfterThePreviousRunExpires(int status) {
+        var candidate = discovered();
+        approve();
+        manual();
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        Instant until = Instant.now().plusSeconds(1800).truncatedTo(ChronoUnit.MICROS);
+        String reason = status == 429 ? "RATE_LIMITED" : "PROVIDER_UNAVAILABLE";
+        java.util.function.Supplier<com.logssey.secretworker.validation.CredentialValidationResult> provider = () -> {
+            calls.incrementAndGet();
+            return new com.logssey.secretworker.validation.CredentialValidationResult(
+                    "UNKNOWN",reason,Instant.now(),status,until);
+        };
+        attempts.validate(claim,candidate.credential(),AwsValidationResult.METHOD,
+                AwsValidationResult.VERSION,"AWS_STS",false,true,provider);
+        jobs.fail(claim.jobId(),claim.leaseToken(),SecretJobFailureCode.VALIDATOR_TEMPORARY,true);
+        assertThat(jdbc.queryForObject("SELECT last_error_code FROM secret_jobs WHERE job_id=?",String.class,claim.jobId()))
+                .isEqualTo("VALIDATION_DEADLINE_EXCEEDED");
+        assertThat(jdbc.queryForObject("SELECT max(next_due_at) FROM secret_validation_attempts",OffsetDateTime.class).toInstant())
+                .isEqualTo(until.truncatedTo(ChronoUnit.MICROS));
+        long nextJob = jdbc.queryForObject("""
+                INSERT INTO secret_jobs(kind,purpose,connection_id,target_occurrence_id,requested_by_user_id,
+                    idempotency_key,expected_context,scheduled_at,available_at,attempt_no,max_attempts,status)
+                SELECT kind,purpose,connection_id,target_occurrence_id,requested_by_user_id,
+                    gen_random_uuid()::text,expected_context,clock_timestamp(),clock_timestamp(),0,3,'PENDING'
+                FROM secret_jobs WHERE job_id=? RETURNING job_id
+                """,Long.class,claim.jobId());
+        long nextRun = jdbc.queryForObject("""
+                INSERT INTO secret_scan_runs(job_id,connection_id,trigger_type,scope_version,scheduled_at,requested_at,
+                    collection_status,detection_status,validation_status,result_status)
+                SELECT ?,connection_id,'REVALIDATION',scope_version,clock_timestamp(),clock_timestamp(),
+                    'PENDING','PENDING','PENDING','PENDING' FROM secret_scan_runs WHERE run_id=? RETURNING run_id
+                """,Long.class,nextJob,claim.runId());
+        jdbc.update("INSERT INTO secret_run_scopes(run_id,scope_id,collection_status) SELECT ?,scope_id,'PENDING' FROM secret_run_scopes WHERE run_id=?",nextRun,claim.runId());
+        var next = jobs.claimNextJob().orElseThrow();
+        assertThat(next.jobId()).isEqualTo(nextJob);
+        var result = attempts.validate(next,candidate.credential(),AwsValidationResult.METHOD,
+                AwsValidationResult.VERSION,"AWS_STS",false,true,provider);
+        assertThat(result.result()).isEqualTo("UNCHECKED");
+        assertThat(result.reasonCode()).isEqualTo(reason);
+        assertThat(result.nextDueAt()).isEqualTo(until.truncatedTo(ChronoUnit.MICROS));
+        assertThat(calls).hasValue(1);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints={429,503})
+    void aDifferentPatCannotBypassTheSharedGithubEndpointCooldown(int status) {
+        var candidates = new java.util.ArrayList<SecretFindingNormalizer.GitHubCandidate>();
+        var scan = new GitleaksScanResult("8.30.1",CONFIG_HASH,
+                List.of(new GitleaksFinding("github-pat",1,1,14,54)));
+        long tool = findings.beginGitleaksRun(runScopeId,scan.engineVersion(),scan.configHash(),Instant.now());
+        for (String suffix : List.of("A", "B")) {
+            byte[] bytes = ("GITHUB_TOKEN=ghp_"+suffix.repeat(36)+"\n").getBytes(StandardCharsets.UTF_8);
+            String path = "repo/"+suffix+".env";
+            var inspection = normalizer.inspect(claim.connectionId(),path,bytes,scan.findings());
+            findings.recordInspection(tool,path,"test-blob",inspection,scan,Instant.now());
+            candidates.add(inspection.githubCandidates().getFirst());
+        }
+        approve();
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        Instant until = Instant.now().plusSeconds(120).truncatedTo(ChronoUnit.MICROS);
+        String reason = status == 429 ? "RATE_LIMITED" : "PROVIDER_UNAVAILABLE";
+        java.util.function.Supplier<com.logssey.secretworker.validation.CredentialValidationResult> provider = () -> {
+            calls.incrementAndGet();
+            return new com.logssey.secretworker.validation.CredentialValidationResult(
+                    "UNKNOWN",reason,Instant.now(),status,until);
+        };
+        for (var candidate : candidates) {
+            var result = attempts.validate(claim,candidate.credential(),
+                    com.logssey.secretworker.validation.GitHubPatValidator.METHOD,
+                    com.logssey.secretworker.validation.GitHubPatValidator.VERSION,
+                    "GITHUB_USER",false,true,provider);
+            assertThat(result.reasonCode()).isEqualTo(reason);
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_credential_sets",Long.class)).isEqualTo(2);
+        assertThat(calls).hasValue(1);
+    }
+
+    @Test
     void approvalRevokedDuringProviderResponsePreservesOnlyHistoricalResult() {
         var candidate = discovered();
         approve();
@@ -666,6 +771,103 @@ SELECT max(provider_checked_at) FROM secret_validation_attempts WHERE result = '
         assertThat(result.status()).isEqualTo(AwsValidationResult.Status.UNKNOWN);
         assertThat(jdbc.queryForMap("SELECT reason_code,provider_checked_at,current_eligible FROM secret_validation_attempts"))
             .containsEntry("reason_code","APPROVAL_CHANGED").containsEntry("provider_checked_at",null).containsEntry("current_eligible",false);
+    }
+
+    @Test
+    void notionRevalidationPreservesPriorAuthenticationAndRecordsRejectionWithoutRevocation(CapturedOutput output) {
+        var candidate = discoveredNotion('A');
+        approve();
+        var identity = com.logssey.secret.permission.core.SecretProviderIdentity.notion(
+                "d8f44863-cb4d-438d-9314-f82f8a52e0d9",
+                "04ce4821-4d1c-41a8-959c-f94c718fbda5", "workspace");
+        attempts.validate(claim, candidate.credential(), "NOTION_GET_SELF", "1", "NOTION_SELF",
+                false, true, () -> new com.logssey.secretworker.validation.CredentialValidationResult(
+                        "VALID", "AUTHENTICATED", Instant.now(), 200, null, identity));
+        manual();
+        var notion = org.mockito.Mockito.mock(com.logssey.secretworker.validation.NotionTokenValidator.class);
+        org.mockito.Mockito.when(notion.enabled()).thenReturn(true);
+        org.mockito.Mockito.when(notion.validate(candidate.token())).thenReturn(
+                new com.logssey.secretworker.validation.CredentialValidationResult(
+                        "INVALID", "AUTHENTICATION_REJECTED", Instant.now(), 401, null));
+        byte[] bytes = ("NOTION_TOKEN=" + candidate.token()).getBytes(StandardCharsets.UTF_8);
+        var scan = new GitleaksScanResult("8.30.1", CONFIG_HASH,
+                List.of(new GitleaksFinding("notion-api-token", 1, 1, 14, 63)));
+        var detector = org.mockito.Mockito.mock(SecretContentDetector.class);
+        org.mockito.Mockito.when(detector.scan(bytes)).thenReturn(scan);
+        var github = org.mockito.Mockito.mock(com.logssey.secretworker.validation.GitHubPatValidator.class);
+        new CredentialRevalidationProcessor(jdbc, normalizer, detector, attempts,
+                material -> { throw new AssertionError("Notion candidate reached AWS"); }, github, notion)
+                .process(claim, jobs, (target, sink) -> {
+                    sink.accept((String) target.get("source_object_ref"), "current-test-version", bytes);
+                    return true;
+                });
+        org.mockito.Mockito.verify(notion).validate(candidate.token());
+        org.mockito.Mockito.verifyNoInteractions(github);
+        assertThat(jdbc.queryForList("SELECT result FROM secret_validation_attempts ORDER BY attempt_id", String.class))
+                .containsExactly("VALID", "INVALID");
+        assertThat(jdbc.queryForObject("SELECT result FROM secret_current_validation_attempts"
+                + " ORDER BY completed_at DESC,attempt_id DESC LIMIT 1", String.class))
+                .isEqualTo("INVALID");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_credential_identities", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_credential_lifecycle_evidence", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT validation_status FROM secret_scan_runs", String.class)).isEqualTo("SUCCEEDED");
+        assertThat(jdbc.queryForList("SELECT to_jsonb(a)::text FROM secret_validation_attempts a", String.class).toString()
+                + jdbc.queryForList("SELECT to_jsonb(i)::text FROM secret_credential_identities i", String.class))
+                .doesNotContain(candidate.token(), "current-test-version");
+        assertThat(output.getAll()).doesNotContain(candidate.token());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints = {429, 503, 529})
+    void anotherNotionKeyHonorsTheObservedEndpointCooldown(int status) {
+        var first = discoveredNotion('A');
+        var second = discoveredNotion('B');
+        approve();
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var until = Instant.now().plusSeconds(120).truncatedTo(ChronoUnit.MICROS);
+        String reason = status == 429 ? "RATE_LIMITED" : "PROVIDER_UNAVAILABLE";
+        java.util.function.Supplier<com.logssey.secretworker.validation.CredentialValidationResult> provider = () -> {
+            calls.incrementAndGet();
+            return new com.logssey.secretworker.validation.CredentialValidationResult(
+                    "UNKNOWN", reason, Instant.now(), status, until);
+        };
+        for (var candidate : List.of(first, second)) {
+            var result = attempts.validate(claim, candidate.credential(), "NOTION_GET_SELF", "1", "NOTION_SELF",
+                    false, true, provider);
+            assertThat(result.reasonCode()).isEqualTo(reason);
+            assertThat(result.nextDueAt()).isEqualTo(until);
+        }
+        assertThat(calls).hasValue(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_credential_sets", Integer.class)).isEqualTo(2);
+    }
+
+    @Test
+    void notionProfileApprovalAndTypeRegistryGuardTheSendBoundary() {
+        var candidate = discoveredNotion('A');
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.function.Supplier<com.logssey.secretworker.validation.CredentialValidationResult> provider = () -> {
+            calls.incrementAndGet();
+            return new com.logssey.secretworker.validation.CredentialValidationResult(
+                    "VALID", "AUTHENTICATED", Instant.now(), 200, null);
+        };
+        assertThat(attempts.validate(claim, candidate.credential(), "NOTION_GET_SELF", "1", "NOTION_SELF",
+                false, true, provider).result()).isEqualTo("UNCHECKED");
+        approve();
+        assertThat(attempts.validate(claim, candidate.credential(), "GITHUB_GET_AUTHENTICATED_USER", "1", "GITHUB_USER",
+                false, true, provider).reasonCode()).isEqualTo("UNSUPPORTED_TYPE");
+        assertThat(calls).hasValue(0);
+    }
+
+    private SecretFindingNormalizer.NotionCandidate discoveredNotion(char discriminator) {
+        String token = "ntn_" + String.valueOf(discriminator).repeat(46);
+        String path = "repo/notion-" + discriminator + ".txt";
+        var scan = new GitleaksScanResult("8.30.1", CONFIG_HASH,
+                List.of(new GitleaksFinding("notion-api-token", 1, 1, 14, 63)));
+        var inspection = normalizer.inspect(claim.connectionId(), path,
+                ("NOTION_TOKEN=" + token).getBytes(StandardCharsets.UTF_8), scan.findings());
+        long tool = findings.beginGitleaksRun(runScopeId, scan.engineVersion(), scan.configHash(), Instant.now());
+        findings.recordInspection(tool, path, "test-version", inspection, scan, Instant.now());
+        return inspection.notionCandidates().getFirst();
     }
 
     private void manual() {

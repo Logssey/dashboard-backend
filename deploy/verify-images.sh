@@ -37,6 +37,7 @@ logssey.secret.aws.content.enabled=false
 logssey.secret.validation.aws.enabled=false
 logssey.secret.validation.github.enabled=false
 logssey.secret.guide.groq.enabled=false
+logssey.secret.usage.cloudtrail-enabled=false
 EOF
 cat > "$task_dir/worker.properties" <<EOF
 spring.datasource.url=jdbc:postgresql://$task_db:5432/secret_ci
@@ -50,6 +51,7 @@ logssey.secret.aws.content.enabled=false
 logssey.secret.validation.aws.enabled=false
 logssey.secret.validation.github.enabled=false
 logssey.secret.permissions.enabled=false
+logssey.secret.usage.cloudtrail-enabled=false
 EOF
 # UID10001 may read the synthetic mounted configuration; no host credential directory is used.
 chmod 755 "$task_dir" "$task_dir/api-secrets" "$task_dir/worker-secrets"

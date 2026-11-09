@@ -16,6 +16,7 @@ final class SecretFullScanPresence {
        AND rs.evidence_version IS NOT NULL AND baseline.scope_id=rs.scope_id AND rs.scope_revision=sc.revision AND rs.scope_revision=baseline.scope_revision
        AND rs.snapshot_content_type=baseline.snapshot_content_type AND rs.snapshot_content_type=sc.content_type
        AND right(rs.snapshot_content_type,9)<>'_METADATA' AND rs.snapshot_origin=baseline.snapshot_origin AND rs.snapshot_origin=sc.response_origin
+       AND rs.snapshot_content_type<>'NOTION_PAGE_CONTENT'
        AND r.scope_version=cn.scope_version AND baseline.connection_version=r.scope_version
        AND current_tool.scope_origin_version=sc.response_origin_version AND current_tool.scope_origin_version=baseline.scope_origin_version
        AND baseline.detector_status='SUCCEEDED' AND baseline.collection_status='SUCCEEDED'

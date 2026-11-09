@@ -41,6 +41,7 @@ class GitHubPipelineConfiguration {
             SecretValidationAttemptRepository attempts,
             SecretJobProperties jobs,
             com.logssey.secretworker.validation.GitHubPatValidator githubValidator,
+            com.logssey.secretworker.validation.NotionTokenValidator notionValidator,
             org.springframework.beans.factory.ObjectProvider<GitHubRepositoryAccessSink>
                     accessSinks) {
         return new GitHubSecretJobProcessor(
@@ -53,6 +54,7 @@ class GitHubPipelineConfiguration {
                 attempts,
                 jobs,
                 githubValidator,
-                accessSinks.orderedStream().toList());
+                accessSinks.orderedStream().toList(),
+                notionValidator);
     }
 }

@@ -145,6 +145,84 @@ class SecretFindingNormalizerTest {
         assertThat(candidates).isEqualTo(2);
     }
 
+    @Test
+    void notionCurrentAndLegacyTokensAreAvailableToValidationInProseAndCode() {
+        String current = "ntn_" + "A".repeat(46);
+        String legacy = "secret_" + "B".repeat(43);
+        String prefix = "운영 문서에서 확인할 시험용 연결 정보입니다. 접근 여부를 확인할 토큰은 🔐 `";
+        String text = prefix + current + "` 입니다.\nNOTION_TOKEN=" + legacy;
+        int byteStart = prefix.getBytes(StandardCharsets.UTF_8).length + 1;
+        var findings = List.of(
+                new GitleaksFinding("notion-api-token", 1, 1,
+                        byteStart, byteStart + current.length() - 1),
+                new GitleaksFinding("notion-api-token", 2, 2, 14, 13 + legacy.length()));
+        var inspection = normalizer.inspect(1, "repo/notion.txt",
+                text.getBytes(StandardCharsets.UTF_8), findings);
+
+        assertThat(inspection.credentials()).hasSize(2)
+                .allMatch(c -> "NOTION".equals(c.issuer())
+                        && "NOTION_CONNECTION_TOKEN".equals(c.credentialType()));
+        assertThat(inspection.notionCandidates()).hasSize(2);
+        assertThat(inspection.notionCandidates().getFirst().token()).isEqualTo(current);
+        assertThat(inspection.notionCandidates().getLast().token()).isEqualTo(legacy);
+        assertThat(inspection.credentials().getFirst().findings()).containsExactly(findings.getFirst());
+        assertThat(inspection.toString() + inspection.notionCandidates())
+                .doesNotContain(current, legacy);
+    }
+
+    @Test
+    void notionSameKeyKeepsItsFingerprintAcrossTextFormsAndLocations() {
+        String token = "ntn_" + "C".repeat(46);
+        byte[] assigned = ("NOTION_TOKEN=" + token).getBytes(StandardCharsets.UTF_8);
+        byte[] prose = ("Token `" + token + "`.").getBytes(StandardCharsets.UTF_8);
+        var a = normalizer.inspect(1, "repo/config", assigned,
+                List.of(new GitleaksFinding("notion-api-token", 1, 1, 14, 63)));
+        var b = normalizer.inspect(1, "repo/doc", prose,
+                List.of(new GitleaksFinding("notion-api-token", 1, 1, 8, 57)));
+        assertThat(a.credentials()).hasSize(1);
+        assertThat(b.credentials()).hasSize(1);
+        assertThat(a.credentials().getFirst().fingerprint())
+                .isEqualTo(b.credentials().getFirst().fingerprint());
+
+        var changed = normalizer.inspect(1, "repo/doc",
+                new String(prose, StandardCharsets.UTF_8).replace("C", "D").getBytes(StandardCharsets.UTF_8),
+                List.of(new GitleaksFinding("notion-api-token", 1, 1, 8, 57)));
+        assertThat(changed.credentials().getFirst().fingerprint())
+                .isNotEqualTo(a.credentials().getFirst().fingerprint());
+    }
+
+    @Test
+    void notionExtractionRequiresAnExactSupportedTokenAndUnambiguousDetectorSpan() {
+        String token = "ntn_" + "E".repeat(46);
+        for (String text : List.of("x" + token, token + "x", token.substring(0, 48))) {
+            var inspection = normalizer.inspect(1, "repo/invalid", text.getBytes(StandardCharsets.UTF_8),
+                    List.of(new GitleaksFinding("notion-api-token", 1, 1, 1, text.length())));
+            assertThat(inspection.notionCandidates()).isEmpty();
+        }
+        String ambiguous = token + " " + token;
+        var inspection = normalizer.inspect(1, "repo/ambiguous", ambiguous.getBytes(StandardCharsets.UTF_8),
+                List.of(new GitleaksFinding("notion-api-token", 1, 1, 1, ambiguous.length())));
+        assertThat(inspection.notionCandidates()).isEmpty();
+    }
+
+    @Test
+    void githubPatValuesInNotionProseKeepTheSameIdentityAsConfigurationValues() {
+        for (String token : List.of("ghp_" + "G".repeat(36), "github_pat_" + "H".repeat(70))) {
+            String rule = token.startsWith("ghp_") ? "github-pat" : "github-fine-grained-pat";
+            String prefix = "이 문서의 연결 정보를 확인할 때 사용하는 시험용 토큰입니다. 값은 `";
+            int start = prefix.getBytes(StandardCharsets.UTF_8).length + 1;
+            var prose = normalizer.inspect(1, "notion/pages/example/blocks/local",
+                    (prefix + token + "`").getBytes(StandardCharsets.UTF_8),
+                    List.of(new GitleaksFinding(rule, 1, 1, start, start + token.length() - 1)));
+            var config = normalizer.inspect(1, "repo/config", ("TOKEN=" + token).getBytes(StandardCharsets.UTF_8),
+                    List.of(new GitleaksFinding(rule, 1, 1, 7, 6 + token.length())));
+            assertThat(prose.githubCandidates()).hasSize(1);
+            assertThat(prose.credentials().getFirst().fingerprint())
+                    .isEqualTo(config.credentials().getFirst().fingerprint());
+            assertThat(prose.toString() + prose.githubCandidates()).doesNotContain(token);
+        }
+    }
+
     private static String awsId(String label, String prefix) {
         byte[] digest = sha(label);
         String alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";

@@ -31,6 +31,9 @@ JOIN secret_connections c ON c.connection_id = j.connection_id
 JOIN secret_scan_runs r ON r.job_id = j.job_id
 WHERE j.status = 'PENDING' AND j.available_at <= ? AND c.status = 'ACTIVE'
   AND c.provider = COALESCE(?, c.provider)
+  AND (c.provider<>'NOTION' OR NOT EXISTS(SELECT 1 FROM secret_connections cooldown
+    WHERE cooldown.provider='NOTION' AND cooldown.auth_ref=c.auth_ref
+      AND cooldown.source_retry_at>clock_timestamp()))
 ORDER BY j.available_at, j.job_id
 LIMIT ? FOR UPDATE OF j SKIP LOCKED
 """, (rs, row) -> jobRow(rs), now, provider, limit);
@@ -174,16 +177,26 @@ WHERE job_id = ? AND status = 'LEASED' AND lease_owner = ?
                 row.runId());
     }
 
-    void retry(JobRow row, OffsetDateTime now, OffsetDateTime availableAt, String code) {
+    boolean retry(JobRow row, OffsetDateTime now, OffsetDateTime availableAt, String code) {
+        var retryAt = jdbc.queryForObject(
+                "SELECT GREATEST(?::timestamptz,COALESCE((SELECT max(next_due_at)"
+                        + " FROM secret_validation_attempts WHERE run_id=?),?::timestamptz),"
+                        + "COALESCE((SELECT source_retry_at FROM secret_connections WHERE connection_id=?),?::timestamptz))",
+                OffsetDateTime.class, availableAt, row.runId(), availableAt, row.connectionId(), availableAt);
+        // Leave the registered maximum request duration inside the validation run's budget.
+        if (("VALIDATOR_TEMPORARY".equals(code) || isCredentialValidation(row.jobId()))
+                && Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT ?::timestamptz+interval '8 seconds'>=started_at+interval '30 minutes'"
+                        + " FROM secret_scan_runs WHERE run_id=?",
+                Boolean.class, retryAt, row.runId()))) return false;
         jdbc.update(
                 """
 UPDATE secret_jobs
-SET status = 'PENDING', available_at = GREATEST(?::timestamptz,COALESCE((SELECT max(next_due_at) FROM secret_validation_attempts WHERE run_id=?),?::timestamptz)), lease_owner = NULL, lease_until = NULL,
+SET status = 'PENDING', available_at = ?, lease_owner = NULL, lease_until = NULL,
     last_error_code = ?
 WHERE job_id = ?
 """,
-                availableAt,
-                row.runId(), availableAt, code, row.jobId());
+                retryAt, code, row.jobId());
         jdbc.update("""
                 UPDATE secret_scan_runs SET
                     collection_status = CASE WHEN collection_status IN ('RUNNING', 'PARTIAL', 'FAILED')
@@ -197,13 +210,14 @@ WHERE job_id = ?
                 """, code, row.runId());
         jdbc.update("""
                 UPDATE secret_run_scopes SET
-                    collection_status = 'PENDING', object_count = NULL, failure_code = NULL,
+                    collection_status = 'PENDING', object_count = NULL, failure_code = NULL,excluded_object_count=0,
                     started_at = NULL, finished_at = NULL
                 WHERE run_id = ? AND collection_status IN ('RUNNING', 'PARTIAL', 'FAILED')
                 """, row.runId());
         new SecretFullScanPresence(jdbc).reconcile(row.runId(),now);
         // A completed collection remains evidence of success even when a later stage needs a retry.
         updateLastCollectionSuccess(row);
+        return true;
     }
 
     void failPermanently(JobRow row, OffsetDateTime now, String code) {
@@ -273,7 +287,9 @@ WHERE job_id = ?
                                     WHERE f.run_id = v.run_id
                                       AND found.scope_id = v.scope_id AND found.occurrence_id=v.occurrence_id
                                       AND found.credential_set_id = c.credential_set_id
-                                ) THEN 'PRESENT' ELSE 'MISSING' END
+                                ) THEN 'PRESENT'
+                                  WHEN scope.content_type='NOTION_PAGE_CONTENT' THEN 'UNKNOWN'
+                                  ELSE 'MISSING' END
                                 ELSE 'UNKNOWN' END AS result
                     FROM secret_case_revalidations v
                     JOIN secret_scan_runs r ON r.run_id = v.run_id
