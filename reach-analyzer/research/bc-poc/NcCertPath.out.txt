@@ -1,0 +1,6 @@
+default PKIX CertPathValidator provider with BC appended: SUN
+SAN rfc822 user@bank.com                  BC: REJECTED: Subtree check for certificate subject alternative name failed. | SUN: REJECTED: name constraints check failed
+SAN rfc822 user@bank.com.                 BC: VALID (provider=BC)                           | SUN: VALID (provider=SUN)
+SAN uri    https://competitor.example/    BC: REJECTED: Subtree check for certificate subject alternative name failed. | SUN: REJECTED: name constraints check failed
+SAN uri    https://competitor.example./   BC: VALID (provider=BC)                           | SUN: VALID (provider=SUN)
+default PKIX CertPathValidator provider with BC inserted at 1: BC / CertPathBuilder: BC / X.509 CertificateFactory: BC

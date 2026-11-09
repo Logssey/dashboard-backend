@@ -1,0 +1,5 @@
+lightweight GOST3412_2015/GCTR blockSize=16 keystream block[256]==block[0]: true
+lightweight GOST28147/GCTR blockSize=8 keystream block[256]==block[0]: true
+JCE GOST3412-2015/CTR/NoPadding (BC) impl=BC keystream block[256]==block[0]: true
+JCE GOST28147/CTR/NoPadding (BC, SICBlockCipher) block[256]==block[0]: false
+JCE GOST28147/GOFB/NoPadding (BC, GOFBBlockCipher) block[256]==block[0]: false

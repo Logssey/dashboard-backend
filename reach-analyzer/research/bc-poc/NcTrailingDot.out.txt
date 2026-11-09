@@ -1,0 +1,9 @@
+bcprov impl version: null
+rfc822Name                 excluded=bank.com             name=user@bank.com                    -> REJECTED: Email address is from an excluded subtree.
+rfc822Name                 excluded=bank.com             name=user@bank.com.                   -> ACCEPTED (not excluded)
+rfc822Name                 excluded=.bank.com            name=user@mail.bank.com               -> REJECTED: Email address is from an excluded subtree.
+rfc822Name                 excluded=.bank.com            name=user@mail.bank.com.              -> ACCEPTED (not excluded)
+uniformResourceIdentifier  excluded=competitor.example   name=https://competitor.example/      -> REJECTED: URI is from an excluded subtree.
+uniformResourceIdentifier  excluded=competitor.example   name=https://competitor.example./     -> ACCEPTED (not excluded)
+dNSName                    excluded=bank.com             name=www.bank.com                     -> REJECTED: DNS is from an excluded subtree.
+dNSName                    excluded=bank.com             name=www.bank.com.                    -> ACCEPTED (not excluded)

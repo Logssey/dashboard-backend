@@ -1,0 +1,75 @@
+plugins {
+    id 'java'
+}
+
+// Reach L2 analyzer: a command-line tool run in the monitored service's CI, not part of the dashboard server.
+// It reads a Spring Boot jar and writes call-graph and fact results. Verdicts come from verdict/verdict.py.
+group = rootProject.group
+version = rootProject.version
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+configurations {
+    // Real library jars that the fixture apps bundle. expected.json was decided against these exact versions.
+    fixtureLibs {
+        canBeConsumed = false
+        transitive = false
+    }
+}
+
+dependencies {
+    implementation 'org.ow2.asm:asm:9.8'
+
+    fixtureLibs 'org.bouncycastle:bcprov-jdk18on:1.78.1'
+    fixtureLibs 'com.fasterxml.jackson.core:jackson-core:2.16.1'
+    fixtureLibs 'com.fasterxml.jackson.core:jackson-databind:2.16.1'
+    fixtureLibs 'com.fasterxml.jackson.core:jackson-annotations:2.16.1'
+    fixtureLibs 'commons-logging:commons-logging:1.3.0'
+}
+
+tasks.named('compileJava') {
+    options.encoding = 'UTF-8'
+}
+
+// One runnable jar with ASM inside, so CI only needs `java -jar reach-analyzer.jar`.
+tasks.named('jar') {
+    archiveFileName = 'reach-analyzer.jar'
+    manifest {
+        attributes(
+            'Main-Class': 'com.logssey.reach.analyzer.Main',
+            'Implementation-Title': 'reach-analyzer',
+            'Implementation-Version': project.version
+        )
+    }
+    from({ configurations.runtimeClasspath.collect { zipTree(it) } }) {
+        include 'org/objectweb/asm/**'
+    }
+}
+
+def fixtureLibsDir = layout.buildDirectory.dir('fixture-libs')
+
+def copyFixtureLibs = tasks.register('copyFixtureLibs', Sync) {
+    from configurations.fixtureLibs
+    into fixtureLibsDir
+}
+
+// Builds the five fixture apps, runs the analyzer and verdict.py, and compares with fixtures/expected.json.
+// Needs bash, javac, jar and python3, so it is not part of `check` (teammates build on Windows).
+tasks.register('fixtureTest', Exec) {
+    group = 'verification'
+    description = 'Runs the analyzer on the fixture apps and compares verdicts with fixtures/expected.json.'
+    dependsOn tasks.named('jar'), copyFixtureLibs
+    workingDir file('fixtures')
+    environment 'REACH_JAR', layout.buildDirectory.file('libs/reach-analyzer.jar').get().asFile.path
+    environment 'FIXTURE_LIBS', fixtureLibsDir.get().asFile.path
+    environment 'FIXTURE_BUILD', layout.buildDirectory.dir('fixtures').get().asFile.path
+    commandLine 'bash', 'run-tests.sh'
+}

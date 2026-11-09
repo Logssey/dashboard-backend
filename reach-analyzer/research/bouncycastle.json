@@ -1,0 +1,364 @@
+[
+  {
+    "cve": "CVE-2025-14813",
+    "ghsa": "GHSA-574f-3g2m-x479",
+    "package": "org.bouncycastle:bcprov-jdk18on",
+    "installed_version": "1.81",
+    "fixed_versions": [
+      "1.81.1",
+      "1.80.2",
+      "1.84"
+    ],
+    "severity": "HIGH",
+    "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+    "summary": "G3413CTRBlockCipher, BC's GOST R 34.13-2015 CTR mode (algorithm name '<cipher>/GCTR'), increments only the last byte of the counter. After 256 blocks the counter wraps and the keystream repeats (two-time pad), leaking the XOR of plaintext blocks. Affects 1.59-1.80.1, 1.81 and 1.82-1.83, so the installed 1.81 is affected (fixed in 1.81.1).",
+    "vulnerable_feature": "Lightweight-API CTR mode org.bouncycastle.crypto.modes.G3413CTRBlockCipher (any BlockCipher; normally GOST3412_2015Engine/Kuznyechik or GOST28147Engine/Magma) and its only JCE binding, Cipher 'GOST3412-2015/CTR' (org.bouncycastle.jcajce.provider.symmetric.GOST3412_2015$CTR). Not GOFBBlockCipher (the GOST 28147-89 'GCTR' gamming mode, JCE mode GOFB). Not SICBlockCipher (JCE 'GOST28147/CTR').",
+    "trigger_conditions": [
+      "Code instantiates org.bouncycastle.crypto.modes.G3413CTRBlockCipher (directly, or wrapped in BufferedBlockCipher/DefaultBufferedBlockCipher) and processes data with it, OR it obtains a javax.crypto.Cipher for 'GOST3412-2015/CTR' (lookup is case-insensitive, optional '/NoPadding') from the BC provider. That means an explicit 'BC'/BouncyCastleProvider argument, or BouncyCastleProvider registered anywhere in the provider list, because no JDK provider implements GOST3412-2015.",
+      "More than 256 counter blocks are processed under one key/IV. With the default s = block size that is >4096 bytes for Kuznyechik (128-bit block, the JCE binding) or >2048 bytes for GOST 28147/Magma (64-bit block); in general 256*s bytes. Block 256 reuses block 0's keystream (verified locally on 1.78.1, whose class source is identical to 1.81).",
+      "An attacker can observe the ciphertext. Impact is on confidentiality (keystream reuse); decryption of correctly produced long ciphertexts also garbles after block 255."
+    ],
+    "invocation_kind": "app_calls_library",
+    "vulnerable_methods": [
+      {
+        "class": "org.bouncycastle.crypto.modes.G3413CTRBlockCipher",
+        "method": "generateCRT",
+        "desc": "()V",
+        "confidence": "high",
+        "evidence": "Root cause. 1.81 source L194-197: 'private void generateCRT() { CTR[CTR.length - 1]++; }'. javap -c on bcprov 1.78.1 (source byte-identical to 1.81) shows a single-byte baload/iadd/bastore on CTR[length-1] with no carry. The fix (r1rv81v1, r1rv80v2, r1rv84; commit 701686cb) replaces it with generateCTR(), which propagates the carry over the counter half and throws IllegalStateException('attempt to process too many blocks'). Fixed jars contain generateCTR()V instead, which works as a version fingerprint."
+      },
+      {
+        "class": "org.bouncycastle.crypto.modes.G3413CTRBlockCipher",
+        "method": "calculateByte",
+        "desc": "(B)B",
+        "confidence": "high",
+        "evidence": "Protected. javap -c shows invokespecial generateBuf:()[B at each block start and generateCRT:()V after every s bytes. Every keystream byte passes through here."
+      },
+      {
+        "class": "org.bouncycastle.crypto.modes.G3413CTRBlockCipher",
+        "method": "processBlock",
+        "desc": "([BI[BI)I",
+        "confidence": "high",
+        "evidence": "Public. javap -c shows invokevirtual processBytes:([BII[BI)I, which goes to StreamBlockCipher.processBytes and then calculateByte. BufferedBlockCipher (used by the JCE binding) calls this."
+      },
+      {
+        "class": "org.bouncycastle.crypto.StreamBlockCipher",
+        "method": "processBytes",
+        "desc": "([BII[BI)I",
+        "confidence": "medium",
+        "evidence": "Inherited public entry point (so are StreamBlockCipher.returnByte (B)B and DefaultMultiBlockCipher.processBlocks ([BII[BI)I). These are shared by every StreamBlockCipher mode, so they are vulnerable only when the receiver is a G3413CTRBlockCipher."
+      },
+      {
+        "class": "org.bouncycastle.crypto.modes.G3413CTRBlockCipher",
+        "method": "<init>",
+        "desc": "(Lorg/bouncycastle/crypto/BlockCipher;)V",
+        "confidence": "high",
+        "evidence": "Construction marker for rules. The other constructor is (Lorg/bouncycastle/crypto/BlockCipher;I)V. Signatures from javap on 1.78.1."
+      },
+      {
+        "class": "org.bouncycastle.jcajce.provider.symmetric.GOST3412_2015$CTR",
+        "method": "<init>",
+        "desc": "()V",
+        "confidence": "high",
+        "evidence": "1.81 GOST3412_2015.java L66-72: super(new BufferedBlockCipher(new G3413CTRBlockCipher(new GOST3412_2015Engine())), true, 64). It is registered as 'Cipher.GOST3412-2015/CTR' (L119). It is the only class in the bcprov 1.78.1 jar that references G3413CTRBlockCipher (constant-pool scan). Local test: Cipher.getInstance(\"GOST3412-2015/CTR/NoPadding\", BC) keystream block 256 == block 0."
+      }
+    ],
+    "entry_apis": [
+      "new org.bouncycastle.crypto.modes.G3413CTRBlockCipher(BlockCipher[, int bitBlockSize]) + init(boolean, ParametersWithIV) + processBytes(byte[],int,int,byte[],int) / processBlock(byte[],int,byte[],int) / processBlocks(...) / returnByte(byte)  [lightweight API, any engine]",
+      "org.bouncycastle.crypto.BufferedBlockCipher / DefaultBufferedBlockCipher wrapping a G3413CTRBlockCipher: processBytes(...) / doFinal(...)",
+      "javax.crypto.Cipher.getInstance(\"GOST3412-2015/CTR[/NoPadding]\", \"BC\" | BouncyCastleProvider) -> GOST3412_2015$CTR -> BaseBlockCipher.engineUpdate ([BII)[B / ([BII[BI)I, engineDoFinal ([BII)[B / ([BII[BI)I (also via CipherInputStream/CipherOutputStream). The provider-less form resolves to BC whenever BouncyCastleProvider is registered.",
+      "Verified NOT entry points: Cipher 'GOST28147/GOFB' (BaseBlockCipher -> GOFBBlockCipher), 'GOST28147/CTR' (-> SICBlockCipher), BCJSSE GOST TLS suites KUZNYECHIK_CTR_OMAC/MAGMA_CTR_OMAC (unsupported in bctls 1.81 BcTlsCrypto/JcaTlsCrypto). No JCE alias named 'GOSTCTR' exists."
+    ],
+    "fix_evidence": {
+      "changelog": "BC 1.84 release notes (docs/releasenotes.html @ r1rv85), section 2.2.4 Security Fixes: 'CVE-2025-14813 - GOSTCTR implementation unable to process more than 255 blocks correctly.' Vendor wiki (raw.githubusercontent.com/wiki/bcgit/bc-java/CVE-2025-14813, hyphens U+2010): 'The GOST-R-3413-2015 CTR implementation in G3413CTRBlockCipher was using a single byte as a counter, resulting in the mode being unable to encrypt or decrypt more than 255 blocks.' It lists issue affecting BC 1.59 to 1.80.1, BC 1.81, and BC 1.82 to 1.83; fixed in BC 1.80.2, BC 1.81.1 and BC 1.84.",
+      "diff_summary": "In r1rv81 -> r1rv81v1 (identical content in r1rv80 -> r1rv80v2 and r1rv83 -> r1rv84) only G3413CTRBlockCipher changes. The private generateCRT() { CTR[CTR.length - 1]++; } becomes generateCTR(), which loops while (++CTR[start] == 0) { start--; if (start == IV.length - 1) throw new IllegalStateException(\"attempt to process too many blocks\"); }. calculateByte now calls generateCTR(). The class source is identical (vulnerable) in r1rv59, r1rv63, r1rv80, r1rv80v1, r1rv81, r1rv82 and r1rv83, and identical (fixed) in r1rv81v1, r1rv84, r1rv86 and main.",
+      "commit": "701686cb0184cd9ae103c801b3581fdf95c6d4f3 (file content == r1rv84 release); also b42574345414e4b7c8051b16fa1fafe01c29871f (file content has an extra CTR[start]++ inside the carry loop; not present in any release tag checked; commit order/branch unverified)"
+    },
+    "rule_hint": "Code-reachability rule (app_calls_library). Mark reachable if any bytecode (app or bundled lib) contains: (a) NEW org/bouncycastle/crypto/modes/G3413CTRBlockCipher + INVOKESPECIAL <init>(Lorg/bouncycastle/crypto/BlockCipher;)V or (Lorg/bouncycastle/crypto/BlockCipher;I)V, followed by processBytes/processBlock/processBlocks/returnByte or BufferedBlockCipher use; or (b) an LDC string matching (case-insensitive) ^GOST3412-2015/CTR(/.*)?$ flowing into javax/crypto/Cipher.getInstance, together with BC provider availability (explicit 'BC'/BouncyCastleProvider argument, Security.addProvider/insertProviderAt(BouncyCastleProvider), or security.provider.N in java.security). Sink: G3413CTRBlockCipher.generateCRT()V. Fixed builds rename it to generateCTR()V, so the method name is a version fingerprint for the bundled jar. Do not flag GOST28147/GOFB (GOFBBlockCipher) or GOST28147/CTR (SICBlockCipher). Exploitability additionally needs >256 blocks per key/IV. For this app: app code has no BC refs; the Spring Security crypto BC users checked (Argon2, AES-CBC/GCM, PBKDF2 in BouncyCastleAesBytesEncryptor, SCrypt) use no GOST or CTR classes; OkHttp touches only bctls classes. Expected verdict NOT_REACHABLE unless a jar string scan finds 'GOST3412-2015/CTR' or G3413CTRBlockCipher references.",
+    "argon2_path_analysis": "Not reachable (high confidence; sources verified, conclusion inferred). Spring Security 7.1.1 Argon2PasswordEncoder (tag 7.1.1 source) uses only these BC APIs: Argon2Parameters$Builder.<init>(I)V(ARGON2_id) / withSalt([B) / withParallelism(I) / withMemoryAsKB(I) / withIterations(I) / build()Lorg/bouncycastle/crypto/params/Argon2Parameters;, Argon2BytesGenerator.<init>()V / init(Lorg/bouncycastle/crypto/params/Argon2Parameters;)V / generateBytes([C[B)I (encodeNonNullPassword L111, matchesNonNull L130), Argon2Parameters.getMemory/getIterations (upgradeEncodingNonNull L147). Argon2EncodingUtils also uses getType/getVersion/getLanes/getSalt, Builder.withVersion(I) and org.bouncycastle.util.Arrays.clone([B)[B. In BC 1.81 source, Argon2BytesGenerator imports only Digest, Blake2bDigest, Argon2Parameters, Arrays, Longs, Pack. Blake2bDigest imports CryptoServicePurpose, CryptoServicesRegistrar, ExtendedDigest, OutputLengthException, Arrays, Longs, Pack (+ same-package Utils). A jdeps class-level transitive closure on bcprov 1.78.1 (274 classes, over-approximate) from those entry classes contains no org.bouncycastle.crypto.modes.*, no org.bouncycastle.asn1.x509.*, and no org.bouncycastle.jce/jcajce classes. javap finds no Class.forName/loadClass/ClassLoader use in the closure. Blake2bDigest/Argon2Parameters are identical in 1.78.1 and 1.81. Argon2BytesGenerator differs only in input validation; its import set is the same. No Spring Security BC-using class checked (Argon2*, BouncyCastleAes{,Cbc,Gcm}BytesEncryptor, SCryptPasswordEncoder) registers a JCA provider. The app's parameters (16, 32, 1, 19456, 2) only change Argon2 cost. Specifically for this CVE: the closure contains no cipher mode classes at all (no StreamBlockCipher subclass), so G3413CTRBlockCipher.generateCRT()V is unreachable from Argon2PasswordEncoder.",
+    "okhttp_analysis": "Not relevant (verified sources, OkHttp tag parent-4.12.0). OkHttp's BC references are only org.bouncycastle.jsse.BCSSLSocket and org.bouncycastle.jsse.provider.BouncyCastleJsseProvider (bctls), in okhttp3/internal/platform/BouncyCastlePlatform.kt and Android-only android/BouncyCastleSocketAdapter.kt. It never uses bcprov cipher modes. Even when BouncyCastlePlatform is active (bctls present and the 'BC' provider is Security.getProviders()[0]), BCJSSE 1.81 does not implement the GOST CTR_OMAC TLS cipher suites (KUZNYECHIK_CTR_OMAC/MAGMA_CTR_OMAC -> TlsFatalAlert(internal_error) / not usable in BcTlsCrypto and JcaTlsCrypto), so TLS never instantiates G3413CTRBlockCipher. Nothing to check in the jar for this CVE beyond the generic string/class scan in rule_hint.",
+    "sources": [
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81/core/src/main/java/org/bouncycastle/crypto/modes/G3413CTRBlockCipher.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81v1/core/src/main/java/org/bouncycastle/crypto/modes/G3413CTRBlockCipher.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv84/core/src/main/java/org/bouncycastle/crypto/modes/G3413CTRBlockCipher.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv80v2/core/src/main/java/org/bouncycastle/crypto/modes/G3413CTRBlockCipher.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv59/core/src/main/java/org/bouncycastle/crypto/modes/G3413CTRBlockCipher.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/701686cb0184cd9ae103c801b3581fdf95c6d4f3/core/src/main/java/org/bouncycastle/crypto/modes/G3413CTRBlockCipher.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/b42574345414e4b7c8051b16fa1fafe01c29871f/core/src/main/java/org/bouncycastle/crypto/modes/G3413CTRBlockCipher.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81/core/src/main/java/org/bouncycastle/crypto/modes/GOFBBlockCipher.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81/prov/src/main/java/org/bouncycastle/jcajce/provider/symmetric/GOST3412_2015.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81/prov/src/main/java/org/bouncycastle/jcajce/provider/symmetric/GOST28147.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81/prov/src/main/java/org/bouncycastle/jcajce/provider/symmetric/util/BaseBlockCipher.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81/tls/src/main/java/org/bouncycastle/tls/crypto/impl/bc/BcTlsCrypto.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81/tls/src/main/java/org/bouncycastle/tls/crypto/impl/jcajce/JcaTlsCrypto.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv85/docs/releasenotes.html",
+      "https://raw.githubusercontent.com/wiki/bcgit/bc-java/CVE%E2%80%902025%E2%80%9014813.md",
+      "https://app.opencve.io/cve/CVE-2025-14813",
+      "https://db.gcve.eu/vuln/cve-2025-14813",
+      "https://advisories.gitlab.com/maven/org.bouncycastle/bcprov-jdk18on/CVE-2025-14813/",
+      "local: javap -p -s -c on /opt/gradle-8.14.3/lib/plugins/bcprov-jdk18on-1.78.1.jar (org.bouncycastle.crypto.modes.G3413CTRBlockCipher, StreamBlockCipher, DefaultMultiBlockCipher, GOST3412_2015$CTR)",
+      "local PoC: /home/claude/reach-poc/data/research/bc-poc/GostCtrWrap.java (+ .out.txt)"
+    ]
+  },
+  {
+    "cve": "CVE-2026-8763",
+    "ghsa": "GHSA-9pwp-9qqc-pr26",
+    "package": "org.bouncycastle:bcprov-jdk18on",
+    "installed_version": "1.81",
+    "fixed_versions": [
+      "1.85"
+    ],
+    "severity": "CRITICAL",
+    "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+    "summary": "BC's PKIXNameConstraintValidator compares rfc822Name hosts/mailboxes and URI hosts against name constraints with a bare equalsIgnoreCase or a label split, without removing an RFC 1034 trailing dot. A leaf with SAN 'ceo@bank.com.' or 'https://competitor.example./' therefore escapes an excludedSubtrees entry for bank.com / competitor.example, and BC's PKIX CertPathValidator/CertPathBuilder accepts the chain. Affects all bcprov before 1.85, with no 1.81.x backport.",
+    "vulnerable_feature": "RFC 5280 name-constraint enforcement in BouncyCastle's PKIX certification-path validation (BC JCA provider CertPathValidator/CertPathBuilder 'PKIX'/'RFC3280', PKIXCertPathReviewer), for rfc822Name (SAN and subject emailAddress) and uniformResourceIdentifier names. Implemented in org.bouncycastle.asn1.x509.PKIXNameConstraintValidator via the jce.provider facade.",
+    "trigger_conditions": [
+      "Certificate paths are validated by BouncyCastle's PKIX implementation. That happens through an explicit CertPathValidator/CertPathBuilder.getInstance('PKIX'|'RFC3280', 'BC'|BouncyCastleProvider) call, through BouncyCastleProvider registered AHEAD of SUN so that provider-less 'PKIX' lookups (including the JDK SunJSSE trust manager) pick BC, through the BCJSSE (bctls) trust manager running on BC, or through PKIXCertPathReviewer. With the stock JDK provider order and BC not registered (or only appended via Security.addProvider), JSSE and CertPathValidator use SUN, not BC (verified locally).",
+      "A CA certificate inside the validated CertPath (normally a constrained intermediate) carries a NameConstraints extension with rfc822Name or uniformResourceIdentifier subtrees. The bypass matters for excludedSubtrees (host form 'bank.com' and '.domain' form; permitted subtrees fail closed instead). BC 1.81 does not apply TrustAnchor.getNameConstraints() (verified: PKIXCertPathValidatorSpi(_8) start from an empty validator).",
+      "An attacker controls, or can get issuance from, that name-constrained CA (compromised or mis-issuing sub-CA). The resulting end-entity certificate has an rfc822Name SAN / subject emailAddress (e.g. 'ceo@bank.com.') or a URI SAN host (e.g. 'https://competitor.example./') ending in a dot. The relying application then treats that identity as the excluded name (e.g. S/MIME or URI-SAN based identities)."
+    ],
+    "invocation_kind": "both",
+    "vulnerable_methods": [
+      {
+        "class": "org.bouncycastle.asn1.x509.PKIXNameConstraintValidator",
+        "method": "emailIsConstrained",
+        "desc": "(Ljava/lang/String;Ljava/lang/String;)Z",
+        "confidence": "high",
+        "evidence": "1.81 name (source identical 1.78.1-1.83; javap on 1.78.1: private instance method, args (email, constraint)). L1028-1057 compares mailbox and host forms with bare equalsIgnoreCase and the '.domain' form via withinDomain. The advisory names the 1.84+ equivalent 'isEmailConstrained' (private static, args (constraint, email), same desc), which fix commit 2c28b253 wraps with stripTrailingDot. Local test: excluded rfc822Name 'bank.com' does not exclude 'user@bank.com.'."
+      },
+      {
+        "class": "org.bouncycastle.asn1.x509.PKIXNameConstraintValidator",
+        "method": "isUriConstrained",
+        "desc": "(Ljava/lang/String;Ljava/lang/String;)Z",
+        "confidence": "high",
+        "evidence": "1.81 name (1.84+: 'isURIConstrained', static, args (constraint, uri)). L1801-1820: host = extractHostFromURL(uri); host.equalsIgnoreCase(constraint) or withinDomain(host, constraint). The fix strips the trailing dot from host and constraint. Local test: excluded URI 'competitor.example' does not exclude 'https://competitor.example./'."
+      },
+      {
+        "class": "org.bouncycastle.asn1.x509.PKIXNameConstraintValidator",
+        "method": "withinDomain",
+        "desc": "(Ljava/lang/String;Ljava/lang/String;)Z",
+        "confidence": "high",
+        "evidence": "L1059-1089: label-wise compare after Strings.split(testDomain, '.'). In 1.81 a trailing dot yields an extra empty label that misaligns the compare, so '.bank.com' misses 'user@mail.bank.com.' (local test). The fix adds stripTrailingDot on both arguments. Also used by the dNSName checks and the intersect*/union* methods."
+      },
+      {
+        "class": "org.bouncycastle.asn1.x509.PKIXNameConstraintValidator",
+        "method": "checkExcludedEmail",
+        "desc": "(Ljava/util/Set;Ljava/lang/String;)V",
+        "confidence": "high",
+        "evidence": "javap -c: iterates the excluded set and calls emailIsConstrained. With the bypass it never throws (named in advisory). Sibling: checkPermittedEmail (Ljava/util/Set;Ljava/lang/String;)V."
+      },
+      {
+        "class": "org.bouncycastle.asn1.x509.PKIXNameConstraintValidator",
+        "method": "checkExcludedURI",
+        "desc": "(Ljava/util/Set;Ljava/lang/String;)V",
+        "confidence": "high",
+        "evidence": "javap -c: calls isUriConstrained. Sibling: checkPermittedURI (Ljava/util/Set;Ljava/lang/String;)V."
+      },
+      {
+        "class": "org.bouncycastle.asn1.x509.PKIXNameConstraintValidator",
+        "method": "checkExcluded",
+        "desc": "(Lorg/bouncycastle/asn1/x509/GeneralName;)V",
+        "confidence": "high",
+        "evidence": "Public API (L96). Dispatches rfc822Name -> checkExcludedEmail, uniformResourceIdentifier -> checkExcludedURI, dNSName -> checkExcludedDNS. Sibling: checkPermitted (Lorg/bouncycastle/asn1/x509/GeneralName;)V (L61)."
+      },
+      {
+        "class": "org.bouncycastle.jce.provider.PKIXNameConstraintValidator",
+        "method": "checkExcluded",
+        "desc": "(Lorg/bouncycastle/asn1/x509/GeneralName;)V",
+        "confidence": "high",
+        "evidence": "Facade that delegates to the asn1.x509 validator (1.81 source L86-97; identical to 1.78.1). Sibling: checkPermitted (Lorg/bouncycastle/asn1/x509/GeneralName;)V."
+      },
+      {
+        "class": "org.bouncycastle.jce.provider.RFC3280CertPathUtilities",
+        "method": "processCertBC",
+        "desc": "(Ljava/security/cert/CertPath;ILorg/bouncycastle/jce/provider/PKIXNameConstraintValidator;Z)V",
+        "confidence": "high",
+        "evidence": "1.81 L1059+. Calls checkPermitted/checkExcluded for every subject-DN emailAddress RDN as an rfc822Name (L1116-1125) and for every SubjectAltName GeneralName (L1155-1156). Confirmed with javap -c on 1.78.1. Named in the vendor advisory."
+      },
+      {
+        "class": "org.bouncycastle.jce.provider.PKIXCertPathValidatorSpi_8",
+        "method": "engineValidate",
+        "desc": "(Ljava/security/cert/CertPath;Ljava/security/cert/CertPathParameters;)Ljava/security/cert/CertPathValidatorResult;",
+        "confidence": "high",
+        "evidence": "Registered as CertPathValidator.PKIX/RFC3280 when java.security.cert.PKIXRevocationChecker exists, i.e. on Java 21 (BouncyCastleProvider 1.81 L239-246). Calls processCertBC and prepareNextCertG (javap -c). PKIXCertPathValidatorSpi.engineValidate (same desc) is the pre-Java-8 registration. Local end-to-end test: CertPathValidator.getInstance(\"PKIX\",\"BC\") accepts leaves with SAN 'user@bank.com.' / 'https://competitor.example./' under an intermediate that excludes them, and rejects the no-dot forms."
+      },
+      {
+        "class": "org.bouncycastle.jce.provider.PKIXCertPathBuilderSpi_8",
+        "method": "build",
+        "desc": "(Ljava/security/cert/X509Certificate;Lorg/bouncycastle/jcajce/PKIXExtendedBuilderParameters;Ljava/util/List;)Ljava/security/cert/CertPathBuilderResult;",
+        "confidence": "high",
+        "evidence": "javap -c: new PKIXCertPathValidatorSpi_8(Z) and engineValidate. Reached from engineBuild (Ljava/security/cert/CertPathParameters;)Ljava/security/cert/CertPathBuilderResult; (CertPathBuilder.PKIX), the path BCJSSE and the JDK PKIXValidator.doBuild take."
+      },
+      {
+        "class": "org.bouncycastle.x509.PKIXCertPathReviewer",
+        "method": "checkNameConstraints",
+        "desc": "()V",
+        "confidence": "high",
+        "evidence": "javap -c: creates a jce.provider.PKIXNameConstraintValidator and calls checkPermitted/checkExcluded. Reached via doChecks()V from isValidCertPath()Z / getErrors()[Ljava/util/List;."
+      },
+      {
+        "class": "org.bouncycastle.asn1.x509.PKIXNameConstraintValidator",
+        "method": "checkExcludedDNS",
+        "desc": "(Ljava/util/Set;Ljava/lang/String;)V",
+        "confidence": "medium",
+        "evidence": "Not named by the CVE (its title says rfc822Name and URI only). In 1.81 the dNSName path also lacks trailing-dot handling (withinDomain + equalsIgnoreCase): a local test shows excluded 'bank.com' does not exclude dNSName 'www.bank.com.'. 1.85 adds stripTrailingDot to isDNSConstrained (diff r1rv84 -> 2c28b253). The vendor wording 'the dNSName path strips trailing dots' holds for 1.85-cycle main, not for 1.81. Whether this falls under this CVE ID is unclear."
+      }
+    ],
+    "entry_apis": [
+      "java.security.cert.CertPathValidator.getInstance(\"PKIX\"|\"RFC3280\", \"BC\" | BouncyCastleProvider).validate(CertPath, PKIXParameters)",
+      "java.security.cert.CertPathBuilder.getInstance(\"PKIX\"|\"RFC3280\", \"BC\" | BouncyCastleProvider).build(PKIXBuilderParameters)",
+      "Provider-less CertPathValidator.getInstance(\"PKIX\") / CertPathBuilder.getInstance(\"PKIX\") when BouncyCastleProvider is registered ahead of SUN (Security.insertProviderAt(bc, 1) or security.provider.1=...BouncyCastleProvider). This includes the JDK SunJSSE default X509TrustManager: sun.security.validator.PKIXValidator.doValidate/doBuild call these without a provider (javap on JDK 21.0.12). It therefore covers TLS server-certificate validation in any JSSE client (OkHttp Jdk9Platform, java.net.http.HttpClient, HttpsURLConnection, etc.) and Tomcat mTLS client-certificate validation.",
+      "BCJSSE (bctls) X509TrustManager from TrustManagerFactory.getInstance(\"PKIX\", \"BCJSSE\"): ProvX509TrustManager.checkServerTrusted/checkClientTrusted -> CertPathBuilder.getInstance(\"PKIX\", provider of helper.createCertificateFactory(\"X.509\")). That provider is BC when BC is first (DefaultJcaJceHelper) or when BCJSSE is constructed with the BC provider.",
+      "org.bouncycastle.x509.PKIXCertPathReviewer(CertPath, PKIXParameters).isValidCertPath() / getErrors() / getNotifications()",
+      "Direct use: org.bouncycastle.asn1.x509.PKIXNameConstraintValidator or org.bouncycastle.jce.provider.PKIXNameConstraintValidator .checkPermitted(GeneralName) / .checkExcluded(GeneralName) after intersectPermittedSubtree/addExcludedSubtree",
+      "Outside bcprov, only if bcpkix-jdk18on 1.81 is bundled: org.bouncycastle.pkix.PKIXNameConstraintValidator -> package-private org.bouncycastle.pkix.ASN1PKIXNameConstraintValidator, a separate copy with the same emailIsConstrained/isUriConstrained logic (bcpkix is not listed in the advisory)"
+    ],
+    "fix_evidence": {
+      "changelog": "BC 1.85 release notes (docs/releasenotes.html @ r1rv85, released 2026-07-12), Security Fixes: 'CVE-2026-8763 - Name Constraints bypass via trailing dot in rfc822Name and URI.' Defect entry: '(2) rfc822Name and uniformResourceIdentifier host comparisons used an exact case-insensitive compare while the dNSName path strips an RFC 1034 root-label trailing dot, so an excluded subtree of bank.com / competitor.example could be evaded with a trailing dot (user@bank.com., https://competitor.example./); the email and URI host forms now apply the same trailing-dot canonicalisation before comparison.' Vendor wiki: affects BC before 1.85, BC-LTS before 2.73.12, BC-FJA before 1.0.2.7/2.0.2/2.1.3; reachable from PKIXCertPathValidatorSpi_8 -> RFC3280CertPathUtilities.processCertBC.",
+      "diff_summary": "Comparing r1rv84 with commit 2c28b253 (core/src/main/java/org/bouncycastle/asn1/x509/PKIXNameConstraintValidator.java): a new private static stripTrailingDot(String) is added. isEmailConstrained compares stripTrailingDot(email)/stripTrailingDot(constraint) for the mailbox, '@domain' and host forms. withinDomain strips the dot from both arguments. isURIConstrained strips the dot from the extracted host and the constraint. isDNSConstrained is normalised the same way. extractHostFromURL is rewritten per RFC 3986 (last '@', '?'/'#' terminators, IPv6 brackets). The same range also restricts directoryName matching to prefixes only (SGP.22 relaxed mode moved behind a property) and normalises IPv4-mapped IPv6 in isIPConstrained. 1.85 final additionally rejects multi-'@' rfc822Names (opt-out org.bouncycastle.x509.allow_lenient_rfc822_name). The installed 1.81 code is identical to 1.78.1-1.83 and lacks all of this. The 1.84 refactor renamed the methods but kept the bare equalsIgnoreCase. There is no 1.81.x backport: the r1rv81v1 validator == r1rv81 and tag r1rv81v2 does not exist. The fixed release fingerprint is stripTrailingDot(Ljava/lang/String;)Ljava/lang/String; in asn1.x509.PKIXNameConstraintValidator.",
+      "commit": "2c28b253a44681fbbc562561eab6ad383d2ae558"
+    },
+    "rule_hint": "Configuration-plus-call reachability rule (invocation_kind both). Mark reachable if ANY of these holds: (1) bytecode calls java/security/cert/CertPathValidator.getInstance or CertPathBuilder.getInstance with 'PKIX'/'RFC3280' and provider 'BC' or a BouncyCastleProvider instance; (2) BouncyCastleProvider is registered ahead of SUN, via Security.insertProviderAt(new BouncyCastleProvider(), 1) in any bytecode, security.provider.1=org.bouncycastle.jce.provider.BouncyCastleProvider in java.security, or -Djava.security.properties. That makes every provider-less 'PKIX' lookup, including SunJSSE trust managers, run BC's validator. Security.addProvider (append) alone is NOT enough; (3) bctls is bundled and a BCJSSE trust manager is used with BC as its JCA provider (OkHttp picks BouncyCastlePlatform only if Security.getProviders()[0].getName()=='BC' and bctls is present); (4) direct references to org/bouncycastle/x509/PKIXCertPathReviewer or PKIXNameConstraintValidator.checkPermitted/checkExcluded. Exploitability also needs a CA in the validated chain with rfc822Name/URI name constraints (excludedSubtrees) and an attacker able to issue under it. Sink methods with 1.81 names: asn1.x509.PKIXNameConstraintValidator.emailIsConstrained/isUriConstrained/withinDomain (Ljava/lang/String;Ljava/lang/String;)Z. 1.84 renamed them to isEmailConstrained/isURIConstrained (static, args swapped, same desc), so match both name sets or anchor on the public checkPermitted/checkExcluded (Lorg/bouncycastle/asn1/x509/GeneralName;)V. For this app: no BC refs in app code, Argon2 path cannot reach it, and OkHttp needs bctls + BC first. Expected verdict NOT_REACHABLE unless runtime config/jar shows BC registered at position 1, bctls in use, or explicit BC CertPath usage.",
+    "argon2_path_analysis": "Not reachable (high confidence; sources verified, conclusion inferred). Spring Security 7.1.1 Argon2PasswordEncoder (tag 7.1.1 source) uses only these BC APIs: Argon2Parameters$Builder.<init>(I)V(ARGON2_id) / withSalt([B) / withParallelism(I) / withMemoryAsKB(I) / withIterations(I) / build()Lorg/bouncycastle/crypto/params/Argon2Parameters;, Argon2BytesGenerator.<init>()V / init(Lorg/bouncycastle/crypto/params/Argon2Parameters;)V / generateBytes([C[B)I (encodeNonNullPassword L111, matchesNonNull L130), Argon2Parameters.getMemory/getIterations (upgradeEncodingNonNull L147). Argon2EncodingUtils also uses getType/getVersion/getLanes/getSalt, Builder.withVersion(I) and org.bouncycastle.util.Arrays.clone([B)[B. In BC 1.81 source, Argon2BytesGenerator imports only Digest, Blake2bDigest, Argon2Parameters, Arrays, Longs, Pack. Blake2bDigest imports CryptoServicePurpose, CryptoServicesRegistrar, ExtendedDigest, OutputLengthException, Arrays, Longs, Pack (+ same-package Utils). A jdeps class-level transitive closure on bcprov 1.78.1 (274 classes, over-approximate) from those entry classes contains no org.bouncycastle.crypto.modes.*, no org.bouncycastle.asn1.x509.*, and no org.bouncycastle.jce/jcajce classes. javap finds no Class.forName/loadClass/ClassLoader use in the closure. Blake2bDigest/Argon2Parameters are identical in 1.78.1 and 1.81. Argon2BytesGenerator differs only in input validation; its import set is the same. No Spring Security BC-using class checked (Argon2*, BouncyCastleAes{,Cbc,Gcm}BytesEncryptor, SCryptPasswordEncoder) registers a JCA provider. The app's parameters (16, 32, 1, 19456, 2) only change Argon2 cost. Specifically for this CVE: the closure contains no org.bouncycastle.asn1.x509 class (PKIXNameConstraintValidator, GeneralName) and no jce.provider/x509 path-validation classes, so the name-constraint code is unreachable from Argon2PasswordEncoder.",
+    "okhttp_analysis": "Verified sources (OkHttp tag parent-4.12.0; bc-java r1rv81). OkHttp selects BouncyCastlePlatform only when both hold: (a) Platform.isBouncyCastlePreferred, i.e. Security.getProviders()[0].name == \"BC\" (the bcprov JCA provider at position 1, not 'BCJSSE'; Platform.kt L212-216, L239-244), and (b) BouncyCastlePlatform.isSupported, i.e. Class.forName(\"org.bouncycastle.jsse.provider.BouncyCastleJsseProvider\") succeeds, which needs bctls. OkHttp 4.12.0 has no okhttp.platform property; it reads only java.vm.name and java.specification.version. So bcprov alone never activates it, and OkHttp falls back to Jdk9Platform. When BouncyCastlePlatform is active, platformTrustManager() = TrustManagerFactory.getInstance(\"PKIX\", \"BCJSSE\") (BCJSSE must also be registered by name, otherwise NoSuchProviderException; that failure mode is inferred). The chain then is BCJSSE ProvX509TrustManager -> CertPathBuilder.getInstance(\"PKIX\", provider of DefaultJcaJceHelper's X.509 CertificateFactory = BC) -> PKIXCertPathBuilderSpi_8 -> PKIXCertPathValidatorSpi_8.engineValidate -> RFC3280CertPathUtilities.processCertBC, i.e. the vulnerable checks run on every server-cert validation. With Jdk9Platform (the default): SunJSSE X509TrustManagerImpl -> sun.security.validator.PKIXValidator -> provider-less CertPathValidator/CertPathBuilder.getInstance(\"PKIX\") -> SUN, unless BC is registered ahead of SUN (then BC; verified locally that inserting BC at position 1 makes default PKIX validator/builder/X.509 factory resolve to BC). OkHttp's OkHostnameVerifier, BasicCertificateChainCleaner and BasicTrustRootIndex (fetched) reference no name-constraint or CertPath/PKIX APIs; the chain cleaner only calls X509Certificate.verify(publicKey). What to check in the jar/runtime: BOOT-INF/lib/bctls-jdk18on-*.jar (org/bouncycastle/jsse/provider/BouncyCastleJsseProvider.class); bcpkix-jdk18on (its own validator copy); any Security.insertProviderAt/addProvider of BouncyCastleProvider or BouncyCastleJsseProvider in bytecode; security.provider.N entries in $JAVA_HOME/conf/security/java.security or a -Djava.security.properties override; a runtime dump of Security.getProviders() order. Side note, outside this CVE: OpenJDK 21.0.12's SUN PKIX validator also accepted the same trailing-dot rfc822Name/URI leaves in a local test.",
+    "sources": [
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81/core/src/main/java/org/bouncycastle/asn1/x509/PKIXNameConstraintValidator.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv84/core/src/main/java/org/bouncycastle/asn1/x509/PKIXNameConstraintValidator.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv85/core/src/main/java/org/bouncycastle/asn1/x509/PKIXNameConstraintValidator.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/2c28b253a44681fbbc562561eab6ad383d2ae558/core/src/main/java/org/bouncycastle/asn1/x509/PKIXNameConstraintValidator.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81v1/core/src/main/java/org/bouncycastle/asn1/x509/PKIXNameConstraintValidator.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81/prov/src/main/java/org/bouncycastle/jce/provider/PKIXNameConstraintValidator.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81/prov/src/main/java/org/bouncycastle/jce/provider/RFC3280CertPathUtilities.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81/prov/src/main/java/org/bouncycastle/jce/provider/PKIXCertPathValidatorSpi.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81/prov/src/main/java/org/bouncycastle/jce/provider/PKIXCertPathValidatorSpi_8.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81/prov/src/main/java/org/bouncycastle/jce/provider/BouncyCastleProvider.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81/core/src/main/java/org/bouncycastle/util/Strings.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81/tls/src/main/java/org/bouncycastle/jsse/provider/ProvX509TrustManager.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81/tls/src/main/java/org/bouncycastle/jsse/provider/BouncyCastleJsseProvider.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81/tls/src/main/java/org/bouncycastle/tls/crypto/impl/jcajce/JcaTlsCryptoProvider.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81/pkix/src/main/java/org/bouncycastle/pkix/ASN1PKIXNameConstraintValidator.java",
+      "https://raw.githubusercontent.com/bcgit/bc-java/r1rv85/docs/releasenotes.html",
+      "https://raw.githubusercontent.com/wiki/bcgit/bc-java/CVE%E2%80%902026%E2%80%908763.md",
+      "https://raw.githubusercontent.com/square/okhttp/parent-4.12.0/okhttp/src/main/kotlin/okhttp3/internal/platform/Platform.kt",
+      "https://raw.githubusercontent.com/square/okhttp/parent-4.12.0/okhttp/src/main/kotlin/okhttp3/internal/platform/BouncyCastlePlatform.kt",
+      "https://raw.githubusercontent.com/square/okhttp/parent-4.12.0/okhttp/src/main/kotlin/okhttp3/internal/platform/android/BouncyCastleSocketAdapter.kt",
+      "https://raw.githubusercontent.com/spring-projects/spring-security/7.1.1/crypto/src/main/java/org/springframework/security/crypto/argon2/Argon2PasswordEncoder.java",
+      "https://raw.githubusercontent.com/spring-projects/spring-security/7.1.1/crypto/src/main/java/org/springframework/security/crypto/argon2/Argon2EncodingUtils.java",
+      "https://app.opencve.io/cve/CVE-2026-8763",
+      "https://advisories.gitlab.com/maven/org.bouncycastle/bcprov-jdk18on/CVE-2026-8763/",
+      "local: javap -p -s -c on /opt/gradle-8.14.3/lib/plugins/bcprov-jdk18on-1.78.1.jar (asn1.x509/jce.provider PKIXNameConstraintValidator, RFC3280CertPathUtilities, PKIXCertPathValidatorSpi(_8), PKIXCertPathBuilderSpi_8, x509.PKIXCertPathReviewer); javap -c --module java.base sun.security.validator.PKIXValidator (JDK 21.0.12)",
+      "local PoC: /home/claude/reach-poc/data/research/bc-poc/NcTrailingDot.java, NcCertPath.java (+ .out.txt)"
+    ]
+  },
+  {
+    "cve": "CVE-2026-13506",
+    "ghsa": "GHSA-qp49-qgx5-5m26",
+    "package": "org.bouncycastle:bcprov-jdk18on",
+    "installed_version": "1.81",
+    "fixed_versions": [
+      "1.85"
+    ],
+    "severity": "HIGH",
+    "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+    "invocation_kind": "app_calls_library",
+    "summary": "ASN1InputStream in lazy mode captures a SEQUENCE as LazyEncodedSequence; force()/getObjects() re-parse the contents with a fresh ASN1InputStream whose nesting-depth guard starts at the maximum again, so a crafted deeply nested SEQUENCE defeats the StreamUtil depth limit and a whole-tree walk overflows the stack (DoS). Fixed in 1.85 by carrying the remaining depth.",
+    "vulnerable_feature": "Lazy ASN.1 parsing (ASN1InputStream with lazyEvaluate=true) of untrusted input, walked to the end",
+    "trigger_conditions": [
+      "untrusted DER parsed with ASN1InputStream(..., true) or another lazy path",
+      "the resulting sequences are forced (size/getObjectAt/toArray/getObjects)"
+    ],
+    "fix_evidence": "Commit 77454da9 (data/research/bc-src/diffs/LazyEncodedSequence_commit_77454da9.diff): LazyEncodedSequence gains contentsDepth; force() and getObjects() pass it to a new ASN1InputStream(byte[], boolean, int); LazyConstructionEnumeration(byte[]) becomes (byte[], int); ASN1InputStream.buildObject records StreamUtil.decrementDepth(depth).",
+    "vulnerable_methods": [
+      {
+        "class": "org.bouncycastle.asn1.LazyEncodedSequence",
+        "method": "force",
+        "desc": "()V",
+        "confidence": "high",
+        "evidence": "Private synchronized. 1.81: new ASN1InputStream(encoded, true) resets the depth guard. Reached from size/getObjectAt/toArray/parser. javap on 1.81."
+      },
+      {
+        "class": "org.bouncycastle.asn1.LazyEncodedSequence",
+        "method": "getObjects",
+        "desc": "()Ljava/util/Enumeration;",
+        "confidence": "high",
+        "evidence": "1.81: returns new LazyConstructionEnumeration(encoded) with a fresh depth guard. javap on 1.81."
+      },
+      {
+        "class": "org.bouncycastle.asn1.LazyConstructionEnumeration",
+        "method": "<init>",
+        "desc": "([B)V",
+        "confidence": "high",
+        "evidence": "1.81: aIn = new ASN1InputStream(encoded, true). Signature changes to (byte[], int) in the fix, which works as a version fingerprint."
+      },
+      {
+        "class": "org.bouncycastle.asn1.ASN1InputStream",
+        "method": "buildObject",
+        "desc": "(III)Lorg/bouncycastle/asn1/ASN1Primitive;",
+        "confidence": "low",
+        "evidence": "Changed by the fix (lazy branch), but shared with eager parsing, so it is excluded as a sink (make_spec.py EXCLUDE_SINKS)."
+      }
+    ],
+    "sources": [
+      "https://github.com/bcgit/bc-java/commit/77454da9b3dcaaa2991412d1c3c1a6e1a338ff84",
+      "https://github.com/bcgit/bc-java/wiki/CVE-2026-13506",
+      "https://github.com/advisories/GHSA-qp49-qgx5-5m26"
+    ]
+  },
+  {
+    "cve": "CVE-2026-0636",
+    "ghsa": "GHSA-c3fc-8qff-9hwx",
+    "package": "org.bouncycastle:bcprov-jdk18on",
+    "installed_version": "1.81",
+    "fixed_versions": [
+      "1.80.2",
+      "1.81.1",
+      "1.84"
+    ],
+    "severity": "MEDIUM",
+    "cvss_vector": null,
+    "invocation_kind": "app_calls_library",
+    "summary": "LDAP injection in BC's LDAP certificate store: LDAPStoreHelper and X509LDAPCertStoreSpi extract an RDN value from a certificate subject/issuer DN with parseDN and put it into an LDAP search filter without RFC 2254 escaping, so a crafted DN changes the filter. Affects 1.74-1.80.1, 1.81 and 1.82-1.83. The fix moves parseDN to LDAPUtils, which escapes * ( ) \\\\ and NUL.",
+    "vulnerable_feature": "BC LDAP CertStore (CertStore.getInstance(\"LDAP\", ..., \"BC\"), X509LDAPCertStoreSpi, LDAPStoreHelper) queried with attacker-influenced certificate names",
+    "trigger_conditions": [
+      "the app uses BC's LDAP CertStore / LDAPStoreHelper",
+      "a selector built from an untrusted certificate DN is searched"
+    ],
+    "fix_evidence": "Commit d20cdb84: removes private parseDN from LDAPStoreHelper and X509LDAPCertStoreSpi and calls the new escaping LDAPUtils.parseDN; search filters are built from the escaped value.",
+    "vulnerable_methods": [
+      {
+        "class": "org.bouncycastle.x509.util.LDAPStoreHelper",
+        "method": "parseDN",
+        "desc": "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+        "confidence": "high",
+        "evidence": "Private, removed by the fix (no escaping). javap on 1.81 and 1.78.1."
+      },
+      {
+        "class": "org.bouncycastle.jce.provider.X509LDAPCertStoreSpi",
+        "method": "parseDN",
+        "desc": "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+        "confidence": "high",
+        "evidence": "Private, removed by the fix. javap on 1.81."
+      },
+      {
+        "class": "org.bouncycastle.x509.util.LDAPStoreHelper",
+        "method": "search",
+        "desc": "([Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;)Ljava/util/List;",
+        "confidence": "medium",
+        "evidence": "Builds the LDAP filter from the unescaped value. javap on 1.81."
+      },
+      {
+        "class": "org.bouncycastle.jce.provider.X509LDAPCertStoreSpi",
+        "method": "search",
+        "desc": "(Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;)Ljava/util/Set;",
+        "confidence": "medium",
+        "evidence": "Builds the LDAP filter from the unescaped value. javap on 1.81."
+      }
+    ],
+    "rule_hint": "CertStore.getInstance(\"LDAP\") selects X509LDAPCertStoreSpi through the provider table (reflection), so the call graph alone can miss it: also look for CertStore.getInstance and LDAP store classes in app code.",
+    "sources": [
+      "https://github.com/bcgit/bc-java/commit/d20cdb8430e09224114fec0179a71859929fcbde",
+      "https://github.com/bcgit/bc-java/wiki/CVE%E2%80%902026%E2%80%900636",
+      "https://github.com/advisories/GHSA-c3fc-8qff-9hwx"
+    ]
+  }
+]

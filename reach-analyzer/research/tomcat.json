@@ -1,0 +1,213 @@
+[
+  {
+    "cve": "CVE-2026-65182",
+    "ghsa": "GHSA-gcx9-497g-6cp6",
+    "package": "org.apache.tomcat.embed:tomcat-embed-core",
+    "installed_version": "11.0.24",
+    "fixed_versions": [
+      "11.0.25",
+      "10.1.59",
+      "9.0.121"
+    ],
+    "severity": "CRITICAL",
+    "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+    "summary": "RealmBase.findSecurityConstraints() records the length of the LAST matching '/x/*' pattern in a web-resource-collection rather than the longest one. When a longer prefix is listed before a shorter overlapping prefix in one collection, a later constraint with an overlapping prefix can displace the more restrictive constraint, or be combined with it, and access is granted (NVD/CISA-ADP CVSS 9.1; Apache rates it Important).",
+    "vulnerable_feature": "Servlet container-managed security constraints: <security-constraint>/<web-resource-collection> path-prefix ('/x/*') url-pattern matching, evaluated by the Realm inside Tomcat's Authenticator valve",
+    "trigger_conditions": [
+      "The Tomcat Context has security constraints (Context.findConstraints() is non-empty). Sources: web.xml or web-fragment <security-constraint> (only processed when ContextConfig is used, e.g. standalone Tomcat, a WAR, or Tomcat#addWebapp); programmatic Context.addConstraint(...) (e.g. in a Spring Boot TomcatContextCustomizer or a TomcatServletWebServerFactory#postProcessContext override); @ServletSecurity; ServletRegistration.Dynamic#setServletSecurity.",
+      "At least one SecurityCollection holds two or more '/.../*' prefix patterns that both match the request path, with the LONGER pattern listed BEFORE the shorter one. Example: ['/level1/level2/level3/*', '/level1/*'] (see the test added by the fix). Constraints built from @ServletSecurity or setServletSecurity put one pattern per collection (SecurityConstraint.createConstraints -> createConstraint -> collection.addPatternDecoded(urlPattern)), so they cannot produce this shape on their own (inferred from code).",
+      "The constraint holding that collection is declared (evaluated) BEFORE another overlapping prefix constraint Y. Y's matching pattern length L must satisfy lastMatchLen <= L <= longestMatchLen of the misordered collection. If L > lastMatchLen, Y displaces the earlier constraint (mode 1, the unit test: a '/level1/level2/*' permit-all constraint displaces the deny constraint for /level1/level2/level3/*). If L == lastMatchLen, Y is wrongly combined with it (mode 2), and hasResourcePermission treats a constraint without an auth-constraint as allow. If Y is declared first, the result is correct.",
+      "No exact-match url-pattern covers the request URI. Exact matches are evaluated first and short-circuit.",
+      "An AuthenticatorBase valve is in the Context pipeline. This is always true with ContextConfig, and in Spring Boot through Tomcat.FixContextListener's NonLoginAuthenticator. Constraints are only evaluated in AuthenticatorBase.invoke."
+    ],
+    "invocation_kind": "framework_invokes",
+    "vulnerable_methods": [
+      {
+        "class": "org.apache.catalina.realm.RealmBase",
+        "method": "findSecurityConstraints",
+        "desc": "(Lorg/apache/catalina/connector/Request;Lorg/apache/catalina/Context;)[Lorg/apache/tomcat/util/descriptor/web/SecurityConstraint;",
+        "confidence": "high",
+        "evidence": "11.0.24 L639 '/*' prefix loop: 'pattern.length() >= longest' becomes '... && pattern.length() >= length' in 11.0.25. Tomcat security-11.xml names commit 8bafd79a3b54 as the fix. RealmBase at 8bafd79 equals 11.0.25. RealmBase at 2c2c510 (the CVE-2026-66422 fix) already has the unrelated hasRole change but lacks this one. TestRealmBase#testOverlappingConstraints is present at 8bafd79 and in 11.0.25. A ported simulation shows that for /level1/level2/level3/index.jsp, 11.0.24 selects only the permit-all constraint and 11.0.25 selects the deny constraint. Descriptor confirmed via javac/javap on signature stubs."
+      },
+      {
+        "class": "org.apache.catalina.Realm",
+        "method": "findSecurityConstraints",
+        "desc": "(Lorg/apache/catalina/connector/Request;Lorg/apache/catalina/Context;)[Lorg/apache/tomcat/util/descriptor/web/SecurityConstraint;",
+        "confidence": "low",
+        "evidence": "Interface method only (unchanged). AuthenticatorBase.invoke (11.0.24 L524, and L596 in 11.0.25 after FORM restore) calls it via invokeinterface. RealmBase is the only implementation in Tomcat: CombinedRealm, LockOutRealm, NullRealm and Tomcat$SimpleRealm all inherit it. Listed only to map call sites to the vulnerable implementation."
+      }
+    ],
+    "fix_evidence": {
+      "changelog": "11.0.25 changelog, Catalina: 'Ensure the security constraint with the longest matching path is selected when more than one constraint matches the request path. (markt)'. The same entry appears in 10.1.58 (marked 'not released' in the 10.1.59 changelog) and in 9.0.121. Tomcat security page: 'Important: Security constraint bypass ... if a constraint for a longer path was specified before a more restrictive constraint for a shorter sub-path.'",
+      "diff_summary": "RealmBase.findSecurityConstraints: in the prefix-match stage, add '&& pattern.length() >= length' to the per-pattern filter, so a later and shorter matching pattern in the same SecurityCollection no longer overwrites the longer match length recorded for that collection. TestRealmBase adds testOverlappingConstraints. The other RealmBase hunks are unrelated: hasRole now uses Context.findRoleMapping (CVE-2026-66422), plus javadoc reflow. hasResourcePermission and hasUserDataPermission are unchanged. Full diff: tomcat-src/diffs/RealmBase.11.0.24-11.0.25.diff",
+      "commit": "8bafd79a3b54684e80e9cb1bafd4746aede7d3f5"
+    },
+    "rule_hint": "This is a configuration-reachability rule: the method runs on every request, but the vulnerable branch needs constraints. Check bytecode and config for: (1) calls to org/apache/catalina/Context.addConstraint(Lorg/apache/tomcat/util/descriptor/web/SecurityConstraint;)V, SecurityConstraint.addCollection, SecurityCollection.addPattern/addPatternDecoded, typically inside TomcatContextCustomizer#customize or a TomcatServletWebServerFactory#postProcessContext override. For each SecurityCollection, collect its patterns in order and flag a collection with two or more '/.../*' patterns where a longer one precedes a shorter overlapping one, AND another constraint added after it with an overlapping prefix. (2) A web.xml with <security-constraint>, which only matters when ContextConfig is used; Spring Boot embedded ignores web.xml. (3) @ServletSecurity or setServletSecurity; these use single-pattern collections and are not vulnerable on their own. The common HTTPS-redirect snippet (one '/*' pattern with CONFIDENTIAL) is not the vulnerable shape. Fix fingerprint: version >= 11.0.25 / 10.1.59 / 9.0.121.",
+    "default_spring_boot_exposure": "Not exposed by default (verified from source). Spring Boot v4.0.8 and v4.1.1 (both pin tomcatVersion=11.0.24 in gradle.properties): TomcatServletWebServerFactory.prepareContext only registers Tomcat.FixContextListener (v4.0.8 L184 / v4.1.1 L205) and adds no SecurityConstraint, LoginConfig, Realm or Authenticator, and no ContextConfig (so no web.xml processing and no auth-method-based authenticator installation). A grep of TomcatWebServerFactory, TomcatEmbeddedContext, TomcatWebServer and the two autoconfigure customizers also found nothing (this was not a whole-repo search). Tomcat's FixContextListener (Tomcat.java L1113-1118) then sets LoginConfig('NONE') and adds a NonLoginAuthenticator valve, so AuthenticatorBase.invoke runs on every request. AuthenticatorBase.invoke calls Realm.findSecurityConstraints, which goes to RealmBase via Tomcat$SimpleRealm, the default Engine realm from Tomcat#getEngine L600. RealmBase returns null at L550-556 because StandardContext.constraints defaults to new SecurityConstraint[0] (L271), so the vulnerable prefix loop (L611-669) is never reached. invoke then skips to the next valve (L531-537). Method-level reachability is therefore a false positive. Real exposure needs app-added constraints in the misordered shape. Spring Security filters run after this valve and do not use Tomcat constraints.",
+    "sources": [
+      "https://raw.githubusercontent.com/apache/tomcat/11.0.24/java/org/apache/catalina/realm/RealmBase.java",
+      "https://raw.githubusercontent.com/apache/tomcat/11.0.25/java/org/apache/catalina/realm/RealmBase.java",
+      "https://raw.githubusercontent.com/apache/tomcat/8bafd79a3b54684e80e9cb1bafd4746aede7d3f5/java/org/apache/catalina/realm/RealmBase.java",
+      "https://raw.githubusercontent.com/apache/tomcat/2c2c510ab10ae7796de6c6f7b70abae85c99d30d/java/org/apache/catalina/realm/RealmBase.java",
+      "https://raw.githubusercontent.com/apache/tomcat/11.0.25/test/org/apache/catalina/realm/TestRealmBase.java",
+      "https://raw.githubusercontent.com/apache/tomcat/11.0.25/webapps/docs/changelog.xml",
+      "https://raw.githubusercontent.com/apache/tomcat/10.1.59/webapps/docs/changelog.xml",
+      "https://raw.githubusercontent.com/apache/tomcat-site/trunk/xdocs/security-11.xml",
+      "https://raw.githubusercontent.com/apache/tomcat/11.0.24/java/org/apache/catalina/authenticator/AuthenticatorBase.java",
+      "https://raw.githubusercontent.com/apache/tomcat/11.0.24/java/org/apache/catalina/startup/Tomcat.java",
+      "https://raw.githubusercontent.com/apache/tomcat/11.0.24/java/org/apache/catalina/core/StandardContext.java",
+      "https://raw.githubusercontent.com/apache/tomcat/11.0.24/java/org/apache/tomcat/util/descriptor/web/SecurityConstraint.java",
+      "https://raw.githubusercontent.com/spring-projects/spring-boot/v4.0.8/module/spring-boot-tomcat/src/main/java/org/springframework/boot/tomcat/servlet/TomcatServletWebServerFactory.java",
+      "https://raw.githubusercontent.com/spring-projects/spring-boot/v4.1.1/module/spring-boot-tomcat/src/main/java/org/springframework/boot/tomcat/servlet/TomcatServletWebServerFactory.java",
+      "https://app.opencve.io/cve/CVE-2026-65182",
+      "https://advisories.gitlab.com/maven/org.apache.tomcat.embed/tomcat-embed-core/CVE-2026-65182/",
+      "https://research.averlon.ai/vulnerability-intelligence/cve/CVE-2026-65182",
+      "https://lists.apache.org/thread/joosxvzc9b49ttj8lj0jw9mqt0ml767m"
+    ]
+  },
+  {
+    "cve": "CVE-2026-65905",
+    "ghsa": "GHSA-9xv2-5v5q-p794",
+    "package": "org.apache.tomcat.embed:tomcat-embed-core",
+    "installed_version": "11.0.24",
+    "fixed_versions": [
+      "11.0.25",
+      "10.1.59",
+      "9.0.121"
+    ],
+    "severity": "CRITICAL",
+    "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+    "summary": "DigestAuthenticator$NonceInfo.nonceCountValid() clears the 'seen' slot for the current count BEFORE incrementing it. A DIGEST request whose nc sits exactly at the upper boundary of the replay window therefore has its own seen-flag cleared and can be replayed once while that nc stays in the window. The same off-by-one also causes false rejections (NVD/CISA-ADP CVSS 9.8; Apache rates it Low).",
+    "vulnerable_feature": "Tomcat container-managed HTTP DIGEST authentication: org.apache.catalina.authenticator.DigestAuthenticator valve and its nonce-count (nc) replay window",
+    "trigger_conditions": [
+      "A DigestAuthenticator valve is in the Context pipeline. Either web.xml <login-config><auth-method>DIGEST</auth-method> processed by ContextConfig (standalone Tomcat, WAR, Tomcat#addWebapp), or programmatic 'new DigestAuthenticator()' added via Pipeline#addValve, TomcatServletWebServerFactory#addContextValves or a TomcatContextCustomizer. In Spring Boot embedded, LoginConfig('DIGEST') alone installs no authenticator because there is no ContextConfig.",
+      "Something makes DIGEST authentication run: security constraints with an auth-constraint (or preemptive authentication, or HttpServletRequest#authenticate) backed by a Realm that has users.",
+      "The attacker captures a victim's DIGEST-authenticated request (e.g. plaintext HTTP or MITM) whose nc equals the window's upper bound at acceptance time: count - windowSize/2 + windowSize, with nonceCountWindowSize defaulting to 100. A client that sends nc=1,2,3... in order never hits it. Apache scopes the issue to the first windowSize requests on a nonce.",
+      "The replay must reuse the same nonce within nonceValidity (default 5 min) while the nonce is still cached (nonceCacheSize 1000). It must use the same method and URI (validateUri defaults to true and the response hash covers method:uri). It must come from the same request.getRemoteAddr() that the nonce was bound to (nonce = H(remoteAddr:time:key), DigestAuthenticator L409/L696). These conditions are inferred from source."
+    ],
+    "invocation_kind": "framework_invokes",
+    "vulnerable_methods": [
+      {
+        "class": "org.apache.catalina.authenticator.DigestAuthenticator$NonceInfo",
+        "method": "nonceCountValid",
+        "desc": "(J)Z",
+        "confidence": "high",
+        "evidence": "The only code change in the fix commit c5f94ad1 (per security-11.xml); DigestAuthenticator at c5f94ad differs from 11.0.24 only here. 11.0.24 L806-808 do 'seen[checkIndex]=true; seen[count % seen.length]=false; count++;' and 11.0.25 does 'seen[checkIndex]=true; count++; seen[count % seen.length]=false;'. New test TestDigestAuthenticatorNonceInfo expects {2,2} -> {true,false} for window size 4. A ported simulation shows 11.0.24 returns [true,true] (replay accepted)."
+      },
+      {
+        "class": "org.apache.catalina.authenticator.DigestAuthenticator$DigestInfo",
+        "method": "validate",
+        "desc": "(Lorg/apache/catalina/connector/Request;Ljava/util/List;)Z",
+        "confidence": "medium",
+        "evidence": "Unchanged caller: 11.0.24 L734 'if (!info.nonceCountValid(count)) return false;'. Called from DigestAuthenticator.doAuthenticate L356."
+      },
+      {
+        "class": "org.apache.catalina.authenticator.DigestAuthenticator",
+        "method": "doAuthenticate",
+        "desc": "(Lorg/apache/catalina/connector/Request;Ljakarta/servlet/http/HttpServletResponse;)Z",
+        "confidence": "medium",
+        "evidence": "Unchanged entry point. The container calls it from AuthenticatorBase.invoke (11.0.24 L618). AuthenticatorBase.authenticate (L721-726) also calls it, and app code can reach that via HttpServletRequest#authenticate (connector.Request L2503: getContext().getAuthenticator().authenticate(this, response)). Reached only when a DigestAuthenticator instance is the context's authenticator."
+      }
+    ],
+    "fix_evidence": {
+      "changelog": "11.0.25 changelog, Catalina: 'Fix the incorrect rejection of requests using digest authentication when the client provided nonce count is at the upper boundary of the window (markt).' The changelog describes the false-rejection symptom of the same bug. The Tomcat security page describes the replay: 'Low: Limited replay attack possible with DIGEST authentication ... If, before windowSize requests had been made, a client made a DIGEST authenticated request with a nonceCount on the upper boundary of the replay window then that request was replayable once only while the associated nonceCount remained within the replay window.'",
+      "diff_summary": "DigestAuthenticator.java: in NonceInfo.nonceCountValid, move 'count++' before 'seen[count % seen.length] = false'. The cleared slot is now the one that newly enters the window (the new top), instead of the slot of the current top value that remains in the window. This is a single 2-line hunk (file size unchanged). The fix commit also adds test/org/apache/catalina/authenticator/TestDigestAuthenticatorNonceInfo.java. Full diff: tomcat-src/diffs/DigestAuthenticator.11.0.24-11.0.25.diff",
+      "commit": "c5f94ad1726e8399b77eb3fd69c811c1103894d6"
+    },
+    "rule_hint": "Reachable only if Tomcat's DigestAuthenticator is installed. Check bytecode for 'new org/apache/catalina/authenticator/DigestAuthenticator' (or subclasses), Pipeline.addValve or TomcatServletWebServerFactory.addContextValves or addEngineValves with it, and LoginConfig with auth-method 'DIGEST' ('new LoginConfig(\"DIGEST\",...)' / setAuthMethod(\"DIGEST\")) combined with a ContextConfig listener. Also check web.xml or web-fragment <auth-method>DIGEST</auth-method> (only relevant outside Spring Boot embedded). Spring Security's DigestAuthenticationFilter / httpDigest is a separate implementation and is NOT affected. If found, also confirm there are auth-constraints and a Realm with users.",
+    "default_spring_boot_exposure": "Not exposed by default (verified from source). Spring Boot v4.0.8 and v4.1.1 (both pin tomcatVersion=11.0.24 in gradle.properties): TomcatServletWebServerFactory.prepareContext only registers Tomcat.FixContextListener (v4.0.8 L184 / v4.1.1 L205) and adds no SecurityConstraint, LoginConfig, Realm or Authenticator, and no ContextConfig (so no web.xml processing and no auth-method-based authenticator installation). A grep of TomcatWebServerFactory, TomcatEmbeddedContext, TomcatWebServer and the two autoconfigure customizers also found nothing (this was not a whole-repo search). Tomcat's FixContextListener (Tomcat.java L1113-1118) then sets LoginConfig('NONE') and adds a NonLoginAuthenticator valve, so AuthenticatorBase.invoke runs on every request. NonLoginAuthenticator never calls DigestInfo.validate or NonceInfo.nonceCountValid. Because Spring Boot does not install ContextConfig, a DIGEST setup needs an explicit DigestAuthenticator valve.",
+    "sources": [
+      "https://raw.githubusercontent.com/apache/tomcat/11.0.24/java/org/apache/catalina/authenticator/DigestAuthenticator.java",
+      "https://raw.githubusercontent.com/apache/tomcat/11.0.25/java/org/apache/catalina/authenticator/DigestAuthenticator.java",
+      "https://raw.githubusercontent.com/apache/tomcat/c5f94ad1726e8399b77eb3fd69c811c1103894d6/java/org/apache/catalina/authenticator/DigestAuthenticator.java",
+      "https://raw.githubusercontent.com/apache/tomcat/11.0.25/test/org/apache/catalina/authenticator/TestDigestAuthenticatorNonceInfo.java",
+      "https://raw.githubusercontent.com/apache/tomcat/11.0.25/webapps/docs/changelog.xml",
+      "https://raw.githubusercontent.com/apache/tomcat-site/trunk/xdocs/security-11.xml",
+      "https://raw.githubusercontent.com/apache/tomcat/11.0.24/java/org/apache/catalina/startup/Tomcat.java",
+      "https://raw.githubusercontent.com/apache/tomcat/11.0.24/java/org/apache/catalina/startup/ContextConfig.java",
+      "https://raw.githubusercontent.com/spring-projects/spring-boot/v4.0.8/module/spring-boot-tomcat/src/main/java/org/springframework/boot/tomcat/servlet/TomcatServletWebServerFactory.java",
+      "https://raw.githubusercontent.com/spring-projects/spring-boot/v4.1.1/module/spring-boot-tomcat/src/main/java/org/springframework/boot/tomcat/servlet/TomcatServletWebServerFactory.java",
+      "https://app.opencve.io/cve/CVE-2026-65905",
+      "https://advisories.gitlab.com/maven/org.apache.tomcat.embed/tomcat-embed-core/CVE-2026-65905/",
+      "https://research.averlon.ai/vulnerability-intelligence/cve/CVE-2026-65905",
+      "https://lists.apache.org/thread/9v114xlpgbzrrbzz5vf9f6r2q4wnxwwj"
+    ]
+  },
+  {
+    "cve": "CVE-2026-68525",
+    "ghsa": "GHSA-h3x4-894j-xpx5",
+    "package": "org.apache.tomcat.embed:tomcat-embed-core",
+    "installed_version": "11.0.24",
+    "fixed_versions": [
+      "11.0.25",
+      "10.1.59",
+      "9.0.121"
+    ],
+    "severity": "CRITICAL",
+    "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+    "summary": "With FORM auth, AuthenticatorBase.invoke() computes the security constraints for the post-login redirect GET. FormAuthenticator.restoreRequest() then swaps in the saved POST (method and body), and authorization runs against the stale GET constraints. If POST is role-restricted but GET is not, any user who can log in gets the POST processed without the required role (NVD/CISA-ADP CVSS 9.1; Apache rates it Low).",
+    "vulnerable_feature": "Tomcat container-managed FORM authentication (FormAuthenticator saved-request restore after j_security_check login) combined with HTTP-method-specific security constraints",
+    "trigger_conditions": [
+      "A FormAuthenticator valve is in the Context pipeline. Either web.xml <login-config><auth-method>FORM</auth-method> with form-login-page and form-error-page processed by ContextConfig, or programmatic 'new FormAuthenticator()' added to the pipeline plus LoginConfig('FORM', ...). Spring Boot embedded has no ContextConfig, so the valve must be added explicitly.",
+      "A security constraint that is method-specific: a <web-resource-collection> with <http-method>POST</http-method> or any non-GET method, <http-method-omission>, or an HttpMethodConstraintElement in @ServletSecurity or setServletSecurity, carrying an auth-constraint with roles. GET to the same URI must be unconstrained or less restrictive.",
+      "The attacker holds valid credentials for ANY realm user who lacks the required role. Flow: POST to the protected URI while unauthenticated -> the request is saved and the login form is shown -> POST j_security_check -> 303 redirect to GET of the same URI -> FormAuthenticator.isContinuationRequired()=true -> restoreRequest() switches the method to POST and restores the body -> the constraints computed for GET are used, so hasResourcePermission is either skipped (GET constraints are null) or evaluated against the weaker GET constraints -> the POST reaches the servlet.",
+      "The saved POST body must fit within the Connector's maxSavePostSize, otherwise saveRequest fails with 403. The method is restored even when no body is saved."
+    ],
+    "invocation_kind": "framework_invokes",
+    "vulnerable_methods": [
+      {
+        "class": "org.apache.catalina.authenticator.AuthenticatorBase",
+        "method": "invoke",
+        "desc": "(Lorg/apache/catalina/connector/Request;Lorg/apache/catalina/connector/Response;)V",
+        "confidence": "high",
+        "evidence": "The flawed control flow is here (changed in fix commit 10d048e1). In 11.0.24, constraints are computed once at L524 for the incoming GET, doAuthenticate at L618 can mutate the request (FORM restore), and hasUserDataPermission and hasResourcePermission at L552-567 and L632-647 use the stale constraints. 11.0.25 calls doAuthenticateExtended and, on PASSED_CONSTRAINTS_NEED_REFRESH, re-runs realm.findSecurityConstraints, disableCaching and checkUserDataConstraints. NOTE: this method runs for every authenticator, including NonLoginAuthenticator, so its reachability alone does not mean exposure."
+      },
+      {
+        "class": "org.apache.catalina.authenticator.FormAuthenticator",
+        "method": "restoreRequest",
+        "desc": "(Lorg/apache/catalina/connector/Request;Lorg/apache/catalina/Session;)Z",
+        "confidence": "high",
+        "evidence": "11.0.24 L641 request.getCoyoteRequest().setMethod(method) changes GET to the saved method, then the method returns true without signalling the change. In 11.0.25 it returns AuthenticationResult and reports PASSED_CONSTRAINTS_NEED_REFRESH when the method changed. The return-type change makes the descriptor '(...)Lorg/apache/catalina/authenticator/AuthenticatorBase$AuthenticationResult;' in 11.0.25."
+      },
+      {
+        "class": "org.apache.catalina.authenticator.FormAuthenticator",
+        "method": "doAuthenticate",
+        "desc": "(Lorg/apache/catalina/connector/Request;Ljakarta/servlet/http/HttpServletResponse;)Z",
+        "confidence": "high",
+        "evidence": "11.0.24 L195-212: if matchRequest(request) and restoreRequest(...) succeed, it returns true, and AuthenticatorBase.invoke proceeds with the stale constraints. In 11.0.25 the logic moved to doAuthenticateExtended(...) returning AuthenticationResult, and doAuthenticate now throws UnsupportedOperationException."
+      },
+      {
+        "class": "org.apache.catalina.authenticator.FormAuthenticator",
+        "method": "isContinuationRequired",
+        "desc": "(Lorg/apache/catalina/connector/Request;)Z",
+        "confidence": "low",
+        "evidence": "Unchanged enabler (11.0.24 L352-367). It returns matchRequest(request, false) so that authentication, and therefore the restore, runs for the unconstrained redirect GET. Its comment documents exactly the case 'protected for some HTTP methods but not protected for GET'."
+      }
+    ],
+    "fix_evidence": {
+      "changelog": "11.0.25 changelog, Catalina: 'If the request saved by FORM authentication uses a method other than GET, ensure that the security constraints are re-assessed after the saved request is restored and before it is processed. Custom Authenticator implementations that extend FormAuthenticator and override doAuthenticate() and/or restoreRequest() will require modification. (markt)'. Tomcat security page: 'Low: Redirect after FORM authentication may bypass method specific constraints'.",
+      "diff_summary": "AuthenticatorBase: new protected doAuthenticateExtended(Request, HttpServletResponse) and new protected enum AuthenticationResult {FAILED, PASSED_CONSTRAINTS_NEED_REFRESH, PASSED}. invoke() re-computes constraints and re-checks caching and user-data constraints after a PASSED_CONSTRAINTS_NEED_REFRESH result. The caching and user-data checks were extracted into private disableCaching() and checkUserDataConstraints(). authenticate() now calls doAuthenticateExtended (no refresh needed there). FormAuthenticator: doAuthenticate becomes doAuthenticateExtended; restoreRequest returns AuthenticationResult and detects a method change; the old doAuthenticate throws UnsupportedOperationException. Files at commit 10d048e equal 11.0.25. Full diffs: tomcat-src/diffs/AuthenticatorBase.11.0.24-11.0.25.diff and FormAuthenticator.11.0.24-11.0.25.diff",
+      "commit": "10d048e16034ddf12055e0cede0da05b15c823b8"
+    },
+    "rule_hint": "Do NOT key on AuthenticatorBase.invoke reachability, which is always true in Spring Boot because of NonLoginAuthenticator. Reachable only if Tomcat's FormAuthenticator is installed. Check bytecode for 'new org/apache/catalina/authenticator/FormAuthenticator' or subclasses (custom subclasses overriding doAuthenticate or restoreRequest also need code changes after upgrading), Pipeline.addValve or addContextValves with it, LoginConfig with auth-method 'FORM' plus ContextConfig, and web.xml <auth-method>FORM</auth-method>. Then require method-specific constraints: SecurityCollection.addMethod or addOmittedMethod (or <http-method> / <http-method-omission>, or HttpMethodConstraintElement) where GET is not equally restricted. Spring Security formLogin() and its RequestCache are a separate implementation and are NOT affected. Fix fingerprint: the class org/apache/catalina/authenticator/AuthenticatorBase$AuthenticationResult exists in 11.0.25+.",
+    "default_spring_boot_exposure": "Not exposed by default (verified from source). Spring Boot v4.0.8 and v4.1.1 (both pin tomcatVersion=11.0.24 in gradle.properties): TomcatServletWebServerFactory.prepareContext only registers Tomcat.FixContextListener (v4.0.8 L184 / v4.1.1 L205) and adds no SecurityConstraint, LoginConfig, Realm or Authenticator, and no ContextConfig (so no web.xml processing and no auth-method-based authenticator installation). A grep of TomcatWebServerFactory, TomcatEmbeddedContext, TomcatWebServer and the two autoconfigure customizers also found nothing (this was not a whole-repo search). Tomcat's FixContextListener (Tomcat.java L1113-1118) then sets LoginConfig('NONE') and adds a NonLoginAuthenticator valve, so AuthenticatorBase.invoke runs on every request. However, NonLoginAuthenticator.doAuthenticate never changes the request method; only FormAuthenticator.restoreRequest does. There are also no constraints, so invoke returns early (L531-537). FORM auth would need an explicit FormAuthenticator valve plus LoginConfig plus method-specific constraints in app code.",
+    "sources": [
+      "https://raw.githubusercontent.com/apache/tomcat/11.0.24/java/org/apache/catalina/authenticator/AuthenticatorBase.java",
+      "https://raw.githubusercontent.com/apache/tomcat/11.0.25/java/org/apache/catalina/authenticator/AuthenticatorBase.java",
+      "https://raw.githubusercontent.com/apache/tomcat/11.0.24/java/org/apache/catalina/authenticator/FormAuthenticator.java",
+      "https://raw.githubusercontent.com/apache/tomcat/11.0.25/java/org/apache/catalina/authenticator/FormAuthenticator.java",
+      "https://raw.githubusercontent.com/apache/tomcat/10d048e16034ddf12055e0cede0da05b15c823b8/java/org/apache/catalina/authenticator/AuthenticatorBase.java",
+      "https://raw.githubusercontent.com/apache/tomcat/10d048e16034ddf12055e0cede0da05b15c823b8/java/org/apache/catalina/authenticator/FormAuthenticator.java",
+      "https://raw.githubusercontent.com/apache/tomcat/11.0.25/webapps/docs/changelog.xml",
+      "https://raw.githubusercontent.com/apache/tomcat-site/trunk/xdocs/security-11.xml",
+      "https://raw.githubusercontent.com/apache/tomcat/11.0.24/java/org/apache/catalina/authenticator/NonLoginAuthenticator.java",
+      "https://raw.githubusercontent.com/apache/tomcat/11.0.24/java/org/apache/catalina/startup/Tomcat.java",
+      "https://raw.githubusercontent.com/spring-projects/spring-boot/v4.0.8/module/spring-boot-tomcat/src/main/java/org/springframework/boot/tomcat/servlet/TomcatServletWebServerFactory.java",
+      "https://raw.githubusercontent.com/spring-projects/spring-boot/v4.1.1/module/spring-boot-tomcat/src/main/java/org/springframework/boot/tomcat/servlet/TomcatServletWebServerFactory.java",
+      "https://app.opencve.io/cve/CVE-2026-68525",
+      "https://advisories.gitlab.com/maven/org.apache.tomcat.embed/tomcat-embed-core/CVE-2026-68525/",
+      "https://research.averlon.ai/vulnerability-intelligence/cve/CVE-2026-68525",
+      "https://lists.apache.org/thread/x1y2lfsgzxwzc456f8954vbvgn03zhd7"
+    ]
+  }
+]
