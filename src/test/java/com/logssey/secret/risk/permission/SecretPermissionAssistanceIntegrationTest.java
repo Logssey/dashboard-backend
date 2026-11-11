@@ -1,6 +1,7 @@
 package com.logssey.secret.risk.permission;
 
 import static org.assertj.core.api.Assertions.*;
+import static org.mockito.Mockito.*;
 import com.logssey.common.error.ApiException;
 import com.logssey.secret.access.SecretAccessService;
 import com.logssey.secret.permission.core.SecretPermissionContext;
@@ -17,6 +18,56 @@ import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.json.JsonMapper;
 
 class SecretPermissionAssistanceIntegrationTest {
+    @Test void manuallyConfirmedPublicPriorityUsesDatabaseTimeDuringApplicationClockLag(){
+        var observed=jdbc.queryForObject("SELECT clock_timestamp()",OffsetDateTime.class);
+        evidence.submit("security",occurrence,new SecretRiskEvidenceService.Submission(revision(),"clock-public-source","ACCESS_SCOPE","OCCURRENCE",observed,observed.plusHours(1),"TICKET:SEC-123",Map.of("audienceClass","BROAD","coverageStatus","PARTIAL","publicAccessConfirmed",true,"boundedPrincipalCount",0),List.of(),null,observed.minusMinutes(5),observed.plusMinutes(30)));
+        var applicationNow=observed.minusMinutes(2);
+        try(var applicationClock=mockStatic(OffsetDateTime.class,CALLS_REAL_METHODS)){
+            applicationClock.when(()->OffsetDateTime.now(ZoneOffset.UTC)).thenReturn(applicationNow);
+            var risk=new SecretRiskQueryService(jdbc,new SecretAccessService(jdbc)).risk("security",occurrence);
+            var experience=(Map<?,?>)risk.get("riskExperience");var priority=(Map<?,?>)experience.get("workPriority");
+            assertThat(priority.get("level")).isEqualTo("PRIORITY");
+            assertThat(priority.get("targetBasis")).isEqualTo("PRIORITY_SIGNAL_OBSERVED");
+            assertThat(priority.get("acknowledgeDueAt")).isNotNull();
+            assertThat((OffsetDateTime)experience.get("readAt")).isAfterOrEqualTo(observed);
+            assertThat(risk.get("severity")).isNull();
+        }
+    }
+    @Test void futurePublicObservationStillCannotEstablishADeadline(){
+        var runScope=jdbc.queryForMap("SELECT rs.run_scope_id,rs.run_id FROM secret_run_scopes rs JOIN secret_validation_attempts a USING(run_id) WHERE a.attempt_id=?",attempt);
+        jdbc.update("UPDATE secret_occurrences SET latest_object_version='fixture-blob',last_seen_run_id=? WHERE occurrence_id=?",runScope.get("run_id"),occurrence);
+        var future=jdbc.queryForObject("SELECT clock_timestamp()+interval '2 minutes'",OffsetDateTime.class);
+        new SecretRiskObservationWriter(jdbc).githubRepositoryAccess(occurrence,((Number)runScope.get("run_scope_id")).longValue(),true,true,future);
+        var risk=new SecretRiskQueryService(jdbc,new SecretAccessService(jdbc)).risk("security",occurrence);
+        var priority=(Map<?,?>)((Map<?,?>)risk.get("riskExperience")).get("workPriority");
+        assertThat(priority.get("level")).isEqualTo("PRIORITY");
+        assertThat(priority.get("targetBasis")).isEqualTo("UNCONFIRMED");
+        assertThat(priority.get("targetBasisAt")).isNull();
+        assertThat(priority.get("acknowledgeDueAt")).isNull();
+        assertThat(risk.get("severity")).isNull();
+    }
+    @Test void databaseObservedPrioritySurvivesApplicationClockLag(){
+        var runScope=jdbc.queryForMap("SELECT rs.run_scope_id,rs.run_id FROM secret_run_scopes rs JOIN secret_validation_attempts a USING(run_id) WHERE a.attempt_id=?",attempt);
+        jdbc.update("UPDATE secret_occurrences SET latest_object_version='fixture-blob',last_seen_run_id=? WHERE occurrence_id=?",runScope.get("run_id"),occurrence);
+        var dbObserved=jdbc.queryForObject("SELECT clock_timestamp()",OffsetDateTime.class);
+        new SecretRiskObservationWriter(jdbc).githubRepositoryAccess(occurrence,((Number)runScope.get("run_scope_id")).longValue(),true,true,dbObserved);
+        var applicationNow=dbObserved.minusMinutes(2);
+        try(var applicationClock=mockStatic(OffsetDateTime.class,CALLS_REAL_METHODS)){
+            applicationClock.when(()->OffsetDateTime.now(ZoneOffset.UTC)).thenReturn(applicationNow);
+            var query=new SecretRiskQueryService(jdbc,new SecretAccessService(jdbc));
+            var risk=query.risk("security",occurrence);var experience=(Map<?,?>)risk.get("riskExperience");
+            var priority=(Map<?,?>)experience.get("workPriority");
+            assertThat(priority.get("level")).isEqualTo("PRIORITY");
+            assertThat(priority.get("targetBasis")).describedAs("DB=%s; app=%s; read=%s",priorityTiming(),applicationNow,experience.get("readAt"))
+                    .isEqualTo("PRIORITY_SIGNAL_OBSERVED");
+            assertThat(priority.get("acknowledgeDueAt")).isNotNull();
+            assertThat((OffsetDateTime)experience.get("readAt")).isAfterOrEqualTo(dbObserved);
+            var again=(Map<?,?>)((Map<?,?>)query.risk("security",occurrence).get("riskExperience")).get("workPriority");
+            assertThat(again.get("targetBasisAt")).isEqualTo(priority.get("targetBasisAt"));
+            assertThat(again.get("acknowledgeDueAt")).isEqualTo(priority.get("acknowledgeDueAt"));
+            assertThat(risk.get("severity")).isNull();
+        }
+    }
     @Test void publicMetadataIsOnlyAPrioritySignalAndRepeatedScansDoNotPostponeItsDeadline(){
         var runScope=jdbc.queryForMap("SELECT rs.run_scope_id,rs.run_id FROM secret_run_scopes rs JOIN secret_validation_attempts a USING(run_id) WHERE a.attempt_id=?",attempt);
         jdbc.update("UPDATE secret_occurrences SET latest_object_version='fixture-blob',last_seen_run_id=? WHERE occurrence_id=?",runScope.get("run_id"),occurrence);
@@ -26,7 +77,7 @@ class SecretPermissionAssistanceIntegrationTest {
         var risk=query.risk("security",occurrence);var experience=(Map<?,?>)risk.get("riskExperience");
         var priority=(Map<?,?>)experience.get("workPriority");
         assertThat(priority.get("level")).isEqualTo("PRIORITY");
-        assertThat(priority.get("targetBasis")).isEqualTo("PRIORITY_SIGNAL_OBSERVED");
+        assertThat(priority.get("targetBasis")).describedAs("Priority timing: %s; readAt=%s", priorityTiming(), experience.get("readAt")).isEqualTo("PRIORITY_SIGNAL_OBSERVED");
         assertThat(priority.get("acknowledgeDueAt")).isNotNull();
         var access=(Map<?,?>)((Map<?,?>)risk.get("analysisContext")).get("access");
         assertThat(access.get("range")).isEqualTo("UNKNOWN");
@@ -48,7 +99,7 @@ class SecretPermissionAssistanceIntegrationTest {
         var risk=query.risk("security",occurrence);
         var experience=(Map<?,?>)risk.get("riskExperience");var priority=(Map<?,?>)experience.get("workPriority");
         assertThat(priority.get("level")).isEqualTo("PRIORITY");
-        assertThat(priority.get("targetBasis")).isEqualTo("PRIORITY_SIGNAL_OBSERVED");
+        assertThat(priority.get("targetBasis")).describedAs("Priority timing: %s; readAt=%s", priorityTiming(), experience.get("readAt")).isEqualTo("PRIORITY_SIGNAL_OBSERVED");
         assertThat(priority.get("acknowledgeDueAt")).isNotNull();
         assertThat(risk.get("severity")).isNull();
         var again=(Map<?,?>)((Map<?,?>)query.risk("security",occurrence).get("riskExperience")).get("workPriority");
@@ -129,6 +180,16 @@ class SecretPermissionAssistanceIntegrationTest {
         assertThat(policy()).isEqualTo(before);
         assertThat(context.toString()).doesNotContain("github-user:123","fixture-app","protected");
     }
+    private Map<String,Object> priorityTiming(){return jdbc.queryForMap("""
+SELECT clock_timestamp() AS db_now,
+ (SELECT first_seen_at FROM secret_occurrences WHERE occurrence_id=?) AS first_seen_at,
+ (SELECT count(*) FROM secret_current_risk_evidence WHERE occurrence_id=? AND kind='ACCESS_SCOPE') AS public_rows,
+ (SELECT max(observed_at) FROM secret_current_risk_evidence WHERE occurrence_id=? AND kind='ACCESS_SCOPE') AS public_observed_at,
+ (SELECT max(recorded_at) FROM secret_current_risk_evidence WHERE occurrence_id=? AND kind='ACCESS_SCOPE') AS public_recorded_at,
+ (SELECT max(source_presence_observed_at) FROM secret_current_risk_evidence WHERE occurrence_id=? AND kind='ACCESS_SCOPE') AS source_observed_at,
+ (SELECT count(*) FROM secret_current_validation_attempts WHERE occurrence_id=?) AS validation_rows,
+ (SELECT max(completed_at) FROM secret_current_validation_attempts WHERE occurrence_id=?) AS validation_completed_at
+""",occurrence,occurrence,occurrence,occurrence,occurrence,occurrence,occurrence);}
     private long publish(Map<String,Object> request,List<String> caps){var json=new JsonMapper();return jdbc.queryForObject("INSERT INTO secret_permission_observations(request_id,status,safe_facts,observed_at,expires_at,observer_version) VALUES(?,'PARTIAL',?::jsonb,clock_timestamp(),clock_timestamp()+interval '1 hour','fixture') RETURNING observation_id",Long.class,request.get("requestId"),json.writeValueAsString(Map.of("capabilities",caps,"coverage",Map.of("permissionCoverage","PARTIAL","targetCoverage","UNKNOWN","restrictionCoverage","UNKNOWN","classificationCoverage","UNKNOWN"),"reasonCodes",List.of("EFFECTIVE_PERMISSION_NOT_PROVEN"))));}
     private SecretPermissionAssistanceService.Confirm confirm(Map<String,Object> preview,List<SecretRiskProvenance.Ref> refs,String key){return new SecretPermissionAssistanceService.Confirm((String)preview.get("contextVersion"),((Number)preview.get("evidenceRevision")).longValue(),key,true,"TICKET:SEC-123",OffsetDateTime.now(ZoneOffset.UTC),OffsetDateTime.now(ZoneOffset.UTC).plusMinutes(30),Map.of("capability","RESOURCE_ADMINISTRATION","targetScope","ACCOUNT","permissionCoverage","COMPLETE","targetCoverage","COMPLETE","restrictionCoverage","COMPLETE","classificationCoverage","COMPLETE"),refs,OffsetDateTime.now(ZoneOffset.UTC).minusMinutes(5),OffsetDateTime.now(ZoneOffset.UTC).plusMinutes(20));}
     private long revision(){return jdbc.queryForObject("SELECT risk_evidence_revision FROM secret_occurrences WHERE occurrence_id=?",Long.class,occurrence);}

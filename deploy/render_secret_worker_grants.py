@@ -29,7 +29,10 @@ def render(role):
         lines.append(f"GRANT {operation} ON TABLE " + ",".join(t for t in tables if t not in optional) + f" TO {quoted};")
         for table in sorted(set(tables) & optional):
             lines.append("DO $optional$ BEGIN IF to_regclass('public." + table + "') IS NOT NULL THEN EXECUTE 'GRANT " + operation + " ON public." + table + " TO " + quoted + "'; END IF; END $optional$;")
-    lines += [f"GRANT UPDATE(next_due_at,last_collection_success_at) ON secret_connections TO {quoted};",
+    lines += [f"REVOKE INSERT,UPDATE,DELETE,TRUNCATE ON secret_run_execution_events,secret_run_execution_stage_facts FROM {quoted};",
+              f"REVOKE EXECUTE ON FUNCTION secret_append_execution_event(bigint,bigint,integer,bigint,text,text,text,integer,text,bigint,bigint,bigint,text,boolean) FROM {quoted};",
+              f"GRANT EXECUTE ON FUNCTION secret_record_execution_event(bigint,uuid,bigint,bigint,text,text,text,integer,text,bigint,bigint,bigint,text),secret_purge_execution_events() TO {quoted};",
+              f"GRANT UPDATE(next_due_at,last_collection_success_at) ON secret_connections TO {quoted};",
               f"REVOKE INSERT,UPDATE,DELETE,TRUNCATE ON secret_usage_targets FROM {quoted};",
               f"GRANT UPDATE(next_scheduled_at) ON secret_usage_targets TO {quoted};",
               f"REVOKE INSERT,UPDATE,DELETE,TRUNCATE ON secret_usage_decisions FROM {quoted};",

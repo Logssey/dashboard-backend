@@ -1,5 +1,9 @@
 package com.logssey.secretworker.aws.content;
 
+import com.logssey.secret.run.progress.core.ScanExecutionObserver;
+import com.logssey.secret.run.progress.core.ScanExecutionObserver.Operation;
+import com.logssey.secretworker.progress.AwsScanObservation;
+import static com.logssey.secret.run.progress.core.ScanExecutionObserver.*;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -34,6 +38,7 @@ public final class AwsSdkContentReader implements AwsContentReader {
         S3Client s3(String region);
     }
 
+    private ScanExecutionObserver observer = ScanExecutionObserver.NONE;
     private final ClientFactory clients;
 
     public AwsSdkContentReader(AwsCredentialsProvider credentials) {
@@ -63,6 +68,12 @@ public final class AwsSdkContentReader implements AwsContentReader {
         this.clients = Objects.requireNonNull(clients);
     }
 
+    @Override public AwsContentReader observed(ScanExecutionObserver observer) {
+        var copy = new AwsSdkContentReader(clients);
+        copy.observer = Objects.requireNonNull(observer);
+        return copy;
+    }
+
     @Override public byte[] read(AwsContentScope scope, int maxBytes) {
         Objects.requireNonNull(scope);
         if (maxBytes < 1 || maxBytes > AwsContentCollector.ABSOLUTE_MAX_BYTES) {
@@ -88,8 +99,8 @@ public final class AwsSdkContentReader implements AwsContentReader {
     private byte[] readSecret(AwsContentScope scope, int maxBytes) {
         byte[] content = null;
         try (var client = clients.secretsManager(scope.region())) {
-            var response = client.getSecretValue(GetSecretValueRequest.builder()
-                    .secretId(scope.resource()).versionStage("AWSCURRENT").build());
+            var response = AwsScanObservation.call(observer, Operation.AWS_GET_SECRET_VALUE, () -> client.getSecretValue(GetSecretValueRequest.builder()
+                    .secretId(scope.resource()).versionStage("AWSCURRENT").build()));
             if (response.secretString() == null) throw new ReadFailure(FailureCode.NON_TEXT);
             content = utf8Bounded(response.secretString(), maxBytes);
         } catch (RuntimeException error) {
@@ -102,8 +113,8 @@ public final class AwsSdkContentReader implements AwsContentReader {
     private byte[] readParameter(AwsContentScope scope, int maxBytes) {
         byte[] content = null;
         try (var client = clients.ssm(scope.region())) {
-            var response = client.getParameter(GetParameterRequest.builder()
-                    .name(scope.resource()).withDecryption(true).build());
+            var response = AwsScanObservation.call(observer, Operation.AWS_GET_PARAMETER, () -> client.getParameter(GetParameterRequest.builder()
+                    .name(scope.resource()).withDecryption(true).build()));
             if (response.parameter() == null || response.parameter().value() == null) {
                 throw new ReadFailure(FailureCode.UNAVAILABLE);
             }
@@ -118,8 +129,8 @@ public final class AwsSdkContentReader implements AwsContentReader {
     private byte[] readObject(AwsContentScope scope, int maxBytes) throws IOException {
         byte[] content = null;
         try (var client = clients.s3(scope.region())) {
-            var head = client.headObject(HeadObjectRequest.builder().bucket(scope.resource())
-                    .key(scope.objectKey()).expectedBucketOwner(scope.accountId()).build());
+            var head = AwsScanObservation.call(observer, Operation.AWS_HEAD_OBJECT, () -> client.headObject(HeadObjectRequest.builder().bucket(scope.resource())
+                    .key(scope.objectKey()).expectedBucketOwner(scope.accountId()).build()));
             if (head.contentLength() == null || head.contentLength() < 0) {
                 throw new ReadFailure(FailureCode.UNAVAILABLE);
             }
@@ -132,7 +143,7 @@ public final class AwsSdkContentReader implements AwsContentReader {
             if (head.versionId() != null && !head.versionId().isBlank()) {
                 request.versionId(head.versionId());
             }
-            try (ResponseInputStream<GetObjectResponse> stream = client.getObject(request.build());
+            try (ResponseInputStream<GetObjectResponse> stream = getObject(client, request.build());
                  var watchdog = Executors.newSingleThreadScheduledExecutor(
                          Thread.ofVirtual().name("aws-s3-value-watchdog").factory())) {
                 // Bound body consumption as well as the SDK request. abort() closes a stalled stream.
@@ -155,6 +166,33 @@ public final class AwsSdkContentReader implements AwsContentReader {
             throw error;
         }
         return content;
+    }
+
+    private ResponseInputStream<GetObjectResponse> getObject(S3Client client, GetObjectRequest request) {
+        observer.record(Stage.COLLECTION, Operation.AWS_GET_OBJECT, Outcome.STARTED, null, null, null, null, null);
+        long started = System.nanoTime();
+        try {
+            var response = client.getObject(request);
+            Integer status = response.response().sdkHttpResponse() == null ? null
+                    : AwsScanObservation.validStatus(response.response().sdkHttpResponse().statusCode());
+            try {
+                observer.record(Stage.COLLECTION, Operation.AWS_GET_OBJECT, Outcome.COMPLETED, status,
+                        null, null, null, ScanExecutionObserver.elapsed(started));
+            } catch (RuntimeException failure) {
+                response.abort();
+                throw failure;
+            }
+            return response;
+        } catch (AwsServiceException failure) {
+            observer.record(Stage.COLLECTION, Operation.AWS_GET_OBJECT, Outcome.FAILED,
+                    AwsScanObservation.validStatus(failure.statusCode()), "OPERATION_FAILED", null, null,
+                    ScanExecutionObserver.elapsed(started));
+            throw failure;
+        } catch (SdkClientException failure) {
+            observer.record(Stage.COLLECTION, Operation.AWS_GET_OBJECT, Outcome.FAILED,
+                    null, "NETWORK_ERROR", null, null, ScanExecutionObserver.elapsed(started));
+            throw failure;
+        }
     }
 
     private static byte[] utf8Bounded(String value, int maxBytes) {

@@ -46,6 +46,17 @@ class SecretClosureIntegrationTest {
             """,Long.class,key,first.occurrence);
         link(first);first=missing(first);
     }
+    @Test void unclassifiedCaseRetainsActualOriginThroughIndependentLifecycleReviewAndClosure() {
+        jdbc.update("UPDATE secret_response_cases SET case_origin='UNCLASSIFIED' WHERE case_id=?",caseId);
+        jdbc.update("UPDATE secret_connection_scopes SET response_origin='UNCLASSIFIED',response_origin_set_by_user_id=NULL,response_origin_set_at=NULL WHERE scope_id=?",first.scope);
+        jdbc.update("UPDATE secret_run_scopes SET snapshot_origin='UNCLASSIFIED' WHERE scope_id=?",first.scope);
+        long proof=manual("REVOKED");
+        assertThat(jdbc.queryForObject("SELECT origin FROM secret_credential_lifecycle_evidence WHERE evidence_id=?",String.class,proof)).isEqualTo("UNCLASSIFIED");
+        var checks=service.checks("security",caseId);assertThat(checks.allowedCoverageLevels()).containsExactly("LIMITED");
+        assertThat(service.resolve("security",caseId,resolution(checks,"LIMITED","unclassified-close")).coverageLevel()).isEqualTo("LIMITED");
+        assertThat(jdbc.queryForObject("SELECT target_origin FROM secret_case_resolution_checks WHERE case_id=?",String.class,caseId)).isEqualTo("UNCLASSIFIED");
+        assertThat(jdbc.queryForObject("SELECT origin FROM secret_lifecycle_evidence_applications WHERE evidence_id=?",String.class,proof)).isEqualTo("UNCLASSIFIED");
+    }
     @Test void comparableMissingAndIndependentlyApprovedRetirementPermitOnlyLimited() {
         long evidence=manual("REVOKED");var checks=service.checks("security",caseId);
         assertThat(checks.allowedCoverageLevels()).containsExactly("LIMITED");
@@ -60,6 +71,17 @@ class SecretClosureIntegrationTest {
         assertThat(after.lastResolution().limitations()).contains("PROVIDER_RETIREMENT_NOT_VERIFIED");
         assertThatThrownBy(()->jdbc.update("UPDATE secret_case_resolutions SET coverage_level='FULL' WHERE case_id=?",caseId))
             .isInstanceOf(org.springframework.dao.DataAccessException.class);
+    }
+    @Test void allOriginInventoryCannotBorrowRetirementProofToHideAnotherOriginsUnresolvedLocation() {
+        provider();var checks=service.checks("security",caseId);
+        service.resolve("security",caseId,resolution(checks,"FULL","retired-production"));
+        var other=location("TEST",false);
+        jdbc.update("UPDATE secret_occurrences SET exposure_status='UNKNOWN' WHERE occurrence_id=?",other.occurrence);
+        var repository=new com.logssey.secret.query.SecretLocationRepository(jdbc);
+        var production=repository.visible(1,key,new com.logssey.secret.query.SecretInventoryFilters("PRODUCTION","ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL"));
+        assertThat(repository.normalInventorySubtype(production)).isEqualTo("RETIRED_HISTORY");
+        var all=repository.visible(1,key,new com.logssey.secret.query.SecretInventoryFilters("ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL"));
+        assertThat(all).hasSize(2);assertThat(repository.normalInventorySubtype(all)).isNull();
     }
     @Test void trustedProviderEvidenceCanPermitFullButManualCannotForgeIt() {
         manual("REVOKED");var checks=service.checks("security",caseId);

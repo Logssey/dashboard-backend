@@ -182,7 +182,7 @@ public class SecretScopeChangeService {
     }
 
     private Preview prepare(Scope scope,String origin,Long policyId,Long policyVersion,SecretPrincipal actor) {
-        if(!Set.of("PRODUCTION","TEST").contains(Objects.toString(origin,"")) || (policyId==null)!=(policyVersion==null))invalid();
+        if(!(Set.of("PRODUCTION","TEST").contains(Objects.toString(origin,"")) || "UNCLASSIFIED".equals(origin)&&origin.equals(scope.origin())) || (policyId==null)!=(policyVersion==null))invalid();
         if(!scope.available())conflict("SCOPE_UNAVAILABLE");
         policies.validateSupportedScope(scope);policies.preventFixtureMisclassification(scope,origin);
         var binding=repository.binding(scope.id()).orElse(null);

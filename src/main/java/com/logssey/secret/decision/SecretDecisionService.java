@@ -128,7 +128,7 @@ public class SecretDecisionService {
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public QueuePage queue(String login,String bucket,String origin,int page,int size) {
         page(page,size);code(bucket,Set.of("ACTION_REQUIRED","NEEDS_DECISION","NORMAL_INVENTORY","NEEDS_CASE_LINK"));
-        code(origin,Set.of("PRODUCTION","TEST","UNCLASSIFIED"));
+        code(origin,Set.of("ALL","PRODUCTION","TEST","UNCLASSIFIED"));
         var actor=access.requirePrincipal(login);access.requireAnyRole(actor);
         if(!access.hasAnyRole(actor,Set.of(SecretRole.SECURITY,SecretRole.REMEDIATOR)))throw new ApiException(ErrorCode.FORBIDDEN);
         var rows=locations.visible(actor.userId(),null,new SecretInventoryFilters(origin,"ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL"));
@@ -146,11 +146,11 @@ public class SecretDecisionService {
                 "ACTION_REQUIRED".equals(bucket)?"RESPONSE_REQUIRED":
                 "METADATA_ONLY".equals(visible.componentState())?"METADATA_ONLY":
                 "NORMAL_INVENTORY".equals(bucket)?"POLICY_ALLOWED_LOCATION":
-                "UNCLASSIFIED".equals(origin)?"SOURCE_CLASSIFICATION_REQUIRED":"EVIDENCE_REVIEW_REQUIRED";
+                !Boolean.TRUE.equals(row.get("source_approved"))?"SOURCE_COLLECTION_APPROVAL_REQUIRED":"EVIDENCE_REVIEW_REQUIRED";
             String next="ACTION_REQUIRED".equals(bucket)?"OPEN_CASE":"NORMAL_INVENTORY".equals(bucket)?"VIEW_LOCATIONS":
                 access.hasConnectionRole(actor,visible.connectionId(),SecretRole.SECURITY)?
                     "NEEDS_CASE_LINK".equals(bucket)?"LINK_CASE":"REVIEW_EVIDENCE":"VIEW_EVIDENCE";
-            items.putIfAbsent(key,new QueueItem(visible.secretId(),visible.occurrenceId(),nullableNumber(row,"case_id"),origin,
+            items.putIfAbsent(key,new QueueItem(visible.secretId(),visible.occurrenceId(),nullableNumber(row,"case_id"),visible.origin(),
                 visible.maskedLabel(),visible.componentState(),text(row,"effective_presence"),visible.exposure(),why,next));
         }
         var all=new ArrayList<>(items.values());int from=(int)Math.min((long)page*size,all.size());
@@ -220,7 +220,7 @@ public class SecretDecisionService {
                 !currentValue(row)?"CURRENT_PRESENCE_REQUIRED":validFindings(number(row,"occurrence_id"))==0?"CURRENT_FINDING_REQUIRED":
                 "FALSE_POSITIVE".equals(decision)&&Boolean.TRUE.equals(row.get("confirmed_real"))?"REAL_CREDENTIAL_CONFIRMED":
                 !"CONFIRMED".equals(row.get("component_state"))?"INCOMPLETE_CREDENTIAL":
-                !Boolean.TRUE.equals(row.get("source_approved"))?"SOURCE_CLASSIFICATION_REQUIRED":
+                !Boolean.TRUE.equals(row.get("source_approved"))?"SOURCE_COLLECTION_APPROVAL_REQUIRED":
                 "NORMAL".equals(decision)?"EXPLICIT_ALLOW_REQUIRED":"STORAGE_ALLOWED";
             unavailable.put(decision,reason);
         }
@@ -249,8 +249,9 @@ public class SecretDecisionService {
             SELECT o.*,c.component_state,c.masked_label,c.issuer,c.credential_type,s.revision,s.response_origin,
                 s.response_origin_version,s.enabled,s.approved_ref,s.safe_display_alias,conn.provider AS discovery_source,
                 p.binding_id,p.policy_id,p.policy_version,p.policy_result,
-                EXISTS(SELECT 1 FROM secret_scope_origin_decisions source WHERE source.scope_id=s.scope_id
-                    AND source.version=s.response_origin_version AND source.decision='APPROVED') AS source_approved,
+                (s.enabled AND conn.status='ACTIVE'
+                 AND EXISTS(SELECT 1 FROM secret_current_valid_findings current_finding
+                    WHERE current_finding.occurrence_id=o.occurrence_id)) AS source_approved,
                 p.reason_code AS policy_reason,p.requires_reassessment,
                 CASE WHEN NOT s.enabled THEN 'UNKNOWN'
                   WHEN latest.scope_outcome IN ('PARTIAL','FAILED','SKIPPED','UNKNOWN') AND latest.requested_at>o.last_seen_at

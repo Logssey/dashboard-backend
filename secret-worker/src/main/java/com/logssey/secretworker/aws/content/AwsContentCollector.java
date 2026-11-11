@@ -25,6 +25,10 @@ public final class AwsContentCollector {
     public record Source(AwsContentScope.Kind kind, int byteCount) { }
     public record Result(Status status, int objectCount, long byteCount, List<GapCode> gaps) { }
 
+    public AwsContentCollector observed(com.logssey.secret.run.progress.core.ScanExecutionObserver observer) {
+        return new AwsContentCollector(reader.observed(observer));
+    }
+
     @FunctionalInterface
     public interface ContentSink {
         /** Must finish processing synchronously; content is zeroed as soon as this returns. */

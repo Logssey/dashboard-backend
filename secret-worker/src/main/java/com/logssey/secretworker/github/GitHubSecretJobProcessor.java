@@ -1,5 +1,7 @@
 package com.logssey.secretworker.github;
 
+import static com.logssey.secret.run.progress.core.ScanExecutionObserver.*;
+
 import com.logssey.secretworker.ClaimedSecretJob;
 import com.logssey.secretworker.SecretJobExecutionService;
 import com.logssey.secretworker.SecretJobFailure;
@@ -297,7 +299,7 @@ WHERE run_scope_id = ?
                 detector.engineVersion(), detector.configHash(), Instant.now())));
         AtomicReference<String> consumerFailure = new AtomicReference<>();
         GitHubCollector.Result result =
-                collector.collect(
+                collector.observed(execution.observer(job, scope.id())).collect(
                         approved,
                         GitHubCollectionLimits.DEFAULT,
                         (source, bytes) -> {
@@ -307,7 +309,8 @@ WHERE run_scope_id = ?
                                         SecretJobFailureCode.LEASE_EXPIRED, true);
                             }
                             try {
-                                var scan = detector.scan(bytes);
+                                var scan = execution.observer(job, scope.id()).measure(
+                                    Stage.DETECTION, Operation.GITLEAKS_SCAN, () -> detector.scan(bytes));
                                 String sourceRef =
                                         source.owner()
                                                 + "/"
@@ -315,11 +318,12 @@ WHERE run_scope_id = ?
                                                 + "/"
                                                 + source.path();
                                 var inspection =
-                                        normalizer.inspect(
+                                        execution.observer(job, scope.id()).measure(
+                                    Stage.DETECTION, Operation.CANDIDATE_NORMALIZATION, () -> normalizer.inspect(
                                                 job.connectionId(),
                                                 sourceRef,
                                                 bytes,
-                                                scan.findings());
+                                                scan.findings()));
                                 withLease(
                                         job,
                                         execution,
@@ -330,7 +334,7 @@ WHERE run_scope_id = ?
                                                         source.blobSha(),
                                                         inspection,
                                                         scan,
-                                                        Instant.now()));
+                                                        Instant.now(), execution.observer(job, scope.id())));
                                 for (var candidate : inspection.awsCandidates()) {
                                     if (!validation.firstEncounter(
                                             candidate.credential(), syntheticFixture)) continue;
@@ -414,7 +418,7 @@ WHERE run_scope_id = ?
         withLease(job, execution, () -> findings.finishToolRun(toolRunId.get(), status, code, Instant.now()));
         GitHubCollector.RepositoryAccess access =
                 result.status() == GitHubCollector.Status.SUCCEEDED && !accessSinks.isEmpty()
-                        ? collector.repositoryAccess(approved)
+                        ? collector.observed(execution.observer(job, scope.id())).repositoryAccess(approved)
                         : null;
         withLease(
                 job,

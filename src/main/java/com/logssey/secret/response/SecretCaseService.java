@@ -19,7 +19,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class SecretCaseService {
     private static final Set<String> ASSIGNMENT_REASONS = Set.of(
             "INITIAL_ASSIGNMENT", "OWNERSHIP_CHANGE", "TEAM_TRANSFER", "UNASSIGNED", "OTHER");
-    private static final Set<String> CASE_ORIGINS = Set.of("PRODUCTION", "TEST");
+    private static final Set<String> CASE_ORIGINS = Set.of("PRODUCTION", "TEST", "UNCLASSIFIED");
     private static final Set<String> ACTION_TYPES = Set.of(
             "ROTATED", "REVOKED", "REMOVED_FROM_SOURCE", "PERMISSION_REDUCED");
     private static final Pattern EVIDENCE_REF = Pattern.compile(

@@ -46,6 +46,10 @@ public final class AwsMetadataCollector {
         this.limits = Objects.requireNonNull(limits);
     }
 
+    public AwsMetadataCollector observed(com.logssey.secret.run.progress.core.ScanExecutionObserver observer) {
+        return new AwsMetadataCollector(pages.observed(observer), limits);
+    }
+
     /** Caller must first verify the account and approved scope; this method never enumerates regions. */
     public Result collect(Service service, String region) {
         Objects.requireNonNull(service);

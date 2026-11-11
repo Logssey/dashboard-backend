@@ -1,6 +1,8 @@
 package com.logssey.secretworker.notion;
 
 import java.io.IOException;
+import com.logssey.secret.run.progress.core.ScanExecutionObserver;
+import static com.logssey.secret.run.progress.core.ScanExecutionObserver.*;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -37,6 +39,7 @@ public final class NotionPageClient {
   public static final int MAX_METADATA_BYTES = 262_144;
   public static final int MAX_BLOCK_RESPONSE_BYTES = 2_097_152;
   private static final URI API = URI.create("https://api.notion.com/");
+  private ScanExecutionObserver observer = ScanExecutionObserver.NONE;
   private final URI base;
   private final Supplier<String> tokens;
   private final Duration requestTimeout;
@@ -65,6 +68,12 @@ public final class NotionPageClient {
     this.base = base;
     this.tokens = Objects.requireNonNull(tokens);
     this.requestTimeout = requestTimeout;
+  }
+
+  NotionPageClient observed(ScanExecutionObserver observer) {
+    var copy = new NotionPageClient(base, tokens, requestTimeout);
+    copy.observer = Objects.requireNonNull(observer);
+    return copy;
   }
 
   public record PageMetadata(
@@ -231,9 +240,25 @@ public final class NotionPageClient {
                 if (Thread.currentThread().isInterrupted() || System.nanoTime() >= deadline)
                   throw new NotionSourceException(NotionSourceException.Code.TIMEOUT, 0);
                 request.setHeader("Authorization", "Bearer " + token);
-                var response = http.executeOpen(null, request, null);
+                Operation operation = path.startsWith("v1/pages/")
+                    ? Operation.NOTION_PAGE_GET : Operation.NOTION_BLOCK_CHILDREN_LIST;
+                observer.record(Stage.COLLECTION, operation, Outcome.STARTED, null, null, null, null, null);
+                long operationStarted = System.nanoTime();
+                org.apache.hc.core5.http.ClassicHttpResponse response;
+                try {
+                  response = http.executeOpen(null, request, null);
+                } catch (IOException failure) {
+                  observer.record(Stage.COLLECTION, operation, Outcome.FAILED, null,
+                      "NETWORK_ERROR", null, null, ScanExecutionObserver.elapsed(operationStarted));
+                  throw failure;
+                }
                 try {
                   int status = response.getCode();
+                  observer.record(Stage.COLLECTION, operation,
+                      status >= 200 && status < 300 ? Outcome.COMPLETED : Outcome.FAILED,
+                      status, status >= 200 && status < 300 ? null : status == 429 ? "RATE_LIMITED"
+                          : status == 401 || status == 403 ? "ACCESS_DENIED" : "OPERATION_FAILED",
+                      null, null, ScanExecutionObserver.elapsed(operationStarted));
                   var error = error(response);
                   if (error != null) {
                     headers.set(error);

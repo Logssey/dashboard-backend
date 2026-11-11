@@ -213,7 +213,7 @@ public class SecretStoragePolicyService {
         var scope=scope(scopeId,true);
         if (!access.hasConnectionRole(actor,scope.connectionId(),SecretRole.OPERATIONS)
                 && !access.hasConnectionRole(actor,scope.connectionId(),SecretRole.SECURITY)) forbidden();
-        if (request==null || !allowed(request.origin(),"TEST","PRODUCTION")
+        if (request==null || !(allowed(request.origin(),"TEST","PRODUCTION") || "UNCLASSIFIED".equals(request.origin())&&request.origin().equals(scope.origin()))
                 || (request.storagePolicyId()==null)!=(request.storagePolicyVersion()==null)
                 || !allowed(request.reasonCode(),"POLICY_PENDING","SOURCE_CLASSIFICATION","SOURCE_CORRECTION")) invalid();
         evidence(request.evidenceRef());
@@ -265,9 +265,10 @@ public class SecretStoragePolicyService {
         long decisionId=recordDecision(scope,proposal,"APPROVED",proposal.reason(),actor.userId(),next);
         jdbc.update("""
                 UPDATE secret_connection_scopes SET response_origin=?,response_origin_version=?,
-                    response_origin_set_by_user_id=?,response_origin_set_at=now(),updated_at=now()
+                    response_origin_set_by_user_id=CASE WHEN response_origin=? THEN response_origin_set_by_user_id ELSE ? END,
+                    response_origin_set_at=CASE WHEN response_origin=? THEN response_origin_set_at ELSE now() END,updated_at=now()
                 WHERE scope_id=? AND response_origin_version=?
-                """,proposal.origin(),next,actor.userId(),scopeId,scope.originVersion());
+                """,proposal.origin(),next,proposal.origin(),actor.userId(),proposal.origin(),scopeId,scope.originVersion());
         jdbc.update("UPDATE secret_scope_classification_proposals SET status='APPROVED',version=version+1 WHERE proposal_id=?",proposalId);
         // One boundary for both intervals; a clock rollback must not close before prior history.
         var bindingBoundary=jdbc.queryForObject("""
