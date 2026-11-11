@@ -58,4 +58,15 @@ public class SecretValidationController {
             @PathVariable long id, @RequestBody Map<String, Object> body, Authentication a) {
         return service.updatePolicy(id, body, login(a));
     }
+
+    @GetMapping("/connections/{id}/validation-policy")
+    public Map<String, Object> connectionPolicy(@PathVariable long id, Authentication a) {
+        return service.connectionPolicy(id, login(a));
+    }
+
+    @PatchMapping("/connections/{id}/validation-policy")
+    public Map<String, Object> connectionPolicy(
+            @PathVariable long id, @RequestBody Map<String, Object> body, Authentication a) {
+        return service.updateConnectionPolicy(id, body, login(a));
+    }
 }

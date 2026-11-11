@@ -17,6 +17,7 @@ public record AwsValidationResult(Status status, Reason reason, Instant evaluate
         DISABLED,
         SYNTHETIC_FIXTURE,
         SOURCE_GUARD_BLOCKED,
+        VALIDATOR_NOT_ALLOWED,
         INCOMPLETE_PAIR,
         MISSING_SESSION_TOKEN,
         ACCESS_AMBIGUOUS,

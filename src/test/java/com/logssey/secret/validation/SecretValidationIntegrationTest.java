@@ -518,6 +518,83 @@ class SecretValidationIntegrationTest {
                 new SecretCommandExecutor(db, tx), false, false, true, true, true);
     }
 
+    @Test
+    void connectionPolicyRegistersTheProfileAndOnlyExplicitIssuersWithoutApprovingScopes() {
+        db.update("UPDATE secret_connections SET validation_enabled=false,validation_profile_version=NULL WHERE connection_id=?", conn);
+        db.update("UPDATE secret_connection_scopes SET validation_approved=false WHERE scope_id=?", scope);
+        assertThat(service.connectionPolicy(conn, "security"))
+                .containsEntry("enabled", false).containsEntry("profileStatus", "UNCONFIGURED");
+        var changed = service.updateConnectionPolicy(conn, connectionPolicy(true, List.of("GITHUB"), 1, "github-only"), "security");
+        assertThat(changed).containsEntry("enabled", true).containsEntry("allowedIssuers", List.of("GITHUB"))
+                .containsEntry("expectedValidationRevision", 2L).containsEntry("approvedScopeCount", 0L)
+                .containsEntry("profileStatus", "DISABLED").containsEntry("enabledIssuers", List.of("AWS"));
+        assertThat(service.policy(scope, "security")).containsEntry("connectionEnabled", true)
+                .containsEntry("allowedIssuers", List.of("GITHUB")).containsEntry("enabled", false)
+                .containsEntry("profileStatus", "DISABLED");
+        assertThat(db.queryForObject("SELECT validation_profile_version FROM secret_connections", String.class))
+                .isEqualTo(SecretValidationService.PROFILE);
+        assertThat((List<String>) ((Map<?, ?>) service.read(key, occurrence, "security").get("capabilities")).get("blockedReasonCodes"))
+                .contains("VALIDATOR_NOT_ALLOWED");
+    }
+
+    @Test
+    void repositoryNameDoesNotOverrideExplicitValidationAndSyntheticEvidenceStillBlocks() {
+        db.update("UPDATE secret_connection_scopes SET approved_ref='github://Logssey/test-find-key/main/fixtures/' WHERE scope_id=?", scope);
+        var read = service.read(key, occurrence, "security");
+        assertThat((Map<String, Object>) read.get("capabilities")).containsEntry("canRequestValidation", true);
+        db.update("UPDATE secret_connection_scopes SET synthetic_fixture=true WHERE scope_id=?", scope);
+        var blocked = service.read(key, occurrence, "security");
+        assertThat((List<String>) ((Map<?, ?>) blocked.get("capabilities")).get("blockedReasonCodes"))
+                .contains("SYNTHETIC_FIXTURE").doesNotContain("SOURCE_GUARD_BLOCKED");
+    }
+
+    @Test
+    void connectionPolicyUsesVersionedIdempotencyAndOneSafeAuditRecord() {
+        var payload = connectionPolicy(true, List.of("GITHUB"), 1, "connection-change");
+        service.updateConnectionPolicy(conn, payload, "security");
+        service.updateConnectionPolicy(conn, payload, "security");
+        assertThat(db.queryForObject("SELECT validation_revision FROM secret_connections", Long.class)).isEqualTo(2L);
+        assertThat(db.queryForObject("SELECT count(*) FROM secret_audit_events WHERE event_type='VALIDATION_PROFILE_CHANGED'", Long.class)).isEqualTo(1L);
+        assertThat(db.queryForMap("SELECT safe_changes->>'enabled' AS enabled,safe_changes->>'allowedIssuers' AS issuers FROM secret_audit_events WHERE event_type='VALIDATION_PROFILE_CHANGED'"))
+                .containsEntry("enabled", "true").containsEntry("issuers", "[\"GITHUB\"]");
+        assertThatThrownBy(() -> service.updateConnectionPolicy(conn, connectionPolicy(false, List.of(), 1, "stale-policy"), "security"))
+                .isInstanceOf(ApiException.class).extracting(e -> ((ApiException) e).errorCode()).isEqualTo(ErrorCode.CONFLICT);
+        db.update("UPDATE secret_role_grants SET revoked_at=clock_timestamp() WHERE user_id=?", user);
+        assertThatThrownBy(() -> service.updateConnectionPolicy(conn, payload, "security"))
+                .isInstanceOf(ApiException.class).extracting(e -> ((ApiException) e).errorCode()).isEqualTo(ErrorCode.FORBIDDEN);
+    }
+
+    @Test
+    void connectionPolicyCancelsPendingAuthenticationAndInvalidatesEarlierObservations() {
+        useNotionCredential();
+        long attempt = completedNotionObservation();
+        var pending = request("pending-before-policy-change");
+        service.updateConnectionPolicy(conn, connectionPolicy(true, List.of("GITHUB"), 1, "restrict-issuers"), "security");
+        assertThat(db.queryForObject("SELECT current_eligible FROM secret_validation_attempts WHERE attempt_id=?", Boolean.class, attempt)).isFalse();
+        assertThat(db.queryForObject("SELECT status FROM secret_jobs WHERE job_id=?", String.class, pending.get("requestId"))).isEqualTo("CANCELLED");
+        assertThat(db.queryForObject("SELECT count(*) FROM secret_current_validation_attempts WHERE attempt_id=?", Long.class, attempt)).isZero();
+    }
+
+    @Test
+    void connectionPolicyRejectsUnknownEmptyDuplicateAndUnversionedSelections() {
+        assertThatThrownBy(() -> service.updateConnectionPolicy(conn, connectionPolicy(true, List.of(), 1, "empty"), "security"))
+                .isInstanceOf(ApiException.class);
+        assertThatThrownBy(() -> service.updateConnectionPolicy(conn, connectionPolicy(true, List.of("OTHER"), 1, "unknown"), "security"))
+                .isInstanceOf(ApiException.class);
+        assertThatThrownBy(() -> service.updateConnectionPolicy(conn, connectionPolicy(true, List.of("GITHUB", "GITHUB"), 1, "duplicate"), "security"))
+                .isInstanceOf(ApiException.class);
+        db.update("UPDATE secret_role_grants SET role='OPERATIONS' WHERE user_id=?", user);
+        assertThat(service.connectionPolicy(conn, "security")).containsEntry("canConfigure", false);
+        assertThatThrownBy(() -> service.updateConnectionPolicy(conn, connectionPolicy(true, List.of("GITHUB"), 1, "not-security"), "security"))
+                .isInstanceOf(ApiException.class).extracting(e -> ((ApiException) e).errorCode()).isEqualTo(ErrorCode.FORBIDDEN);
+    }
+
+    private Map<String, Object> connectionPolicy(boolean enabled, List<String> issuers, long version, String idempotencyKey) {
+        return Map.of("expectedValidationRevision", version, "idempotencyKey", idempotencyKey,
+                "enabled", enabled, "allowedIssuers", issuers,
+                "reasonCode", enabled ? "VALIDATION_APPROVED" : "VALIDATION_DISABLED");
+    }
+
     private Map<String, Object> request(String idempotencyKey) {
         var read = service.read(key, occurrence, "security");
         return service.request(key, Map.of("occurrenceId", occurrence,

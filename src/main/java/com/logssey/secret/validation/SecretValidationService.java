@@ -18,6 +18,7 @@ import java.util.*;
 @Service
 public class SecretValidationService {
     public static final String PROFILE = "credential-validation-v1";
+    private static final List<String> VALIDATION_ISSUERS = List.of("GITHUB", "AWS", "NOTION");
     private final JdbcTemplate jdbc;
     private final SecretAccessService access;
     private final SecretCommandExecutor commands;
@@ -351,7 +352,7 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
                 jdbc.queryForList(
                         "SELECT"
                             + " s.scope_id,s.connection_id,c.validation_enabled,c.validation_profile_version"
-                            + " AS connection_profile,s.validation_approved,s.validation_approval_revision,s.validation_profile_version"
+                            + " AS connection_profile,c.validation_allowed_issuers,s.validation_approved,s.validation_approval_revision,s.validation_profile_version"
                             + " AS scope_profile FROM secret_connection_scopes s JOIN"
                             + " secret_connections c USING(connection_id) WHERE s.scope_id=?",
                         scope);
@@ -359,6 +360,116 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
         var c = rows.getFirst();
         access.requireConnectionFactsRead(actor, num(c, "connection_id"));
         return policyFor(c, actor);
+    }
+
+    @Transactional(readOnly = true)
+    public Map<String, Object> connectionPolicy(long connection, String login) {
+        var actor = access.requirePrincipal(login);
+        var c = connectionPolicyRow(connection, false);
+        access.requireConnectionFactsRead(actor, connection);
+        boolean canConfigure = access.hasConnectionRole(actor, connection, SecretRole.SECURITY);
+        var allowed = allowedIssuers(c.get("validation_allowed_issuers"));
+        var enabledIssuers = VALIDATION_ISSUERS.stream().filter(this::issuerEnabled).toList();
+        var reasons = new ArrayList<String>();
+        if (!canConfigure) reasons.add("SECURITY_REQUIRED");
+        if (!PROFILE.equals(c.get("validation_profile_version"))) reasons.add("PROFILE_UNCONFIGURED");
+        if (!Boolean.TRUE.equals(c.get("validation_enabled"))) reasons.add("DISABLED");
+        if (allowed.stream().anyMatch(issuer -> !enabledIssuers.contains(issuer)))
+            reasons.add("VALIDATOR_DISABLED");
+        var counts = jdbc.queryForMap("""
+                SELECT count(*) FILTER(WHERE enabled) AS scope_count,
+                  count(*) FILTER(WHERE enabled AND validation_approved) AS approved_scope_count
+                FROM secret_connection_scopes WHERE connection_id=?
+                """, connection);
+        return Map.ofEntries(
+                Map.entry("connectionId", connection), Map.entry("provider", c.get("provider")),
+                Map.entry("enabled", Boolean.TRUE.equals(c.get("validation_enabled"))),
+                Map.entry("allowedIssuers", allowed),
+                Map.entry("enabledIssuers", enabledIssuers),
+                Map.entry("expectedValidationRevision", num(c, "validation_revision")),
+                Map.entry("profileStatus", !PROFILE.equals(c.get("validation_profile_version"))
+                        ? "UNCONFIGURED" : Boolean.TRUE.equals(c.get("validation_enabled"))
+                                && allowed.stream().anyMatch(enabledIssuers::contains) ? "ENABLED" : "DISABLED"),
+                Map.entry("canConfigure", canConfigure), Map.entry("blockedReasonCodes", reasons),
+                Map.entry("scopeCount", num(counts, "scope_count")),
+                Map.entry("approvedScopeCount", num(counts, "approved_scope_count")));
+    }
+
+    public Map<String, Object> updateConnectionPolicy(long connection, Map<String, Object> body, String login) {
+        exact(body, Set.of("expectedValidationRevision", "idempotencyKey", "enabled", "allowedIssuers", "reasonCode"));
+        long revision = positive(body.get("expectedValidationRevision"));
+        String idem = token(body.get("idempotencyKey"), "[A-Za-z0-9._:-]{1,120}");
+        if (!(body.get("enabled") instanceof Boolean enabled)) throw new ApiException(ErrorCode.INVALID_INPUT);
+        var issuers = requestedIssuers(body.get("allowedIssuers"));
+        if (enabled && issuers.isEmpty()) throw new ApiException(ErrorCode.INVALID_INPUT);
+        String reason = token(body.get("reasonCode"), "VALIDATION_APPROVED|VALIDATION_DISABLED");
+        if (!(enabled ? "VALIDATION_APPROVED" : "VALIDATION_DISABLED").equals(reason))
+            throw new ApiException(ErrorCode.INVALID_INPUT);
+        var actor = access.requirePrincipal(login);
+        commands.execute(actor, SecretCommandExecutor.Kind.CONNECTION_VALIDATION_POLICY, idem,
+                digest(connection, revision, enabled, issuers, reason),
+                () -> {
+                    connectionPolicyRow(connection, false);
+                    if (!access.hasConnectionRole(actor, connection, SecretRole.SECURITY))
+                        throw new ApiException(ErrorCode.FORBIDDEN);
+                }, () -> {
+                    var c = connectionPolicyRow(connection, true);
+                    if (num(c, "validation_revision") != revision)
+                        throw fail(ErrorCode.CONFLICT, "CONTEXT_CHANGED");
+                    jdbc.update("""
+                            UPDATE secret_connections SET validation_enabled=?,validation_profile_version=?,
+                              validation_allowed_issuers=string_to_array(?,','),validation_revision=validation_revision+1
+                            WHERE connection_id=?
+                            """, enabled, PROFILE, String.join(",", issuers), connection);
+                    jdbc.update("""
+                            UPDATE secret_validation_attempts SET current_eligible=false,ineligible_reason_code='APPROVAL_CHANGED'
+                            WHERE scope_id IN(SELECT scope_id FROM secret_connection_scopes WHERE connection_id=?)
+                              AND current_eligible
+                            """, connection);
+                    jdbc.update("""
+                            UPDATE secret_jobs SET status='CANCELLED',last_error_code='APPROVAL_CHANGED',finished_at=clock_timestamp()
+                            WHERE connection_id=? AND purpose='CREDENTIAL_VALIDITY' AND status='PENDING'
+                            """, connection);
+                    return new SecretCommandResult(connection, revision + 1, SecretCommandResult.Status.SUCCEEDED);
+                });
+        var result = new LinkedHashMap<>(connectionPolicy(connection, login));
+        result.put("requiresSnapshotRefresh", true);
+        return result;
+    }
+
+    private Map<String, Object> connectionPolicyRow(long connection, boolean lock) {
+        if (connection <= 0) throw new ApiException(ErrorCode.NOT_FOUND);
+        var rows = jdbc.queryForList("""
+                SELECT connection_id,provider,validation_enabled,validation_profile_version,
+                  validation_allowed_issuers,validation_revision FROM secret_connections WHERE connection_id=?
+                """ + (lock ? " FOR UPDATE" : ""), connection);
+        if (rows.isEmpty()) throw new ApiException(ErrorCode.NOT_FOUND);
+        return rows.getFirst();
+    }
+
+    private List<String> requestedIssuers(Object value) {
+        if (!(value instanceof List<?> values) || values.size() > VALIDATION_ISSUERS.size()
+                || values.stream().anyMatch(item -> !(item instanceof String) || !VALIDATION_ISSUERS.contains(item))
+                || new HashSet<>(values).size() != values.size()) throw new ApiException(ErrorCode.INVALID_INPUT);
+        return VALIDATION_ISSUERS.stream().filter(values::contains).toList();
+    }
+
+    private List<String> allowedIssuers(Object value) {
+        if (value instanceof java.sql.Array array) {
+            try { return Arrays.asList((String[]) array.getArray()); }
+            catch (java.sql.SQLException failure) { throw new IllegalStateException("VALIDATION_POLICY_UNAVAILABLE"); }
+        }
+        if (value instanceof String[] values) return Arrays.asList(values);
+        return List.of();
+    }
+
+    private boolean issuerEnabled(String issuer) {
+        return switch (issuer) {
+            case "GITHUB" -> githubEnabled;
+            case "AWS" -> awsEnabled;
+            case "NOTION" -> notionEnabled;
+            default -> false;
+        };
     }
 
     public Map<String, Object> updatePolicy(long scope, Map<String, Object> body, String login) {
@@ -462,6 +573,7 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
         if (!"CONFIRMED".equals(c.get("component_state"))) reasons.add("INCOMPLETE_PAIR");
         if (Boolean.TRUE.equals(c.get("synthetic_fixture"))) reasons.add("SYNTHETIC_FIXTURE");
         if (Boolean.TRUE.equals(c.get("source_guard_blocked"))) reasons.add("SOURCE_GUARD_BLOCKED");
+        if (!Boolean.TRUE.equals(c.get("validation_issuer_allowed"))) reasons.add("VALIDATOR_NOT_ALLOWED");
         if (!global(c) || !Boolean.TRUE.equals(c.get("validation_enabled")))
             reasons.add("DISABLED");
         if (!PROFILE.equals(c.get("connection_profile"))) reasons.add("PROFILE_UNCONFIGURED");
@@ -477,7 +589,8 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
         var reasons = new ArrayList<String>();
         if (!configure) reasons.add("SECURITY_REQUIRED");
         if (!PROFILE.equals(c.get("connection_profile"))) reasons.add("PROFILE_UNCONFIGURED");
-        if (!Boolean.TRUE.equals(c.get("validation_enabled")) || !(awsEnabled || githubEnabled || notionEnabled))
+        if (!Boolean.TRUE.equals(c.get("validation_enabled"))
+                || allowedIssuers(c.get("validation_allowed_issuers")).stream().noneMatch(this::issuerEnabled))
             reasons.add("DISABLED");
         return reasons;
     }
@@ -553,22 +666,19 @@ VALUES(?,?,'REVALIDATION',?,clock_timestamp(),clock_timestamp(),'PENDING','PENDI
     private Map<String, Object> policyFor(Map<String, Object> c, SecretPrincipal actor) {
         boolean configure =
                 access.hasConnectionRole(actor, num(c, "connection_id"), SecretRole.SECURITY);
-        return Map.of(
-                "expectedValidationApprovalRevision",
-                num(c, "validation_approval_revision"),
-                "enabled",
-                Boolean.TRUE.equals(c.get("validation_approved")),
-                "profileStatus",
-                !PROFILE.equals(c.get("connection_profile"))
-                        ? "UNCONFIGURED"
-                        : Boolean.TRUE.equals(c.get("validation_enabled"))
-                                        && (awsEnabled || githubEnabled || notionEnabled)
-                                ? "ENABLED"
-                                : "DISABLED",
-                "canConfigure",
-                configure,
-                "blockedReasonCodes",
-                policyBlocks(c, configure));
+        var result = new LinkedHashMap<String, Object>();
+        result.put("connectionId", num(c, "connection_id"));
+        result.put("connectionEnabled", Boolean.TRUE.equals(c.get("validation_enabled")));
+        result.put("allowedIssuers", allowedIssuers(c.get("validation_allowed_issuers")));
+        result.put("expectedValidationApprovalRevision", num(c, "validation_approval_revision"));
+        result.put("enabled", Boolean.TRUE.equals(c.get("validation_approved")));
+        result.put("profileStatus", !PROFILE.equals(c.get("connection_profile"))
+                ? "UNCONFIGURED" : Boolean.TRUE.equals(c.get("validation_enabled"))
+                        && allowedIssuers(c.get("validation_allowed_issuers")).stream().anyMatch(this::issuerEnabled)
+                        ? "ENABLED" : "DISABLED");
+        result.put("canConfigure", configure);
+        result.put("blockedReasonCodes", policyBlocks(c, configure));
+        return result;
     }
 
     private Map<String, Object> latestRequest(long oid) {

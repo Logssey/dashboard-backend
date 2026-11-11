@@ -531,6 +531,7 @@ WHERE v.connection_id=j.connection_id AND k.issuer=? AND k.credential_type=? AND
                         "GITHUB_FINE_GRAINED_PAT",
                         "NOTION_CONNECTION_TOKEN")
                 .contains(c.get("credential_type"))) return "UNSUPPORTED_TYPE";
+        if (!Boolean.TRUE.equals(c.get("validation_issuer_allowed"))) return "VALIDATOR_NOT_ALLOWED";
         if (!enabled || !Boolean.TRUE.equals(c.get("validation_enabled"))) return "DISABLED";
         if (!"CONFIRMED".equals(c.get("component_state")))
             return "AWS_TEMPORARY_CREDENTIALS".equals(c.get("credential_type"))
