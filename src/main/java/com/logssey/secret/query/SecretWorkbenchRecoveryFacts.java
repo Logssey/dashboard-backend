@@ -36,6 +36,8 @@ final class SecretWorkbenchRecoveryFacts {
       SecretWorkbenchService.Filters filters,
       List<Subject> subjects) {
     var selectedIds = new ArrayList<Long>();
+    var providerScopeIds = new TreeMap<String, List<Long>>();
+    long configuredConnections = 0;
     for (var connection :
         jdbc.queryForList(
             "SELECT connection_id,provider FROM secret_connections ORDER BY connection_id")) {
@@ -44,6 +46,9 @@ final class SecretWorkbenchRecoveryFacts {
           || filters.connectionId() != null && filters.connectionId() != id
           || !filters.source().equals("ALL")
               && !filters.source().equals(connection.get("provider"))) continue;
+      configuredConnections++;
+      subjects.add(new Subject("HealthConnection", id, null,
+          facts("connectionId", id, "source", connection.get("provider"))));
       for (var item : pages(page -> coverage.scopes(login, id, "ALL", "ALL", false, page, 100))) {
         long scope = ((Number) item.get("scopeId")).longValue();
         boolean selected = filters.origin().equals(item.get("origin"));
@@ -51,6 +56,7 @@ final class SecretWorkbenchRecoveryFacts {
         if (selected) {
           subjects.add(new Subject("HealthScope", scope, null, item));
           selectedIds.add(scope);
+          providerScopeIds.computeIfAbsent((String) connection.get("provider"), key -> new ArrayList<>()).add(scope);
         }
         if (!(item.get("setupReasonCodes") instanceof List<?> reasons) || reasons.isEmpty())
           continue;
@@ -60,13 +66,22 @@ final class SecretWorkbenchRecoveryFacts {
           subjects.add(new Subject("UnassignedSetupScope", scope, null, item));
       }
     }
+    // This marker distinguishes a new snapshot with zero connections from an older snapshot
+    // that never captured connection facts. Never infer zero from an empty selected origin.
+    subjects.add(new Subject("CollectionConfiguration", 0, null,
+        facts("configuredConnectionCount", configuredConnections)));
     // A per-scope success is not a success for the whole selected set.
+    addCompleteRun(subjects, "CollectionCompleteRun", null, selectedIds);
+    providerScopeIds.forEach((source, ids) -> addCompleteRun(subjects, "ProviderCompleteRun", source, ids));
+  }
+
+  private void addCompleteRun(List<Subject> subjects, String type, String source, List<Long> selectedIds) {
     if (!selectedIds.isEmpty()) {
       var runs =
           new NamedParameterJdbcTemplate(jdbc)
               .queryForList(
                   """
-SELECT r.run_id,r.requested_at,r.finished_at FROM secret_scan_runs r
+SELECT r.run_id,r.connection_id,r.requested_at,r.finished_at FROM secret_scan_runs r
 JOIN secret_jobs j USING(job_id) WHERE j.kind='FULL_SCAN' AND j.status='SUCCEEDED'
   AND r.result_status='SUCCEEDED' AND r.collection_status='SUCCEEDED' AND r.finished_at IS NOT NULL
   AND NOT EXISTS(SELECT 1 FROM secret_connection_scopes s WHERE s.scope_id IN(:ids)
@@ -80,12 +95,16 @@ ORDER BY r.finished_at DESC NULLS LAST,r.run_id DESC LIMIT 1
         var run = runs.getFirst();
         subjects.add(
             new Subject(
-                "CollectionCompleteRun",
+                type,
                 ((Number) run.get("run_id")).longValue(),
                 null,
                 facts(
                     "runId",
                     run.get("run_id"),
+                    "connectionId",
+                    run.get("connection_id"),
+                    "source",
+                    source,
                     "status",
                     "SUCCEEDED",
                     "requestedAt",
@@ -109,7 +128,30 @@ ORDER BY r.finished_at DESC NULLS LAST,r.run_id DESC LIMIT 1
             responseAllowed,
             Set.of("REVALIDATION_PENDING")),
         "decision",
-        preview(header, "DecisionOccurrence", "Occurrence", securityAllowed, Set.of()));
+        preview(header, "DecisionOccurrence", "Occurrence", securityAllowed, Set.of()),
+        "review", reviewPreview(header, securityAllowed));
+  }
+
+  /** Both the card and the paginated destination use this union of the same frozen subjects. */
+  List<Map<String, Object>> reviewRows(Header header) {
+    var byOccurrence = new LinkedHashMap<Long, Map<String, Object>>();
+    for (String type : List.of("LinkOccurrence", "DecisionOccurrence")) {
+      for (var original : snapshots.page(header, type, 0, Integer.MAX_VALUE)) {
+        long occurrenceId = ((Number) original.get("occurrenceId")).longValue();
+        if (byOccurrence.containsKey(occurrenceId)) continue;
+        var row = new LinkedHashMap<>(original);
+        row.put("nextActionCode", type.equals("LinkOccurrence") ? "LINK_CASE" : "REVIEW_EVIDENCE");
+        row.put("taskGuidance", SecretTaskGuidance.location(row));
+        byOccurrence.put(occurrenceId, row);
+      }
+    }
+    return List.copyOf(byOccurrence.values());
+  }
+
+  private Map<String, Object> reviewPreview(Header header, boolean allowed) {
+    var rows = allowed ? reviewRows(header) : List.<Map<String, Object>>of();
+    return facts("status", allowed ? "AVAILABLE" : "NOT_AUTHORIZED", "items", rows.stream().limit(5).toList(),
+        "total", allowed ? rows.size() : null, "unit", "Occurrence", "snapshotId", header.snapshotId());
   }
 
   private Map<String, Object> preview(
@@ -197,17 +239,56 @@ ORDER BY r.finished_at DESC NULLS LAST,r.run_id DESC LIMIT 1
         allowed
             ? snapshots.page(header, "HealthScope", 0, Integer.MAX_VALUE)
             : List.<Map<String, Object>>of();
+    var connections = allowed ? snapshots.page(header, "HealthConnection", 0, Integer.MAX_VALUE)
+        : List.<Map<String, Object>>of();
+    var configuration = allowed ? snapshots.page(header, "CollectionConfiguration", 0, 1)
+        : List.<Map<String, Object>>of();
+    boolean configurationKnown = !configuration.isEmpty();
+    var providerComplete = allowed ? snapshots.page(header, "ProviderCompleteRun", 0, Integer.MAX_VALUE)
+        : List.<Map<String, Object>>of();
+    var sources = new TreeSet<String>();
+    items.forEach(item -> sources.add((String) item.get("source")));
+    connections.forEach(item -> sources.add((String) item.get("source")));
+    var providers = new ArrayList<Map<String, Object>>();
+    for (String source : sources) {
+      var selected = items.stream().filter(item -> source.equals(item.get("source"))).toList();
+      var row = healthFacts(selected, providerComplete.stream().filter(item -> source.equals(item.get("source")))
+          .findFirst().orElse(null), 5);
+      row.put("source", source);
+      row.put("configuredConnectionCount", configurationKnown
+          ? connections.stream().filter(item -> source.equals(item.get("source"))).count() : null);
+      providers.add(row);
+    }
+    var complete = allowed ? snapshots.page(header, "CollectionCompleteRun", 0, 1)
+        : List.<Map<String, Object>>of();
+    var result = healthFacts(items, complete.isEmpty() ? null : complete.getFirst(), 10);
+    result.putAll(facts("status", allowed ? "AVAILABLE" : "NOT_AUTHORIZED", "origin", origin,
+        "configuredConnectionCount", configurationKnown ? configuration.getFirst().get("configuredConnectionCount") : null,
+        "configuredConnectionsIgnoreOrigin", true, "providers", providers,
+        "basis", "CURRENT_SCOPE_REVISION", "notApplicableFilters", List.of("provider", "environment", "assignee"),
+        "snapshotId", header.snapshotId()));
+    if (!allowed) {
+      result.put("approvedScopeCount", null);
+      result.put("gapScopeCount", null);
+      result.put("counts", null);
+    }
+    return result;
+  }
+
+  private Map<String, Object> healthFacts(List<Map<String, Object>> items, Map<String, Object> complete, int limit) {
     var counts = new LinkedHashMap<String, Long>();
     for (String key :
         List.of("success", "partial", "failed", "notRun", "paused", "running", "incomplete"))
       counts.put(key, 0L);
     Map<String, Object> latest = null, success = null;
+    long gapScopes = 0;
     for (var item : items) {
       var observation = block(item.get("coverage"));
-      var attempt = block(observation.get("lastAttempt"));
-      var successful = block(observation.get("lastSuccessfulScan"));
+      var attempt = contextualAttempt(item, observation.get("lastAttempt"));
+      var successful = contextualAttempt(item, observation.get("lastSuccessfulScan"));
       if (!attempt.isEmpty() && newer(attempt, latest)) latest = attempt;
       if (!successful.isEmpty() && newer(successful, success)) success = successful;
+      if (observation.get("gapReasonCodes") instanceof List<?> gaps && !gaps.isEmpty()) gapScopes++;
       String bucket =
           Boolean.TRUE.equals(observation.get("isPaused"))
               ? "paused"
@@ -226,38 +307,35 @@ ORDER BY r.finished_at DESC NULLS LAST,r.run_id DESC LIMIT 1
                                       : "incomplete";
       counts.merge(bucket, 1L, Long::sum);
     }
-    var complete =
-        allowed
-            ? snapshots.page(header, "CollectionCompleteRun", 0, 1)
-            : List.<Map<String, Object>>of();
     return facts(
-        "status",
-        allowed ? "AVAILABLE" : "NOT_AUTHORIZED",
-        "origin",
-        origin,
         "approvedScopeCount",
-        allowed ? items.size() : null,
+        items.size(),
+        "gapScopeCount", gapScopes,
         "counts",
-        allowed ? counts : null,
+        counts,
         "lastAttempt",
         latest,
         "lastScopeSuccess",
         success,
         "lastCompleteSuccess",
-        complete.isEmpty() ? null : complete.getFirst(),
+        complete,
         "items",
         items.stream()
             .sorted(
                 Comparator.comparingInt(this::healthPriority)
                     .thenComparingLong(item -> ((Number) item.get("scopeId")).longValue()))
-            .limit(10)
-            .toList(),
-        "basis",
-        "CURRENT_SCOPE_REVISION",
-        "notApplicableFilters",
-        List.of("provider", "environment", "assignee"),
-        "snapshotId",
-        header.snapshotId());
+            .limit(limit)
+            .toList());
+  }
+
+  private Map<String, Object> contextualAttempt(Map<String, Object> scope, Object value) {
+    var observation = block(value);
+    if (observation.isEmpty()) return observation;
+    var result = new LinkedHashMap<>(observation);
+    result.put("connectionId", scope.get("connectionId"));
+    result.put("scopeId", scope.get("scopeId"));
+    result.put("source", scope.get("source"));
+    return result;
   }
 
   private int healthPriority(Map<String, Object> item) {

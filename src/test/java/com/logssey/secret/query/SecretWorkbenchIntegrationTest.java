@@ -397,6 +397,108 @@ class SecretWorkbenchIntegrationTest {
     }
 
     @Test
+    void reviewCardAndQueueIncludeReviewAndCaseCreationFromOneFrozenSet() {
+        long run = scan(connection, List.of(scope), true);
+        for (int i = 0; i < 5; i++) reviewOccurrence(connection, scope, run, "UNKNOWN");
+        for (int i = 0; i < 2; i++) reviewOccurrence(connection, scope, run, "ABNORMAL");
+        long hiddenConnection = connection(), hiddenScope = scope(hiddenConnection);
+        reviewOccurrence(hiddenConnection, hiddenScope, scan(hiddenConnection, List.of(hiddenScope), true), "UNKNOWN");
+        var filters = new SecretWorkbenchService.Filters("PRODUCTION", "ALL", "ALL", "ALL", null, "ME");
+        var summary = summary("security", filters, null);
+        var card = metric(summary, "reviewRequiredLocations");
+        assertThat(card).containsEntry("value", 7L).containsEntry("unit", "Occurrence")
+            .containsEntry("notApplicableFilters", List.of("assignee"));
+        assertThat(block(card.get("queueFilter"))).containsEntry("bucket", "REVIEW_REQUIRED");
+        assertThat(metric(summary, "needsDecisionLocations")).containsEntry("value", 5L);
+        assertThat(metric(summary, "needsCaseLinkLocations")).containsEntry("value", 2L);
+        var preview = block(block(summary.get("workPreviews")).get("review"));
+        assertThat(preview).containsEntry("total", 7);
+        assertThat(items(preview.get("items"))).hasSize(5);
+        assertThat(items(preview.get("items")).subList(0, 2)).allSatisfy(row -> {
+            assertThat(row).containsEntry("whyHereCode", "CASE_LINK_REQUIRED").containsEntry("nextActionCode", "LINK_CASE");
+            assertThat(block(row.get("taskGuidance"))).containsEntry("nextActionCode", "LINK_CASE");
+        });
+        String snapshot = summary.get("snapshotId").toString();
+        var queue = tx.execute(status -> service.queue("security", filters, "REVIEW_REQUIRED", null, 0, 5, snapshot));
+        assertThat(queue).containsEntry("total", 7).containsEntry("notApplicableFilters", List.of("assignee"));
+        assertThat(queue.get("items")).isEqualTo(preview.get("items"));
+        var second = tx.execute(status -> service.queue("security", filters, "REVIEW_REQUIRED", null, 1, 5, snapshot));
+        assertThat(items(second.get("items"))).hasSize(2).allSatisfy(row -> assertThat(row)
+            .containsEntry("whyHereCode", "NEEDS_REVIEW").containsEntry("nextActionCode", "REVIEW_EVIDENCE"));
+        reviewOccurrence(connection, scope, run, "UNKNOWN");
+        assertThat(summary("security", filters, snapshot)).isEqualTo(summary);
+        assertThat(metric(summary("security", filters, null), "reviewRequiredLocations")).containsEntry("value", 8L);
+        var denied = summary("operations", filters(), null);
+        assertThat(metric(denied, "reviewRequiredLocations")).containsEntry("status", "NOT_AUTHORIZED").containsEntry("value", null);
+        assertThat(block(block(denied.get("workPreviews")).get("review"))).containsEntry("total", null).containsEntry("items", List.of());
+        code(ErrorCode.FORBIDDEN, () -> tx.execute(status -> service.queue("operations", filters(), "REVIEW_REQUIRED", null, 0, 20, null)));
+        code(ErrorCode.INVALID_INPUT, () -> tx.execute(status -> service.queue("security", filters(), "REVIEW_REQUIRED", "OPEN", 0, 20, null)));
+    }
+
+    @Test
+    void providerHealthCountsAllAuthorizedScopesAndKeepsScopeAndRunOutcomesSeparate() {
+        var githubScopes = new ArrayList<Long>(); githubScopes.add(scope);
+        for (int i = 1; i < 7; i++) githubScopes.add(addScope(connection, "scope-" + i, "PRODUCTION"));
+        long githubRun = scan(connection, githubScopes.subList(0, 6), true);
+        jdbc.update("UPDATE secret_run_scopes SET detection_stage_status='FAILED' WHERE run_id=? AND scope_id=?", githubRun, githubScopes.get(5));
+        jdbc.update("UPDATE secret_scan_runs SET result_status='PARTIAL' WHERE run_id=?", githubRun);
+        long aws = connection(); jdbc.update("UPDATE secret_connections SET provider='AWS' WHERE connection_id=?", aws);
+        grant(security, "SECURITY", aws); long awsScope = scope(aws);
+        long awsRun = scan(aws, List.of(awsScope), true);
+        long hidden = connection(), hiddenScope = scope(hidden); scan(hidden, List.of(hiddenScope), true);
+        var summary = summary("security", filters(), null);
+        var health = block(summary.get("collectionHealth"));
+        assertThat(health).containsEntry("approvedScopeCount", 8).containsEntry("configuredConnectionCount", 2)
+            .containsEntry("gapScopeCount", 2L).containsEntry("lastCompleteSuccess", null);
+        assertThat(items(health.get("providers"))).hasSize(2);
+        var github = provider(health, "GITHUB");
+        assertThat(github).containsEntry("approvedScopeCount", 7).containsEntry("configuredConnectionCount", 1L)
+            .containsEntry("gapScopeCount", 2L).containsEntry("lastCompleteSuccess", null);
+        assertThat(block(github.get("counts"))).containsEntry("success", 5L).containsEntry("partial", 1L).containsEntry("notRun", 1L);
+        assertThat(items(github.get("items"))).hasSize(5);
+        assertThat(block(github.get("lastAttempt"))).containsEntry("runId", (int) githubRun)
+            .containsEntry("connectionId", (int) connection).containsEntry("source", "GITHUB").containsEntry("runStatus", "PARTIAL");
+        assertThat(block(github.get("lastScopeSuccess"))).containsEntry("scopeOutcome", "SUCCEEDED").containsEntry("runStatus", "PARTIAL");
+        assertThat(block(provider(health, "AWS").get("lastCompleteSuccess"))).containsEntry("runId", (int) awsRun).containsEntry("connectionId", (int) aws);
+        jdbc.update("UPDATE secret_connections SET next_due_at=now()-interval '1 hour' WHERE connection_id=?", connection);
+        assertThat(summary("security", filters(), summary.get("snapshotId").toString())).isEqualTo(summary);
+        var overdue = provider(block(summary("security", filters(), null).get("collectionHealth")), "GITHUB");
+        assertThat(overdue).containsEntry("gapScopeCount", 7L);
+        assertThat(block(overdue.get("counts"))).containsEntry("success", 5L);
+        var selected = block(summary("security", new SecretWorkbenchService.Filters("PRODUCTION", "AWS", "GITHUB", "PROD", null, "ME"), null).get("collectionHealth"));
+        assertThat(selected).containsEntry("approvedScopeCount", 1).containsEntry("configuredConnectionCount", 1)
+            .containsEntry("notApplicableFilters", List.of("provider", "environment", "assignee"));
+        assertThat(items(selected.get("providers"))).hasSize(1);
+        var byConnection = block(summary("security", new SecretWorkbenchService.Filters("PRODUCTION", "ALL", "ALL", "ALL", connection, null), null).get("collectionHealth"));
+        assertThat(byConnection).containsEntry("approvedScopeCount", 7).containsEntry("configuredConnectionCount", 1);
+    }
+
+    @Test
+    void configuredConnectionsDistinguishOtherOriginNoScopesAndLegacyUnknownWithoutLeakingAcl() {
+        var test = new SecretWorkbenchService.Filters("TEST", "ALL", "ALL", "ALL", null, null);
+        var otherOrigin = block(summary("security", test, null).get("collectionHealth"));
+        assertThat(otherOrigin).containsEntry("approvedScopeCount", 0).containsEntry("configuredConnectionCount", 1)
+            .containsEntry("configuredConnectionsIgnoreOrigin", true);
+        assertThat(provider(otherOrigin, "GITHUB")).containsEntry("approvedScopeCount", 0).containsEntry("configuredConnectionCount", 1L);
+        var missingProvider = new SecretWorkbenchService.Filters("PRODUCTION", "AWS", "ALL", "ALL", null, null);
+        assertThat(block(summary("security", missingProvider, null).get("collectionHealth")))
+            .containsEntry("configuredConnectionCount", 0).containsEntry("providers", List.of());
+        long empty = connection(); grant(security, "SECURITY", empty);
+        var emptyFilters = new SecretWorkbenchService.Filters("PRODUCTION", "ALL", "ALL", "ALL", empty, null);
+        assertThat(block(summary("security", emptyFilters, null).get("collectionHealth")))
+            .containsEntry("configuredConnectionCount", 1).containsEntry("approvedScopeCount", 0);
+        var current = summary("security", filters(), null); String snapshot = current.get("snapshotId").toString();
+        jdbc.update("DELETE FROM secret_snapshot_subjects WHERE snapshot_id=? AND subject_type IN ('HealthConnection','CollectionConfiguration','ProviderCompleteRun')", UUID.fromString(snapshot));
+        var legacy = block(summary("security", filters(), snapshot).get("collectionHealth"));
+        assertThat(legacy).containsEntry("configuredConnectionCount", null);
+        assertThat(provider(legacy, "GITHUB")).containsEntry("configuredConnectionCount", null);
+        jdbc.update("UPDATE secret_role_grants SET revoked_at=now() WHERE user_id=? AND connection_id=?", security, connection);
+        code(ErrorCode.CONFLICT, () -> summary("security", filters(), snapshot));
+        var reduced = block(summary("security", filters(), null).get("collectionHealth"));
+        assertThat(reduced).containsEntry("configuredConnectionCount", 1).containsEntry("approvedScopeCount", 0);
+    }
+
+    @Test
     void collectionHealthRequiresCurrentRevisionAndOneActuallyCompleteRun() {
         long second =
                 jdbc.queryForObject(
@@ -442,9 +544,11 @@ class SecretWorkbenchIntegrationTest {
         long complete = scan(connection, List.of(scope, second), true);
         var healthy = block(summary("security", filters(), null).get("collectionHealth"));
         assertThat(block(healthy.get("lastCompleteSuccess")).get("runId")).isEqualTo((int) complete);
+        assertThat(block(provider(healthy, "GITHUB").get("lastCompleteSuccess")).get("runId")).isEqualTo((int) complete);
         jdbc.update("UPDATE secret_connection_scopes SET revision=2 WHERE scope_id=?", scope);
         var changed = block(summary("security", filters(), null).get("collectionHealth"));
         assertThat(changed.get("lastCompleteSuccess")).isNull();
+        assertThat(provider(changed, "GITHUB").get("lastCompleteSuccess")).isNull();
         assertThat(block(changed.get("counts")))
                 .containsEntry("notRun", 1L)
                 .containsEntry("success", 1L);
@@ -454,6 +558,28 @@ class SecretWorkbenchIntegrationTest {
                         .findFirst()
                         .orElseThrow();
         assertThat(block(changedScope.get("coverage")).get("lastSuccessfulScan")).isNull();
+    }
+
+    private Map<String, Object> provider(Map<String, Object> health, String source) {
+        return items(health.get("providers")).stream().filter(row -> source.equals(row.get("source"))).findFirst().orElseThrow();
+    }
+
+    private long addScope(long connection, String name, String origin) {
+        return jdbc.queryForObject("INSERT INTO secret_connection_scopes(connection_id,scope_key,revision,content_type,approved_ref,enabled,response_origin,response_origin_set_by_user_id,response_origin_set_at) VALUES(?,?,1,'TEXT','safe-fixture',true,?,?,now()) RETURNING scope_id",
+            Long.class, connection, name, origin, security);
+    }
+
+    private long reviewOccurrence(long connection, long scope, long run, String exposure) {
+        long key = jdbc.queryForObject("INSERT INTO secret_credential_sets(issuer,credential_type,component_state,fingerprint,fingerprint_key_version,masked_label,first_seen_at,last_seen_at) VALUES('AWS','AWS_ACCESS_KEY_PAIR','CONFIRMED',decode(md5(random()::text),'hex'),'test','AWS ••••1234',now(),now()) RETURNING credential_set_id", Long.class);
+        long occurrence = jdbc.queryForObject("""
+            INSERT INTO secret_occurrences(credential_set_id,connection_id,scope_id,source_object_ref,location_key,environment,exposure_status,exposure_range,presence_status,first_seen_at,last_seen_at,last_seen_run_id,policy_assessed_origin_version)
+            VALUES(?,?,?,'safe-fixture','L1','UNKNOWN',?,'UNKNOWN','PRESENT',now(),now(),?,(SELECT response_origin_version FROM secret_connection_scopes WHERE scope_id=?)) RETURNING occurrence_id
+            """, Long.class, key, connection, scope, exposure, run, scope);
+        long runScope = jdbc.queryForObject("SELECT run_scope_id FROM secret_run_scopes WHERE run_id=? AND scope_id=?", Long.class, run, scope);
+        jdbc.update("INSERT INTO secret_tool_runs(run_scope_id,engine,engine_version,config_hash,status) VALUES(?,'GITLEAKS','1','fixture','SUCCEEDED') ON CONFLICT DO NOTHING", runScope);
+        long tool = jdbc.queryForObject("SELECT tool_run_id FROM secret_tool_runs WHERE run_scope_id=? AND engine='GITLEAKS'", Long.class, runScope);
+        jdbc.update("INSERT INTO secret_findings(occurrence_id,run_id,tool_run_id,finding_key,rule_id,rule_version,detected_at) VALUES(?,?,?,?, 'fixture-key','1',now())", occurrence, run, tool, "finding-" + occurrence);
+        return occurrence;
     }
 
     private long scan(long connection, List<Long> scopes, boolean complete) {

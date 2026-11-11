@@ -286,8 +286,9 @@ FROM secret_scope_classification_proposals q WHERE q.scope_id=? AND q.status='PE
     private Map<String,Object> coverage(Map<String,Object> s,Map<String,Object> c) {
         long scopeId=number(s,"scope_id"),revision=number(s,"revision");
         var all=jdbc.queryForList("""
-            SELECT o.run_id,o.scope_revision,o.scope_outcome,o.requested_at,o.finished_at,o.run_finished_at,o.job_status
+            SELECT o.run_id,o.scope_revision,o.scope_outcome,o.requested_at,o.finished_at,o.run_finished_at,o.job_status,r.result_status
             FROM secret_scope_outcomes o JOIN secret_connection_scopes historical ON historical.scope_id=o.scope_id
+            JOIN secret_scan_runs r ON r.run_id=o.run_id
             WHERE historical.connection_id=? AND historical.scope_key=? AND o.job_kind='FULL_SCAN'
             ORDER BY o.requested_at DESC,o.run_id DESC
             """,c.get("connection_id"),s.get("scope_key"));
@@ -363,6 +364,7 @@ FROM secret_scope_classification_proposals q WHERE q.scope_id=? AND q.status='PE
     private static Map<String,Object> attempt(Map<String,Object> r) {
         if(r==null)return null;Map<String,Object> result=new LinkedHashMap<>();result.put("runId",r.get("run_id"));
         result.put("scopeOutcome",r.get("scope_outcome"));result.put("status",r.get("scope_outcome"));result.put("requestedAt",time(r,"requested_at"));
+        result.put("runStatus",display((String)r.get("job_status"),(String)r.get("result_status")));
         result.put("finishedAt",time(r,"finished_at"));return result;
     }
     private static Map<String,Object> page(List<Map<String,Object>> rows,int page,int size,String unit,Map<String,Object> filters) {
