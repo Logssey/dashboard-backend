@@ -11,7 +11,8 @@ public record SecretRunProgress(
         OffsetDateTime capturedAt, OffsetDateTime latestActivityAt, int pollAfterMs,
         String eventsStatus, boolean historyComplete, boolean truncated, long suppressedEventCount,
         OffsetDateTime recordedFrom, OffsetDateTime expiredAt,
-        List<Stage> stages, List<Event> events, long nextAfterEventId, boolean hasMore) {
+        List<Stage> stages, List<Event> events, long nextAfterEventId, boolean hasMore,
+        ValidationSummary validationSummary) {
     public record Capabilities(boolean canViewFindings) {}
     public record Stage(String key, String status, OffsetDateTime startedAt,
                         OffsetDateTime finishedAt, String reasonCode,
@@ -19,4 +20,10 @@ public record SecretRunProgress(
     public record Event(long id, int attemptNo, String stage, String operationCode, String outcome,
                         Integer httpStatus, String reasonCode, Long processedCount, Long totalCount,
                         Long durationMs, OffsetDateTime observedAt) {}
+    public record ValidationSummary(boolean reuseRecorded, long newRequestCount,
+                                    long completedRequestCount, Long reusedResultCount,
+                                    long uncheckedCount, long incompleteCount, long unknownCount,
+                                    List<ReusedResult> reusedResults, boolean reusedResultsTruncated) {}
+    public record ReusedResult(String issuer, String result, String reasonCode,
+                               OffsetDateTime providerCheckedAt, long sourceRunId, long count) {}
 }

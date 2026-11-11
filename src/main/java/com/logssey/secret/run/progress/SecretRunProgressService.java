@@ -79,7 +79,42 @@ public class SecretRunProgressService {
                 header.latest() == null ? run.requestedAt() : header.latest(), 2500, eventStatus,
                 "AVAILABLE".equals(eventStatus) && header.suppressed() == 0,
                 header.suppressed() > 0, header.suppressed(), header.recorded(), header.expired(),
-                stages(run, header.version() != null), events, next, more);
+                stages(run, header.version() != null), events, next, more, validationSummary(run));
+    }
+
+    private SecretRunProgress.ValidationSummary validationSummary(SecretRunStatusResponse run) {
+        boolean reuseRecorded = Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT validation_reuse_version=1 AND validation_reuse_attempt=? FROM secret_scan_runs WHERE run_id=?",
+                Boolean.class, run.attemptNo(), run.runId()));
+        var counts = jdbc.queryForObject("""
+                SELECT count(*) FILTER(WHERE request_sent_at IS NOT NULL) AS sent,
+                 count(*) FILTER(WHERE request_sent_at IS NOT NULL AND attempt_state='COMPLETED') AS completed,
+                 count(*) FILTER(WHERE result='UNCHECKED') AS unchecked,
+                 count(*) FILTER(WHERE result='UNCHECKED' AND reason_code IN('INCOMPLETE_PAIR','MISSING_SESSION_TOKEN','INCOMPLETE_CREDENTIAL')) AS incomplete,
+                 count(*) FILTER(WHERE result='UNKNOWN' OR attempt_state='ABANDONED') AS unknown
+                FROM secret_validation_attempts WHERE run_id=? AND attempt_no=? AND evidence_version=1
+                """, (rs, n) -> new long[]{rs.getLong("sent"), rs.getLong("completed"),
+                rs.getLong("unchecked"), rs.getLong("incomplete"), rs.getLong("unknown")},
+                run.runId(), run.attemptNo());
+        var reused = jdbc.query("""
+                SELECT k.issuer,a.result,a.reason_code,a.provider_checked_at,a.run_id,count(*) AS count
+                FROM secret_validation_reuses reuse
+                JOIN secret_validation_attempts a ON a.attempt_id=reuse.source_attempt_id
+                JOIN secret_credential_sets k ON k.credential_set_id=reuse.credential_set_id
+                WHERE reuse.run_id=? AND reuse.attempt_no=?
+                GROUP BY k.issuer,a.result,a.reason_code,a.provider_checked_at,a.run_id
+                ORDER BY a.provider_checked_at,k.issuer,a.run_id LIMIT 51
+                """, (rs, n) -> new SecretRunProgress.ReusedResult(rs.getString("issuer"),
+                rs.getString("result"), rs.getString("reason_code"),
+                rs.getObject("provider_checked_at", OffsetDateTime.class), rs.getLong("run_id"),
+                rs.getLong("count")), run.runId(), run.attemptNo());
+        Long reusedCount = reuseRecorded ? jdbc.queryForObject(
+                "SELECT count(*) FROM secret_validation_reuses WHERE run_id=? AND attempt_no=?",
+                Long.class, run.runId(), run.attemptNo()) : null;
+        boolean truncated = reused.size() > 50;
+        return new SecretRunProgress.ValidationSummary(reuseRecorded, counts[0], counts[1],
+                reusedCount, counts[2], counts[3], counts[4],
+                List.copyOf(truncated ? reused.subList(0, 50) : reused), truncated);
     }
 
     private List<SecretRunProgress.Stage> stages(SecretRunStatusResponse run, boolean recorded) {
