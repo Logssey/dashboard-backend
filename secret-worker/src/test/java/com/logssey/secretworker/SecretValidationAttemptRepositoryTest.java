@@ -447,6 +447,37 @@ SELECT max(provider_checked_at) FROM secret_validation_attempts WHERE result = '
     }
 
     @Test
+    void anIssuerOutsideTheConnectionSelectionNeverReachesItsProvider() {
+        var candidate = discovered();
+        approve();
+        jdbc.update("UPDATE secret_connections SET validation_allowed_issuers=ARRAY['GITHUB']::text[]");
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var result = attempts.validateAws(claim, candidate.credential(), candidate.material(), false, material -> {
+            calls.incrementAndGet();
+            return checked(AwsValidationResult.Status.VALID, AwsValidationResult.Reason.AUTHENTICATED, Instant.now());
+        });
+        assertThat(calls).hasValue(0);
+        assertThat(result.reason()).isEqualTo(AwsValidationResult.Reason.VALIDATOR_NOT_ALLOWED);
+        assertThat(jdbc.queryForMap("SELECT result,reason_code,request_sent_at,provider_checked_at FROM secret_validation_attempts"))
+                .containsEntry("result", "UNCHECKED").containsEntry("reason_code", "VALIDATOR_NOT_ALLOWED")
+                .containsEntry("request_sent_at", null).containsEntry("provider_checked_at", null);
+    }
+
+    @Test
+    void removingAnIssuerDuringTheResponseKeepsOnlyHistoricalAuthentication() {
+        var candidate = discovered();
+        approve();
+        attempts.validateAws(claim, candidate.credential(), candidate.material(), false, material -> {
+            jdbc.update("UPDATE secret_connections SET validation_allowed_issuers=ARRAY['GITHUB']::text[],validation_revision=validation_revision+1");
+            return checked(AwsValidationResult.Status.VALID, AwsValidationResult.Reason.AUTHENTICATED, Instant.now());
+        });
+        assertThat(jdbc.queryForMap("SELECT result,current_eligible,ineligible_reason_code FROM secret_validation_attempts"))
+                .containsEntry("result", "VALID").containsEntry("current_eligible", false)
+                .containsEntry("ineligible_reason_code", "APPROVAL_CHANGED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_current_validation_attempts", Long.class)).isZero();
+    }
+
+    @Test
     void timeoutHasSentAndCompletionTimesButNoInventedProviderObservation() {
         var candidate = discovered();
         approve();
@@ -751,15 +782,20 @@ SELECT max(provider_checked_at) FROM secret_validation_attempts WHERE result = '
             .containsEntry("ordered",true).containsEntry("provider_checked_at",null).containsEntry("request_sent_at",null);
     }
 
-    @Test
-    void expiredOneSecondPermitRechecksApprovalBeforeProviderHandoff() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void expiredOneSecondPermitRechecksApprovalBeforeProviderHandoff(boolean issuerPolicyChange) {
         var candidate=discovered();approve();
         var delayed=org.mockito.Mockito.spy(jobs);
         var pause=new java.util.concurrent.atomic.AtomicBoolean();
         org.mockito.Mockito.doAnswer(invocation->{
             Object result=invocation.callRealMethod();
             if(jdbc.queryForObject("SELECT count(*) FROM secret_validation_attempts WHERE attempt_state='SENT'",Long.class)>0 && pause.compareAndSet(false,true)) {
-                jdbc.update("UPDATE secret_connection_scopes SET validation_approved=false,validation_approval_revision=validation_approval_revision+1");
+                if (issuerPolicyChange) {
+                    jdbc.update("UPDATE secret_connections SET validation_allowed_issuers=ARRAY['GITHUB']::text[],validation_revision=validation_revision+1");
+                } else {
+                    jdbc.update("UPDATE secret_connection_scopes SET validation_approved=false,validation_approval_revision=validation_approval_revision+1");
+                }
                 Thread.sleep(1100);
             }
             return result;

@@ -278,10 +278,6 @@ WHERE job_id = ?
             finishScope(job, scope.id(), "FAILED", 0, "INVALID_APPROVED_SCOPE", execution);
             return new ScopeResult(false, 0, 1, "INVALID_APPROVED_SCOPE");
         }
-        // This name guard blocks outbound authentication; it does not attest synthetic contents.
-        boolean syntheticFixture =
-                "Logssey".equalsIgnoreCase(approved.owner())
-                        && "test-find-key".equalsIgnoreCase(approved.repository());
         withLease(
                 job,
                 execution,
@@ -337,7 +333,7 @@ WHERE run_scope_id = ?
                                                         Instant.now(), execution.observer(job, scope.id())));
                                 for (var candidate : inspection.awsCandidates()) {
                                     if (!validation.firstEncounter(
-                                            candidate.credential(), syntheticFixture)) continue;
+                                            candidate.credential(), scope.id())) continue;
                                     try {
                                         // Validation happens after the short persistence
                                         // transaction has returned.
@@ -346,7 +342,7 @@ WHERE run_scope_id = ?
                                                         job,
                                                         candidate.credential(),
                                                         candidate.material(),
-                                                        syntheticFixture,
+                                                        false,
                                                         validator,
                                                         scope.id(),
                                                         sourceRef,
@@ -362,7 +358,7 @@ WHERE run_scope_id = ?
                                 }
                                 for (var candidate : inspection.githubCandidates()) {
                                     if (!validation.firstEncounter(
-                                            candidate.credential(), syntheticFixture)) continue;
+                                            candidate.credential(), scope.id())) continue;
                                     try {
                                         validation.record(
                                                 attempts.validateGitHub(
@@ -379,7 +375,7 @@ WHERE run_scope_id = ?
                                     }
                                 }
                                 for (var candidate : inspection.notionCandidates()) {
-                                    if (!validation.firstEncounter(candidate.credential(), syntheticFixture))
+                                    if (!validation.firstEncounter(candidate.credential(), scope.id()))
                                         continue;
                                     try {
                                         validation.record(attempts.validateNotion(
@@ -394,7 +390,7 @@ WHERE run_scope_id = ?
                                 for (var credential : inspection.credentials()) {
                                     if (Set.of("AWS", "GITHUB", "NOTION").contains(credential.issuer()))
                                         continue;
-                                    if (!validation.firstEncounter(credential, syntheticFixture))
+                                    if (!validation.firstEncounter(credential, scope.id()))
                                         continue;
                                     validation.record(
                                             attempts.recordUnsupported(
@@ -488,22 +484,19 @@ WHERE run_scope_id = ?
         return Instant.now().atOffset(ZoneOffset.UTC);
     }
 
-    private static final class ValidationProgress {
+    static final class ValidationProgress {
         private final Set<String> encountered = new HashSet<>();
-        private final Set<String> fixtureRecorded = new HashSet<>();
         private int checked;
         private int inconclusive;
         private int failed;
 
-        boolean firstEncounter(SecretFindingNormalizer.Credential credential, boolean syntheticFixture) {
+        boolean firstEncounter(SecretFindingNormalizer.Credential credential, long runScopeId) {
             byte[] digest = "CONFIRMED".equals(credential.componentState())
                     ? credential.fingerprint() : credential.candidateLocator();
-            String identity = credential.issuer() + ":" + credential.credentialType() + ":"
+            String identity = runScopeId + ":" + credential.issuer() + ":" + credential.credentialType() + ":"
                     + credential.componentState() + ":" + credential.fingerprintKeyVersion() + ":"
                     + HexFormat.of().formatHex(digest);
-            // An exemption in the fixture repository must not suppress validation if the
-            // same credential is also discovered in a different approved repository.
-            if (syntheticFixture) return !encountered.contains(identity) && fixtureRecorded.add(identity);
+            // Approval and exact synthetic evidence belong to one scope, even for the same key.
             return encountered.add(identity);
         }
 
@@ -511,7 +504,8 @@ WHERE run_scope_id = ?
             if (result.status() == AwsValidationResult.Status.UNCHECKED) {
                 if (result.reason() != AwsValidationResult.Reason.DISABLED
                         && result.reason() != AwsValidationResult.Reason.SYNTHETIC_FIXTURE
-                        && result.reason() != AwsValidationResult.Reason.SOURCE_GUARD_BLOCKED)
+                        && result.reason() != AwsValidationResult.Reason.SOURCE_GUARD_BLOCKED
+                        && result.reason() != AwsValidationResult.Reason.VALIDATOR_NOT_ALLOWED)
                     inconclusive++;
             } else if (result.status() == AwsValidationResult.Status.UNKNOWN) {
                 inconclusive++;
@@ -523,7 +517,7 @@ WHERE run_scope_id = ?
         void record(CredentialValidationResult result) {
             if (Set.of("VALID", "INVALID").contains(result.result())) checked++;
             else if (!("UNCHECKED".equals(result.result())
-                    && Set.of("DISABLED", "SYNTHETIC_FIXTURE", "SOURCE_GUARD_BLOCKED")
+                    && Set.of("DISABLED", "SYNTHETIC_FIXTURE", "SOURCE_GUARD_BLOCKED", "VALIDATOR_NOT_ALLOWED")
                             .contains(result.reasonCode()))) inconclusive++;
         }
 

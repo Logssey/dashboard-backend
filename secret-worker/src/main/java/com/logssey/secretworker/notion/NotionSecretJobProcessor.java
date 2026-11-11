@@ -322,9 +322,10 @@ public final class NotionSecretJobProcessor implements SecretJobProcessor {
       Runnable beforeValidation) {
     for (var candidate : inspection.awsCandidates()) {
       beforeValidation.run();
-      if (!progress.first(candidate.credential())) continue;
+      if (!progress.first(candidate.credential(), scope.runScopeId())) continue;
       observe(
           progress,
+          scope.runScopeId(),
           candidate.credential(),
           () -> {
             var result =
@@ -343,9 +344,10 @@ public final class NotionSecretJobProcessor implements SecretJobProcessor {
     }
     for (var candidate : inspection.githubCandidates()) {
       beforeValidation.run();
-      if (!progress.first(candidate.credential())) continue;
+      if (!progress.first(candidate.credential(), scope.runScopeId())) continue;
       observe(
           progress,
+          scope.runScopeId(),
           candidate.credential(),
           () ->
               attempts.validateGitHub(
@@ -358,10 +360,11 @@ public final class NotionSecretJobProcessor implements SecretJobProcessor {
     }
     for (var candidate : inspection.notionCandidates()) {
       beforeValidation.run();
-      if (!progress.first(candidate.credential())) continue;
+      if (!progress.first(candidate.credential(), scope.runScopeId())) continue;
       // The common send boundary also observes this source connection's cooldown.
       observe(
           progress,
+          scope.runScopeId(),
           candidate.credential(),
           () ->
               attempts.validateNotion(
@@ -376,10 +379,11 @@ public final class NotionSecretJobProcessor implements SecretJobProcessor {
 
   private void observe(
       ValidationProgress progress,
+      long runScopeId,
       SecretFindingNormalizer.Credential credential,
       Supplier<CredentialValidationResult> operation) {
     try {
-      progress.record(credential, operation.get());
+      progress.record(credential, runScopeId, operation.get());
     } catch (SecretJobFailure error) {
       throw error;
     } catch (RuntimeException ignored) {
@@ -512,16 +516,16 @@ public final class NotionSecretJobProcessor implements SecretJobProcessor {
     private final Set<String> seen = new HashSet<>();
     private int checked, inconclusive, failed;
 
-    boolean first(SecretFindingNormalizer.Credential credential) {
-      return !seen.contains(key(credential));
+    boolean first(SecretFindingNormalizer.Credential credential, long runScopeId) {
+      return !seen.contains(key(credential, runScopeId));
     }
 
-    private String key(SecretFindingNormalizer.Credential credential) {
+    private String key(SecretFindingNormalizer.Credential credential, long runScopeId) {
       byte[] digest =
           "CONFIRMED".equals(credential.componentState())
               ? credential.fingerprint()
               : credential.candidateLocator();
-      return credential.issuer()
+      return runScopeId + ":" + credential.issuer()
           + ":"
           + credential.credentialType()
           + ":"
@@ -532,10 +536,10 @@ public final class NotionSecretJobProcessor implements SecretJobProcessor {
           + HexFormat.of().formatHex(digest);
     }
 
-    void record(SecretFindingNormalizer.Credential credential, CredentialValidationResult result) {
-      if (!"UNCHECKED".equals(result.result())) seen.add(key(credential));
+    void record(SecretFindingNormalizer.Credential credential, long runScopeId, CredentialValidationResult result) {
+      seen.add(key(credential, runScopeId));
       if (Set.of("VALID", "INVALID").contains(result.result())) checked++;
-      else if (!Set.of("DISABLED", "SYNTHETIC_FIXTURE", "SOURCE_GUARD_BLOCKED")
+      else if (!Set.of("DISABLED", "SYNTHETIC_FIXTURE", "SOURCE_GUARD_BLOCKED", "VALIDATOR_NOT_ALLOWED")
           .contains(result.reasonCode())) inconclusive++;
     }
 
