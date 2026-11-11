@@ -32,6 +32,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "logssey.secret.bootstrap-security-login-id=",
         "logssey.secret.bootstrap-remediator-login-id=",
         "logssey.secret.bootstrap-remediator-team=",
+        "logssey.secret.guide.provider=claude",
+        "logssey.secret.guide.claude.enabled=false",
         "logssey.secret.guide.groq.enabled=false"
 })
 class SecretGuideSecurityIntegrationTest {

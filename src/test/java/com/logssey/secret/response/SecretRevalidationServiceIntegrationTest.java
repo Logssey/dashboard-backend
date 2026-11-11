@@ -32,7 +32,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "logssey.admin.password=revalidation-pass",
         "logssey.admin.display-name=Revalidation Admin",
         "logssey.secret.bootstrap-security-login-id=",
-        "logssey.secret.bootstrap-remediator-login-id="
+        "logssey.secret.bootstrap-remediator-login-id=",
+        "logssey.secret.guide.provider=groq",
+        "logssey.secret.guide.groq.enabled=false",
+        "logssey.secret.guide.claude.enabled=false"
 })
 class SecretRevalidationServiceIntegrationTest {
     private static final PostgreSQLContainer POSTGRES = new com.logssey.secret.testing.SecretTestPostgres();
@@ -382,7 +385,10 @@ class SecretRevalidationServiceIntegrationTest {
     }
     @Test void repositoryNameAndTestLabelNeverProveSyntheticFixture(){
         jdbc.update("UPDATE secret_connection_scopes SET approved_ref='github://Logssey/test-find-key/develop/fixtures/'");
-        assertThat(guide.guide(caseId,"revalidation-admin").source()).isEqualTo("DEFAULT");
+        var response = guide.guide(caseId, "revalidation-admin");
+        assertThat(response.source()).isEqualTo("DEFAULT");
+        assertThat(response.readiness().reasonCode()).isEqualTo("SYNTHETIC_FIXTURE_REQUIRED");
+        assertThat(response.readiness().providerCalled()).isFalse();
         assertThatThrownBy(()->lifecycle.submit(caseId,new com.logssey.secret.lifecycle.SecretLifecycleService.Submission("FIXTURE_RETIRED",java.time.OffsetDateTime.now().minusMinutes(1),"CHANGE:SEC-2",0L,"fake-fixture"),"revalidation-admin")).isInstanceOf(ApiException.class);
     }
     @Test void onlyExactApprovedFixtureCanSelectExternalGuideAndRealProofImmediatelyDisablesIt(){

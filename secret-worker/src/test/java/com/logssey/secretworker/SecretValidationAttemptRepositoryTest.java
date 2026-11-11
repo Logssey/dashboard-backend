@@ -92,7 +92,7 @@ RETURNING scope_id
 """,
                         Long.class,
                         connectionId);
-        OffsetDateTime now = Instant.now().atOffset(ZoneOffset.UTC);
+        OffsetDateTime now = jdbc.queryForObject("SELECT clock_timestamp()", OffsetDateTime.class);
         long jobId =
                 jdbc.queryForObject(
                         """
