@@ -5,6 +5,7 @@ import com.logssey.secret.run.progress.core.ScanExecutionObserver;
 import static com.logssey.secret.run.progress.core.ScanExecutionObserver.*;
 import java.net.URI;
 import java.net.URLEncoder;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
@@ -319,7 +320,8 @@ public final class NotionPageClient {
       if (error.getCause() instanceof NotionSourceException safe) throw safe;
       throw headers.get() != null
           ? headers.get()
-          : new NotionSourceException(NotionSourceException.Code.SOURCE_UNAVAILABLE, 0);
+          : new NotionSourceException(error.getCause() instanceof SocketTimeoutException
+              ? NotionSourceException.Code.TIMEOUT : NotionSourceException.Code.SOURCE_UNAVAILABLE, 0);
     } catch (RuntimeException error) {
       if (error instanceof NotionSourceException safe) throw safe;
       throw new NotionSourceException(NotionSourceException.Code.SOURCE_UNAVAILABLE, 0);
