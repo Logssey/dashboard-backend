@@ -13,7 +13,7 @@ import org.springframework.transaction.annotation.Transactional;
 /** Read-time composition only: Secret records never become detection_events. */
 @Service
 public class SecretOverviewProjection {
-  public record Case(long id, String maskedLabel, String issuer, String environment, String stage,
+  public record Case(long id, String caseOrigin, String maskedLabel, String issuer, String environment, String stage,
       String severity, String assessmentStatus, String ownerTeam, Instant openedAt) {
     public boolean needsAction() { return Set.of("OPEN", "IN_PROGRESS", "REVALIDATION_PENDING").contains(stage); }
   }
@@ -39,7 +39,7 @@ public class SecretOverviewProjection {
     if(!access.hasAnyRole(actor,Set.of(SecretRole.SECURITY,SecretRole.REMEDIATOR)))
       return new Result("NOT_AUTHORIZED",true,List.of(),null);
     var rows=locations.visible(actor.userId(),null,
-        new SecretInventoryFilters("PRODUCTION","ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL"));
+        new SecretInventoryFilters("ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL"));
     var selected=rows.stream().filter(r -> "ALL".equals(environment)||environment.equals(r.environment())).toList();
     var riskRows=new HashMap<Long,Map<String,Object>>();
     var ids=rows.stream().map(SecretLocationRepository.Row::occurrenceId).distinct().toList();
@@ -49,7 +49,7 @@ public class SecretOverviewProjection {
     for(Long id:selected.stream().map(SecretLocationRepository.Row::caseId).filter(Objects::nonNull).distinct().toList()) {
       var detail=workflow.detail(id,login);
       if(!Boolean.TRUE.equals(detail.get("isCurrent"))||!"IN_SCOPE".equals(detail.get("disposition"))
-          ||!"PRODUCTION".equals(detail.get("caseOrigin")))continue;
+          ||!Set.of("PRODUCTION","TEST","UNCLASSIFIED").contains(detail.get("caseOrigin")))continue;
       var members=rows.stream().filter(r -> Objects.equals(r.caseId(),id)).toList();
       var evaluation=SecretRiskReadModel.summarize(members.stream().filter(r -> !"RESOLVED".equals(r.actionStatus()))
           .map(SecretLocationRepository.Row::occurrenceId).distinct().toList(),riskRows,false);
@@ -58,7 +58,7 @@ public class SecretOverviewProjection {
       String environmentLabel=environments.size()==1?environments.getFirst():"MIXED";
       Object opened=detail.get("createdAt");
       Instant openedAt=opened instanceof java.time.OffsetDateTime value?value.toInstant():((java.sql.Timestamp)opened).toInstant();
-      cases.add(new Case(id,(String)detail.get("maskedLabel"),(String)detail.get("issuer"),environmentLabel,
+      cases.add(new Case(id,(String)detail.get("caseOrigin"),(String)detail.get("maskedLabel"),(String)detail.get("issuer"),environmentLabel,
           stage,(String)evaluation.get("severity"),(String)evaluation.get("assessmentStatus"),
           (String)detail.get("assigneeTeam"),openedAt));
     }

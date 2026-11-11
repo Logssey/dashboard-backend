@@ -41,6 +41,10 @@ public final class NotionCollector {
     this.client = Objects.requireNonNull(client);
   }
 
+  public NotionCollector observed(com.logssey.secret.run.progress.core.ScanExecutionObserver observer) {
+    return new NotionCollector(client.observed(observer));
+  }
+
   @FunctionalInterface
   public interface ContentSink {
     void accept(Source source, byte[] utf8);

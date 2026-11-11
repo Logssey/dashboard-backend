@@ -51,7 +51,7 @@ final class SecretWorkbenchRecoveryFacts {
           facts("connectionId", id, "source", connection.get("provider"))));
       for (var item : pages(page -> coverage.scopes(login, id, "ALL", "ALL", false, page, 100))) {
         long scope = ((Number) item.get("scopeId")).longValue();
-        boolean selected = filters.origin().equals(item.get("origin"));
+        boolean selected = filters.origin().equals("ALL") || filters.origin().equals(item.get("origin"));
         boolean paused = !"ACTIVE".equals(item.get("connectionStatus"));
         if (selected) {
           subjects.add(new Subject("HealthScope", scope, null, item));

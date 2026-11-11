@@ -92,7 +92,7 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
                             expectedAuthRef,
                             job.connectionId())))
                 throw new SecretJobFailure(SecretJobFailureCode.SOURCE_ACCESS_DENIED, false);
-            AccountCheck account = new AccountCheck();
+            AccountCheck account = new AccountCheck(accountGateway.observed(execution.observer(job, null)));
             content.processValidation(
                     job, execution, approved -> account.check(approved.accountId()) == null);
             return;
@@ -154,7 +154,7 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
         int succeeded = 0;
         String firstGap = null;
         boolean allSucceeded = true;
-        AccountCheck account = new AccountCheck();
+        AccountCheck account = new AccountCheck(accountGateway.observed(execution.observer(job, null)));
         ContentProgress contentProgress = new ContentProgress();
         AwsContentPipeline.RunValidation validation = new AwsContentPipeline.RunValidation();
         for (Scope scope : scopes) {
@@ -260,7 +260,7 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
                     object_count = NULL, failure_code = NULL, unsupported_reason = NULL
                 WHERE run_scope_id = ?
                 """, now(), scope.runScopeId()));
-        AwsIamCollector.Result result = collector.collect(approved, (key, usage) -> {
+        AwsIamCollector.Result result = collector.observed(execution.observer(job, scope.runScopeId())).collect(approved, (key, usage) -> {
             if (!execution.renewLease(job.jobId(), job.leaseToken())
                     || !metadata.recordIfLeased(job, execution, scope.scopeId(), approved, key, usage)) {
                 throw new SecretJobFailure(SecretJobFailureCode.LEASE_EXPIRED, true);
@@ -360,7 +360,7 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
                     object_count = NULL, failure_code = NULL, unsupported_reason = NULL
                 WHERE run_scope_id = ?
                 """, now(), scope.runScopeId()));
-        AwsMetadataCollector.Result result = additional.collect(approved.service(), approved.region());
+        AwsMetadataCollector.Result result = additional.observed(execution.observer(job, scope.runScopeId())).collect(approved.service(), approved.region());
         String gap = result.gaps().isEmpty() ? null : "AWS_" + result.gaps().getFirst().name();
         finishScope(job, execution, scope.runScopeId(), result.status().name(),
                 result.objectCount(), gap, null);
@@ -370,6 +370,8 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
     }
 
     private final class AccountCheck {
+        private final AwsIamGateway observedGateway;
+        AccountCheck(AwsIamGateway observedGateway) { this.observedGateway = observedGateway; }
         private boolean checked;
         private String profileAccountId;
         private String failure;
@@ -378,7 +380,7 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
             if (!checked) {
                 checked = true;
                 try {
-                    profileAccountId = accountGateway.accountId();
+                    profileAccountId = observedGateway.accountId();
                 } catch (AwsIamSourceException error) {
                     failure = switch (error.code()) {
                         case ACCESS_DENIED -> "AWS_ACCESS_DENIED";

@@ -2,6 +2,8 @@ package com.logssey.secretworker.aws.metadata;
 
 /** A narrow, count-only boundary around approved AWS metadata listing operations. */
 public interface AwsMetadataPageClient {
+    default AwsMetadataPageClient observed(com.logssey.secret.run.progress.core.ScanExecutionObserver observer) { return this; }
+
     Page listSecrets(String region, String nextToken);
 
     Page describeParameters(String region, String nextToken);

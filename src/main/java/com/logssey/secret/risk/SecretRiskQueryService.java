@@ -34,6 +34,8 @@ public class SecretRiskQueryService {
   public Map<String, Object> risk(String login, long occurrence) {
     var actor = access.requirePrincipal(login);
     access.requireOccurrenceRead(actor, occurrence);
+    // Evidence and work signals use DB-recorded times; one DB clock keeps this read consistent.
+    var readAt = jdbc.queryForObject("SELECT clock_timestamp()", OffsetDateTime.class);
     var o = store.location(occurrence, false);
     boolean security = access.hasConnectionRole(actor, n(o, "connection_id"), SecretRole.SECURITY);
     boolean metadata = "METADATA_ONLY".equals(o.get("component_state"));
@@ -120,7 +122,7 @@ FROM secret_risk_evidence e WHERE e.occurrence_id=? AND e.record_kind='ASSERTION
               ? "RETRACTED"
               : e.get("expires_at") != null
                       && !SecretRiskAssessmentStore.time(e.get("expires_at"))
-                          .isAfter(OffsetDateTime.now())
+                          .isAfter(readAt)
                   ? "EXPIRED"
                   : Boolean.TRUE.equals(e.get("accepted"))
                       ? "ACCEPTED"
@@ -157,7 +159,7 @@ FROM secret_risk_evidence e WHERE e.occurrence_id=? AND e.record_kind='ASSERTION
           security
               && n(p, "actor_user_id") != actor.userId()
               && SecretRiskAssessmentStore.time(p.get("override_expires_at"))
-                  .isAfter(OffsetDateTime.now(ZoneOffset.UTC)));
+                  .isAfter(readAt));
       item.put(
           "allowedDecisionReasonCodes", SecretRiskFacts.REVIEW_REASONS.stream().sorted().toList());
       proposals.add(item);
@@ -230,7 +232,6 @@ FROM secret_risk_evidence e WHERE e.occurrence_id=? AND e.record_kind='ASSERTION
                 : latest.isEmpty()
                     ? "REQUEST_ASSESSMENT"
                     : conflicts.isEmpty() ? "REVIEW_EVIDENCE" : "INVESTIGATE_CONFLICT");
-    var readAt = OffsetDateTime.now(ZoneOffset.UTC);
     var analysisContext = new SecretRiskAnalysisContext(jdbc, store).read(o, result, readAt);
     result.put("analysisContext", analysisContext);
     var authentication = metadata ? Map.<String, Object>of()

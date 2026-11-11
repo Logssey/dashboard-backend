@@ -1,5 +1,7 @@
 package com.logssey.secretworker.notion;
 
+import static com.logssey.secret.run.progress.core.ScanExecutionObserver.*;
+
 import com.logssey.secret.notion.SecretNotionSourceCredentials;
 import com.logssey.secretworker.*;
 import com.logssey.secretworker.detection.SecretFindingNormalizer;
@@ -243,17 +245,19 @@ public final class NotionSecretJobProcessor implements SecretJobProcessor {
     int excluded = 0;
     try {
       var result =
-          collector.collect(
+          collector.observed(execution.observer(job, scope.runScopeId())).collect(
               approved,
               NotionCollectionLimits.DEFAULT,
               (source, bytes) -> {
                 check(job, scope.scopeId(), execution, lost, deadline, false);
                 if (source.nextRetryAt() != null)
                   waitUntil(job, source.nextRetryAt(), source.failureCode(), execution);
-                var scan = detector.scan(bytes);
+                var scan = execution.observer(job, scope.runScopeId()).measure(
+                                    Stage.DETECTION, Operation.GITLEAKS_SCAN, () -> detector.scan(bytes));
                 var inspection =
-                    normalizer.inspect(
-                        job.connectionId(), source.sourceObjectRef(), bytes, scan.findings());
+                    execution.observer(job, scope.runScopeId()).measure(
+                                    Stage.DETECTION, Operation.CANDIDATE_NORMALIZATION, () -> normalizer.inspect(
+                        job.connectionId(), source.sourceObjectRef(), bytes, scan.findings()));
                 persist(
                     job,
                     execution,
@@ -264,7 +268,7 @@ public final class NotionSecretJobProcessor implements SecretJobProcessor {
                             source.version(),
                             inspection,
                             scan,
-                            Instant.now()));
+                            Instant.now(), execution.observer(job, scope.runScopeId())));
                 objects.incrementAndGet();
                 var accounted = new HashSet<com.logssey.secretworker.detector.GitleaksFinding>();
                 inspection.credentials().forEach(c -> accounted.addAll(c.findings()));

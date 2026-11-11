@@ -43,17 +43,34 @@ class SecretOverviewProjectionIntegrationTest {
     projection=new SecretOverviewProjection(access,new SecretLocationRepository(jdbc),workflow,risk,closure);
     overview=new OverviewService(new OverviewQueryRepository(JdbcClient.create(jdbc.getDataSource())),projection);
   }
-  @Test void onlyCurrentAuthorizedProductionCasesCountOnceAndUnknownStaysUnknown() {
+  @Test void currentAuthorizedCasesAcrossAllOriginsCountOnceAndUnknownStaysUnknown() {
     long visible=fixture(connection,scope,"PRODUCTION");
     long hidden=connection(); fixture(hidden,scope(hidden,"PRODUCTION"),"PRODUCTION");
-    long test=connection(); grant(test); fixture(test,scope(test,"TEST"),"TEST");
+    long test=connection(); grant(test); long testCase=fixture(test,scope(test,"TEST"),"TEST");
+    long unclassified=connection(); grant(unclassified);
+    long unclassifiedCase=fixture(unclassified,scope(unclassified,"UNCLASSIFIED"),"UNCLASSIFIED");
     jdbc.update("INSERT INTO secret_occurrences(credential_set_id,connection_id,scope_id,source_object_ref,location_key,environment,exposure_status,exposure_range,presence_status,first_seen_at,last_seen_at) SELECT credential_set_id,connection_id,scope_id,'private-path','L2','UNKNOWN','ABNORMAL','UNKNOWN','PRESENT',now(),now() FROM secret_occurrences WHERE occurrence_id=(SELECT opening_occurrence_id FROM secret_response_cases WHERE case_id=?)",visible);
     jdbc.update("INSERT INTO secret_case_occurrences(case_id,occurrence_id,credential_set_id) SELECT ?,max(occurrence_id),credential_set_id FROM secret_occurrences WHERE credential_set_id=(SELECT credential_set_id FROM secret_response_cases WHERE case_id=?) GROUP BY credential_set_id",visible,visible);
     var result=projection.read("security","ALL");
-    assertThat(result.cases()).hasSize(1); assertThat(result.unassessedCount()).isEqualTo(1);
+    assertThat(result.cases()).hasSize(3); assertThat(result.unassessedCount()).isEqualTo(3);
+    assertThat(result.cases()).extracting(SecretOverviewProjection.Case::id)
+        .containsExactlyInAnyOrder(visible,testCase,unclassifiedCase);
+    assertThat(result.cases()).extracting(SecretOverviewProjection.Case::caseOrigin)
+        .containsExactlyInAnyOrder("PRODUCTION","TEST","UNCLASSIFIED");
     assertThat(result.cases().getFirst().environment()).isEqualTo("UNKNOWN");
     assertThat(result.cases().getFirst().severity()).isEqualTo("UNASSESSED");
     assertThat(projection.read("security","PROD").cases()).isEmpty();
+    jdbc.update("UPDATE secret_occurrences SET environment='PROD' WHERE occurrence_id=(SELECT opening_occurrence_id FROM secret_response_cases WHERE case_id=?)",unclassifiedCase);
+    assertThat(projection.read("security","PROD").cases()).extracting(SecretOverviewProjection.Case::id).containsExactly(unclassifiedCase);
+    var summary=overview.getSummary(EnvironmentFilter.ALL,"security");
+    assertThat(summary.secretIntegration().origin()).isEqualTo("ALL");
+    assertThat(summary.secretIntegration().total()).isEqualTo(3);
+    assertThat(summary.totalCount()).isEqualTo(3);
+    assertThat(overview.getPriorityFindings(EnvironmentFilter.ALL,10,"security").items())
+        .extracting(p->p.detailPath()).containsExactlyInAnyOrder(
+            "/secrets/cases/"+visible+"?origin=PRODUCTION",
+            "/secrets/cases/"+testCase+"?origin=TEST",
+            "/secrets/cases/"+unclassifiedCase+"?origin=UNCLASSIFIED");
     assertThat(projection.read("outsider","ALL")).satisfies(r->{assertThat(r.status()).isEqualTo("NOT_AUTHORIZED");assertThat(r.lastObservedAt()).isNull();});
     jdbc.update("UPDATE secret_role_grants SET revoked_at=now() WHERE user_id=?",security);
     assertThat(projection.read("security","ALL").cases()).isEmpty();
@@ -64,6 +81,7 @@ class SecretOverviewProjectionIntegrationTest {
     var summary=overview.getSummary(EnvironmentFilter.ALL,"security");
     assertThat(summary.totalCount()).isEqualTo(2);assertThat(summary.securityScore()).isEqualTo(99);
     assertThat(summary.secretIntegration().unassessedCount()).isEqualTo(1);
+    assertThat(summary.secretIntegration().origin()).isEqualTo("ALL");
     assertThat(summary.lastCollectedAt()).isNotNull();
     var priority=overview.getPriorityFindings(EnvironmentFilter.ALL,4,"security");
     assertThat(priority.unreviewedCount()).isEqualTo(2);
@@ -85,7 +103,7 @@ class SecretOverviewProjectionIntegrationTest {
   }
   long user(String name){ return jdbc.queryForObject("INSERT INTO dashboard_users(login_id,password_hash,display_name,role) VALUES(?,'hash',?,'ADMIN') RETURNING user_id",Long.class,name,name); }
   long connection(){ return jdbc.queryForObject("INSERT INTO secret_connections(provider,display_name,auth_ref,status,scope_version) VALUES('GITHUB','private','protected','ACTIVE',1) RETURNING connection_id",Long.class); }
-  long scope(long conn,String origin){return jdbc.queryForObject("INSERT INTO secret_connection_scopes(connection_id,scope_key,revision,content_type,approved_ref,enabled,response_origin,response_origin_set_by_user_id,response_origin_set_at) VALUES(?,'scope',1,'TEXT','private-path',true,?,?,now()) RETURNING scope_id",Long.class,conn,origin,security);}
+  long scope(long conn,String origin){return jdbc.queryForObject("INSERT INTO secret_connection_scopes(connection_id,scope_key,revision,content_type,approved_ref,enabled,response_origin,response_origin_set_by_user_id,response_origin_set_at) VALUES(?,'scope',1,'TEXT','private-path',true,?,?,CASE WHEN ?='UNCLASSIFIED' THEN NULL ELSE now() END) RETURNING scope_id",Long.class,conn,origin,"UNCLASSIFIED".equals(origin)?null:security,origin);}
   void grant(long conn){jdbc.update("INSERT INTO secret_role_grants(user_id,role,connection_id,granted_by_user_id,grant_source) VALUES(?,'SECURITY',?,?,'MANUAL')",security,conn,security);}
   long fixture(long conn,long scope,String origin){
     long key=jdbc.queryForObject("INSERT INTO secret_credential_sets(issuer,credential_type,component_state,fingerprint,fingerprint_key_version,masked_label,first_seen_at,last_seen_at) VALUES('AWS','AWS_ACCESS_KEY_PAIR','CONFIRMED',decode(md5(random()::text),'hex'),'test','AWS ••••1234',now(),now()) RETURNING credential_set_id",Long.class);

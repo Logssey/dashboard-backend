@@ -159,6 +159,7 @@ class SecretWorkbenchIntegrationTest {
         assertThat(snapshots.authorizationRevision(person)).isNotEqualTo(first);
     }
     @Test void anEmptyVisibleScopeAliasInvalidatesItsFrozenQueueButNotHiddenScopes(){
+        jdbc.update("UPDATE secret_connection_scopes SET content_type='GITHUB_REPOSITORY_FILES',history_limit='CURRENT_COMMIT_ONLY',approved_ref='github://Example/project/main/fixtures/' WHERE scope_id=?",scope);
         var snapshots=new SecretReadSnapshots(jdbc,JsonMapper.builder().build());
         var first=summary("operations",filters(),null);String id=first.get("snapshotId").toString();
         assertThat(metric(first,"unclassifiedScopes").get("value")).isEqualTo(1L);
@@ -212,6 +213,8 @@ class SecretWorkbenchIntegrationTest {
                         + " WHERE scope_id=?",
                 paused);
         scope(connection()); // Hidden setup must never contribute to any group.
+        // Setup now means missing operational policy, not an absent production/test classification.
+        jdbc.update("UPDATE secret_connection_scopes SET content_type='GITHUB_REPOSITORY_FILES',history_limit='CURRENT_COMMIT_ONLY',approved_ref='github://Example/project/main/fixtures/'");
 
         var production = summary("security", filters(), null);
         var setup = block(production.get("setupSummary"));
@@ -227,7 +230,7 @@ class SecretWorkbenchIntegrationTest {
                 .extracting(row -> row.get("scopeId"))
                 .containsExactly((int) paused);
         assertThat(block(setup.get("reasonCounts")))
-                .containsEntry("SOURCE_UNCLASSIFIED", 2L)
+                .containsEntry("POLICY_MISSING", 2L)
                 .containsEntry("CONNECTION_PAUSED", 1L);
         assertThat(items(setup.get("pausedItems")).getFirst())
                 .containsEntry("setupState", "PAUSED")
@@ -580,6 +583,27 @@ class SecretWorkbenchIntegrationTest {
         long tool = jdbc.queryForObject("SELECT tool_run_id FROM secret_tool_runs WHERE run_scope_id=? AND engine='GITLEAKS'", Long.class, runScope);
         jdbc.update("INSERT INTO secret_findings(occurrence_id,run_id,tool_run_id,finding_key,rule_id,rule_version,detected_at) VALUES(?,?,?,?, 'fixture-key','1',now())", occurrence, run, tool, "finding-" + occurrence);
         return occurrence;
+    }
+
+    @Test void allOriginCaseQueueCountsEveryActualOriginAndSafeSearchSharesSnapshot() {
+        caseFixture(connection,scope);jdbc.update("UPDATE secret_connection_scopes SET safe_display_alias='주문 API' WHERE scope_id=?",scope);
+        for(String origin:List.of("TEST","UNCLASSIFIED")) {
+            long c=connection(),s=scope(c);grant(security,"SECURITY",c);caseFixture(c,s);
+            jdbc.update("UPDATE secret_connection_scopes SET response_origin=?,response_origin_set_by_user_id=CASE WHEN ?='UNCLASSIFIED' THEN NULL ELSE ? END,response_origin_set_at=CASE WHEN ?='UNCLASSIFIED' THEN NULL ELSE now() END,safe_display_alias='결제 API' WHERE scope_id=?",origin,origin,security,origin,s);
+            jdbc.update("UPDATE secret_response_cases SET case_origin=? WHERE opening_occurrence_id IN(SELECT occurrence_id FROM secret_occurrences WHERE scope_id=?)",origin,s);
+        }
+        long hidden=connection();caseFixture(hidden,scope(hidden));
+        var all=new SecretWorkbenchService.Filters("ALL","ALL","ALL","ALL",null,null);
+        var overview=summary("security",all,null);assertThat(metric(overview,"ongoingCases").get("value")).isEqualTo(3L);
+        var queue=tx.execute(t->service.queue("security",all,"CURRENT_CASES",null,0,20,overview.get("snapshotId").toString()));
+        assertThat(queue.get("total")).isEqualTo(3);
+        var search=new SecretWorkbenchService.Filters("ALL","ALL","ALL","ALL",null,null," 결제 ");
+        var page=tx.execute(t->service.queue("security",search,"CURRENT_CASES",null,0,1,null));assertThat(page.get("total")).isEqualTo(2);
+        assertThat(items(page.get("items"))).hasSize(1);
+        assertThat(tx.execute(t->service.queue("security",search,"CURRENT_CASES",null,1,1,page.get("snapshotId").toString())).get("total")).isEqualTo(2);
+        code(ErrorCode.CONFLICT,()->tx.execute(t->service.queue("security",all,"CURRENT_CASES",null,0,20,page.get("snapshotId").toString())));
+        var exact=summary("security",filters(),null);assertThat(metric(exact,"ongoingCases").get("value")).isEqualTo(1L);
+        assertThat(block(overview.get("collectionHealth")).get("approvedScopeCount")).isEqualTo(3);
     }
 
     private long scan(long connection, List<Long> scopes, boolean complete) {

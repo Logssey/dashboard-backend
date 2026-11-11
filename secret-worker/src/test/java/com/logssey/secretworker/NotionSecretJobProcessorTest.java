@@ -91,6 +91,7 @@ class NotionSecretJobProcessorTest {
   void setUp() {
     jdbc.execute("TRUNCATE secret_connections RESTART IDENTITY CASCADE");
     collector = mock(NotionCollector.class);
+    org.mockito.Mockito.when(collector.observed(org.mockito.ArgumentMatchers.any())).thenReturn(collector);
     validator = mock(NotionTokenValidator.class);
     github = mock(GitHubPatValidator.class);
     aws = mock(AwsValidationService.class);

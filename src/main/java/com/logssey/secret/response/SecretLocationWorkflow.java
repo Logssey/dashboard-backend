@@ -119,8 +119,13 @@ public class SecretLocationWorkflow {
 
     @Transactional(readOnly=true)
     public Map<String,Object> list(String login,String origin,String scope,String stages,String assignmentStatus,String assignee,int page,int size) {
+        return list(login,origin,scope,stages,assignmentStatus,assignee,page,size,null);
+    }
+    @Transactional(readOnly=true)
+    public Map<String,Object> list(String login,String origin,String scope,String stages,String assignmentStatus,String assignee,int page,int size,String search) {
+        String q=com.logssey.secret.query.SecretSafeSearch.normalize(search);
         SecretPrincipal actor=access.requirePrincipal(login);access.requireAnyRole(actor);page(page,size);
-        if(!Set.of("PRODUCTION","TEST").contains(origin)||!Set.of("currentCases","history").contains(scope))invalid();
+        if(!Set.of("ALL","PRODUCTION","TEST","UNCLASSIFIED").contains(origin)||!Set.of("currentCases","history").contains(scope))invalid();
         Set<String> stageSet=csv(stages,Set.of("OPEN","IN_PROGRESS","REVALIDATION_PENDING","RESOLVED"));
         if(assignmentStatus!=null&&!Set.of("UNASSIGNED","TEAM_ONLY","PERSONAL").contains(assignmentStatus))invalid();
         if(assignee!=null&&!assignee.matches("ME|UNASSIGNED|[1-9][0-9]{0,17}"))invalid();
@@ -128,8 +133,8 @@ public class SecretLocationWorkflow {
             SELECT c.case_id,c.case_origin,c.credential_set_id,c.action_status,c.assigned_team,c.assigned_user_id,c.version,
                    c.opened_at,c.updated_at,k.masked_label,k.issuer,k.credential_type
             FROM secret_response_cases c JOIN secret_credential_sets k USING(credential_set_id)
-            WHERE c.case_origin=? AND c.is_current=? ORDER BY c.updated_at DESC,c.case_id DESC
-            """,origin,"currentCases".equals(scope));
+            WHERE (?='ALL' OR c.case_origin=?) AND c.is_current=? ORDER BY c.updated_at DESC,c.case_id DESC
+            """,origin,origin,"currentCases".equals(scope));
         var visible=new ArrayList<Map<String,Object>>();
         for(var c:all) {
             long id=num(c,"case_id");var loc=visibleLocations(id,actor);if(loc.isEmpty())continue;
@@ -138,6 +143,9 @@ public class SecretLocationWorkflow {
             boolean matched=loc.stream().anyMatch(o->assignmentMatches(o,assignmentStatus,assignee,actor.userId()));
             if(!matched)continue;
             var currentDetail=detail(id,login);
+            @SuppressWarnings("unchecked") var publicLocations=(List<Map<String,Object>>)currentDetail.get("occurrences");
+            if(q!=null && !com.logssey.secret.query.SecretSafeSearch.matches(q,c.get("masked_label"),currentDetail.get("assigneeDisplayName"),currentDetail.get("assigneeTeam"))
+                && publicLocations.stream().noneMatch(o->com.logssey.secret.query.SecretSafeSearch.matches(q,o.get("safeLocationLabel"),o.get("assigneeDisplayName"),o.get("assignedTeam"))))continue;
             visible.add(facts("caseId",id,"secretId",c.get("credential_set_id"),"maskedLabel",c.get("masked_label"),
                 "issuer",c.get("issuer"),"credentialType",c.get("credential_type"),"caseOrigin",c.get("case_origin"),
                 "stage",c.get("action_status"),"version",c.get("version"),"assigneeTeam",full?c.get("assigned_team"):null,

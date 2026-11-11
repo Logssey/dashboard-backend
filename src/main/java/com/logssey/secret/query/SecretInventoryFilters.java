@@ -7,9 +7,13 @@ import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
 
 public record SecretInventoryFilters(String origin, String source, String provider, String environment,
-        String contentKind, String workBucket, String componentState, String validity, String severity) {
+        String contentKind, String workBucket, String componentState, String validity, String severity, String q) {
+    public SecretInventoryFilters(String origin,String source,String provider,String environment,String contentKind,String workBucket,String componentState,String validity,String severity) {
+        this(origin,source,provider,environment,contentKind,workBucket,componentState,validity,severity,null);
+    }
     public SecretInventoryFilters {
-        require(origin, "PRODUCTION", "TEST", "UNCLASSIFIED");
+        q=SecretSafeSearch.normalize(q);
+        require(origin, "ALL", "PRODUCTION", "TEST", "UNCLASSIFIED");
         require(source, "ALL", "GITHUB", "AWS", "NOTION", "KUBERNETES");
         require(provider, "ALL", "GITHUB", "AWS", "NOTION", "KUBERNETES");
         require(environment, "ALL", "PROD", "DEV", "UNKNOWN");
@@ -24,6 +28,7 @@ public record SecretInventoryFilters(String origin, String source, String provid
         map.put("origin", origin); map.put("source", source); map.put("provider", provider);
         map.put("environment", environment); map.put("contentKind", contentKind); map.put("workBucket", workBucket);
         map.put("componentState", componentState); map.put("validity", validity); map.put("severity", severity);
+        if(q!=null) map.put("q",q);
         return map;
     }
     public static void require(String value, String... allowed) {

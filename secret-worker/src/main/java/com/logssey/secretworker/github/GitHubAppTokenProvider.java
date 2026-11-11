@@ -33,6 +33,10 @@ public final class GitHubAppTokenProvider {
         this.clock = Objects.requireNonNull(clock);
     }
 
+    GitHubAppTokenProvider observed(com.logssey.secret.run.progress.core.ScanExecutionObserver observer) {
+        return new GitHubAppTokenProvider(appId, installationId, privateKey, api.observed(observer), clock);
+    }
+
     String tokenFor(GitHubApprovedScope scope) {
         String jwt = jwt();
         String request = api.json(Map.of("repositories", new String[]{scope.repository()},

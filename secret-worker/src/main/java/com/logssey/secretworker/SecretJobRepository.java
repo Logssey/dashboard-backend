@@ -17,6 +17,16 @@ class SecretJobRepository {
         this.jdbc = jdbc;
     }
 
+    com.logssey.secret.run.progress.core.ScanExecutionObserver observer(ClaimedSecretJob job, Long scopeId) {
+        var events = new com.logssey.secret.run.progress.core.ScanExecutionEvents(jdbc);
+        return (stage, operation, outcome, http, reason, processed, total, duration) -> {
+            if (!events.append(job.jobId(), job.leaseToken(), job.leaseGeneration(), scopeId,
+                    stage, operation, outcome, http, reason, processed, total, duration)) {
+                throw new SecretJobFailure(SecretJobFailureCode.LEASE_EXPIRED, true);
+            }
+        };
+    }
+
     OffsetDateTime databaseNow() {
         return jdbc.queryForObject("SELECT clock_timestamp()", OffsetDateTime.class);
     }
@@ -129,6 +139,14 @@ WHERE job_id = ? AND status = 'LEASED' AND lease_owner = ?
 
     void recordScopeEvidence(long runScopeId, boolean validationFailed) {
         jdbc.queryForObject("SELECT secret_record_scope_evidence(?, ?)", Object.class, runScopeId, validationFailed);
+    }
+
+    void startResult(JobRow row) {
+        jdbc.queryForObject("""
+                SELECT secret_record_execution_event(?,?::uuid,?,NULL,'RESULT','STAGE_SUMMARY','STARTED',
+                 NULL,NULL,NULL,NULL,NULL,?)
+                """, Boolean.class, row.jobId(), row.fenceToken(), row.leaseGeneration(),
+                "result-start:" + row.attemptNo());
     }
 
     void finish(JobRow row, OffsetDateTime now, String resultStatus) {

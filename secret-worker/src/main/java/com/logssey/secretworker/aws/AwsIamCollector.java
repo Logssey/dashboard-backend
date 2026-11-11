@@ -17,6 +17,10 @@ public final class AwsIamCollector {
         this.gateway = gateway;
     }
 
+    public AwsIamCollector observed(com.logssey.secret.run.progress.core.ScanExecutionObserver observer) {
+        return new AwsIamCollector(gateway.observed(observer));
+    }
+
     @FunctionalInterface
     public interface MetadataSink {
         void accept(AwsIamGateway.AccessKey key, AwsIamGateway.LastUsed lastUsed);

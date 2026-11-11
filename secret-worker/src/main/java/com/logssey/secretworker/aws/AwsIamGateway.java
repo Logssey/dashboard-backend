@@ -5,6 +5,8 @@ import java.util.List;
 
 /** Raw AWS identifiers exist only in the short-lived collection callback. */
 public interface AwsIamGateway extends AutoCloseable {
+    default AwsIamGateway observed(com.logssey.secret.run.progress.core.ScanExecutionObserver observer) { return this; }
+
     String accountId();
     Page<String> users(String marker);
     Page<AccessKey> accessKeys(String userName, String marker);

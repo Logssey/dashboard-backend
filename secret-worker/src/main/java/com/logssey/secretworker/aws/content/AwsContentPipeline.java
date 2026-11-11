@@ -1,5 +1,7 @@
 package com.logssey.secretworker.aws.content;
 
+import static com.logssey.secret.run.progress.core.ScanExecutionObserver.*;
+
 import com.logssey.secretworker.ClaimedSecretJob;
 import com.logssey.secretworker.SecretJobExecutionService;
 import com.logssey.secretworker.SecretJobFailure;
@@ -183,7 +185,7 @@ public final class AwsContentPipeline {
                 detector.engineVersion(), detector.configHash(), Instant.now())));
         AtomicReference<String> consumerGap = new AtomicReference<>();
         AwsContentCollector.Result result =
-                collector.collect(
+                collector.observed(execution.observer(job, runScopeId)).collect(
                         approved,
                         true,
                         AwsContentCollector.DEFAULT_MAX_BYTES,
@@ -194,13 +196,15 @@ public final class AwsContentPipeline {
                                         SecretJobFailureCode.LEASE_EXPIRED, true);
                             }
                             try {
-                                var scan = detector.scan(bytes);
+                                var scan = execution.observer(job, runScopeId).measure(
+                                    Stage.DETECTION, Operation.GITLEAKS_SCAN, () -> detector.scan(bytes));
                                 var inspection =
-                                        normalizer.inspect(
+                                        execution.observer(job, runScopeId).measure(
+                                    Stage.DETECTION, Operation.CANDIDATE_NORMALIZATION, () -> normalizer.inspect(
                                                 job.connectionId(),
                                                 sourceRef,
                                                 bytes,
-                                                scan.findings());
+                                                scan.findings()));
                                 if (unprovenRecheckAbsence(job, inspection)) {
                                     consumerGap.set("DETECTOR_NORMALIZATION_INCOMPLETE");
                                     throw new IllegalStateException("DETECTOR_NORMALIZATION_INCOMPLETE");
@@ -215,7 +219,7 @@ public final class AwsContentPipeline {
                                                         null,
                                                         inspection,
                                                         scan,
-                                                        Instant.now()));
+                                                        Instant.now(), execution.observer(job, runScopeId)));
                                 for (var candidate : inspection.awsCandidates()) {
                                     if (!validation.firstEncounter(candidate.credential()))
                                         continue;
