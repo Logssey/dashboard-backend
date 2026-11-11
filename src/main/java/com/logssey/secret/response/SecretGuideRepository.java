@@ -27,9 +27,40 @@ class SecretGuideRepository {
                 FROM secret_response_cases c
                 JOIN secret_credential_sets s ON s.credential_set_id = c.credential_set_id
                 LEFT JOIN LATERAL (
-                    SELECT v.result FROM secret_validation_attempts v
-                    WHERE v.credential_set_id = s.credential_set_id
-                    ORDER BY v.completed_at DESC, v.attempt_id DESC LIMIT 1
+                    WITH locations AS (
+                        SELECT co.occurrence_id,co.response_status,observed.result,
+                               observed.provider_checked_at,observed.completed_at,action.performed_at
+                        FROM secret_case_occurrences co JOIN secret_occurrences o USING(occurrence_id)
+                        LEFT JOIN LATERAL (
+                            SELECT v.result,v.provider_checked_at,v.completed_at
+                            FROM secret_current_validation_attempts v JOIN secret_scan_runs r ON r.run_id=v.run_id
+                            WHERE v.occurrence_id=co.occurrence_id AND v.credential_set_id=c.credential_set_id
+                              AND r.connection_id=o.connection_id
+                              AND EXISTS(SELECT 1 FROM secret_run_scopes rs WHERE rs.run_id=r.run_id AND rs.scope_id=o.scope_id)
+                              AND EXISTS(SELECT 1 FROM secret_findings f WHERE f.occurrence_id=co.occurrence_id AND f.run_id=v.run_id)
+                            ORDER BY v.completed_at DESC,v.attempt_id DESC LIMIT 1
+                        ) observed ON TRUE
+                        LEFT JOIN LATERAL (
+                            SELECT max(a.performed_at) AS performed_at FROM secret_action_records a
+                            WHERE a.case_id=co.case_id AND a.occurrence_id=co.occurrence_id
+                              AND a.action_type IN('ROTATED','REVOKED','REMOVED_FROM_SOURCE')
+                        ) action ON TRUE
+                        WHERE co.case_id=c.case_id
+                    ), relevant AS (
+                        SELECT * FROM locations WHERE response_status<>'RESOLVED'
+                          OR NOT EXISTS(SELECT 1 FROM locations WHERE response_status<>'RESOLVED')
+                    ), latest AS (
+                        SELECT * FROM relevant WHERE completed_at IS NOT NULL
+                        ORDER BY completed_at DESC,occurrence_id DESC LIMIT 1
+                    )
+                    SELECT CASE
+                        WHEN EXISTS(SELECT 1 FROM relevant WHERE performed_at IS NOT NULL
+                          AND (provider_checked_at IS NULL OR provider_checked_at<=performed_at)) THEN 'UNCHECKED'
+                        WHEN latest.completed_at IS NULL THEN 'UNCHECKED'
+                        WHEN latest.result IN('VALID','INVALID') AND
+                          (latest.provider_checked_at IS NULL OR latest.provider_checked_at<=clock_timestamp()-interval '6 hours') THEN 'UNKNOWN'
+                        ELSE COALESCE(latest.result,'UNCHECKED') END AS result
+                    FROM (SELECT 1) seed LEFT JOIN latest ON TRUE
                 ) latest ON TRUE
                 WHERE c.case_id = ? AND c.is_current
                 """, (rs, row) -> new GuideCase(rs.getString("case_origin"),
