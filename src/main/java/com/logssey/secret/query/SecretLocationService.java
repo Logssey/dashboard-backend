@@ -43,13 +43,15 @@ public class SecretLocationService {
         this.repository=repository; this.snapshots=snapshots; this.access=access; this.coverageService=coverageService;this.readiness=readiness;this.lifecycle=lifecycle;
     }
 
-    @Transactional(isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> inventory(String loginId,SecretInventoryFilters filters,int page,int size,String snapshotId) {
         return inventory(loginId,filters,page,size,snapshotId,null);
     }
 
-    @Transactional(isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> inventory(String loginId,SecretInventoryFilters filters,int page,int size,String snapshotId,Long runId) {
+        return snapshots.readConsistently(() -> inventoryWithinRead(loginId,filters,page,size,snapshotId,runId));
+    }
+
+    private Map<String,Object> inventoryWithinRead(String loginId,SecretInventoryFilters filters,int page,int size,String snapshotId,Long runId) {
         validatePage(page,size);
         if(runId!=null&&runId<=0)throw new ApiException(ErrorCode.INVALID_INPUT);
         var actor=reader(loginId);

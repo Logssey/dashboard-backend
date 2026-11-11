@@ -48,8 +48,11 @@ public class SecretWorkbenchService {
             SecretCoverageService coverage,SecretReadSnapshots snapshots,ObjectMapper json) {
         this(jdbc,access,locations,cases,coverage,snapshots,json,null);
     }
-    @Transactional(isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> summary(String login,Filters f,String snapshotId) {
+        return snapshots.readConsistently(() -> summaryWithinRead(login,f,snapshotId));
+    }
+
+    private Map<String,Object> summaryWithinRead(String login,Filters f,String snapshotId) {
         if(f.q()!=null)throw new ApiException(ErrorCode.INVALID_INPUT);
         var actor=access.requirePrincipal(login);access.requireAnyRole(actor);var h=header(login,actor,f,snapshotId);
         var metrics=jdbc.query("SELECT * FROM secret_snapshot_metrics WHERE snapshot_id=? ORDER BY metric_key",(rs,n)->{
@@ -98,11 +101,9 @@ public class SecretWorkbenchService {
             "setupSummary",recovery.setup(h,f.origin(),access.hasAnyRole(actor,Set.of(SecretRole.SECURITY,SecretRole.OPERATIONS))),
             "collectionHealth",recovery.health(h,f.origin(),access.hasAnyRole(actor,Set.of(SecretRole.SECURITY,SecretRole.OPERATIONS))));
     }
-    @Transactional(isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> queue(String login,Filters f,String bucket,String stages,int page,int size,String snapshotId) {
         return queue(login,f,bucket,stages,page,size,snapshotId,"ALL","ALL");
     }
-    @Transactional(isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> matrix(String login,Filters f,String snapshotId) {
         var summary=summary(login,f,snapshotId);
         @SuppressWarnings("unchecked") var cases=(Map<String,Object>)summary.get("caseSummary");
@@ -110,8 +111,11 @@ public class SecretWorkbenchService {
         for(String key:List.of("origin","filters","snapshotId","asOf","expiresAt","restrictedCoverage","accessScope"))result.put(key,summary.get(key));
         return result;
     }
-    @Transactional(isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> queue(String login,Filters f,String bucket,String stages,int page,int size,String snapshotId,String severity,String validity) {
+        return snapshots.readConsistently(() -> queueWithinRead(login,f,bucket,stages,page,size,snapshotId,severity,validity));
+    }
+
+    private Map<String,Object> queueWithinRead(String login,Filters f,String bucket,String stages,int page,int size,String snapshotId,String severity,String validity) {
         if(page<0||page>1_000_000||size<1||size>100)throw new ApiException(ErrorCode.INVALID_INPUT);
         SecretInventoryFilters.require(bucket,"ACTION_REQUIRED","CURRENT_CASES","NEEDS_DECISION","NEEDS_CASE_LINK","REVIEW_REQUIRED","NORMAL_INVENTORY","COVERAGE_GAPS","UNCLASSIFIED");
         SecretInventoryFilters.require(severity,"ALL","CRITICAL","HIGH","MEDIUM","LOW","UNASSESSED","NOT_APPLICABLE");
