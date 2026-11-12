@@ -20,7 +20,7 @@ public class SecretScanFactsRepository {
             String type=recorded?rs.getString("snapshot_content_type"):rs.getString("fallback_type");
             if (!Set.of("GITHUB_REPOSITORY_FILES","IAM_ACCESS_KEY_METADATA","AWS_SECRETS_MANAGER_METADATA",
                 "AWS_SSM_PARAMETER_METADATA","AWS_S3_BUCKET_METADATA","AWS_SECRETS_MANAGER_VALUE",
-                "AWS_SSM_PARAMETER_VALUE","AWS_S3_OBJECT_CONTENT").contains(type)) type="UNSUPPORTED";
+                "AWS_SSM_PARAMETER_VALUE","AWS_S3_OBJECT_CONTENT","NOTION_PAGE_CONTENT").contains(type)) type="UNSUPPORTED";
             var at=rs.getObject("finished_at",OffsetDateTime.class);
             String collection=rs.getString("collection_status");
             String failure=safeCode(rs.getString("failure_code")==null?rs.getString("unsupported_reason"):rs.getString("failure_code"));

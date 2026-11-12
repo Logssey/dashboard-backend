@@ -35,8 +35,11 @@ public class SecretRunService {
             "GITHUB_REPOSITORY_FILES", "IAM_ACCESS_KEY_METADATA",
             "AWS_SECRETS_MANAGER_METADATA", "AWS_SSM_PARAMETER_METADATA",
             "AWS_S3_BUCKET_METADATA", "AWS_SECRETS_MANAGER_VALUE",
-            "AWS_SSM_PARAMETER_VALUE", "AWS_S3_OBJECT_CONTENT");
+            "AWS_SSM_PARAMETER_VALUE", "AWS_S3_OBJECT_CONTENT", "NOTION_PAGE_CONTENT");
     private static final Set<String> PUBLIC_SCOPE_GAPS = Set.of(
+            "NOTION_ACCESS_DENIED", "NOTION_NOT_FOUND", "NOTION_RATE_LIMITED", "NOTION_UNAVAILABLE",
+            "NOTION_RESPONSE_TOO_LARGE", "NOTION_MALFORMED_RESPONSE", "NOTION_TOKEN_UNAVAILABLE",
+            "NOTION_PAGE_TRASHED", "NOTION_CONTENT_TRUNCATED", "NOTION_UNATTRIBUTED_FINDINGS",
             "INVALID_APPROVED_SCOPE", "AWS_INVALID_APPROVED_SCOPE", "AWS_SERVICE_UNSUPPORTED",
             "AWS_ACCOUNT_MISMATCH", "AWS_ACCESS_DENIED", "AWS_RATE_LIMITED",
             "AWS_UNAVAILABLE", "AWS_SOURCE_UNAVAILABLE", "AWS_API_ERROR",
@@ -265,7 +268,7 @@ public class SecretRunService {
     }
 
     private static boolean supportedProvider(String provider) {
-        return "GITHUB".equals(provider) || "AWS".equals(provider);
+        return "GITHUB".equals(provider) || "AWS".equals(provider) || "NOTION".equals(provider);
     }
 
     private static String hashIdempotencyKey(long actorId, String key) {

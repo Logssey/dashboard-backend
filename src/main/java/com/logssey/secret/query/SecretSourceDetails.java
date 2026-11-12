@@ -20,6 +20,9 @@ public final class SecretSourceDetails {
     private static String decode(String value) { return URLDecoder.decode(value.replace("+","%2B"),StandardCharsets.UTF_8); }
     private static String encode(String value) { return URLEncoder.encode(value,StandardCharsets.UTF_8).replace("+","%20"); }
     public static String scopeLabel(String provider,String approvedRef,long scopeId) {
+        String notionPage="NOTION".equals(provider)?com.logssey.secret.run.NotionScopeSql.pageId(approvedRef):null;
+        // A page id is a reference, not a secret: show only a short prefix, never pass it through safe().
+        if(notionPage!=null)return "Notion 페이지 · "+notionPage.substring(0,8)+"…";
         try {
             var uri=URI.create(approvedRef);
             if(uri.getRawUserInfo()!=null||uri.getPort()!=-1||uri.getRawQuery()!=null||uri.getRawFragment()!=null)return "검사 대상 #"+scopeId;
@@ -37,6 +40,14 @@ public final class SecretSourceDetails {
     }
     public static Map<String,Object> describe(String provider,String approvedRef,String sourceRef,String lineRef) {
         var unavailable=facts("status","UNAVAILABLE","label","발견 위치 확인 필요","reasonCode","SOURCE_COORDINATES_UNAVAILABLE");
+        if("NOTION".equals(provider)) {
+            String page=com.logssey.secret.run.NotionScopeSql.pageId(approvedRef);
+            // The worker records "notion/pages/<hyphenated id>" for the approved page only.
+            if(page==null||sourceRef==null||!sourceRef.startsWith("notion/pages/")
+                    ||!page.equals(sourceRef.substring("notion/pages/".length()).replace("-","")))return unavailable;
+            return facts("status","AVAILABLE","kind","NOTION_PAGE","label","Notion 페이지 · "+page.substring(0,8)+"…",
+                    "line",null,"sourceUrl","https://www.notion.so/"+page);
+        }
         try {
             var uri=URI.create(approvedRef);
             if(uri.getUserInfo()!=null||uri.getPort()!=-1||uri.getQuery()!=null||uri.getFragment()!=null) return unavailable;

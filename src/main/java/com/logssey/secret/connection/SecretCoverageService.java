@@ -72,7 +72,7 @@ public class SecretCoverageService {
             }
             item.put("scopeStatusCounts",counts);
             boolean operations=access.hasConnectionRole(a,id,SecretRole.OPERATIONS);
-            boolean supported=Set.of("GITHUB","AWS").contains(c.get("provider"));
+            boolean supported=Set.of("GITHUB","AWS","NOTION").contains(c.get("provider"));
             item.put("capabilities",Map.of("canTest",operations&&supported&&"ACTIVE".equals(c.get("status")),
                 "canRun",operations&&supported&&"ACTIVE".equals(c.get("status"))&&!scopes.isEmpty()&&isExecutable(id,(String)c.get("provider"))));
             item.put("testBlockedReasonCode",!operations?"OPERATIONS_ROLE_REQUIRED":!supported?"PROVIDER_UNSUPPORTED":!"ACTIVE".equals(c.get("status"))?"CONNECTION_PAUSED":null);
@@ -123,6 +123,7 @@ public class SecretCoverageService {
 
     private boolean isExecutable(long connectionId,String provider) {
         String valid=provider.equals("AWS")?com.logssey.secret.run.AwsScopeSql.predicate("s"):
+            provider.equals("NOTION")?com.logssey.secret.run.NotionScopeSql.predicate("s"):
             "(s.content_type='GITHUB_REPOSITORY_FILES' AND s.history_limit='CURRENT_COMMIT_ONLY' AND s.approved_ref ~ '^github://[^/]+/[^/]+/[^/]+/.+$')";
         String sql="SELECT EXISTS(SELECT 1 FROM secret_connection_scopes s WHERE s.connection_id=? AND s.enabled)"
             +" AND NOT EXISTS(SELECT 1 FROM secret_connection_scopes s WHERE s.connection_id=? AND s.enabled AND ("+valid+") IS NOT TRUE)";
@@ -209,6 +210,11 @@ FROM secret_scope_classification_proposals q WHERE q.scope_id=? AND q.status='PE
                                         (String) s.get("approved_ref"))
                                 && !s.get("approved_ref").toString().contains("..")
                                 && !s.get("approved_ref").toString().contains("\\")
+                        : "NOTION".equals(c.get("provider"))
+                                ? com.logssey.secret.run.NotionScopeSql.approved(
+                                        (String) s.get("content_type"),
+                                        (String) s.get("history_limit"),
+                                        (String) s.get("approved_ref"))
                         : "AWS".equals(c.get("provider"))
                                 && Boolean.TRUE.equals(
                                         jdbc.queryForObject(
@@ -350,6 +356,6 @@ FROM secret_scope_classification_proposals q WHERE q.scope_id=? AND q.status='PE
     private static void validatePage(int page,int size){if(page<0||page>1_000_000||size<1||size>100)throw new ApiException(ErrorCode.INVALID_INPUT);}
     private static void validateOrigin(String origin){validate(origin,Set.of("ALL","PRODUCTION","TEST","UNCLASSIFIED"));}
     private static void validate(String value,Set<String> allowed){if(value==null||!allowed.contains(value))throw new ApiException(ErrorCode.INVALID_INPUT);}
-    private static String safeType(String type){return Set.of("GITHUB_REPOSITORY_FILES","IAM_ACCESS_KEY_METADATA","AWS_SECRETS_MANAGER_METADATA","AWS_SSM_PARAMETER_METADATA","AWS_S3_BUCKET_METADATA","AWS_SECRETS_MANAGER_VALUE","AWS_SSM_PARAMETER_VALUE","AWS_S3_OBJECT_CONTENT").contains(type)?type:"UNSUPPORTED";}
-    private static String safeProbeCode(String code){return code==null?null:Set.of("INVALID_APPROVED_SCOPE","AWS_ACCOUNT_MISMATCH","AWS_ACCESS_DENIED","AWS_RATE_LIMITED","AWS_UNAVAILABLE","GITHUB_APP_UNAVAILABLE","GITHUB_ACCESS_DENIED","GITHUB_RATE_LIMITED","GITHUB_UNAVAILABLE").contains(code)?code:"PROBE_UNAVAILABLE";}
+    private static String safeType(String type){return Set.of("GITHUB_REPOSITORY_FILES","IAM_ACCESS_KEY_METADATA","AWS_SECRETS_MANAGER_METADATA","AWS_SSM_PARAMETER_METADATA","AWS_S3_BUCKET_METADATA","AWS_SECRETS_MANAGER_VALUE","AWS_SSM_PARAMETER_VALUE","AWS_S3_OBJECT_CONTENT","NOTION_PAGE_CONTENT").contains(type)?type:"UNSUPPORTED";}
+    private static String safeProbeCode(String code){return code==null?null:Set.of("INVALID_APPROVED_SCOPE","AWS_ACCOUNT_MISMATCH","AWS_ACCESS_DENIED","AWS_RATE_LIMITED","AWS_UNAVAILABLE","GITHUB_APP_UNAVAILABLE","GITHUB_ACCESS_DENIED","GITHUB_RATE_LIMITED","GITHUB_UNAVAILABLE","NOTION_ACCESS_DENIED","NOTION_RATE_LIMITED","NOTION_UNAVAILABLE","NOTION_TOKEN_UNAVAILABLE").contains(code)?code:"PROBE_UNAVAILABLE";}
 }

@@ -102,24 +102,25 @@ class SecretRunRepository {
     }
 
     boolean hasSupportedScope(Connection connection) {
+        // GitHub scopes are checked by the worker; AWS and Notion scopes must all be executable.
+        String scopeOk = "(CASE CAST(? AS varchar) WHEN 'GITHUB' THEN true WHEN 'NOTION' THEN "
+                + NotionScopeSql.predicate("s") + " ELSE " + AwsScopeSql.predicate("s") + " END)";
         String query = """
-                SELECT (? = 'GITHUB' OR EXISTS (
+                SELECT (CAST(? AS varchar) IN ('GITHUB', 'NOTION') OR EXISTS (
                     SELECT 1 FROM secret_connections c
                     WHERE c.connection_id = ?
                       AND (c.auth_ref ~ '^aws-profile:[A-Za-z0-9._-]{1,100}$' OR c.auth_ref='aws-workload:default')
                 )) AND EXISTS (
                     SELECT 1 FROM secret_connection_scopes s
-                    WHERE s.connection_id = ? AND s.enabled
-                      AND (? = 'GITHUB' OR AWS_SCOPE_VALID)
-                ) AND (? = 'GITHUB' OR NOT EXISTS (
+                    WHERE s.connection_id = ? AND s.enabled AND SCOPE_OK
+                ) AND NOT EXISTS (
                     SELECT 1 FROM secret_connection_scopes s
-                    WHERE s.connection_id = ? AND s.enabled
-                      AND NOT AWS_SCOPE_VALID
-                ))
-                """.replace("AWS_SCOPE_VALID", AwsScopeSql.predicate("s"));
+                    WHERE s.connection_id = ? AND s.enabled AND NOT SCOPE_OK
+                )
+                """.replace("SCOPE_OK", scopeOk);
         Boolean supported = jdbc.queryForObject(query, Boolean.class,
                 connection.provider(), connection.id(), connection.id(),
-                connection.provider(), connection.provider(), connection.id());
+                connection.provider(), connection.id(), connection.provider());
         return Boolean.TRUE.equals(supported);
     }
 

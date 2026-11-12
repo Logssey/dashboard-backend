@@ -284,6 +284,47 @@ class SecretRunServiceTest {
     }
 
     @Test
+    void registersNotionOnlyWhenEveryEnabledScopeIsOneExactCurrentPage() {
+        long page = connection("NOTION", "ACTIVE", null);
+        notionScope(page, "notion://pages/0123456789abcdef0123456789abcdef", "CURRENT_VERSION_ONLY");
+        var accepted = service.register(new SecretRunRequest(page, null), "admin");
+        assertThat(accepted.status()).isEqualTo("PENDING");
+        var status = service.status(accepted.runId(), "admin");
+        assertThat(status.scopeCount()).isEqualTo(1);
+        assertThat(status.toString()).doesNotContain("0123456789abcdef");
+
+        long hyphenated = connection("NOTION", "ACTIVE", null);
+        notionScope(hyphenated, "notion://pages/01234567-89ab-cdef-0123-456789abcdef", "CURRENT_VERSION_ONLY");
+        assertThat(service.register(new SecretRunRequest(hyphenated, null), "admin").status()).isEqualTo("PENDING");
+
+        long workspace = connection("NOTION", "ACTIVE", null);
+        notionScope(workspace, "notion://workspace/all", "CURRENT_VERSION_ONLY");
+        assertConflict(() -> service.register(new SecretRunRequest(workspace, null), "admin"));
+        long history = connection("NOTION", "ACTIVE", null);
+        notionScope(history, "notion://pages/0123456789abcdef0123456789abcdef", "ALL_HISTORY");
+        assertConflict(() -> service.register(new SecretRunRequest(history, null), "admin"));
+        long mixed = connection("NOTION", "ACTIVE", null);
+        notionScope(mixed, "notion://pages/0123456789abcdef0123456789abcdef", "CURRENT_VERSION_ONLY");
+        jdbc.update("""
+                INSERT INTO secret_connection_scopes
+                    (connection_id, scope_key, revision, content_type, approved_ref, history_limit, enabled)
+                VALUES (?, 'other', 1, 'NOTION_PAGE_CONTENT', 'notion://pages/../all', 'CURRENT_VERSION_ONLY', true)
+                """, mixed);
+        assertConflict(() -> service.register(new SecretRunRequest(mixed, null), "admin"));
+        assertThat(count("secret_jobs")).isEqualTo(2);
+        assertThat(SecretRunService.safeFailureCode("NOTION_ACCESS_DENIED")).isEqualTo("NOTION_ACCESS_DENIED");
+        assertThat(SecretRunService.safeFailureCode("NOTION_SOMETHING_ELSE")).isEqualTo("UNSPECIFIED_FAILURE");
+    }
+
+    private void notionScope(long connectionId, String approvedRef, String historyLimit) {
+        jdbc.update("""
+                INSERT INTO secret_connection_scopes
+                    (connection_id, scope_key, revision, content_type, approved_ref, history_limit, enabled)
+                VALUES (?, 'notion-page', 1, 'NOTION_PAGE_CONTENT', ?, ?, true)
+                """, connectionId, approvedRef, historyLimit);
+    }
+
+    @Test
     void acceptsMixedAwsMetadataAndReturnsSafePerScopeCoverage() {
         long connection = connection("AWS", "ACTIVE", null);
         jdbc.update("""

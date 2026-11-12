@@ -38,6 +38,29 @@ class SecretConnectionTestServiceTest {
     }
 
     @Test
+    void notionProbesOnlyTheFirstApprovedPageAndNeverOtherProviders() {
+        var notion = mock(NotionAuthProbe.class);
+        var notionService = new SecretConnectionTestService(repository, aws, github, notion,
+                Clock.fixed(Instant.parse("2026-10-14T01:02:03Z"), ZoneOffset.UTC), access);
+        when(access.requirePrincipal("admin")).thenReturn(new SecretPrincipal(1));
+        when(repository.connection(9)).thenReturn(Optional.of(new SecretConnectionTestRepository.Connection(
+                9, "NOTION", "ACTIVE", "notion-connection:test")));
+        var scope = new SecretConnectionTestRepository.Scope("NOTION_PAGE_CONTENT",
+                "notion://pages/0123456789abcdef0123456789abcdef", "CURRENT_VERSION_ONLY");
+        when(repository.firstEnabledScope(9)).thenReturn(Optional.of(scope));
+        when(notion.probe(scope)).thenReturn(ConnectionProbeResult.failed("NOTION_ACCESS_DENIED"));
+
+        var result = notionService.test(9, "admin");
+
+        assertThat(result.provider()).isEqualTo("NOTION");
+        assertThat(result.status()).isEqualTo("FAILED");
+        assertThat(result.reasonCode()).isEqualTo("NOTION_ACCESS_DENIED");
+        assertThat(result.toString()).doesNotContain("0123456789abcdef", "notion-connection");
+        verifyNoInteractions(aws, github);
+        verify(repository).recordProbe(9, "admin", result);
+    }
+
+    @Test
     void identityProbeRejectsWrongRuntimeModeBeforeResolvingAnyCredentials() {
         assertThat(new AwsIdentityProbe("PROFILE").probeWorkload("123456789012").reasonCode())
                 .isEqualTo("AWS_UNAVAILABLE");

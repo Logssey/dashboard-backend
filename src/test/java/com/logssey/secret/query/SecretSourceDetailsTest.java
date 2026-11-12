@@ -18,4 +18,17 @@ class SecretSourceDetailsTest {
         assertThat(value.toString()).doesNotContain(key).contains("마스킹");
         assertThat(value.get("sourceUrl")).isNull();
     }
+    @Test void notionShowsOnlyTheApprovedPageAsAShortLabelAndLink() {
+        String ref="notion://pages/0123456789abcdef0123456789abcdef";
+        var value=SecretSourceDetails.describe("NOTION",ref,"notion/pages/01234567-89ab-cdef-0123-456789abcdef",null);
+        assertThat(value).containsEntry("status","AVAILABLE").containsEntry("kind","NOTION_PAGE")
+            .containsEntry("label","Notion 페이지 · 01234567…")
+            .containsEntry("sourceUrl","https://www.notion.so/0123456789abcdef0123456789abcdef");
+        assertThat(SecretSourceDetails.describe("NOTION",ref,"notion/pages/ffffffffffffffffffffffffffffffff",null))
+            .containsEntry("status","UNAVAILABLE");
+        assertThat(SecretSourceDetails.describe("NOTION","notion://workspace/all","notion/pages/x",null))
+            .containsEntry("status","UNAVAILABLE");
+        assertThat(SecretSourceDetails.scopeLabel("NOTION",ref,5)).isEqualTo("Notion 페이지 · 01234567…");
+        assertThat(SecretSourceDetails.scopeLabel("NOTION","notion://pages/../all",5)).isEqualTo("검사 대상 #5");
+    }
 }
