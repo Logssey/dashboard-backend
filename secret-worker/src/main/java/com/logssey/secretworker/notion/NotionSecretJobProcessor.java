@@ -292,6 +292,12 @@ public final class NotionSecretJobProcessor implements SecretJobProcessor {
       failure = result.failureCode();
       if (failure == null && unattributed.get()) failure = "DETECTOR_NORMALIZATION_INCOMPLETE";
       excluded = result.excludedBlockCount();
+      if ("SUCCEEDED".equals(collection) && objects.get() > 0) {
+        // Notion only reports whether the page is published to the web. Record that as the
+        // location's exposure range; it is not severity evidence and adds no ACCESS_SCOPE row.
+        String range = result.publishedToWeb() ? "BROAD" : "BOUNDED";
+        persist(job, execution, () -> recordExposureRange(tool, range));
+      }
     } catch (SecretJobFailure error) {
       throw error;
     } catch (NotionSourceException error) {
@@ -457,6 +463,16 @@ public final class NotionSecretJobProcessor implements SecretJobProcessor {
                 until.atOffset(ZoneOffset.UTC),
                 reason,
                 credentials.authRef()));
+  }
+
+  private void recordExposureRange(long toolRunId, String range) {
+    jdbc.update(
+        "UPDATE secret_occurrences o SET exposure_range=? WHERE o.occurrence_id IN"
+            + " (SELECT f.occurrence_id FROM secret_findings f WHERE f.tool_run_id=?"
+            + " AND f.occurrence_id IS NOT NULL) AND o.exposure_range IS DISTINCT FROM ?",
+        range,
+        toolRunId,
+        range);
   }
 
   private void finishScope(

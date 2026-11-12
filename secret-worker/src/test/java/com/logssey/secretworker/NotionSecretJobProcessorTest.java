@@ -209,6 +209,38 @@ class NotionSecretJobProcessorTest {
   }
 
   @Test
+  void webPublicationSetsOnlyTheLocationExposureRange() {
+    publishedBlock(true);
+    runSuccessfully();
+    assertThat(jdbc.queryForList("SELECT exposure_range FROM secret_occurrences", String.class))
+        .containsExactly("BROAD");
+
+    publishedBlock(false);
+    runSuccessfully();
+    assertThat(jdbc.queryForList("SELECT exposure_range FROM secret_occurrences", String.class))
+        .containsExactly("BOUNDED");
+    // Publication is shown on the location only; it is not severity (ACCESS_SCOPE) evidence.
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT count(*) FROM secret_risk_evidence WHERE kind='ACCESS_SCOPE'", Long.class))
+        .isZero();
+  }
+
+  @Test
+  void anIncompleteWalkLeavesTheExposureRangeUnchanged() {
+    stubCollector(
+        (scope, sink, guard) -> {
+          guard.run();
+          emit(sink, PAGE, BLOCK, content(TOKEN), false, null, null);
+          return result(
+              NotionCollector.Status.PARTIAL, false, NotionSourceException.Code.CONTENT_CHANGED, null, 1);
+        });
+    runSuccessfully();
+    assertThat(jdbc.queryForList("SELECT exposure_range FROM secret_occurrences", String.class))
+        .containsExactly("UNKNOWN");
+  }
+
+  @Test
   void theSameKeyInTwoBlocksHasOneIdentityAndTwoLocations() {
     approveValidation();
     when(validator.enabled()).thenReturn(true);
@@ -517,6 +549,16 @@ class NotionSecretJobProcessorTest {
             emit(sink, PAGE, block, content(TOKEN), true, null, null);
           }
           return result(NotionCollector.Status.SUCCEEDED, true, null, null, 3);
+        });
+  }
+
+  private void publishedBlock(boolean published) {
+    stubCollector(
+        (scope, sink, guard) -> {
+          guard.run();
+          emit(sink, PAGE, BLOCK, content(TOKEN), true, null, null);
+          return new NotionCollector.Result(
+              NotionCollector.Status.SUCCEEDED, 1, 0, List.of(), true, null, 0, published);
         });
   }
 
