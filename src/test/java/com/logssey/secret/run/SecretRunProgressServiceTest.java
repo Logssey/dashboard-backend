@@ -155,6 +155,84 @@ class SecretRunProgressServiceTest {
         assertThatThrownBy(() -> progress.progress("progress-admin", 999999, 0, 100)).isInstanceOf(ApiException.class);
     }
 
+    @Test void reuseSupportIsExplicitForHistoricalRunsAndEveryWorkerAttempt() {
+        assertThat(read(0, 100).validationSummary().reuseRecorded()).isFalse();
+        assertThat(read(0, 100).validationSummary().reusedResultCount()).isNull();
+        claim();
+        jdbc.update("UPDATE secret_scan_runs SET validation_reuse_version=1,validation_reuse_attempt=1 WHERE run_id=?", run);
+        assertThat(read(0, 100).validationSummary().reuseRecorded()).isTrue();
+        assertThat(read(0, 100).validationSummary().reusedResultCount()).isZero();
+        jdbc.update("UPDATE secret_jobs SET attempt_no=2,lease_generation=2 WHERE job_id=?", job);
+        assertThat(read(0, 100).validationSummary().reuseRecorded()).isFalse();
+        assertThat(read(0, 100).validationSummary().reusedResultCount()).isNull();
+    }
+
+    @Test void progressSeparatesSevenReusedObservationsFromTwoIncompleteCurrentDecisions() {
+        claim();
+        var sourceAttempts = new java.util.ArrayList<Long>();
+        for (int index = 0; index < 7; index++) {
+            sourceAttempts.add(validationAttempt(index, "INVALID", "INVALID_ACCESS_KEY"));
+        }
+        jdbc.update("UPDATE secret_jobs SET attempt_no=2,lease_generation=2 WHERE job_id=?", job);
+        jdbc.update("UPDATE secret_scan_runs SET validation_reuse_version=1,validation_reuse_attempt=2 WHERE run_id=?", run);
+        for (long source : sourceAttempts) {
+            jdbc.update("""
+                    INSERT INTO secret_validation_reuses(run_id,run_scope_id,attempt_no,credential_set_id,source_attempt_id)
+                    SELECT ?,?,2,credential_set_id,attempt_id FROM secret_validation_attempts WHERE attempt_id=?
+                    """, run, scope, source);
+        }
+        validationAttempt(8, "UNCHECKED", "INCOMPLETE_PAIR");
+        validationAttempt(9, "UNCHECKED", "MISSING_SESSION_TOKEN");
+        var summary = read(0, 100).validationSummary();
+        assertThat(summary.reuseRecorded()).isTrue();
+        assertThat(summary.newRequestCount()).isZero();
+        assertThat(summary.completedRequestCount()).isZero();
+        assertThat(summary.reusedResultCount()).isEqualTo(7);
+        assertThat(summary.uncheckedCount()).isEqualTo(2);
+        assertThat(summary.incompleteCount()).isEqualTo(2);
+        assertThat(summary.unknownCount()).isZero();
+        assertThat(summary.reusedResults()).hasSize(7).allSatisfy(result -> {
+            assertThat(result.result()).isEqualTo("INVALID");
+            assertThat(result.sourceRunId()).isEqualTo(run);
+            assertThat(result.providerCheckedAt()).isBefore(OffsetDateTime.now().minusSeconds(20));
+            assertThat(result.count()).isEqualTo(1);
+        });
+        assertThat(summary.reusedResultsTruncated()).isFalse();
+        var next = validationAttempt(10, "INVALID", "INVALID_ACCESS_KEY");
+        var withNewRequest = read(0, 100).validationSummary();
+        assertThat(withNewRequest.newRequestCount()).isEqualTo(1);
+        assertThat(withNewRequest.completedRequestCount()).isEqualTo(1);
+        assertThat(withNewRequest.reusedResultCount()).isEqualTo(7);
+        assertThat(jdbc.queryForObject("SELECT request_sent_at IS NOT NULL FROM secret_validation_attempts WHERE attempt_id=?", Boolean.class, next)).isTrue();
+    }
+
+    private long validationAttempt(int index, String result, String reason) {
+        long credential = jdbc.queryForObject("""
+                INSERT INTO secret_credential_sets(issuer,credential_type,component_state,fingerprint,fingerprint_key_version,first_seen_at,last_seen_at)
+                VALUES('AWS','AWS_ACCESS_KEY_PAIR','CONFIRMED',sha256(convert_to(?,'UTF8')),'test-v1',clock_timestamp(),clock_timestamp()) RETURNING credential_set_id
+                """, Long.class, "progress-credential-" + index);
+        long occurrence = jdbc.queryForObject("""
+                INSERT INTO secret_occurrences(credential_set_id,connection_id,scope_id,source_object_ref,location_key,
+                 environment,exposure_status,exposure_range,presence_status,first_seen_at,last_seen_at)
+                SELECT ?,r.connection_id,s.scope_id,?,'L1','UNKNOWN','UNKNOWN','UNKNOWN','PRESENT',clock_timestamp(),clock_timestamp()
+                FROM secret_run_scopes s JOIN secret_scan_runs r USING(run_id) WHERE s.run_scope_id=? RETURNING occurrence_id
+                """, Long.class, credential, "private/progress-" + index, scope);
+        return jdbc.queryForObject("""
+                INSERT INTO secret_validation_attempts(evidence_version,credential_set_id,run_id,job_id,validator_id,validator_version,
+                 endpoint_class,requested_at,completed_at,provider_checked_at,result,reason_code,attempt_state,request_sent_at,
+                 scope_id,occurrence_id,source_object_version_digest,credential_revision,scope_revision,validation_revision,
+                 validation_approval_revision,validation_profile_version,action_context_digest,dedup_key,cycle_key,attempt_no,
+                 reservation_generation,reservation_token,current_eligible,ineligible_reason_code)
+                SELECT 1,?,?,j.job_id,'AWS_STS_GET_CALLER_IDENTITY','v1','AWS_STS',clock_timestamp()-interval '1 minute',
+                 clock_timestamp()-interval '30 seconds',CASE WHEN ?<>'UNCHECKED' THEN clock_timestamp()-interval '40 seconds' END,
+                 ?,?,'COMPLETED',CASE WHEN ?<>'UNCHECKED' THEN clock_timestamp()-interval '50 seconds' END,
+                 s.scope_id,?,decode(repeat('11',32),'hex'),1,1,1,1,'credential-validation-v1',decode(repeat('22',32),'hex'),
+                 decode(repeat('33',32),'hex'),'scheduled:test',j.attempt_no,j.lease_generation,j.lease_token,false,'APPROVAL_CHANGED'
+                FROM secret_jobs j JOIN secret_scan_runs r USING(job_id) JOIN secret_run_scopes s USING(run_id)
+                WHERE j.job_id=? AND s.run_scope_id=? RETURNING attempt_id
+                """, Long.class, credential, run, result, result, reason, result, occurrence, job, scope);
+    }
+
     private void claim() {
         jdbc.update("UPDATE secret_jobs SET status='LEASED',attempt_no=1,lease_owner='test',lease_token='11111111-1111-1111-1111-111111111111',lease_generation=1,lease_until=clock_timestamp()+interval '5 minutes' WHERE job_id=?", job);
         jdbc.update("UPDATE secret_scan_runs SET result_status='RUNNING',started_at=clock_timestamp() WHERE run_id=?", run);

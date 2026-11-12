@@ -1,11 +1,9 @@
 package com.logssey.secret.response;
 
-import java.io.ByteArrayOutputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -14,23 +12,22 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /** Optional Groq adapter. Only catalog codes cross the output boundary; bodies are never logged. */
 @Component
+@ConditionalOnProperty(name = "logssey.secret.guide.provider", havingValue = "groq")
 class GroqSecretGuideProvider implements SecretGuideProvider {
-    private static final int MAX_RESPONSE_BYTES = 8_192;
     private static final int MAX_CONTENT_CHARS = 2_048;
     private static final int MAX_CACHE_ENTRIES = 128;
     private static final String API_PATH = "/openai/v1/chat/completions";
@@ -44,6 +41,7 @@ class GroqSecretGuideProvider implements SecretGuideProvider {
             Optionally include REVIEW_USAGE and REVIEW_PERMISSIONS. Return only the requested JSON object.
             """;
 
+    private final SecretAiCallBudget budget;
     private final boolean enabled;
     private final String apiKey;
     private final URI endpoint;
@@ -68,20 +66,35 @@ class GroqSecretGuideProvider implements SecretGuideProvider {
                             @Value("${logssey.secret.guide.groq.model:openai/gpt-oss-20b}") String model,
                             @Value("${logssey.secret.guide.groq.timeout-ms:5000}") int timeoutMillis,
                             @Value("${logssey.secret.guide.groq.calls-per-minute:6}") int callsPerMinute,
-                            @Value("${logssey.secret.guide.groq.cache-seconds:300}") int cacheSeconds) {
+                            @Value("${logssey.secret.guide.groq.cache-seconds:300}") int cacheSeconds,
+                            SecretAiCallBudget budget) {
         this(enabled, apiKey, url, model, HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(3))
                 .followRedirects(HttpClient.Redirect.NEVER).build(),
-                timeoutMillis, callsPerMinute, cacheSeconds, false);
+                timeoutMillis, callsPerMinute, cacheSeconds, false, java.util.Objects.requireNonNull(budget));
+    }
+
+    GroqSecretGuideProvider(boolean enabled, String apiKey, String url, String model,
+                            int timeoutMillis, int callsPerMinute, int cacheSeconds) {
+        this(enabled, apiKey, url, model, HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(3)).followRedirects(HttpClient.Redirect.NEVER).build(),
+                timeoutMillis, callsPerMinute, cacheSeconds, false, null);
     }
 
     /** Loopback is available only to package-local injected HTTP tests, never runtime configuration. */
     GroqSecretGuideProvider(boolean enabled, String apiKey, String url, String model, HttpClient http) {
-        this(enabled, apiKey, url, model, http, 5000, 6, 300, true);
+        this(enabled, apiKey, url, model, http, 5000, 6, 300, true, null);
     }
 
     GroqSecretGuideProvider(boolean enabled, String apiKey, String url, String model, HttpClient http,
                             int timeoutMillis, int callsPerMinute, int cacheSeconds, boolean allowLoopback) {
+        this(enabled, apiKey, url, model, http, timeoutMillis, callsPerMinute, cacheSeconds, allowLoopback, null);
+    }
+
+    private GroqSecretGuideProvider(boolean enabled, String apiKey, String url, String model, HttpClient http,
+                            int timeoutMillis, int callsPerMinute, int cacheSeconds, boolean allowLoopback,
+                            SecretAiCallBudget budget) {
+        this.budget = budget;
         this.enabled = enabled;
         this.apiKey = apiKey;
         this.model = model;
@@ -97,6 +110,9 @@ class GroqSecretGuideProvider implements SecretGuideProvider {
         this.endpointAllowed = allowedEndpoint(parsed, allowLoopback)
                 && http.followRedirects() == HttpClient.Redirect.NEVER;
     }
+
+    @Override
+    public String modelId() { return MODEL.equals(model) ? model : null; }
 
     @Override
     public String configurationReason() {
@@ -131,8 +147,16 @@ class GroqSecretGuideProvider implements SecretGuideProvider {
             windowCalls++;
         }
         Selection result;
-        try { result = request(context); }
-        catch (RuntimeException ignored) { result = Selection.fallback("PROVIDER_UNAVAILABLE", true); }
+        boolean providerCalled = false;
+        try (var permit = budget == null ? SecretAiCallBudget.Permit.unmeteredForTests()
+                : budget.acquire(providerId(), modelId(), "GUIDE", Duration.ofMillis(timeoutMillis))) {
+            if (permit.allowed()) {
+                providerCalled = true;
+                result = request(context);
+            } else {
+                result = Selection.fallback(permit.reasonCode(), false);
+            }
+        } catch (RuntimeException ignored) { result = Selection.fallback("PROVIDER_UNAVAILABLE", providerCalled); }
         synchronized (this) {
             inFlight = false;
             if (cache.size() >= MAX_CACHE_ENTRIES) cache.remove(cache.keySet().iterator().next());
@@ -151,8 +175,8 @@ class GroqSecretGuideProvider implements SecretGuideProvider {
                     .header("Content-Type", "application/json")
                     .header("Accept", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(requestBody(context), StandardCharsets.UTF_8)).build();
-            pending = http.sendAsync(request, info -> new BoundedBodySubscriber(info.statusCode() == 200,
-                    info.headers().firstValueAsLong("Content-Length").orElse(0) > MAX_RESPONSE_BYTES));
+            pending = http.sendAsync(request, info -> new SecretGuideHttpBody(info.statusCode() == 200,
+                    info.headers().firstValueAsLong("Content-Length").orElse(0)));
             // Completes only after the bounded body finishes, so stalled bodies share the same deadline.
             HttpResponse<byte[]> response = pending.get(timeoutMillis, TimeUnit.MILLISECONDS);
             if (response.statusCode() == 429) return Selection.fallback("PROVIDER_RATE_LIMITED", true);
@@ -169,7 +193,7 @@ class GroqSecretGuideProvider implements SecretGuideProvider {
         } catch (ExecutionException failure) {
             Throwable cause = failure.getCause();
             while (cause != null) {
-                if (cause instanceof ResponseTooLarge) return Selection.fallback("PROVIDER_RESPONSE_TOO_LARGE", true);
+                if (cause instanceof SecretGuideHttpBody.ResponseTooLarge) return Selection.fallback("PROVIDER_RESPONSE_TOO_LARGE", true);
                 if (cause instanceof java.net.http.HttpTimeoutException) return Selection.fallback("PROVIDER_TIMEOUT", true);
                 cause = cause.getCause();
             }
@@ -227,40 +251,4 @@ class GroqSecretGuideProvider implements SecretGuideProvider {
     }
 
     private record CachedSelection(Selection selection, long expiresAt) { }
-    private static final class ResponseTooLarge extends RuntimeException { }
-
-    /** Cancels before buffering more than 8 KiB, also for chunked bodies with no Content-Length. */
-    private static final class BoundedBodySubscriber implements HttpResponse.BodySubscriber<byte[]> {
-        private final CompletableFuture<byte[]> body = new CompletableFuture<>();
-        private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-        private final boolean read;
-        private final boolean oversized;
-        private Flow.Subscription subscription;
-
-        BoundedBodySubscriber(boolean read, boolean oversized) { this.read = read; this.oversized = oversized; }
-        @Override public CompletionStage<byte[]> getBody() { return body; }
-        @Override public void onSubscribe(Flow.Subscription value) {
-            subscription = value;
-            if (!read || oversized) {
-                value.cancel();
-                if (read && oversized) body.completeExceptionally(new ResponseTooLarge());
-                else body.complete(new byte[0]);
-            } else value.request(1);
-        }
-        @Override public void onNext(List<ByteBuffer> buffers) {
-            for (ByteBuffer buffer : buffers) {
-                if (buffer.remaining() > MAX_RESPONSE_BYTES - bytes.size()) {
-                    subscription.cancel();
-                    body.completeExceptionally(new ResponseTooLarge());
-                    return;
-                }
-                byte[] chunk = new byte[buffer.remaining()];
-                buffer.get(chunk);
-                bytes.writeBytes(chunk);
-            }
-            subscription.request(1);
-        }
-        @Override public void onError(Throwable failure) { body.completeExceptionally(failure); }
-        @Override public void onComplete() { body.complete(bytes.toByteArray()); }
-    }
 }

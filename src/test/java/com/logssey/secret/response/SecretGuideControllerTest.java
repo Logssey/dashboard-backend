@@ -42,7 +42,7 @@ class SecretGuideControllerTest {
         mvc.perform(post("/api/v1/secrets/cases/{caseId}/guide", 17)
                         .principal(new UsernamePasswordAuthenticationToken("security", "n/a")))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.version").value("secret-response-guide-v2"))
+                .andExpect(jsonPath("$.version").value("secret-response-guide-v3"))
                 .andExpect(jsonPath("$.source").value("DEFAULT"))
                 .andExpect(jsonPath("$.steps[0].code").value("VERIFY_EXPOSURE"))
                 .andExpect(jsonPath("$.maskedLabel").doesNotExist())

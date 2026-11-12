@@ -8,7 +8,7 @@ import java.util.Set;
 
 /** Versioned, server-authored steps. The model may only select their order and optional checks. */
 final class SecretGuideCatalog {
-    static final String VERSION = "secret-response-guide-v2";
+    static final String VERSION = "secret-response-guide-v3";
     static final String TITLE = "시크릿 대응 절차 안내";
     static final String NOTICE = "일반적인 대응 안내입니다. 실제 키 변경, 유효성·위험도 판정 및 해결 승인을 대신하지 않습니다.";
 
@@ -34,6 +34,10 @@ final class SecretGuideCatalog {
     }
 
     static Optional<SecretGuideResponse> fromSelectedCodes(List<String> codes, SecretGuideContext context) {
+        return fromSelectedCodes(codes, context, "GROQ");
+    }
+
+    static Optional<SecretGuideResponse> fromSelectedCodes(List<String> codes, SecretGuideContext context, String provider) {
         if (codes == null || codes.size() < REQUIRED.size() || codes.size() > STEPS.size()
                 || !STEPS.keySet().containsAll(codes) || !codes.containsAll(REQUIRED)
                 || Set.copyOf(codes).size() != codes.size()
@@ -42,7 +46,7 @@ final class SecretGuideCatalog {
                 || !(codes.indexOf("EXTERNAL_ROTATION") < codes.indexOf("RECORD_ACTION"))) {
             return Optional.empty();
         }
-        return Optional.of(response("GROQ", codes, context));
+        return Optional.of(response("CLAUDE".equals(provider) ? "CLAUDE" : "GROQ", codes, context));
     }
 
     static Set<String> stepCodes() {
@@ -55,6 +59,7 @@ final class SecretGuideCatalog {
         String title = switch (issuer) {
             case "AWS" -> "AWS 인증 수단 대응 안내";
             case "GITHUB" -> "GitHub 토큰 대응 안내";
+            case "NOTION" -> "Notion 토큰 대응 안내";
             default -> TITLE;
         };
         var wording = new LinkedHashMap<>(STEPS);
@@ -68,6 +73,16 @@ final class SecretGuideCatalog {
             replace(wording, "REVIEW_USAGE", "GitHub 사용 이력 확인", "GitHub의 토큰 사용 기록과 조직 감사 로그를 확인하고 담당자가 의심 활동을 검토하세요.");
             replace(wording, "REVIEW_PERMISSIONS", "GitHub 토큰 권한 확인", "토큰의 저장소 접근 범위, 조직 승인과 만료를 확인하고 필요한 최소 권한을 검토하세요.");
             replace(wording, "EXTERNAL_ROTATION", "GitHub에서 외부 조치", "담당자가 GitHub에서 토큰을 폐기·재발급하고 CI, 배포 환경 등 해당 토큰의 사용처를 갱신하세요.");
+        } else if ("NOTION".equals(issuer)) {
+            replace(wording, "REVIEW_USAGE", "Notion 사용 이력 확인", "연결의 사용처와 확인 가능한 워크스페이스 감사 기록을 검토하고 담당자가 의심 활동을 확인하세요.");
+            replace(wording, "REVIEW_PERMISSIONS", "Notion 연결 권한 확인", "연결의 콘텐츠 읽기·쓰기 기능과 공유된 페이지 범위를 확인하고 필요한 최소 권한을 검토하세요.");
+            replace(wording, "EXTERNAL_ROTATION", "Notion에서 외부 조치", "담당자가 Notion 연결 설정에서 토큰을 교체·폐기하고 연결된 수집기와 사용처의 인증 설정을 갱신하세요.");
+        }
+        if (context != null && "INVALID".equals(context.validationStatus())) {
+            replace(wording, "VERIFY_EXPOSURE", "인증 거부 결과와 사용처 확인", "기록된 인증 거부 응답과 검증 시각을 확인하세요. 만료·폐기·교체 여부와 현재 사용 중인 인증 수단을 담당자가 확인하세요.");
+            replace(wording, "EXTERNAL_ROTATION", "교체·폐기 상태와 사용처 점검", "이미 교체·폐기한 키인지 확인하고 사용처의 인증 설정을 점검하세요. 원인이 확인되지 않으면 발급 서비스에서 상태를 확인한 후 필요한 조치를 수행하세요.");
+        } else if (context != null && List.of("UNKNOWN", "UNCHECKED").contains(context.validationStatus())) {
+            replace(wording, "VERIFY_EXPOSURE", "인증 확인 사유와 구성요소 확인", "키별 미검증·확인 불가 사유를 확인하고 필요한 키 구성요소와 현재 승인 범위를 점검하세요. 가능한 경우 최신 인증 확인 결과를 먼저 확보하세요.");
         }
         if ("IN_PROGRESS".equals(stage)) {
             replace(wording, "VERIFY_EXPOSURE", "진행 중 조치 범위 확인", "현재 담당자와 발견 위치를 확인하고 아직 처리되지 않은 사용처와 조치 근거를 검토하세요.");

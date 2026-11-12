@@ -11,6 +11,9 @@ import com.logssey.secretworker.detector.SecretContentDetector;
 import com.logssey.secretworker.validation.AwsValidationResult;
 import com.logssey.secretworker.validation.AwsValidationService;
 import com.logssey.secretworker.validation.CredentialRevalidationProcessor;
+import com.logssey.secretworker.validation.CredentialValidationResult;
+import com.logssey.secretworker.validation.GitHubPatValidator;
+import com.logssey.secretworker.validation.NotionTokenValidator;
 import com.logssey.secretworker.validation.SecretValidationAttemptRepository;
 
 import org.flywaydb.core.Flyway;
@@ -89,7 +92,7 @@ RETURNING scope_id
 """,
                         Long.class,
                         connectionId);
-        OffsetDateTime now = Instant.now().atOffset(ZoneOffset.UTC);
+        OffsetDateTime now = jdbc.queryForObject("SELECT clock_timestamp()", OffsetDateTime.class);
         long jobId =
                 jdbc.queryForObject(
                         """
@@ -308,6 +311,186 @@ SELECT max(provider_checked_at) FROM secret_validation_attempts WHERE result = '
                 .doesNotContain("AKIAABCDEFGHIJKLMNOP", "aB3/".repeat(10));
         assertThat(output.getAll()).doesNotContain("AKIAABCDEFGHIJKLMNOP", "aB3/".repeat(10));
     }
+
+    @Test
+    void sameCycleRescanRecordsSevenReusesAndTwoIncompleteDecisionsWithoutProviderCalls() {
+        var fixtures = new java.util.ArrayList<ValidationFixture>();
+        for (String marker : List.of("A", "B", "C")) {
+            fixtures.add(new ValidationFixture("repo/aws-" + marker + ".env",
+                    "AWS_ACCESS_KEY_ID=AKIA" + marker.repeat(16) + "\nAWS_SECRET_ACCESS_KEY=" + marker.repeat(40),
+                    List.of("aws-access-token", "generic-api-key")));
+        }
+        fixtures.add(new ValidationFixture("repo/classic.env", "GITHUB_TOKEN=ghp_" + "D".repeat(36), List.of("github-pat")));
+        fixtures.add(new ValidationFixture("repo/fine.env", "GITHUB_TOKEN=github_pat_" + "E".repeat(70), List.of("github-fine-grained-pat")));
+        fixtures.add(new ValidationFixture("repo/notion.env", "NOTION_TOKEN=ntn_" + "F".repeat(46), List.of("notion-api-token")));
+        fixtures.add(new ValidationFixture("repo/notion-legacy.env", "NOTION_TOKEN=secret_" + "G".repeat(43), List.of("notion-api-token")));
+        fixtures.add(new ValidationFixture("repo/id-only.env", "AWS_ACCESS_KEY_ID=AKIA" + "H".repeat(16), List.of("aws-access-token")));
+        fixtures.add(new ValidationFixture("repo/temporary.env",
+                "AWS_ACCESS_KEY_ID=ASIA" + "I".repeat(16) + "\nAWS_SECRET_ACCESS_KEY=" + "I".repeat(40),
+                List.of("aws-access-token", "generic-api-key")));
+        approve();
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        validateFixtures(fixtures, calls);
+        long originalRun = claim.runId();
+        assertThat(calls).hasValue(7);
+        assertThat(jobs.complete(claim.jobId(), claim.leaseToken())).isTrue();
+
+        nextScanInSameCycle();
+        validateFixtures(fixtures, calls);
+        assertThat(calls).hasValue(7);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_validation_reuses WHERE run_id=?", Long.class, claim.runId())).isEqualTo(7);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_validation_attempts WHERE run_id=? AND request_sent_at IS NOT NULL", Long.class, claim.runId())).isZero();
+        assertThat(jdbc.queryForList("SELECT reason_code FROM secret_validation_attempts WHERE run_id=? ORDER BY attempt_id", String.class, claim.runId()))
+                .containsExactly("INCOMPLETE_PAIR", "MISSING_SESSION_TOKEN");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_validation_reuses reuse JOIN secret_validation_attempts a ON a.attempt_id=reuse.source_attempt_id WHERE reuse.run_id=? AND a.run_id=? AND a.provider_checked_at IS NOT NULL", Long.class, claim.runId(), originalRun))
+                .isEqualTo(7);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_run_execution_events WHERE run_id=? AND operation_code='CREDENTIAL_RESULT_REUSED' AND outcome='COMPLETED' AND http_status IS NULL", Long.class, claim.runId()))
+                .isEqualTo(7);
+        assertThat(jdbc.queryForMap("SELECT validation_stage_status,validation_reason_code FROM secret_run_scopes WHERE run_scope_id=?", runScopeId))
+                .containsEntry("validation_stage_status", "PARTIAL").containsEntry("validation_reason_code", "VALIDATION_INCONCLUSIVE");
+        assertThat(jdbc.queryForObject("SELECT started_at IS NOT NULL FROM secret_run_execution_stage_facts WHERE run_id=? AND attempt_no=? AND stage='VALIDATION'", Boolean.class, claim.runId(), claim.attemptNo())).isTrue();
+    }
+
+    @Test
+    void cacheOnlyRescanCompletesValidationWithoutInventingANewProviderObservation() {
+        var fixture = new ValidationFixture("repo/aws-only.env", "AWS_ACCESS_KEY_ID=AKIA" + "J".repeat(16)
+                + "\nAWS_SECRET_ACCESS_KEY=" + "J".repeat(40), List.of("aws-access-token", "generic-api-key"));
+        approve();
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        validateFixtures(List.of(fixture), calls);
+        assertThat(jobs.complete(claim.jobId(), claim.leaseToken())).isTrue();
+        nextScanInSameCycle();
+        validateFixtures(List.of(fixture), calls);
+        assertThat(calls).hasValue(1);
+        assertThat(jdbc.queryForObject("SELECT validation_stage_status FROM secret_run_scopes WHERE run_scope_id=?", String.class, runScopeId)).isEqualTo("SUCCEEDED");
+        assertThat(jobs.complete(claim.jobId(), claim.leaseToken())).isTrue();
+        assertThat(jdbc.queryForMap("SELECT outcome,reason_code FROM secret_run_execution_events WHERE run_id=? AND stage='VALIDATION' AND operation_code='STAGE_SUMMARY'", claim.runId()))
+                .containsEntry("outcome", "COMPLETED").containsEntry("reason_code", null);
+    }
+
+    @Test
+    void restrictedWorkerRecordsReuseOnlyThroughTheLiveLeaseAndCurrentSourceFence() {
+        var fixture = new ValidationFixture("repo/aws.txt", "AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\nAWS_SECRET_ACCESS_KEY="
+                + "aB3/".repeat(10), List.of("aws-access-token", "generic-api-key"));
+        approve();
+        validateFixtures(List.of(fixture), new java.util.concurrent.atomic.AtomicInteger());
+        long originalRun = claim.runId();
+        assertThat(jobs.complete(claim.jobId(), claim.leaseToken())).isTrue();
+        nextScanInSameCycle();
+        long tool = findings.beginGitleaksRun(runScopeId, "8.30.1", CONFIG_HASH, Instant.now());
+        var scan = new GitleaksScanResult("8.30.1", CONFIG_HASH, List.of(
+                new GitleaksFinding("aws-access-token", 1, 1, 19, 38),
+                new GitleaksFinding("generic-api-key", 2, 2, 1, 60)));
+        var source = jdbc.queryForMap("""
+                SELECT a.attempt_id,a.dedup_key,v.context_version FROM secret_current_validation_attempts a
+                JOIN secret_validation_context v USING(occurrence_id) WHERE a.run_id=?
+                """, originalRun);
+        jdbc.execute("CREATE ROLE validation_reuse_test_worker NOLOGIN NOINHERIT");
+        jdbc.execute("GRANT USAGE ON SCHEMA public TO validation_reuse_test_worker");
+        jdbc.execute("GRANT EXECUTE ON FUNCTION secret_record_validation_reuse(bigint,uuid,bigint,bigint,bigint,text,bytea) TO validation_reuse_test_worker");
+        var transaction = new TransactionTemplate(transactionManager);
+        java.util.function.Function<String, Boolean> record = token -> transaction.execute(status -> {
+            jdbc.execute("SET LOCAL ROLE validation_reuse_test_worker");
+            return jdbc.queryForObject("SELECT secret_record_validation_reuse(?,?::uuid,?,?,?,?,?)", Boolean.class,
+                    claim.jobId(), token, claim.leaseGeneration(), runScopeId, source.get("attempt_id"),
+                    source.get("context_version"), source.get("dedup_key"));
+        });
+        assertThat(record.apply(claim.leaseToken())).isFalse(); // The source has not been fetched in this run.
+        findings.recordObject(tool, fixture.path(), "unchanged-blob", fixture.content().getBytes(StandardCharsets.UTF_8), scan, Instant.now());
+        assertThat(record.apply("11111111-1111-1111-1111-111111111111")).isFalse();
+        assertThat(record.apply(claim.leaseToken())).isTrue();
+        assertThat(record.apply(claim.leaseToken())).isTrue();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_validation_reuses WHERE run_id=?", Long.class, claim.runId())).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_run_execution_events WHERE run_id=? AND operation_code='CREDENTIAL_RESULT_REUSED'", Long.class, claim.runId())).isEqualTo(2);
+        for (String forbidden : List.of("DELETE FROM secret_validation_reuses", "UPDATE secret_validation_reuses SET attempt_no=999")) {
+            assertThatThrownBy(() -> transaction.execute(status -> {
+                jdbc.execute("SET LOCAL ROLE validation_reuse_test_worker");
+                jdbc.execute(forbidden);
+                return null;
+            })).isInstanceOf(org.springframework.dao.DataAccessException.class);
+        }
+        jdbc.update("UPDATE secret_jobs SET lease_until=clock_timestamp()-interval '1 second' WHERE job_id=?", claim.jobId());
+        assertThat(record.apply(claim.leaseToken())).isFalse();
+    }
+
+    @Test
+    void successfulRetryDoesNotInheritThePreviousAttemptsUnknownValidation() {
+        var candidate = discovered();
+        approve();
+        attempts.validateAws(claim, candidate.credential(), candidate.material(), false,
+                material -> checked(AwsValidationResult.Status.UNKNOWN, AwsValidationResult.Reason.CLIENT_FAILURE, Instant.now()));
+        assertThat(jobs.fail(claim.jobId(), claim.leaseToken(), SecretJobFailureCode.VALIDATOR_TEMPORARY, true)).isTrue();
+        jdbc.update("UPDATE secret_jobs SET available_at=clock_timestamp()-interval '1 second' WHERE job_id=?", claim.jobId());
+        claim = jobs.claimNextJob().orElseThrow();
+        var fixture = new ValidationFixture("repo/aws.txt", "AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\nAWS_SECRET_ACCESS_KEY="
+                + "aB3/".repeat(10), List.of("aws-access-token", "generic-api-key"));
+        validateFixtures(List.of(fixture), new java.util.concurrent.atomic.AtomicInteger());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_validation_attempts WHERE run_id=? AND result='UNKNOWN' AND attempt_no=1", Long.class, claim.runId())).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT validation_stage_status FROM secret_run_scopes WHERE run_scope_id=?", String.class, runScopeId)).isEqualTo("SUCCEEDED");
+        assertThat(jdbc.queryForObject("SELECT validation_reuse_attempt FROM secret_scan_runs WHERE run_id=?", Integer.class, claim.runId())).isEqualTo(2);
+    }
+
+    private void validateFixtures(List<ValidationFixture> fixtures, java.util.concurrent.atomic.AtomicInteger calls) {
+        long tool = findings.beginGitleaksRun(runScopeId, "8.30.1", CONFIG_HASH, Instant.now());
+        for (var fixture : fixtures) {
+            String[] lines = fixture.content().split("\n");
+            var positions = new java.util.ArrayList<GitleaksFinding>();
+            for (int line = 0; line < fixture.rules().size(); line++)
+                positions.add(new GitleaksFinding(fixture.rules().get(line), line + 1, line + 1, 1, lines[line].length()));
+            var scan = new GitleaksScanResult("8.30.1", CONFIG_HASH, positions);
+            var inspection = normalizer.inspect(claim.connectionId(), fixture.path(), fixture.content().getBytes(StandardCharsets.UTF_8), positions);
+            assertThat(inspection.credentials()).hasSize(1);
+            findings.recordInspection(tool, fixture.path(), "unchanged-blob", inspection, scan, Instant.now());
+            var credential = inspection.credentials().getFirst();
+            String validator = switch (credential.issuer()) {
+                case "GITHUB" -> GitHubPatValidator.METHOD;
+                case "NOTION" -> NotionTokenValidator.METHOD;
+                default -> AwsValidationResult.METHOD;
+            };
+            String version = switch (credential.issuer()) {
+                case "GITHUB" -> GitHubPatValidator.VERSION;
+                case "NOTION" -> NotionTokenValidator.VERSION;
+                default -> AwsValidationResult.VERSION;
+            };
+            String endpoint = switch (credential.issuer()) {
+                case "GITHUB" -> "GITHUB_USER";
+                case "NOTION" -> "NOTION_SELF";
+                default -> "AWS_STS";
+            };
+            attempts.validate(claim, credential, validator, version, endpoint, false, true, () -> {
+                calls.incrementAndGet();
+                return new CredentialValidationResult("INVALID", "AWS".equals(credential.issuer())
+                        ? "INVALID_ACCESS_KEY" : "AUTHENTICATION_REJECTED", Instant.now(),
+                        "AWS".equals(credential.issuer()) ? null : 401, null);
+            }, runScopeId, fixture.path(), "unchanged-blob");
+        }
+        findings.finishToolRun(tool, "SUCCEEDED", null, Instant.now());
+        jdbc.update("UPDATE secret_run_scopes SET collection_status='SUCCEEDED',object_count=?,finished_at=clock_timestamp() WHERE run_scope_id=?", fixtures.size(), runScopeId);
+        jdbc.queryForObject("SELECT secret_record_scope_evidence(?,false)", Object.class, runScopeId);
+        jdbc.update("""
+                UPDATE secret_scan_runs SET collection_status='SUCCEEDED',detection_status='SUCCEEDED',
+                 validation_status=(SELECT validation_stage_status FROM secret_run_scopes WHERE run_scope_id=?),
+                 result_status='RUNNING' WHERE run_id=?
+                """, runScopeId, claim.runId());
+    }
+
+    private void nextScanInSameCycle() {
+        long nextJob = jdbc.queryForObject("""
+                INSERT INTO secret_jobs(kind,connection_id,scheduled_at,available_at,attempt_no,max_attempts,status)
+                SELECT kind,connection_id,scheduled_at+interval '1 microsecond',clock_timestamp(),0,3,'PENDING' FROM secret_jobs WHERE job_id=? RETURNING job_id
+                """, Long.class, claim.jobId());
+        long nextRun = jdbc.queryForObject("""
+                INSERT INTO secret_scan_runs(job_id,connection_id,trigger_type,scope_version,scheduled_at,requested_at,
+                 collection_status,detection_status,validation_status,result_status)
+                SELECT ?,connection_id,'SCHEDULED',scope_version,scheduled_at,clock_timestamp(),
+                 'PENDING','PENDING','PENDING','PENDING' FROM secret_scan_runs WHERE run_id=? RETURNING run_id
+                """, Long.class, nextJob, claim.runId());
+        runScopeId = jdbc.queryForObject("INSERT INTO secret_run_scopes(run_id,scope_id,collection_status) SELECT ?,scope_id,'PENDING' FROM secret_run_scopes WHERE run_id=? RETURNING run_scope_id", Long.class, nextRun, claim.runId());
+        claim = jobs.claimNextJob().orElseThrow();
+        assertThat(claim.jobId()).isEqualTo(nextJob);
+    }
+
+    private record ValidationFixture(String path, String content, List<String> rules) {}
 
     @Test
     void aProviderCooldownSurvivesWorkerRetriesWithoutAnotherSend() {
@@ -769,6 +952,8 @@ SELECT max(provider_checked_at) FROM secret_validation_attempts WHERE result = '
         assertThat(calls).hasValue(1);
         assertThat(jdbc.queryForList("SELECT result FROM secret_validation_attempts ORDER BY attempt_id",String.class)).containsExactly("VALID","UNKNOWN");
         assertThat(jdbc.queryForObject("SELECT reason_code FROM secret_validation_attempts ORDER BY attempt_id DESC LIMIT 1",String.class)).isEqualTo("CREDENTIAL_MISMATCH");
+        assertThat(jdbc.queryForObject("SELECT validation_reuse_version FROM secret_scan_runs WHERE run_id=?", Integer.class, claim.runId())).isNull();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_validation_reuses WHERE run_id=?", Long.class, claim.runId())).isZero();
     }
 
     @Test
