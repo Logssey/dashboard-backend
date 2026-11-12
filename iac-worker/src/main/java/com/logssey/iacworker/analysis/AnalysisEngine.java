@@ -22,6 +22,7 @@ import tools.jackson.databind.node.ObjectNode;
  *
  * 반영하는 변경 (MVP): 역할 인라인 정책(aws_iam_role_policy), 관리형 정책 연결(aws_iam_role_policy_attachment),
  * 인스턴스 IMDS(aws_instance.metadata_options.http_tokens). 보안 그룹은 백로그.
+ * 경로와 따로, http_tokens 를 optional 로 두는 인스턴스를 만들거나 바꾸면 path.imds_v1_added 로 남긴다.
  * 바뀐 역할은 등급 데이터에 대한 읽기 권한을 전·후 모두 같은 평가기로 다시 계산해 비교한다.
  */
 public class AnalysisEngine {
@@ -46,8 +47,12 @@ public class AnalysisEngine {
     public record State(String ruleId, String severity, int readersBefore, int readersAfter, int secretsAdded) {
     }
 
-    public record Result(List<Change> changes, State state, String verdict, String highestSeverity,
-                         Map<String, Integer> resources) {
+    /** 경로 없이 리소스 하나에 걸리는 ① 규칙 (path.imds_v1_added: 경고·MEDIUM, rule-spec). */
+    public record Finding(String ruleId, String enforcement, String severity, Cause cause) {
+    }
+
+    public record Result(List<Change> changes, List<Finding> findings, State state, String verdict,
+                         String highestSeverity, Map<String, Integer> resources) {
     }
 
     public Result analyze(GraphSnapshot graph, JsonNode plan, Set<String> tfstateArns) {
@@ -114,11 +119,16 @@ public class AnalysisEngine {
         var state = new State(increased ? "state.reader_increase" : null, increased ? "HIGH" : null,
                 readersBefore, readersAfter, secretsAdded(plan));
 
+        List<Finding> findings = changes.imdsV1Added().stream()
+                .map(cause -> new Finding("path.imds_v1_added", "WARN", "MEDIUM", cause)).toList();
+
         String verdict = verdict(result);
+        if (!findings.isEmpty() && (verdict.equals("PASS") || verdict.equals("INFO"))) verdict = "WARN";
         if (increased && (verdict.equals("PASS") || verdict.equals("INFO"))) verdict = "WARN";
         String highest = highest(result);
+        if (!findings.isEmpty() && highest == null) highest = "MEDIUM";
         if (increased && (highest == null || !highest.equals("CRITICAL"))) highest = "HIGH";
-        return new Result(result, state, verdict, highest, changes.resources());
+        return new Result(result, findings, state, verdict, highest, changes.resources());
     }
 
     /** tfstate 버킷을 읽을 수 있는 서로 다른 주체 수. */
@@ -270,7 +280,7 @@ public class AnalysisEngine {
     /** plan 에서 읽은, 그래프에 반영할 변경. */
     record PlanChanges(Map<String, Map<String, Policy>> rolePolicies, Map<String, Cause> roleCauses,
                        Map<String, String> httpTokens, Map<String, Cause> instanceCauses,
-                       Map<String, Integer> resources) {
+                       List<Cause> imdsV1Added, Map<String, Integer> resources) {
 
         static PlanChanges read(JsonNode plan, GraphSnapshot graph) {
             Map<String, String> roleIdByName = new HashMap<>();
@@ -282,6 +292,7 @@ public class AnalysisEngine {
             Map<String, Cause> roleCauses = new LinkedHashMap<>();
             Map<String, String> httpTokens = new LinkedHashMap<>();
             Map<String, Cause> instanceCauses = new LinkedHashMap<>();
+            List<Cause> imdsV1Added = new ArrayList<>();
             int add = 0;
             int change = 0;
             int delete = 0;
@@ -330,6 +341,11 @@ public class AnalysisEngine {
                     case "aws_instance" -> {
                         String nodeId = nodeByInstanceId.get(text(before, "id", null));
                         String tokens = text(after.path("metadata_options").path(0), "http_tokens", null);
+                        // 값을 optional 로 적은 것만 본다. 적지 않으면(plan 에서 알 수 없음) AMI·계정 기본값을 따른다
+                        if ("optional".equals(tokens) && !"optional".equals(
+                                text(before.path("metadata_options").path(0), "http_tokens", null))) {
+                            imdsV1Added.add(cause);
+                        }
                         if (nodeId == null || tokens == null) continue;
                         if (!tokens.equals(graph.instances().get(nodeId).httpTokens())) {
                             httpTokens.put(nodeId, tokens);
@@ -339,7 +355,7 @@ public class AnalysisEngine {
                     default -> { }
                 }
             }
-            return new PlanChanges(rolePolicies, roleCauses, httpTokens, instanceCauses,
+            return new PlanChanges(rolePolicies, roleCauses, httpTokens, instanceCauses, imdsV1Added,
                     Map.of("add", add, "change", change, "delete", delete));
         }
 
