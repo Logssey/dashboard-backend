@@ -40,8 +40,7 @@ env:
   POLICY: ${{ vars.REACH_POLICY || 'REPORT_ONLY' }}
   # dashboard-backend commit with the analyzer, verdict.py, bundle.py, the judgement data and these scripts.
   # Bump it when the rules or the analyzer change.
-  # TODO: set to the commit that merges this template (deploy/reach/ci/ is not in 934b922)
-  REACH_REF: 934b92250e8bb2a5bbfdec057bb072e90ae3305c
+  REACH_REF: b261f4573f55562e9826a8cc9be36ba232ba30ee
   AWS_REGION: ap-northeast-1
 
 jobs:
