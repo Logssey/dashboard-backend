@@ -16,13 +16,18 @@ public record ReachFindingDetailResponse(
         JsonNode upgrade, List<Long> sameCveFindings,       // 같은 스캔에서 CVE가 같은 다른 Finding id
         OffsetDateTime firstSeenAt, OffsetDateTime lastSeenAt) {
 
-    public record Component(String purl, String name, String version, String ecosystem) {}
+    /** path는 이미지 안 위치 (예: app.jar 안의 BOOT-INF/lib/…). 모르면 null */
+    public record Component(String purl, String name, String version, String ecosystem, String path) {}
 
-    public record Vulnerability(String id, String severity, String severityNote, String title,
-                                String affectedFeature, List<String> fixedVersions) {}
+    /** description은 스캐너 설명 원문. cwe·references는 없으면 빈 배열 */
+    public record Vulnerability(String id, String severity, String severityNote, String title, String description,
+                                String affectedFeature, List<String> fixedVersions,
+                                List<String> cwe, List<String> references) {}
 
-    /** 현재 판정. callgraph·engine은 DB의 JSONB를 그대로, evidence는 ord 순서 배열 */
+    /** 현재 판정. callgraph·engine은 DB의 JSONB를 그대로, evidence는 ord 순서 배열.
+     * vulnFunctionIds는 판정에 쓴 취약 함수(API-10 id), 없으면 빈 배열 */
     public record Verdict(String status, String method, String summary, String notAnalyzedReason, String ruleId,
+                          List<Integer> vulnFunctionIds,
                           JsonNode callgraph, JsonNode evidence, OffsetDateTime analyzedAt, JsonNode engine) {}
 
     /** 사람 검토. 아직 검토 전이면 reviewer는 null이다. history는 include=reviewHistory일 때만 */
