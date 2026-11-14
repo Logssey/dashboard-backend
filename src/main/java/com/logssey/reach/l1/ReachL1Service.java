@@ -8,6 +8,8 @@ import java.util.regex.Pattern;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
+import com.logssey.reach.ReachCodes;
+import com.logssey.reach.ReachProperties;
 import com.logssey.reach.l1.dto.ReachInventoryResponse;
 import com.logssey.reach.l1.dto.ReachWorkloadPageResponse;
 
@@ -20,9 +22,6 @@ import org.springframework.transaction.annotation.Transactional;
 @Transactional   // 쓰기라 readOnly가 아니다. 조회 행 덮어쓰기·워크로드 교체·재계산이 한 트랜잭션
 public class ReachL1Service {
 
-    /** 운영 기본값. 설정으로 뺄 때 application.properties(공용 파일)는 동의를 받는다 */
-    static final String CLUSTER = "reused-prod";
-    static final List<String> NAMESPACES = List.of("reused");
     /** 이 안의 조회만 믿는다. 하루 한 번 수집이 한 번 빠져도 UNKNOWN이 안 되게 */
     static final String FRESH = "48 hours";
     /** 명세에 없어 정한 것: 한 번에 받는 컨테이너 수 상한 */
@@ -35,23 +34,27 @@ public class ReachL1Service {
     static final int MAX_SIZE = 100;
 
     private final ReachL1Repository repository;
+    /** 수집 범위(logssey.reach.l1)와 앱 코드(logssey.reach.apps). PRD FR-15 */
+    private final ReachProperties properties;
     private final String cluster;
     private final List<String> namespaces;
     private final String fresh;
 
     @Autowired   // 생성자가 둘이라 Spring이 쓸 쪽을 표시한다. 없으면 기동 실패
-    public ReachL1Service(ReachL1Repository repository) {
-        this(repository, CLUSTER, NAMESPACES, FRESH);
+    public ReachL1Service(ReachL1Repository repository, ReachProperties properties) {
+        this(repository, properties, FRESH);
     }
 
-    /** 테스트와 나중 설정용. namespaces가 비면 재계산 SQL의 IN ()이 깨진다 */
-    ReachL1Service(ReachL1Repository repository, String cluster, List<String> namespaces, String fresh) {
-        if (namespaces.isEmpty()) {
-            throw new IllegalArgumentException("namespaces must not be empty");
-        }
+    /**
+     * 테스트용으로 fresh를 바꿀 수 있다. L1이 꺼져 있으면(cluster나 namespaces가 없음) 업로드는 400,
+     * 목록은 빈 결과, 재계산은 하지 않는다. 빈 IN ()은 SQL 오류라 namespaces가 비면 묻지 않는다
+     */
+    ReachL1Service(ReachL1Repository repository, ReachProperties properties, String fresh) {
         this.repository = repository;
-        this.cluster = cluster;
-        this.namespaces = List.copyOf(namespaces);
+        this.properties = properties;
+        boolean enabled = properties.l1().enabled();
+        this.cluster = enabled ? properties.l1().cluster() : null;
+        this.namespaces = enabled ? properties.l1().namespaces() : List.of();
         this.fresh = fresh;
     }
 
@@ -72,7 +75,7 @@ public class ReachL1Service {
                         container.name(), container.image(), container.imageDigest(), container.readyReplicas());
             }
         }
-        int updated = repository.recompute(cluster, namespaces, fresh, null);
+        int updated = recomputeScope(null);
         return new ReachInventoryResponse(request.cluster(), request.namespace(), request.observedAt(),
                 request.workloads().size(), updated);
     }
@@ -86,6 +89,7 @@ public class ReachL1Service {
     public ReachWorkloadPageResponse workloads(String loginId, ReachWorkloadFilter filter,
                                                Integer size, String cursor, String include) {
         requireAdmin(loginId);
+        ReachCodes.checked(filter.app(), properties.codes());   // 설정에 없는 앱 코드는 400
         int limit = size == null ? DEFAULT_SIZE : size;
         if (limit < 1 || limit > MAX_SIZE) throw new ApiException(ErrorCode.INVALID_INPUT);
         if (include != null && !include.equals("total")) throw new ApiException(ErrorCode.INVALID_INPUT);
@@ -122,7 +126,12 @@ public class ReachL1Service {
      */
     public int recompute(Long targetId) {
         repository.lockRecompute();
-        return repository.recompute(cluster, namespaces, fresh, targetId);
+        return recomputeScope(targetId);
+    }
+
+    /** L1이 꺼져 있으면 바꿀 것이 없다 (deployment는 기본값 UNKNOWN 그대로) */
+    private int recomputeScope(Long targetId) {
+        return namespaces.isEmpty() ? 0 : repository.recompute(cluster, namespaces, fresh, targetId);
     }
 
     /**
@@ -138,7 +147,7 @@ public class ReachL1Service {
      * 길이는 V42 칸 길이다. 넘기면 DB에서 500이 나니 여기서 400으로 막는다
      */
     private void validate(ReachInventoryRequest request) {
-        if (request == null || !cluster.equals(request.cluster()) || !in(request.namespace(), namespaces)
+        if (request == null || cluster == null || !cluster.equals(request.cluster()) || !in(request.namespace(), namespaces)
                 || request.observedAt() == null || request.observedAt().isAfter(OffsetDateTime.now().plus(CLOCK_SKEW))
                 || request.workloads() == null) {
             throw new ApiException(ErrorCode.INVALID_INPUT);

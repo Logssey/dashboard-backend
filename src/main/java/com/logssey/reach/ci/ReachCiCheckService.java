@@ -11,6 +11,7 @@ import java.util.List;
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
 import com.logssey.reach.ReachCodes;
+import com.logssey.reach.ReachProperties;
 import com.logssey.reach.ci.dto.ReachCiCheckCreatedResponse;
 import com.logssey.reach.ci.dto.ReachCiCheckResponse;
 
@@ -35,10 +36,13 @@ public class ReachCiCheckService {
     private static final int REF_MAX = 255;
 
     private final ReachCiCheckRepository repository;
+    /** 감시 대상 앱 (PRD FR-15). 요청의 레포·이미지가 어느 앱인지 정한다 */
+    private final ReachProperties properties;
     private final JsonMapper mapper = JsonMapper.builder().build();
 
-    public ReachCiCheckService(ReachCiCheckRepository repository) {
+    public ReachCiCheckService(ReachCiCheckRepository repository, ReachProperties properties) {
         this.repository = repository;
+        this.properties = properties;
     }
 
     /** 실행 결과. replayed면 같은 멱등 키로 이미 만든 검사를 다시 준 것이다 */
@@ -175,7 +179,7 @@ public class ReachCiCheckService {
 
     /** 대상을 찾거나 만든다. 이미 있는 대상의 app과 요청한 app이 다르면 어느 서비스인지 모르니 422 */
     private long target(ReachTargetRequest request) {
-        var resolved = ReachTargets.resolve(request);
+        var resolved = ReachTargets.resolve(request, properties);
         var target = repository.findOrCreateTarget(resolved);
         if (!target.app().equals(resolved.app())) throw new ApiException(ErrorCode.UNPROCESSABLE);
         return target.id();

@@ -1,10 +1,12 @@
-# Reach scan for a Re:Used service repo. Copy to <service repo>/.github/workflows/reach.yml.
+# Reach scan for a service repo. Copy to <service repo>/.github/workflows/reach.yml.
 #
 # DRAFT. It needs, before it can run:
 #   - the dashboard deployed where GitHub runners reach it (repo variable REACH_URL)
 #   - GitHub OIDC auth on /api/v1/reach/ci/** (aud logssey-reach). Today those paths take an ADMIN session only.
 #   - a GitHub App that can read Logssey/dashboard-backend (secrets REACH_APP_ID, REACH_APP_PRIVATE_KEY)
 #   - an AWS role that can only pull from ECR (secret REACH_ECR_READ_ROLE_ARN), for the image job
+#   - the image repository this repo's CI/CD pushes (repo variable REACH_ECR_REPOSITORY, e.g. logssey/reused-api).
+#     Without it the image job is skipped. The dashboard maps the repo and the image to an app (logssey.reach.apps).
 #
 # Two jobs, two targets (API-12 mode):
 #   pr     PR opened/updated  -> builds the bootJar from the PR head, scans it      (mode PR, repo target)
@@ -123,12 +125,13 @@ jobs:
     if: >-
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'pull_request'
+      github.event.workflow_run.event == 'pull_request' &&
+      vars.REACH_ECR_REPOSITORY != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     continue-on-error: ${{ vars.REACH_POLICY != 'GATE' }}
     env:
-      ECR_REPOSITORY: logssey/reused-api
+      ECR_REPOSITORY: ${{ vars.REACH_ECR_REPOSITORY }}
       COMMIT: ${{ github.event.workflow_run.head_sha }}
     steps:
       # The PR head is checked out only so verdict.py can read its config files. Nothing from it runs.
