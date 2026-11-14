@@ -111,7 +111,6 @@ class SecretCaseRepository {
                         && rs.getBoolean("scope_enabled")
                         && SecretGithubScopePolicy.approved(rs.getString("content_type"),
                                 rs.getString("history_limit"), rs.getString("approved_ref"))
-                        && !"UNCLASSIFIED".equals(rs.getString("response_origin"))
                         && rs.getBoolean("assessed_abnormal")
                         && rs.getBoolean("classified_origin")
                         && !(SecretGithubScopePolicy.syntheticFixture(rs.getString("approved_ref"))

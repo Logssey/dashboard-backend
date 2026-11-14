@@ -37,12 +37,12 @@ public class SecretCaseController {
                                        @RequestParam(defaultValue="ALL") String environment,@RequestParam(required=false) Long connectionId,
                                        @RequestParam(required=false) String snapshotId,
                                        @RequestParam(defaultValue="ALL") String severity,@RequestParam(defaultValue="ALL") String validity,
-                                       Authentication authentication) {
+                                       @RequestParam(required=false) String q, Authentication authentication) {
         if(scope.equals("currentCases")&&assignmentStatus==null)return workbench.queue(loginId(authentication),
-            new com.logssey.secret.query.SecretWorkbenchService.Filters(origin,source,provider,environment,connectionId,assignee),"CURRENT_CASES",stages,page,size,snapshotId,severity,validity);
+            new com.logssey.secret.query.SecretWorkbenchService.Filters(origin,source,provider,environment,connectionId,assignee,q),"CURRENT_CASES",stages,page,size,snapshotId,severity,validity);
         if(snapshotId!=null||!source.equals("ALL")||!provider.equals("ALL")||!environment.equals("ALL")||connectionId!=null||!severity.equals("ALL")||!validity.equals("ALL"))
             throw new com.logssey.common.error.ApiException(com.logssey.common.error.ErrorCode.INVALID_INPUT);
-        return workflow.list(loginId(authentication),origin,scope,stages,assignmentStatus,assignee,page,size);
+        return workflow.list(loginId(authentication),origin,scope,stages,assignmentStatus,assignee,page,size,q);
     }
 
     @PostMapping("/{secretId}/cases")

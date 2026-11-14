@@ -63,7 +63,7 @@ public class OverviewService {
                 assetCount,
                 score,
                 SCORE_RULE,
-                formatInstant(collectedAt),new OverviewSummaryResponse.SecretIntegration(secret.status(),"ResponseCase","PRODUCTION",
+                formatInstant(collectedAt),new OverviewSummaryResponse.SecretIntegration(secret.status(),"ResponseCase","ALL",
                     available?(long)secret.cases().size():null,available?secret.unassessedCount():null,
                     available?secret.notApplicableCount():null,secret.restrictedCoverage()));
     }
@@ -140,7 +140,7 @@ public class OverviewService {
         for(var c:cases)items.add(new PriorityFinding(null,"SEC-"+c.id(),c.severity(),c.maskedLabel(),null,
             c.environment(),c.ownerTeam(),null,c.stage(),formatInstant(c.openedAt()),"SECRETS",null,
             "발견 위치와 판단 근거를 확인하고 담당자와 조치 내용을 기록하세요.","SECRET_CASE",c.id(),
-            "/secrets/cases/"+c.id()+"?origin=PRODUCTION",c.assessmentStatus()));
+            "/secrets/cases/"+c.id()+"?origin="+c.caseOrigin(),c.assessmentStatus()));
         items.sort(java.util.Comparator.comparingInt((PriorityFinding p) -> priority(p.severity()))
             .thenComparing(PriorityFinding::detectedAt,java.util.Comparator.reverseOrder())
             .thenComparing(PriorityFinding::sourceType).thenComparingLong(PriorityFinding::sourceId));

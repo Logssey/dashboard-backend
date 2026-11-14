@@ -17,6 +17,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 /** Independent heartbeat thread: a blocked scheduler pool cannot pretend to have progressed. */
 @Component
 public class SecretOperationsHeartbeat implements InitializingBean, DisposableBean {
+    private final JdbcTemplate executionEventsJdbc;
     private static final Logger LOG=LoggerFactory.getLogger(SecretOperationsHeartbeat.class);
     private final UUID instance=UUID.randomUUID();
     private final String deployment;
@@ -37,6 +38,7 @@ public class SecretOperationsHeartbeat implements InitializingBean, DisposableBe
             @Value("${logssey.secret.operations.expected-instances:1}") int expected){
         if(deployment==null||!deployment.matches("[A-Za-z0-9._-]{1,100}"))throw new IllegalArgumentException("OPERATIONS_DEPLOYMENT_KEY_INVALID");
         if(interval.toMillis()<1000||cleanupInterval.toMillis()<1000)throw new IllegalArgumentException("OPERATIONS_INTERVAL_INVALID");
+        this.executionEventsJdbc=jdbc;
         this.store=new SecretOperationsStore(jdbc,manager,grace,queueGrace,expected,deployment);this.enabled=enabled;this.deployment=deployment;
         this.interval=interval;this.cleanupEnabled=cleanupEnabled;this.cleanupInterval=cleanupInterval;
         boolean executor=env.getProperty("logssey.secret.executor.enabled",Boolean.class,false);
@@ -65,7 +67,7 @@ public class SecretOperationsHeartbeat implements InitializingBean, DisposableBe
             for(var e:states.entrySet()){State s=e.getValue();synchronized(s){store.heartbeat(new SecretOperationsStore.Beat(instance,deployment,e.getKey(),s.enabled,s.state,s.interval,s.pollStarted,s.finished,s.success,s.job,s.error));}}
             store.monitor();
             if(cleanupEnabled&&lastCleanup.plus(cleanupInterval).isBefore(Instant.now())){
-                begin("MAINTENANCE");store.cleanupExpiredSnapshots(500);success("MAINTENANCE");lastCleanup=Instant.now();
+                begin("MAINTENANCE");store.cleanupExpiredSnapshots(500);executionEventsJdbc.queryForObject("SELECT secret_purge_execution_events()",Long.class);success("MAINTENANCE");lastCleanup=Instant.now();
             }
         }catch(RuntimeException failure){LOG.error("Secret operations persistence unavailable ({})",failure.getClass().getSimpleName());}
     }

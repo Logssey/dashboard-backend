@@ -94,7 +94,7 @@ public class SecretLocationRepository {
                     ORDER BY v.completed_at DESC,v.attempt_id DESC LIMIT 1
                 ) latest ON TRUE
                 WHERE (CAST(:secretId AS bigint) IS NULL OR o.credential_set_id=CAST(:secretId AS bigint))
-                  AND s.response_origin=:origin
+                  AND (:origin='ALL' OR s.response_origin=:origin)
                   AND (:source='ALL' OR conn.provider=:source)
                   AND (:provider='ALL' OR c.issuer=:provider)
                   AND (:environment='ALL' OR o.environment=:environment)
@@ -128,6 +128,26 @@ public class SecretLocationRepository {
                 rs.getObject("validation_attempt_at",OffsetDateTime.class)));
     }
 
+    /** Input is already ACL-visible; search only the same labels returned to that reader. */
+    public boolean matchesSearch(Row row,String q) {
+        if(q==null)return true;
+        var names=jdbc.queryForList("""
+            SELECT s.safe_display_alias,u.display_name,co.assigned_team
+            FROM secret_connection_scopes s
+            LEFT JOIN secret_case_occurrences co ON co.occurrence_id=:occurrence AND co.case_id=:caseId
+            LEFT JOIN dashboard_users u ON u.user_id=co.assigned_user_id
+            WHERE s.scope_id=:scope
+            """,new org.springframework.jdbc.core.namedparam.MapSqlParameterSource()
+                .addValue("occurrence",row.occurrenceId()).addValue("caseId",row.caseId()).addValue("scope",row.scopeId()));
+        var n=names.isEmpty()?Map.<String,Object>of():names.getFirst();
+        Object alias=n.get("safe_display_alias");
+        if(!(alias instanceof String text)||!com.logssey.secret.connection.SecretDisplayLabels.safeAlias(text))alias=null;
+        return SecretSafeSearch.matches(q,row.maskedLabel(),safeLocationLabel(row),alias,n.get("display_name"),n.get("assigned_team"));
+    }
+    public long originVersion(Row row) {
+        return jdbc.queryForObject("SELECT response_origin_version FROM secret_connection_scopes WHERE scope_id=:id",Map.of("id",row.scopeId()),Long.class);
+    }
+
     private Map<String,Object> parameters(long userId,Long id,SecretInventoryFilters filters) {
         var result=new java.util.HashMap<String,Object>(filters.normalized());
         result.put("userId",userId); result.put("secretId",id); return result;
@@ -144,7 +164,7 @@ public class SecretLocationRepository {
     public boolean retiredHistory(List<Row> rows) {
         if(rows.isEmpty()) return false;
         var first=rows.getFirst();
-        if(!java.util.Set.of("PRODUCTION","TEST").contains(first.origin()) || rows.stream().anyMatch(row ->
+        if(rows.stream().anyMatch(row ->
             row.secretId()!=first.secretId() || !row.origin().equals(first.origin()) || !"CONFIRMED".equals(row.componentState())
             || "UNKNOWN".equals(row.presence()) || row.requiresReassessment() || row.allCurrentFindingsCorrected()
             || (row.caseId()!=null && !"RESOLVED".equals(row.actionStatus()))
@@ -162,7 +182,14 @@ public class SecretLocationRepository {
 
     /** Shared by independent inventory and workbench snapshots, using the same authorized key. */
     public String normalInventorySubtype(List<Row> rows) {
-        if(rows.isEmpty() || "UNCLASSIFIED".equals(rows.getFirst().origin())) return null;
+        if(rows.isEmpty()) return null;
+        var groups=rows.stream().collect(java.util.stream.Collectors.groupingBy(Row::origin));
+        if(groups.size()>1) {
+            if(rows.stream().anyMatch(r->r.secretId()!=rows.getFirst().secretId())) return null;
+            var types=groups.values().stream().map(this::normalInventorySubtype).toList();
+            if(types.stream().anyMatch(java.util.Objects::isNull)) return null;
+            return types.stream().distinct().count()==1?types.getFirst():"MANAGED_LOCATIONS";
+        }
         var first=rows.getFirst();
         if(rows.stream().anyMatch(row->row.secretId()!=first.secretId() || !row.origin().equals(first.origin()))) return null;
         if(retiredHistory(rows)) return "RETIRED_HISTORY";

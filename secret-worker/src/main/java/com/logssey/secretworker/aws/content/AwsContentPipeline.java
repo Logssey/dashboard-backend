@@ -1,5 +1,7 @@
 package com.logssey.secretworker.aws.content;
 
+import static com.logssey.secret.run.progress.core.ScanExecutionObserver.*;
+
 import com.logssey.secretworker.ClaimedSecretJob;
 import com.logssey.secretworker.SecretJobExecutionService;
 import com.logssey.secretworker.SecretJobFailure;
@@ -131,10 +133,10 @@ public final class AwsContentPipeline {
         private int inconclusive;
         private int failed;
 
-        boolean firstEncounter(SecretFindingNormalizer.Credential credential) {
+        boolean firstEncounter(SecretFindingNormalizer.Credential credential, long runScopeId) {
             byte[] digest = "CONFIRMED".equals(credential.componentState())
                     ? credential.fingerprint() : credential.candidateLocator();
-            String identity = credential.issuer() + ":" + credential.credentialType() + ":"
+            String identity = runScopeId + ":" + credential.issuer() + ":" + credential.credentialType() + ":"
                     + credential.componentState() + ":" + credential.fingerprintKeyVersion() + ":"
                     + HexFormat.of().formatHex(digest);
             return encountered.add(identity);
@@ -144,7 +146,8 @@ public final class AwsContentPipeline {
             if (result.status() == AwsValidationResult.Status.UNCHECKED) {
                 if (result.reason() != AwsValidationResult.Reason.DISABLED
                         && result.reason() != AwsValidationResult.Reason.SYNTHETIC_FIXTURE
-                        && result.reason() != AwsValidationResult.Reason.SOURCE_GUARD_BLOCKED)
+                        && result.reason() != AwsValidationResult.Reason.SOURCE_GUARD_BLOCKED
+                        && result.reason() != AwsValidationResult.Reason.VALIDATOR_NOT_ALLOWED)
                     inconclusive++;
             } else if (result.status() == AwsValidationResult.Status.UNKNOWN) {
                 inconclusive++;
@@ -156,7 +159,7 @@ public final class AwsContentPipeline {
         void record(com.logssey.secretworker.validation.CredentialValidationResult result) {
             if (Set.of("VALID", "INVALID").contains(result.result())) checked++;
             else if (!("UNCHECKED".equals(result.result())
-                    && Set.of("DISABLED", "SYNTHETIC_FIXTURE", "SOURCE_GUARD_BLOCKED")
+                    && Set.of("DISABLED", "SYNTHETIC_FIXTURE", "SOURCE_GUARD_BLOCKED", "VALIDATOR_NOT_ALLOWED")
                             .contains(result.reasonCode()))) inconclusive++;
         }
 
@@ -183,7 +186,7 @@ public final class AwsContentPipeline {
                 detector.engineVersion(), detector.configHash(), Instant.now())));
         AtomicReference<String> consumerGap = new AtomicReference<>();
         AwsContentCollector.Result result =
-                collector.collect(
+                collector.observed(execution.observer(job, runScopeId)).collect(
                         approved,
                         true,
                         AwsContentCollector.DEFAULT_MAX_BYTES,
@@ -194,13 +197,15 @@ public final class AwsContentPipeline {
                                         SecretJobFailureCode.LEASE_EXPIRED, true);
                             }
                             try {
-                                var scan = detector.scan(bytes);
+                                var scan = execution.observer(job, runScopeId).measure(
+                                    Stage.DETECTION, Operation.GITLEAKS_SCAN, () -> detector.scan(bytes));
                                 var inspection =
-                                        normalizer.inspect(
+                                        execution.observer(job, runScopeId).measure(
+                                    Stage.DETECTION, Operation.CANDIDATE_NORMALIZATION, () -> normalizer.inspect(
                                                 job.connectionId(),
                                                 sourceRef,
                                                 bytes,
-                                                scan.findings());
+                                                scan.findings()));
                                 if (unprovenRecheckAbsence(job, inspection)) {
                                     consumerGap.set("DETECTOR_NORMALIZATION_INCOMPLETE");
                                     throw new IllegalStateException("DETECTOR_NORMALIZATION_INCOMPLETE");
@@ -215,9 +220,9 @@ public final class AwsContentPipeline {
                                                         null,
                                                         inspection,
                                                         scan,
-                                                        Instant.now()));
+                                                        Instant.now(), execution.observer(job, runScopeId)));
                                 for (var candidate : inspection.awsCandidates()) {
-                                    if (!validation.firstEncounter(candidate.credential()))
+                                    if (!validation.firstEncounter(candidate.credential(), runScopeId))
                                         continue;
                                     try {
                                         AwsValidationResult checked =
@@ -240,7 +245,7 @@ public final class AwsContentPipeline {
                                     }
                                 }
                                 for (var candidate : inspection.githubCandidates()) {
-                                    if (!validation.firstEncounter(candidate.credential()))
+                                    if (!validation.firstEncounter(candidate.credential(), runScopeId))
                                         continue;
                                     try {
                                         validation.record(
@@ -258,7 +263,7 @@ public final class AwsContentPipeline {
                                     }
                                 }
                                 for (var candidate : inspection.notionCandidates()) {
-                                    if (!validation.firstEncounter(candidate.credential())) continue;
+                                    if (!validation.firstEncounter(candidate.credential(), runScopeId)) continue;
                                     try {
                                         validation.record(attempts.validateNotion(
                                                 job, candidate, notionValidator, runScopeId, sourceRef, null));
@@ -271,7 +276,7 @@ public final class AwsContentPipeline {
                                 for (var credential : inspection.credentials()) {
                                     if (Set.of("AWS", "GITHUB", "NOTION").contains(credential.issuer()))
                                         continue;
-                                    if (!validation.firstEncounter(credential)) continue;
+                                    if (!validation.firstEncounter(credential, runScopeId)) continue;
                                     validation.record(
                                             attempts.recordUnsupported(
                                                     job, credential, runScopeId));

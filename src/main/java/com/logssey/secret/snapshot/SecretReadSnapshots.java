@@ -27,10 +27,24 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 public class SecretReadSnapshots {
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
+    private final SecretSnapshotReadExecutor reads;
 
     public SecretReadSnapshots(JdbcTemplate jdbc, ObjectMapper json) {
+        this(jdbc, json, new org.springframework.jdbc.datasource.DataSourceTransactionManager(
+                java.util.Objects.requireNonNull(jdbc.getDataSource())));
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public SecretReadSnapshots(JdbcTemplate jdbc, ObjectMapper json,
+                               org.springframework.transaction.PlatformTransactionManager manager) {
         this.jdbc = jdbc;
         this.json = json;
+        this.reads = new SecretSnapshotReadExecutor(manager);
+    }
+
+    /** Includes authorization, source reads and persisted members in each fresh transaction attempt. */
+    public <T> T readConsistently(java.util.function.Supplier<T> operation) {
+        return reads.read(operation);
     }
 
     public record Header(UUID snapshotId, String scope, long ownerUserId, OffsetDateTime asOf,

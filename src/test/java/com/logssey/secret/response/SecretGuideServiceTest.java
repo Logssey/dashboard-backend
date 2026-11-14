@@ -28,13 +28,14 @@ class SecretGuideServiceTest {
         prepare("PRODUCTION", null);
         var response = service.guide(17, "security");
 
-        assertThat(response.version()).isEqualTo("secret-response-guide-v2");
+        assertThat(response.version()).isEqualTo("secret-response-guide-v3");
         assertThat(response.source()).isEqualTo("DEFAULT");
         assertThat(response.readiness().reasonCode()).isEqualTo("TEST_ONLY");
         assertThat(response.readiness().providerCalled()).isFalse();
         assertThat(response.steps()).extracting(SecretGuideResponse.Step::code)
                 .contains("EXTERNAL_ROTATION", "RECORD_ACTION", "REVALIDATE");
-        verifyNoInteractions(provider);
+        verify(provider, never()).select(any());
+        verify(provider, never()).selectSteps(any());
     }
 
     @Test
@@ -46,7 +47,8 @@ class SecretGuideServiceTest {
                 "TEST", "OPEN", null, "AWS", "AWS_ACCESS_KEY_PAIR", "CONFIRMED",
                 "UNCHECKED", false)));
         assertThat(service.guide(17, "security").source()).isEqualTo("DEFAULT");
-        verifyNoInteractions(provider);
+        verify(provider, never()).select(any());
+        verify(provider, never()).selectSteps(any());
     }
 
     @Test
@@ -69,6 +71,60 @@ class SecretGuideServiceTest {
                 .containsEntry("credentialType", "AWS_ACCESS_KEY_PAIR")
                 .containsEntry("validationStatus", "UNCHECKED")
                 .doesNotContainKeys("maskedLabel", "sourceObjectRef", "path", "freeText");
+    }
+
+    @Test
+    void claudeUsesOperationalCasesAndNotionThroughTheSameSanitizedContract() {
+        prepare("PRODUCTION", null);
+        when(provider.providerId()).thenReturn("CLAUDE");
+        when(provider.modelId()).thenReturn("claude-sonnet-5-5");
+        when(guides.currentCase(17)).thenReturn(Optional.of(new SecretGuideRepository.GuideCase(
+                "PRODUCTION", "OPEN", null, "NOTION", "NOTION_CONNECTION_TOKEN", "CONFIRMED", "INVALID", false)));
+        var time = java.time.Instant.parse("2026-11-12T01:00:00Z");
+        when(provider.select(any())).thenReturn(new SecretGuideProvider.Selection(List.of("VERIFY_EXPOSURE",
+                "EXTERNAL_ROTATION", "RECORD_ACTION", "REVALIDATE"), "CLAUDE_GENERATED", true, false, time));
+        var response = service.guide(17, "security");
+        assertThat(response.source()).isEqualTo("CLAUDE");
+        assertThat(response.readiness().provider()).isEqualTo("CLAUDE");
+        assertThat(response.readiness().model()).isEqualTo("claude-sonnet-5-5");
+        assertThat(response.readiness().generatedAt()).isEqualTo(time);
+        assertThat(response.title()).contains("Notion");
+        assertThat(response.steps().getFirst().title()).contains("인증 거부");
+        var context = org.mockito.ArgumentCaptor.forClass(SecretGuideContext.class);
+        verify(provider).select(context.capture());
+        assertThat(context.getValue().externalFields()).hasSize(5)
+                .containsEntry("issuer", "NOTION").containsEntry("validationStatus", "INVALID");
+        verify(cases, never()).updateAssignment(anyLong(), anyLong(), any(), any());
+    }
+
+    @Test
+    void claudePartialCaseAccessStillBlocksDispatchAndGetNeverSelects() {
+        prepare("PRODUCTION", null);
+        when(provider.providerId()).thenReturn("CLAUDE");
+        when(guides.allLocationsReadable(7,17)).thenReturn(false);
+        assertThat(service.guide(17, "security").readiness().reasonCode()).isEqualTo("ALL_LOCATIONS_ACCESS_REQUIRED");
+        when(guides.allLocationsReadable(7,17)).thenReturn(true);
+        assertThat(service.readiness(17, "security").readiness().status()).isEqualTo("READY");
+        verify(provider, never()).select(any());
+        verify(provider, never()).selectSteps(any());
+    }
+
+    @Test
+    void contextChangesDuringGenerationReturnCurrentDefaultAndRevokedAccessIsEnforced() {
+        prepare("PRODUCTION", null);
+        when(provider.providerId()).thenReturn("CLAUDE");
+        when(provider.select(any())).thenReturn(new SecretGuideProvider.Selection(List.of("VERIFY_EXPOSURE",
+                "EXTERNAL_ROTATION", "RECORD_ACTION", "REVALIDATE"), "CLAUDE_GENERATED", true, false));
+        when(guides.currentCase(17)).thenReturn(Optional.of(guideCase("PRODUCTION", null)),
+                Optional.of(new SecretGuideRepository.GuideCase("PRODUCTION", "IN_PROGRESS", null,
+                        "AWS", "AWS_ACCESS_KEY_PAIR", "CONFIRMED", "INVALID", true)));
+        var changed = service.guide(17, "security");
+        assertThat(changed.source()).isEqualTo("DEFAULT");
+        assertThat(changed.readiness().reasonCode()).isEqualTo("CONTEXT_CHANGED");
+        assertThat(changed.readiness().providerCalled()).isTrue();
+        when(guides.currentCase(17)).thenReturn(Optional.of(guideCase("PRODUCTION", null)));
+        when(guides.canRead(7,17)).thenReturn(true, false);
+        assertCode(ErrorCode.FORBIDDEN, () -> service.guide(17, "security"));
     }
 
     @Test
@@ -118,10 +174,11 @@ class SecretGuideServiceTest {
     void unsupportedIssuerGetsDefaultWithoutAnyProviderInteraction() {
         prepare("TEST", null);
         when(guides.currentCase(17)).thenReturn(Optional.of(new SecretGuideRepository.GuideCase(
-                "TEST", "OPEN", null, "NOTION", "NOTION_CONNECTION_TOKEN", "CONFIRMED", "UNCHECKED", true)));
+                "TEST", "OPEN", null, "SLACK", "SLACK_TOKEN", "CONFIRMED", "UNCHECKED", true)));
         assertThat(service.readiness(17, "security").readiness().reasonCode()).isEqualTo("UNSUPPORTED_ISSUER");
         assertThat(service.guide(17, "security").source()).isEqualTo("DEFAULT");
-        verifyNoInteractions(provider);
+        verify(provider, never()).select(any());
+        verify(provider, never()).selectSteps(any());
     }
 
     @Test

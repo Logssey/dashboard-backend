@@ -29,6 +29,10 @@ public final class GitHubCollector {
         this.tokens = Objects.requireNonNull(tokens);
     }
 
+    public GitHubCollector observed(com.logssey.secret.run.progress.core.ScanExecutionObserver observer) {
+        return new GitHubCollector(api.observed(observer), tokens.observed(observer));
+    }
+
     /**
      * The sink must consume bytes before returning. The collector zeroes its buffer immediately
      * afterwards.

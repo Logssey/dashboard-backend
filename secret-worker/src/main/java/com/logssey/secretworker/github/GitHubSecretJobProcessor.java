@@ -1,5 +1,7 @@
 package com.logssey.secretworker.github;
 
+import static com.logssey.secret.run.progress.core.ScanExecutionObserver.*;
+
 import com.logssey.secretworker.ClaimedSecretJob;
 import com.logssey.secretworker.SecretJobExecutionService;
 import com.logssey.secretworker.SecretJobFailure;
@@ -276,10 +278,6 @@ WHERE job_id = ?
             finishScope(job, scope.id(), "FAILED", 0, "INVALID_APPROVED_SCOPE", execution);
             return new ScopeResult(false, 0, 1, "INVALID_APPROVED_SCOPE");
         }
-        // This name guard blocks outbound authentication; it does not attest synthetic contents.
-        boolean syntheticFixture =
-                "Logssey".equalsIgnoreCase(approved.owner())
-                        && "test-find-key".equalsIgnoreCase(approved.repository());
         withLease(
                 job,
                 execution,
@@ -297,7 +295,7 @@ WHERE run_scope_id = ?
                 detector.engineVersion(), detector.configHash(), Instant.now())));
         AtomicReference<String> consumerFailure = new AtomicReference<>();
         GitHubCollector.Result result =
-                collector.collect(
+                collector.observed(execution.observer(job, scope.id())).collect(
                         approved,
                         GitHubCollectionLimits.DEFAULT,
                         (source, bytes) -> {
@@ -307,7 +305,8 @@ WHERE run_scope_id = ?
                                         SecretJobFailureCode.LEASE_EXPIRED, true);
                             }
                             try {
-                                var scan = detector.scan(bytes);
+                                var scan = execution.observer(job, scope.id()).measure(
+                                    Stage.DETECTION, Operation.GITLEAKS_SCAN, () -> detector.scan(bytes));
                                 String sourceRef =
                                         source.owner()
                                                 + "/"
@@ -315,11 +314,12 @@ WHERE run_scope_id = ?
                                                 + "/"
                                                 + source.path();
                                 var inspection =
-                                        normalizer.inspect(
+                                        execution.observer(job, scope.id()).measure(
+                                    Stage.DETECTION, Operation.CANDIDATE_NORMALIZATION, () -> normalizer.inspect(
                                                 job.connectionId(),
                                                 sourceRef,
                                                 bytes,
-                                                scan.findings());
+                                                scan.findings()));
                                 withLease(
                                         job,
                                         execution,
@@ -330,10 +330,10 @@ WHERE run_scope_id = ?
                                                         source.blobSha(),
                                                         inspection,
                                                         scan,
-                                                        Instant.now()));
+                                                        Instant.now(), execution.observer(job, scope.id())));
                                 for (var candidate : inspection.awsCandidates()) {
                                     if (!validation.firstEncounter(
-                                            candidate.credential(), syntheticFixture)) continue;
+                                            candidate.credential(), scope.id())) continue;
                                     try {
                                         // Validation happens after the short persistence
                                         // transaction has returned.
@@ -342,7 +342,7 @@ WHERE run_scope_id = ?
                                                         job,
                                                         candidate.credential(),
                                                         candidate.material(),
-                                                        syntheticFixture,
+                                                        false,
                                                         validator,
                                                         scope.id(),
                                                         sourceRef,
@@ -358,7 +358,7 @@ WHERE run_scope_id = ?
                                 }
                                 for (var candidate : inspection.githubCandidates()) {
                                     if (!validation.firstEncounter(
-                                            candidate.credential(), syntheticFixture)) continue;
+                                            candidate.credential(), scope.id())) continue;
                                     try {
                                         validation.record(
                                                 attempts.validateGitHub(
@@ -375,7 +375,7 @@ WHERE run_scope_id = ?
                                     }
                                 }
                                 for (var candidate : inspection.notionCandidates()) {
-                                    if (!validation.firstEncounter(candidate.credential(), syntheticFixture))
+                                    if (!validation.firstEncounter(candidate.credential(), scope.id()))
                                         continue;
                                     try {
                                         validation.record(attempts.validateNotion(
@@ -390,7 +390,7 @@ WHERE run_scope_id = ?
                                 for (var credential : inspection.credentials()) {
                                     if (Set.of("AWS", "GITHUB", "NOTION").contains(credential.issuer()))
                                         continue;
-                                    if (!validation.firstEncounter(credential, syntheticFixture))
+                                    if (!validation.firstEncounter(credential, scope.id()))
                                         continue;
                                     validation.record(
                                             attempts.recordUnsupported(
@@ -414,7 +414,7 @@ WHERE run_scope_id = ?
         withLease(job, execution, () -> findings.finishToolRun(toolRunId.get(), status, code, Instant.now()));
         GitHubCollector.RepositoryAccess access =
                 result.status() == GitHubCollector.Status.SUCCEEDED && !accessSinks.isEmpty()
-                        ? collector.repositoryAccess(approved)
+                        ? collector.observed(execution.observer(job, scope.id())).repositoryAccess(approved)
                         : null;
         withLease(
                 job,
@@ -484,22 +484,19 @@ WHERE run_scope_id = ?
         return Instant.now().atOffset(ZoneOffset.UTC);
     }
 
-    private static final class ValidationProgress {
+    static final class ValidationProgress {
         private final Set<String> encountered = new HashSet<>();
-        private final Set<String> fixtureRecorded = new HashSet<>();
         private int checked;
         private int inconclusive;
         private int failed;
 
-        boolean firstEncounter(SecretFindingNormalizer.Credential credential, boolean syntheticFixture) {
+        boolean firstEncounter(SecretFindingNormalizer.Credential credential, long runScopeId) {
             byte[] digest = "CONFIRMED".equals(credential.componentState())
                     ? credential.fingerprint() : credential.candidateLocator();
-            String identity = credential.issuer() + ":" + credential.credentialType() + ":"
+            String identity = runScopeId + ":" + credential.issuer() + ":" + credential.credentialType() + ":"
                     + credential.componentState() + ":" + credential.fingerprintKeyVersion() + ":"
                     + HexFormat.of().formatHex(digest);
-            // An exemption in the fixture repository must not suppress validation if the
-            // same credential is also discovered in a different approved repository.
-            if (syntheticFixture) return !encountered.contains(identity) && fixtureRecorded.add(identity);
+            // Approval and exact synthetic evidence belong to one scope, even for the same key.
             return encountered.add(identity);
         }
 
@@ -507,7 +504,8 @@ WHERE run_scope_id = ?
             if (result.status() == AwsValidationResult.Status.UNCHECKED) {
                 if (result.reason() != AwsValidationResult.Reason.DISABLED
                         && result.reason() != AwsValidationResult.Reason.SYNTHETIC_FIXTURE
-                        && result.reason() != AwsValidationResult.Reason.SOURCE_GUARD_BLOCKED)
+                        && result.reason() != AwsValidationResult.Reason.SOURCE_GUARD_BLOCKED
+                        && result.reason() != AwsValidationResult.Reason.VALIDATOR_NOT_ALLOWED)
                     inconclusive++;
             } else if (result.status() == AwsValidationResult.Status.UNKNOWN) {
                 inconclusive++;
@@ -519,7 +517,7 @@ WHERE run_scope_id = ?
         void record(CredentialValidationResult result) {
             if (Set.of("VALID", "INVALID").contains(result.result())) checked++;
             else if (!("UNCHECKED".equals(result.result())
-                    && Set.of("DISABLED", "SYNTHETIC_FIXTURE", "SOURCE_GUARD_BLOCKED")
+                    && Set.of("DISABLED", "SYNTHETIC_FIXTURE", "SOURCE_GUARD_BLOCKED", "VALIDATOR_NOT_ALLOWED")
                             .contains(result.reasonCode()))) inconclusive++;
         }
 

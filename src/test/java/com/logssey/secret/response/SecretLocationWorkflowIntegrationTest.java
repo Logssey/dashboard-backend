@@ -39,6 +39,16 @@ class SecretLocationWorkflowIntegrationTest {
         jdbc.update("INSERT INTO secret_case_occurrences(case_id,occurrence_id,credential_set_id) VALUES(?,?,?),(?,?,?)",caseId,occ1,key,caseId,occ2,key);
         access=new SecretAccessService(jdbc);service=new SecretLocationWorkflow(jdbc,access,new SecretCommandExecutor(jdbc,tm),new SecretReadSnapshots(jdbc,JsonMapper.builder().build()));
     }
+    @Test void historyAllSearchUsesOnlyReadablePublicCaseAndLocationFacts() {
+        jdbc.update("UPDATE secret_response_cases SET is_current=false,closed_at=now(),action_status='RESOLVED',resolved_at=now(),case_origin='UNCLASSIFIED' WHERE case_id=?",caseId);
+        jdbc.update("UPDATE secret_connection_scopes SET response_origin='UNCLASSIFIED',response_origin_set_by_user_id=NULL,response_origin_set_at=NULL,safe_display_alias='결제 서비스'");
+        var history=service.list("security","ALL","history",null,null,null,0,20,"결제");
+        assertThat(history.get("total")).isEqualTo(1);
+        assertThat(history.get("items").toString()).contains("caseOrigin=UNCLASSIFIED");
+        assertThat(service.list("security","PRODUCTION","history",null,null,null,0,20,"결제").get("total")).isEqualTo(0);
+        assertThat(service.list("alice","ALL","history",null,null,null,0,20,"결제").get("total")).isEqualTo(0);
+        assertThat(service.list("security","ALL","history",null,null,null,0,20,"private-path").get("total")).isEqualTo(0);
+    }
     @Test void coordinatorAndConnectionGrantDoNotAssignLocations(){
         assertThat(access.canReadOccurrence(new SecretPrincipal(alice),occ1)).isFalse();
         code(ErrorCode.NOT_FOUND,()->service.detail(caseId,"alice"));
