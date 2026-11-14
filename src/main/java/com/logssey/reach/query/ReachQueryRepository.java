@@ -155,6 +155,12 @@ public class ReachQueryRepository {
                 : Arrays.stream((String[]) array.getArray()).filter(Objects::nonNull).toList();
     }
 
+    /** INTEGER[] 칸. NOT NULL DEFAULT '{}'라 보통 빈 배열이지만 strings()처럼 NULL 원소는 뺀다 */
+    private static List<Integer> integers(Array array) throws SQLException {
+        return array == null ? List.of()
+                : Arrays.stream((Integer[]) array.getArray()).filter(Objects::nonNull).toList();
+    }
+
     private JsonNode json(String value) {
         return value == null ? null : mapper.readTree(value);
     }
@@ -253,9 +259,11 @@ public class ReachQueryRepository {
      */
     private static final String FINDING_DETAIL = """
         SELECT f.finding_id, f.last_scan_id, f.target_id, f.purl, f.component_name, f.component_version, f.ecosystem,
-               f.vulnerability_id, f.severity, f.severity_note, f.vuln_title, f.affected_feature, f.fixed_versions,
+               f.component_path,
+               f.vulnerability_id, f.severity, f.severity_note, f.vuln_title, f.vuln_description, f.affected_feature,
+               f.fixed_versions, f.cwe_ids, f.reference_urls,
                f.deployment, f.sources, f.upgrade::text AS upgrade, f.first_seen_at, f.last_seen_at,
-               v.status, v.method, v.summary, v.not_analyzed_reason, v.rule_id,
+               v.status, v.method, v.summary, v.not_analyzed_reason, v.rule_id, v.vuln_function_ids,
                v.callgraph::text AS callgraph, v.engine::text AS engine, v.analyzed_at,
                (SELECT COALESCE(jsonb_agg(
                            jsonb_strip_nulls(jsonb_build_object(
@@ -297,14 +305,16 @@ public class ReachQueryRepository {
         return new ReachFindingDetailResponse(
                 rs.getLong("finding_id"), rs.getLong("last_scan_id"), rs.getLong("target_id"),
                 new ReachFindingDetailResponse.Component(rs.getString("purl"), rs.getString("component_name"),
-                        rs.getString("component_version"), rs.getString("ecosystem")),
+                        rs.getString("component_version"), rs.getString("ecosystem"), rs.getString("component_path")),
                 new ReachFindingDetailResponse.Vulnerability(rs.getString("vulnerability_id"), rs.getString("severity"),
-                        rs.getString("severity_note"), rs.getString("vuln_title"), rs.getString("affected_feature"),
-                        strings(rs.getArray("fixed_versions"))),
+                        rs.getString("severity_note"), rs.getString("vuln_title"), rs.getString("vuln_description"),
+                        rs.getString("affected_feature"), strings(rs.getArray("fixed_versions")),
+                        strings(rs.getArray("cwe_ids")), strings(rs.getArray("reference_urls"))),
                 rs.getString("deployment"),
                 strings(rs.getArray("sources")),
                 new ReachFindingDetailResponse.Verdict(status, rs.getString("method"), rs.getString("summary"),
                         rs.getString("not_analyzed_reason"), rs.getString("rule_id"),
+                        integers(rs.getArray("vuln_function_ids")),
                         json(rs.getString("callgraph")), json(rs.getString("evidence")),
                         rs.getObject("analyzed_at", OffsetDateTime.class), json(rs.getString("engine"))),
                 // 사람 판정이 있고 현재 판정과 다르면 true (FR-08, 목록과 같은 규칙)

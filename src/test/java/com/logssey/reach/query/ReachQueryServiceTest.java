@@ -188,6 +188,31 @@ class ReachQueryServiceTest {
     }
 
     @Test
+    void detailReturnsStoredScannerFieldsAndVulnFunctionIds() {
+        long id = finding(scan, "a", "CVE-2026-1", "HIGH", "REACHABLE", "UNREVIEWED");
+        long empty = finding(scan, "b", "CVE-2026-2", "HIGH", "REACHABLE", "UNREVIEWED");
+        jdbc.update("""
+                UPDATE reach_findings SET component_path = 'app.jar/BOOT-INF/lib/a-1.jar', vuln_description = 'desc',
+                       cwe_ids = ARRAY['CWE-400', 'CWE-1333'], reference_urls = ARRAY['https://example.com/a']
+                WHERE finding_id = ?""", id);
+        jdbc.update("UPDATE reach_verdicts SET vuln_function_ids = ARRAY[3, 1] WHERE finding_id = ?", id);
+
+        var detail = service.finding("admin", id, null);
+        assertThat(detail.component().path()).isEqualTo("app.jar/BOOT-INF/lib/a-1.jar");
+        assertThat(detail.vulnerability().description()).isEqualTo("desc");
+        assertThat(detail.vulnerability().cwe()).containsExactly("CWE-400", "CWE-1333");
+        assertThat(detail.vulnerability().references()).containsExactly("https://example.com/a");
+        assertThat(detail.verdict().vulnFunctionIds()).containsExactly(3, 1);   // 저장 순서 그대로
+
+        var none = service.finding("admin", empty, null);   // 칸이 비면 null·빈 배열
+        assertThat(none.component().path()).isNull();
+        assertThat(none.vulnerability().description()).isNull();
+        assertThat(none.vulnerability().cwe()).isEmpty();
+        assertThat(none.vulnerability().references()).isEmpty();
+        assertThat(none.verdict().vulnFunctionIds()).isEmpty();
+    }
+
+    @Test
     void filterValuesAreOrWithinAFieldAndAndAcrossFields() {
         finding(scan, "a", "CVE-2026-1", "HIGH", "REACHABLE", "UNREVIEWED");
         finding(scan, "b", "CVE-2026-2", "LOW", "UNKNOWN", "UNREVIEWED");
