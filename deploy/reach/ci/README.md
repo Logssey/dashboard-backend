@@ -1,6 +1,6 @@
 # Reach CI (서비스 저장소용)
 
-Re:Used 서비스 저장소의 GitHub Actions에서 Reach 분석을 돌려 대시보드에 올린다. 순서는 검사 등록(API-12) → SBOM·대조 → L2(호출 그래프·규칙) → 결과 묶음 → 업로드(API-13) → 게이트 확인이다.
+서비스 저장소의 GitHub Actions에서 Reach 분석을 돌려 대시보드에 올린다. 순서는 검사 등록(API-12) → SBOM·대조 → L2(호출 그래프·규칙) → 결과 묶음 → 업로드(API-13) → 게이트 확인이다.
 
 이 폴더는 **원본**이다. 서비스 저장소에는 `reach.yml` 한 파일만 복사하고, 나머지는 워크플로가 이 저장소를 `REACH_REF` 커밋으로 받아 쓴다. 그래서 판정 데이터(`src/main/resources/reach/`)·분석기·스크립트가 한 커밋에 묶여 같은 입력이면 같은 판정이 나온다(NFR-04).
 
@@ -33,6 +33,8 @@ Re:Used 서비스 저장소의 GitHub Actions에서 Reach 분석을 돌려 대�
 | 무엇 | 어디에 | 상태 |
 | --- | --- | --- |
 | 대시보드 주소 | 서비스 저장소 변수 `REACH_URL`(API), `REACH_UI_URL`(화면, 선택) | 배포 위치 미정 |
+| 감시 대상 등록 | 대시보드 설정 `logssey.reach.apps`에 이 레포(`repo`, 하위 경로면 `path`)와 이미지 저장소(`image`)를 앱 코드로 등록한다(PRD FR-15). 스크립트는 app을 보내지 않고(`APP`을 주면 그 값) 대시보드가 이 설정으로 정한다. 등록 안 된 레포·이미지는 422 | 설치마다 |
+| 이미지 저장소 | 서비스 저장소 변수 `REACH_ECR_REPOSITORY`(예: `logssey/reused-api`). 없으면 이미지 작업을 건너뛴다 | 설치마다 |
 | CI 인증 | 대시보드가 `/api/v1/reach/ci/**`에서 GitHub OIDC 토큰(`aud = logssey-reach`)을 받아야 한다. 스크립트는 호출마다 새 토큰을 받아 `Authorization: Bearer`로 보낸다 | 미구현(지금은 ADMIN 세션만). `SecurityConfig`·OAuth2 라이브러리 팀 동의 필요 |
 | dashboard-backend 읽기 | GitHub App 토큰. 비밀값 `REACH_APP_ID`, `REACH_APP_PRIVATE_KEY`(서비스 CI/CD의 gitops 토큰과 같은 방식) | 앱 미정. 나중에 분석기 이미지(GHCR)로 바꾸면 필요 없다 |
 | ECR 읽기 역할 | 비밀값 `REACH_ECR_READ_ROLE_ARN`. `ecr:DescribeImages`, `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`, `ecr:GetAuthorizationToken`만. 신뢰 정책은 이 저장소의 `workflow_run`으로 제한 | 미정(infrastructure Terraform) |

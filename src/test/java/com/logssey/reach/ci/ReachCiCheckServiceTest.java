@@ -6,6 +6,8 @@ import com.logssey.reach.ci.dto.ReachCiCheckResponse;
 import com.logssey.reach.scan.ReachScanRepository;
 import com.logssey.reach.scan.ReachScanService;
 import com.logssey.reach.scan.dto.ReachScanResponse;
+import com.logssey.reach.ReachProperties;
+import com.logssey.reach.ReachTestProperties;
 
 import java.util.List;
 
@@ -50,7 +52,7 @@ class ReachCiCheckServiceTest {
                 + "reach_findings, reach_scans, reach_targets, dashboard_users RESTART IDENTITY CASCADE");
         jdbc.update("INSERT INTO dashboard_users (login_id, password_hash, display_name, role) "
                 + "VALUES ('admin', 'h', 'Admin', 'ADMIN')");
-        service = new ReachCiCheckService(new ReachCiCheckRepository(JdbcClient.create(jdbc)));
+        service = new ReachCiCheckService(new ReachCiCheckRepository(JdbcClient.create(jdbc)), ReachTestProperties.REUSED);
     }
 
     @Test
@@ -150,6 +152,36 @@ class ReachCiCheckServiceTest {
         }
         assertError(() -> service.create("admin", "k", unknownImage), ErrorCode.UNPROCESSABLE);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM reach_ci_checks", Long.class)).isZero();
+    }
+
+    @Test
+    void appsComeFromTheConfigurationNotFromReUsedNames() {
+        // Re:Used가 아닌 서비스의 설정이면 그 서비스의 레포·이미지로 app을 정하고, Re:Used 이름은 모른다 (PRD FR-15)
+        var other = new ReachProperties(List.of(
+                new ReachProperties.App("ORDER", "acme/order-service", null, "acme/order"),
+                new ReachProperties.App("BATCH", "order-service", "batch", null)), null);
+        service = new ReachCiCheckService(new ReachCiCheckRepository(JdbcClient.create(jdbc)), other);
+        String digest = "sha256:" + "c".repeat(64);
+
+        service.create("admin", "o1", request("MANUAL", repoOf("order-service", null), null, null));
+        service.create("admin", "o2", request("MANUAL", repoOf("acme/order-service", "batch"), null, null));
+        service.create("admin", "o3", request("MANUAL", repoOf("order-service", "docs"), null, null));   // 경로 없는 등록으로
+        service.create("admin", "o4", image("IMAGE_BUILD", "acme/order", digest));
+        assertThat(jdbc.queryForList("SELECT app FROM reach_targets ORDER BY target_id", String.class))
+                .containsExactly("ORDER", "BATCH", "ORDER", "ORDER");
+
+        assertError(() -> service.create("admin", "o5", request("MANUAL", repo(COMMIT), null, null)), ErrorCode.UNPROCESSABLE);
+        assertError(() -> service.create("admin", "o6", image("IMAGE_BUILD", "logssey/reused-api", digest)),
+                ErrorCode.UNPROCESSABLE);
+        var reusedApp = new ReachTargetRequest("REPO", "API", new ReachTargetRequest.Repo("order-service", COMMIT, null), null);
+        assertError(() -> service.create("admin", "o7", request("MANUAL", reusedApp, null, null)), ErrorCode.INVALID_INPUT);
+    }
+
+    @Test
+    void withoutConfiguredAppsNoTargetCanBeResolved() {
+        service = new ReachCiCheckService(new ReachCiCheckRepository(JdbcClient.create(jdbc)), new ReachProperties(null, null));
+        assertError(() -> service.create("admin", "k", pr("GATE")), ErrorCode.UNPROCESSABLE);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM reach_targets", Long.class)).isZero();
     }
 
     @Test
@@ -315,6 +347,10 @@ class ReachCiCheckServiceTest {
     private static ReachCiCheckRequest request(String mode, ReachTargetRequest target, Long rescanOf, Long baseline,
                                                String policy) {
         return new ReachCiCheckRequest(mode, "service-backend", null, null, target, rescanOf, policy, baseline);
+    }
+
+    private static ReachTargetRequest repoOf(String name, String path) {
+        return new ReachTargetRequest("REPO", null, new ReachTargetRequest.Repo(name, COMMIT, path), null);
     }
 
     private static ReachTargetRequest repo(String commit) {

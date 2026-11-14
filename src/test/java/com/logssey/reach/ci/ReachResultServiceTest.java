@@ -7,6 +7,7 @@ import com.logssey.reach.l1.ReachL1Service;
 import com.logssey.reach.review.ReachReviewRepository;
 import com.logssey.reach.review.ReachReviewRequest;
 import com.logssey.reach.review.ReachReviewService;
+import com.logssey.reach.ReachTestProperties;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -64,9 +65,9 @@ class ReachResultServiceTest {
         jdbc.update("INSERT INTO dashboard_users (login_id, password_hash, display_name, role) "
                 + "VALUES ('admin', 'h', 'Admin', 'ADMIN')");
         var client = JdbcClient.create(jdbc);
-        l1 = new ReachL1Service(new ReachL1Repository(client));
+        l1 = new ReachL1Service(new ReachL1Repository(client), ReachTestProperties.REUSED);
         service = new ReachResultService(new ReachResultRepository(client), l1, manager);
-        checks = new ReachCiCheckService(new ReachCiCheckRepository(client));
+        checks = new ReachCiCheckService(new ReachCiCheckRepository(client), ReachTestProperties.REUSED);
         reviews = new ReachReviewService(new ReachReviewRepository(client));
     }
 

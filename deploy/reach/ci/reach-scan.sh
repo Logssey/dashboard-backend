@@ -13,7 +13,7 @@
 # MODE=PR: PR_NUMBER (optional BASE_REF, HEAD_REF). Target is the repo at COMMIT; the SBOM comes from JAR.
 # MODE=IMAGE_BUILD: IMAGE_REPOSITORY (e.g. logssey/reused-api), IMAGE_DIGEST (sha256:...), IMAGE_REF
 #   (what `trivy image` pulls, e.g. <registry>/<repo>@<digest>). JAR is the app jar copied out of that image.
-# Optional: APP (API), POLICY (REPORT_ONLY | GATE, default REPORT_ONLY), SOURCE (service repo checkout,
+# Optional: APP (app code; when empty the dashboard picks it from its logssey.reach.apps), POLICY (REPORT_ONLY | GATE, default REPORT_ONLY), SOURCE (service repo checkout,
 #   gives verdict.py the config files), OUT (./reach-out), WAIT_SECONDS (300), REACH_UI_URL (link in the summary),
 #   REACH_HOME (dashboard-backend checkout; default: this script's repo), ANALYZER (reach-analyzer.jar path).
 # Auth: in GitHub Actions a fresh OIDC token (aud logssey-reach) is fetched for every call
@@ -27,7 +27,7 @@ set -Eeuo pipefail
 : "${COMMIT:?COMMIT=<40-character commit sha>}"
 : "${JAR:?JAR=<bootJar to analyse>}"
 : "${REACH_URL:?REACH_URL=<dashboard base URL>}"
-APP="${APP:-API}"
+APP="${APP:-}"
 POLICY="${POLICY:-REPORT_ONLY}"
 OUT="${OUT:-$PWD/reach-out}"
 WAIT_SECONDS="${WAIT_SECONDS:-300}"
@@ -93,14 +93,14 @@ if [ "$MODE" = PR ]; then
     {mode: "PR", repository: $repo, headCommit: $commit,
      pullRequest: ({number: $number} + (if $base != "" then {baseRef: $base} else {} end)
                                      + (if $head != "" then {headRef: $head} else {} end)),
-     target: {type: "REPO", app: $app, repo: {name: $repo, commit: $commit}},
+     target: ({type: "REPO", repo: {name: $repo, commit: $commit}} + (if $app != "" then {app: $app} else {} end)),
      policy: $policy}')
 else
   KEY="$REPOSITORY-image-${IMAGE_DIGEST#sha256:}"
   REQUEST=$(jq -n --arg repo "$REPOSITORY" --arg commit "$COMMIT" --arg app "$APP" --arg policy "$POLICY" \
     --arg image "$IMAGE_REPOSITORY" --arg digest "$IMAGE_DIGEST" '
     {mode: "IMAGE_BUILD", repository: $repo, headCommit: $commit,
-     target: {type: "IMAGE", app: $app, image: {repository: $image, digest: $digest}},
+     target: ({type: "IMAGE", image: {repository: $image, digest: $digest}} + (if $app != "" then {app: $app} else {} end)),
      policy: $policy}')
 fi
 KEY="${KEY:0:64}"

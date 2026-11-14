@@ -5,6 +5,7 @@ import com.logssey.common.error.ErrorCode;
 import com.logssey.reach.l1.ReachInventoryRequest.Container;
 import com.logssey.reach.l1.ReachInventoryRequest.Workload;
 import com.logssey.reach.l1.dto.ReachWorkloadResponse;
+import com.logssey.reach.ReachTestProperties;
 
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -254,9 +255,19 @@ class ReachL1ServiceTest {
     }
 
     @Test
-    void rejectsAnEmptyAllowList() {
-        assertThatThrownBy(() -> service("reused-prod", List.of(), "48 hours"))
-                .isInstanceOf(IllegalArgumentException.class);
+    void withoutAnL1ScopeUploadsAreRejectedAndNothingIsRecomputed() {
+        // 설정(logssey.reach.l1)이 없으면 L1이 꺼진다. 기동은 하고, 업로드는 400, 재계산은 0, 목록은 빈 결과 (PRD FR-15)
+        long target = imageTarget("API", "logssey/reused-api", A);
+        scan(target, "IMAGE_BUILD", "SUCCEEDED");
+        for (var off : List.of(service("reused-prod", List.of(), "48 hours"), service(null, List.of("reused"), "48 hours"))) {
+            assertError(() -> off.upload("admin", new ReachInventoryRequest("reused-prod", "reused", now, List.of())),
+                    ErrorCode.INVALID_INPUT);
+            assertThat(off.recompute(null)).isZero();
+            var page = off.workloads("admin", ALL, null, null, "total");
+            assertThat(page.items()).isEmpty();
+            assertThat(page.totalCount()).isZero();
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM reach_workload_observations", Long.class)).isZero();
     }
 
     // ---- API-07 워크로드 목록 ----
@@ -426,7 +437,9 @@ class ReachL1ServiceTest {
 
     @Test
     void rejectsBadQueries() {
-        assertError(() -> filter(null, List.of("FOO"), null, null), ErrorCode.INVALID_INPUT);
+        // 앱 코드는 설정(logssey.reach.apps)과 대조한다. Re:Used 설정에 FOO는 없다
+        assertError(() -> service.workloads("admin", filter(null, List.of("FOO"), null, null), null, null, null),
+                ErrorCode.INVALID_INPUT);
         assertError(() -> filter(null, null, null, List.of("GONE")), ErrorCode.INVALID_INPUT);
         assertError(() -> filter(null, null, "sha256:ABC", null), ErrorCode.INVALID_INPUT);
         assertError(() -> filter(null, null, A.toUpperCase(), null), ErrorCode.INVALID_INPUT);
@@ -481,7 +494,8 @@ class ReachL1ServiceTest {
     }
 
     private static ReachL1Service service(String cluster, List<String> namespaces, String fresh) {
-        return new ReachL1Service(new ReachL1Repository(JdbcClient.create(jdbc)), cluster, namespaces, fresh);
+        return new ReachL1Service(new ReachL1Repository(JdbcClient.create(jdbc)),
+                ReachTestProperties.withL1(cluster, namespaces), fresh);
     }
 
     private static String digest(char c) {
