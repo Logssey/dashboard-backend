@@ -24,12 +24,13 @@ public class SecretRunQueryService {
         safe.put("capabilities",Map.of("canViewFindings",access.hasConnectionRole(actor,result.connectionId(),SecretRole.SECURITY)));
         return safe;
     }
-    @Transactional(isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> list(String login,String type,String status,Long connectionId,OffsetDateTime from,OffsetDateTime to,int page,int size,String snapshotId){
         return list(login,type,status,"ALL",connectionId,from,to,page,size,snapshotId);
     }
-    @Transactional(isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> list(String login,String type,String status,String provider,Long connectionId,OffsetDateTime from,OffsetDateTime to,int page,int size,String snapshotId){
+        return snapshots.readConsistently(() -> listWithinRead(login,type,status,provider,connectionId,from,to,page,size,snapshotId));
+    }
+    private Map<String,Object> listWithinRead(String login,String type,String status,String provider,Long connectionId,OffsetDateTime from,OffsetDateTime to,int page,int size,String snapshotId){
         if(!Set.of("ALL","GITHUB","AWS","NOTION","KUBERNETES").contains(provider))throw new ApiException(ErrorCode.INVALID_INPUT);
         page(page,size);if(!Set.of("ALL","MANUAL","SCHEDULED","REVALIDATION").contains(type)||!Set.of("ALL","PENDING","RUNNING","SUCCEEDED","PARTIAL","FAILED","SKIPPED","CANCELLED").contains(status)
             ||(from==null)!=(to==null)||from!=null&&!from.isBefore(to)||connectionId!=null&&connectionId<=0)throw new ApiException(ErrorCode.INVALID_INPUT);

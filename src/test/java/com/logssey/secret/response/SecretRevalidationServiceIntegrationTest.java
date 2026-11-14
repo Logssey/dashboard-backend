@@ -32,7 +32,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "logssey.admin.password=revalidation-pass",
         "logssey.admin.display-name=Revalidation Admin",
         "logssey.secret.bootstrap-security-login-id=",
-        "logssey.secret.bootstrap-remediator-login-id="
+        "logssey.secret.bootstrap-remediator-login-id=",
+        "logssey.secret.guide.provider=groq",
+        "logssey.secret.guide.groq.enabled=false",
+        "logssey.secret.guide.claude.enabled=false"
 })
 class SecretRevalidationServiceIntegrationTest {
     private static final PostgreSQLContainer POSTGRES = new com.logssey.secret.testing.SecretTestPostgres();
@@ -382,7 +385,10 @@ class SecretRevalidationServiceIntegrationTest {
     }
     @Test void repositoryNameAndTestLabelNeverProveSyntheticFixture(){
         jdbc.update("UPDATE secret_connection_scopes SET approved_ref='github://Logssey/test-find-key/develop/fixtures/'");
-        assertThat(guide.guide(caseId,"revalidation-admin").source()).isEqualTo("DEFAULT");
+        var response = guide.guide(caseId, "revalidation-admin");
+        assertThat(response.source()).isEqualTo("DEFAULT");
+        assertThat(response.readiness().reasonCode()).isEqualTo("SYNTHETIC_FIXTURE_REQUIRED");
+        assertThat(response.readiness().providerCalled()).isFalse();
         assertThatThrownBy(()->lifecycle.submit(caseId,new com.logssey.secret.lifecycle.SecretLifecycleService.Submission("FIXTURE_RETIRED",java.time.OffsetDateTime.now().minusMinutes(1),"CHANGE:SEC-2",0L,"fake-fixture"),"revalidation-admin")).isInstanceOf(ApiException.class);
     }
     @Test void onlyExactApprovedFixtureCanSelectExternalGuideAndRealProofImmediatelyDisablesIt(){
@@ -398,7 +404,11 @@ class SecretRevalidationServiceIntegrationTest {
         var calls=new java.util.concurrent.atomic.AtomicInteger();
         var localGuide=new SecretGuideService(caseRepository,guideRepository,context->{calls.incrementAndGet();return java.util.Optional.of(java.util.List.of("VERIFY_EXPOSURE","EXTERNAL_ROTATION","RECORD_ACTION","REVALIDATE"));});
         assertThat(localGuide.guide(caseId,"revalidation-admin").source()).isEqualTo("GROQ");assertThat(calls.get()).isEqualTo(1);
-        long reviewer=reviewer();var submitted=lifecycle.submit(caseId,new com.logssey.secret.lifecycle.SecretLifecycleService.Submission("FIXTURE_RETIRED",java.time.OffsetDateTime.now().minusSeconds(2),"CHANGE:SEC-14",0L,"fixture-retired"),"revalidation-admin");
+        long reviewer=reviewer();
+        var performedAt = jdbc.queryForObject(
+                "SELECT clock_timestamp()-interval '2 seconds'", java.time.OffsetDateTime.class);
+        var submitted=lifecycle.submit(caseId,new com.logssey.secret.lifecycle.SecretLifecycleService.Submission(
+                "FIXTURE_RETIRED",performedAt,"CHANGE:SEC-14",0L,"fixture-retired"),"revalidation-admin");
         long evidence=((Number)submitted.get("evidenceId")).longValue();
         lifecycle.review(caseId,evidence,new com.logssey.secret.lifecycle.SecretLifecycleService.Review("APPROVE","EXTERNAL_RECORD_CONFIRMED",1L,1L,"fixture-review"),"independent");
         assertThat(lifecycle.locationCheck(new com.logssey.secret.access.SecretPrincipal(actor()),occurrenceId).get("coverageLimit")).isEqualTo("SIMULATION");

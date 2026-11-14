@@ -1,6 +1,8 @@
 package com.logssey.secretworker.github;
 
 import java.io.IOException;
+import com.logssey.secret.run.progress.core.ScanExecutionObserver;
+import static com.logssey.secret.run.progress.core.ScanExecutionObserver.*;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -17,6 +19,7 @@ import tools.jackson.databind.json.JsonMapper;
 public final class GitHubRestClient {
     private static final URI GITHUB_API = URI.create("https://api.github.com/");
     private static final int MAX_TOKEN_RESPONSE_BYTES = 65_536;
+    private ScanExecutionObserver observer = ScanExecutionObserver.NONE;
     private final URI apiBase;
     private final HttpClient http;
     private final JsonMapper json = new JsonMapper();
@@ -33,6 +36,21 @@ public final class GitHubRestClient {
         if (!apiBase.toString().endsWith("/") || apiBase.getRawQuery() != null || apiBase.getRawFragment() != null) {
             throw new IllegalArgumentException("Invalid API base URI");
         }
+    }
+
+    GitHubRestClient observed(ScanExecutionObserver observer) {
+        var copy = new GitHubRestClient(apiBase, http);
+        copy.observer = Objects.requireNonNull(observer);
+        return copy;
+    }
+
+    private static Operation operation(String path) {
+        if (path.contains("/git/ref/")) return Operation.GITHUB_REF_GET;
+        if (path.contains("/git/commits/")) return Operation.GITHUB_COMMIT_GET;
+        if (path.contains("/git/trees/")) return Operation.GITHUB_TREE_GET;
+        if (path.contains("/git/blobs/")) return Operation.GITHUB_BLOB_GET;
+        if (path.startsWith("app/installations/")) return Operation.GITHUB_TOKEN_EXCHANGE;
+        return Operation.GITHUB_REPOSITORY_GET;
     }
 
     JsonNode get(String path, String bearer, int maxBytes) {
@@ -66,10 +84,21 @@ public final class GitHubRestClient {
             request.header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8));
         }
+        Operation operation = operation(path);
+        observer.record(Stage.COLLECTION, operation, Outcome.STARTED, null, null, null, null, null);
+        long started = System.nanoTime();
+        boolean responseObserved = false;
         try {
             HttpResponse<InputStream> response = http.send(request.build(), HttpResponse.BodyHandlers.ofInputStream());
             try (InputStream stream = response.body()) {
                 int status = response.statusCode();
+                responseObserved = true;
+                observer.record(Stage.COLLECTION, operation,
+                        status >= 200 && status < 300 ? Outcome.COMPLETED : Outcome.FAILED,
+                        status, status >= 200 && status < 300 ? null
+                                : status == 429 ? "RATE_LIMITED"
+                                : status == 401 || status == 403 ? "ACCESS_DENIED" : "OPERATION_FAILED",
+                        null, null, ScanExecutionObserver.elapsed(started));
                 if (status < 200 || status >= 300) {
                     throw error(status, response);
                 }
@@ -88,9 +117,13 @@ public final class GitHubRestClient {
                 }
             }
         } catch (InterruptedException e) {
+            if (!responseObserved) observer.record(Stage.COLLECTION, operation, Outcome.FAILED, null,
+                    "NETWORK_ERROR", null, null, ScanExecutionObserver.elapsed(started));
             Thread.currentThread().interrupt();
             throw new GitHubSourceException(GitHubSourceException.Code.SOURCE_UNAVAILABLE, 0, null);
         } catch (IOException e) {
+            if (!responseObserved) observer.record(Stage.COLLECTION, operation, Outcome.FAILED, null,
+                    "NETWORK_ERROR", null, null, ScanExecutionObserver.elapsed(started));
             throw new GitHubSourceException(GitHubSourceException.Code.SOURCE_UNAVAILABLE, 0, null);
         }
     }

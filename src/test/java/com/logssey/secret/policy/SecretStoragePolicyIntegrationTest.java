@@ -98,6 +98,22 @@ class SecretStoragePolicyIntegrationTest {
                 """,Long.class,credential,connection,scope);
     }
 
+    @Test void policyOnlyApprovalRetainsUnclassifiedProvenanceAndRequiresIndependentReviewer() {
+        var draft=service.draft(draft("ALLOW"),"policy-creator");
+        var active=service.approvePolicy(draft.policyId(),1,new VersionRequest(1L),"policy-reviewer");
+        var preview=changes.preview(scope,new PreviewRequest("UNCLASSIFIED",active.policyId(),1L,0L),"policy-creator");
+        assertThat(preview.approvalMode()).isEqualTo("INDEPENDENT_REVIEW");
+        var proposed=service.propose(scope,new ProposalRequest("UNCLASSIFIED",active.policyId(),1L,"SOURCE_CORRECTION","TICKET:SEC-123",0L),"policy-creator");
+        assertCode(ErrorCode.FORBIDDEN,()->service.approveProposal(scope,proposed.pendingProposal().proposalId(),new ApproveProposalRequest(0L,1L),"policy-creator"));
+        var applied=service.approveProposal(scope,proposed.pendingProposal().proposalId(),new ApproveProposalRequest(0L,1L),"policy-reviewer");
+        assertThat(applied.origin()).isEqualTo("UNCLASSIFIED");assertThat(applied.setupReasonCodes()).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT response_origin_set_by_user_id FROM secret_connection_scopes WHERE scope_id=?",Long.class,scope)).isNull();
+        assertThat(jdbc.queryForObject("SELECT response_origin_set_at FROM secret_connection_scopes WHERE scope_id=?",OffsetDateTime.class,scope)).isNull();
+        assertThat(jdbc.queryForObject("SELECT policy_result FROM secret_occurrence_policy_results WHERE occurrence_id=?",String.class,occurrence)).isEqualTo("ALLOWED");
+        assertThat(jdbc.queryForObject("SELECT from_origin||'>'||to_origin FROM secret_scope_origin_decisions WHERE scope_id=? AND decision='APPROVED'",String.class,scope)).isEqualTo("UNCLASSIFIED>UNCLASSIFIED");
+        jdbc.update("UPDATE secret_connection_scopes SET response_origin='PRODUCTION',response_origin_set_by_user_id=?,response_origin_set_at=now() WHERE scope_id=?",reviewer,scope);
+        assertCode(ErrorCode.INVALID_INPUT,()->changes.preview(scope,new PreviewRequest("UNCLASSIFIED",active.policyId(),1L,applied.scopeVersion()),"policy-creator"));
+    }
     @Test void independentPolicyAndSourceApprovalsProduceExplicitAllowWithoutInventingNormal() {
         var draft=service.draft(draft("ALLOW"),"policy-creator");
         assertThat(draft.status()).isEqualTo("DRAFT");
@@ -463,7 +479,7 @@ class SecretStoragePolicyIntegrationTest {
     @Test void legacyProductionWithoutFormalEvidenceIsNotTreatedAsNoop() {
         jdbc.update("UPDATE secret_connection_scopes SET response_origin='PRODUCTION',response_origin_version=1,response_origin_set_by_user_id=?,response_origin_set_at=now() WHERE scope_id=?",creator,scope);
         jdbc.update("INSERT INTO secret_scope_origin_decisions(scope_id,from_origin,to_origin,reason_code,actor_user_id,version) VALUES (?,'UNCLASSIFIED','PRODUCTION','APPROVED_PRODUCTION_SOURCE',?,1)",scope,creator);
-        assertThat(service.classification(scope,"policy-creator").setupReasonCodes()).contains("CLASSIFICATION_EVIDENCE_REQUIRED");
+        assertThat(service.classification(scope,"policy-creator").setupReasonCodes()).doesNotContain("CLASSIFICATION_EVIDENCE_REQUIRED");
         var result=changes.propose(scope,change("PRODUCTION","DIRECT",1L,"legacy-source"),"policy-creator");
         assertThat(result.changeResult().effect()).isEqualTo("APPLIED");
         assertThat(result.setupReasonCodes()).doesNotContain("CLASSIFICATION_EVIDENCE_REQUIRED");

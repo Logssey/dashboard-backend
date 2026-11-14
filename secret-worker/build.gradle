@@ -58,3 +58,5 @@ sourceSets.main.java.exclude('**/SecretOperationsService.java','**/SecretOperati
 sourceSets.main.java.srcDir(rootProject.file('src/main/java/com/logssey/secret/permission/core'))
 sourceSets.main.java.srcDir(rootProject.file('src/main/java/com/logssey/secret/usage/core'))
 sourceSets.test.java.srcDir(rootProject.file('src/testFixtures/java'))
+
+sourceSets.main.java.srcDir(rootProject.file('src/main/java/com/logssey/secret/run/progress/core'))

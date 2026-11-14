@@ -32,6 +32,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "logssey.secret.bootstrap-security-login-id=",
         "logssey.secret.bootstrap-remediator-login-id=",
         "logssey.secret.bootstrap-remediator-team=",
+        "logssey.secret.guide.provider=claude",
+        "logssey.secret.guide.claude.enabled=false",
         "logssey.secret.guide.groq.enabled=false"
 })
 class SecretGuideSecurityIntegrationTest {
@@ -143,7 +145,7 @@ class SecretGuideSecurityIntegrationTest {
         mvc.perform(get("/api/v1/secrets/cases/{caseId}/guide", caseId).session(session))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.source").value("DEFAULT"))
-                .andExpect(jsonPath("$.readiness.reasonCode").value("SYNTHETIC_FIXTURE_REQUIRED"))
+                .andExpect(jsonPath("$.readiness.reasonCode").value("DISABLED"))
                 .andExpect(jsonPath("$.readiness.aiRequested").value(false))
                 .andExpect(jsonPath("$.readiness.providerCalled").value(false));
         mvc.perform(post("/api/v1/secrets/cases/{caseId}/guide", caseId)

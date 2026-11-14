@@ -59,4 +59,15 @@ class SecretGuideCatalogTest {
             assertThat(step.description().length()).isLessThanOrEqualTo(160);
         });
     }
+
+    @Test
+    void invalidAuthenticationAndUnverifiedMaterialReceiveSpecificNextSteps() {
+        var invalid = SecretGuideCatalog.fallback(SecretGuideContext.of("NOTION", "NOTION_CONNECTION_TOKEN", "CONFIRMED", "OPEN", "INVALID"));
+        assertThat(invalid.steps().getFirst().description()).contains("인증 거부", "만료·폐기·교체 여부");
+        assertThat(invalid.steps()).filteredOn(step -> "EXTERNAL_ROTATION".equals(step.code())).singleElement()
+                .satisfies(step -> assertThat(step.description()).contains("이미 교체·폐기한 키인지"));
+        var unchecked = SecretGuideCatalog.fallback(SecretGuideContext.of("AWS", "AWS_TEMPORARY_CREDENTIALS", "CANDIDATE", "OPEN", "UNCHECKED"));
+        assertThat(unchecked.steps().getFirst().description()).contains("구성요소", "최신 인증 확인");
+        assertThat(invalid.steps()).allSatisfy(step -> assertThat(step.description().length()).isLessThanOrEqualTo(160));
+    }
 }

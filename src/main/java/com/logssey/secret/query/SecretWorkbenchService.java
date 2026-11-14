@@ -21,14 +21,16 @@ import static com.logssey.secret.snapshot.SecretReadSnapshots.facts;
 /** A permission-bound frozen set backs both work cards and their destination lists. */
 @Service
 public class SecretWorkbenchService {
-    public record Filters(String origin,String source,String provider,String environment,Long connectionId,String assignee) {
+    public record Filters(String origin,String source,String provider,String environment,Long connectionId,String assignee,String q) {
+        public Filters(String origin,String source,String provider,String environment,Long connectionId,String assignee){this(origin,source,provider,environment,connectionId,assignee,null);}
         public Filters {
-            SecretInventoryFilters.require(origin,"PRODUCTION","TEST");
+            q=SecretSafeSearch.normalize(q);
+            SecretInventoryFilters.require(origin,"ALL","PRODUCTION","TEST","UNCLASSIFIED");
             new SecretInventoryFilters(origin,source,provider,environment,"ALL","ALL","ALL","ALL","ALL");
             if(connectionId!=null&&connectionId<=0||assignee!=null&&!assignee.matches("ME|UNASSIGNED|[1-9][0-9]{0,17}"))throw new ApiException(ErrorCode.INVALID_INPUT);
         }
         public Map<String,String> normalized(){var f=new TreeMap<String,String>();f.put("origin",origin);f.put("source",source);f.put("provider",provider);f.put("environment",environment);
-            if(connectionId!=null)f.put("connectionId",connectionId.toString());if(assignee!=null)f.put("assignee",assignee);return f;}
+            if(connectionId!=null)f.put("connectionId",connectionId.toString());if(assignee!=null)f.put("assignee",assignee);if(q!=null)f.put("q",q);return f;}
     }
     private record Metric(String key,String unit,String type,boolean allowed,List<String> ignored) {}
     private final JdbcTemplate jdbc;private final SecretAccessService access;private final SecretLocationRepository locations;
@@ -46,8 +48,12 @@ public class SecretWorkbenchService {
             SecretCoverageService coverage,SecretReadSnapshots snapshots,ObjectMapper json) {
         this(jdbc,access,locations,cases,coverage,snapshots,json,null);
     }
-    @Transactional(isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> summary(String login,Filters f,String snapshotId) {
+        return snapshots.readConsistently(() -> summaryWithinRead(login,f,snapshotId));
+    }
+
+    private Map<String,Object> summaryWithinRead(String login,Filters f,String snapshotId) {
+        if(f.q()!=null)throw new ApiException(ErrorCode.INVALID_INPUT);
         var actor=access.requirePrincipal(login);access.requireAnyRole(actor);var h=header(login,actor,f,snapshotId);
         var metrics=jdbc.query("SELECT * FROM secret_snapshot_metrics WHERE snapshot_id=? ORDER BY metric_key",(rs,n)->{
             String key=rs.getString("metric_key");var filter=new LinkedHashMap<String,Object>(f.normalized());
@@ -70,6 +76,13 @@ public class SecretWorkbenchService {
         allCases.forEach(c->{String grade=(String)c.get("severity");if(grade!=null&&severityCounts.containsKey(grade))severityCounts.merge(grade,1L,Long::sum);});
         boolean caseAccess=access.hasAnyRole(actor,Set.of(SecretRole.SECURITY,SecretRole.REMEDIATOR));
         boolean securityAccess=access.hasAnyRole(actor,Set.of(SecretRole.SECURITY));
+        var reviewFilters=new TreeMap<>(f.normalized());reviewFilters.remove("assignee");
+        var reviewQueue=new LinkedHashMap<String,Object>(f.normalized());
+        reviewQueue.put("snapshotId",h.snapshotId().toString());reviewQueue.put("bucket","REVIEW_REQUIRED");
+        metrics.add(facts("key","reviewRequiredLocations","scope","reviewQueue","unit","Occurrence",
+            "value",securityAccess?(long)recovery.reviewRows(h).size():null,"status",securityAccess?"AVAILABLE":"NOT_AUTHORIZED",
+            "reasonCode",securityAccess?null:"ROLE_REQUIRED","appliedFilters",reviewFilters,
+            "notApplicableFilters",f.assignee()==null?List.of():List.of("assignee"),"queueFilter",reviewQueue));
         var gaps=metrics.stream().filter(m->m.get("key").equals("coverageGapScopes")).findFirst().orElseThrow();
         return facts("scope","workbench","unit","Mixed","total",null,"origin",f.origin(),"filters",f.normalized(),
             "snapshotId",h.snapshotId(),"asOf",h.asOf(),"expiresAt",h.expiresAt(),"restrictedCoverage",h.restrictedCoverage(),
@@ -88,11 +101,9 @@ public class SecretWorkbenchService {
             "setupSummary",recovery.setup(h,f.origin(),access.hasAnyRole(actor,Set.of(SecretRole.SECURITY,SecretRole.OPERATIONS))),
             "collectionHealth",recovery.health(h,f.origin(),access.hasAnyRole(actor,Set.of(SecretRole.SECURITY,SecretRole.OPERATIONS))));
     }
-    @Transactional(isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> queue(String login,Filters f,String bucket,String stages,int page,int size,String snapshotId) {
         return queue(login,f,bucket,stages,page,size,snapshotId,"ALL","ALL");
     }
-    @Transactional(isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> matrix(String login,Filters f,String snapshotId) {
         var summary=summary(login,f,snapshotId);
         @SuppressWarnings("unchecked") var cases=(Map<String,Object>)summary.get("caseSummary");
@@ -100,19 +111,23 @@ public class SecretWorkbenchService {
         for(String key:List.of("origin","filters","snapshotId","asOf","expiresAt","restrictedCoverage","accessScope"))result.put(key,summary.get(key));
         return result;
     }
-    @Transactional(isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> queue(String login,Filters f,String bucket,String stages,int page,int size,String snapshotId,String severity,String validity) {
+        return snapshots.readConsistently(() -> queueWithinRead(login,f,bucket,stages,page,size,snapshotId,severity,validity));
+    }
+
+    private Map<String,Object> queueWithinRead(String login,Filters f,String bucket,String stages,int page,int size,String snapshotId,String severity,String validity) {
         if(page<0||page>1_000_000||size<1||size>100)throw new ApiException(ErrorCode.INVALID_INPUT);
-        SecretInventoryFilters.require(bucket,"ACTION_REQUIRED","CURRENT_CASES","NEEDS_DECISION","NEEDS_CASE_LINK","NORMAL_INVENTORY","COVERAGE_GAPS","UNCLASSIFIED");
+        SecretInventoryFilters.require(bucket,"ACTION_REQUIRED","CURRENT_CASES","NEEDS_DECISION","NEEDS_CASE_LINK","REVIEW_REQUIRED","NORMAL_INVENTORY","COVERAGE_GAPS","UNCLASSIFIED");
         SecretInventoryFilters.require(severity,"ALL","CRITICAL","HIGH","MEDIUM","LOW","UNASSESSED","NOT_APPLICABLE");
         SecretInventoryFilters.require(validity,"ALL","VALID","INVALID","UNKNOWN","UNCHECKED");
+        if(f.q()!=null&&Set.of("COVERAGE_GAPS","UNCLASSIFIED").contains(bucket))throw new ApiException(ErrorCode.INVALID_INPUT);
         if(!Set.of("ACTION_REQUIRED","CURRENT_CASES").contains(bucket)&&(!severity.equals("ALL")||!validity.equals("ALL")))throw new ApiException(ErrorCode.INVALID_INPUT);
         Set<String> selectedStages=stageFilter(bucket,stages);
         var actor=access.requirePrincipal(login);access.requireAnyRole(actor);
         var required=switch(bucket){case "ACTION_REQUIRED","CURRENT_CASES"->Set.of(SecretRole.SECURITY,SecretRole.REMEDIATOR);case "COVERAGE_GAPS","UNCLASSIFIED"->Set.of(SecretRole.SECURITY,SecretRole.OPERATIONS);default->Set.of(SecretRole.SECURITY);};
         if(!access.hasAnyRole(actor,required))throw new ApiException(ErrorCode.FORBIDDEN);
-        var h=header(login,actor,f,snapshotId);String type=switch(bucket){case "ACTION_REQUIRED","CURRENT_CASES"->"ResponseCase";case "NEEDS_DECISION"->"DecisionOccurrence";case "NEEDS_CASE_LINK"->"LinkOccurrence";case "NORMAL_INVENTORY"->"NormalCredentialSet";case "COVERAGE_GAPS"->"GapScope";default->"UnclassifiedScope";};
-        var allowed=snapshots.page(h,type,0,Integer.MAX_VALUE).stream()
+        var h=header(login,actor,f,snapshotId);String type=switch(bucket){case "ACTION_REQUIRED","CURRENT_CASES"->"ResponseCase";case "NEEDS_DECISION"->"DecisionOccurrence";case "NEEDS_CASE_LINK"->"LinkOccurrence";case "REVIEW_REQUIRED"->"ReviewOccurrence";case "NORMAL_INVENTORY"->"NormalCredentialSet";case "COVERAGE_GAPS"->"GapScope";default->"UnclassifiedScope";};
+        var allowed=(bucket.equals("REVIEW_REQUIRED")?recovery.reviewRows(h):snapshots.page(h,type,0,Integer.MAX_VALUE)).stream()
             .filter(r->!bucket.equals("ACTION_REQUIRED")||!Set.of("RESOLVED","RISK_ACCEPTED").contains(r.get("stage")))
             .filter(r->!type.equals("ResponseCase")||selectedStages.isEmpty()||selectedStages.contains(r.get("stage")))
             .filter(r->severity.equals("ALL")||severity.equals(SecretCaseMetrics.severity(r)))
@@ -136,16 +151,20 @@ public class SecretWorkbenchService {
         var rows=allRows.stream().filter(r->(f.connectionId()==null||r.connectionId()==f.connectionId())
             &&(f.source().equals("ALL")||f.source().equals(r.source()))&&(f.provider().equals("ALL")||f.provider().equals(r.issuer()))
             &&(f.environment().equals("ALL")||f.environment().equals(r.environment()))).toList();
+        var searchedRows=rows.stream().filter(r->locations.matchesSearch(r,f.q())).toList();
         var subjects=new ArrayList<Subject>();OffsetDateTime acceptanceDeadline=null;
         OffsetDateTime evaluationAsOf=jdbc.queryForObject("SELECT CURRENT_TIMESTAMP",OffsetDateTime.class);
         Set<Long> valid=validOccurrences(allRows);
         var completeByKey=allRows.stream().collect(Collectors.groupingBy(Row::secretId));
-        var byKey=rows.stream().collect(Collectors.groupingBy(Row::secretId,LinkedHashMap::new,Collectors.toList()));
+        var byKey=searchedRows.stream().collect(Collectors.groupingBy(Row::secretId,LinkedHashMap::new,Collectors.toList()));
         var caseIds=rows.stream().map(Row::caseId).filter(Objects::nonNull).distinct().toList();
         for(long id:caseIds) {
             var member=rows.stream().filter(r->Objects.equals(r.caseId(),id)).toList();
             if(f.assignee()!=null&&member.stream().noneMatch(r->assignmentMatches(actor,r,f.assignee())))continue;
-            var c=cases.detail(id,login);c.remove("checklist");c.remove("occurrences");c.remove("capabilities");
+            var c=cases.detail(id,login);
+            if(f.q()!=null && member.stream().noneMatch(r->locations.matchesSearch(r,f.q()))
+                && !SecretSafeSearch.matches(f.q(),c.get("maskedLabel"),c.get("assigneeDisplayName"),c.get("assigneeTeam")))continue;
+            c.remove("checklist");c.remove("occurrences");c.remove("capabilities");
             var visibleCase=allRows.stream().filter(r->Objects.equals(r.caseId(),id)).toList();
             c.putAll(SecretRiskReadModel.summarize(visibleCase.stream().filter(r->!"RESOLVED".equals(r.actionStatus())).map(Row::occurrenceId).distinct().toList(),riskRows,false));
             c.putAll(SecretCaseMetrics.validation(visibleCase,evaluationAsOf));
@@ -159,7 +178,7 @@ public class SecretWorkbenchService {
             c.put("credentialSetId",c.get("secretId"));
             subjects.add(new Subject("ResponseCase",id,member.getFirst().secretId(),c,member.stream().map(Row::occurrenceId).toList()));
         }
-        for(Row r:rows) {
+        for(Row r:searchedRows) {
             if(!access.hasConnectionRole(actor,r.connectionId(),SecretRole.SECURITY)||r.componentState().equals("METADATA_ONLY")||!valid.contains(r.occurrenceId()))continue;
             if(r.exposure().equals("UNKNOWN")||r.requiresReassessment())subjects.add(subject("DecisionOccurrence",r,"NEEDS_REVIEW","OPEN_REVIEW",riskRows.getOrDefault(r.occurrenceId(),Map.of())));
             else if(r.exposure().equals("ABNORMAL")&&r.caseId()==null)subjects.add(subject("LinkOccurrence",r,"CASE_LINK_REQUIRED","OPEN_REVIEW",riskRows.getOrDefault(r.occurrenceId(),Map.of())));
@@ -169,7 +188,7 @@ public class SecretWorkbenchService {
             if(keyRows.stream().anyMatch(r->!access.hasConnectionRole(actor,r.connectionId(),SecretRole.SECURITY)))continue;
             String subtype=locations.normalInventorySubtype(keyRows);
             if(subtype!=null)subjects.add(new Subject("NormalCredentialSet",entry.getKey(),entry.getKey(),facts("credentialSetId",entry.getKey(),"secretId",entry.getKey(),"maskedLabel",first.maskedLabel(),
-                "inventorySubtype",subtype,"whyHereCode",switch(subtype){case "METADATA_ONLY"->"ACCESS_KEY_METADATA";case "RETIRED_HISTORY"->"PROVIDER_RETIREMENT_CONFIRMED";default->"APPROVED_STORAGE";},"nextActionCode","OPEN_KEY"),keyRows.stream().map(Row::occurrenceId).toList()));
+                "inventorySubtype",subtype,"whyHereCode",switch(subtype){case "METADATA_ONLY"->"ACCESS_KEY_METADATA";case "RETIRED_HISTORY"->"PROVIDER_RETIREMENT_CONFIRMED";case "MANAGED_LOCATIONS"->"MANAGED_LOCATIONS_CONFIRMED";default->"APPROVED_STORAGE";},"nextActionCode","OPEN_KEY"),keyRows.stream().map(Row::occurrenceId).toList()));
         }
         boolean operations=access.hasAnyRole(actor,Set.of(SecretRole.OPERATIONS,SecretRole.SECURITY));
         if(operations) {

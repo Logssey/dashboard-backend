@@ -23,6 +23,10 @@ public class SecretJobExecutionService {
         this.transaction = new TransactionTemplate(transactionManager);
     }
 
+    public com.logssey.secret.run.progress.core.ScanExecutionObserver observer(ClaimedSecretJob job, Long scopeId) {
+        return repository.observer(job, scopeId);
+    }
+
     public Optional<ClaimedSecretJob> claimNextJob() {
         return claimNextJob(null);
     }
@@ -96,6 +100,7 @@ public class SecretJobExecutionService {
                             if (repository.isCredentialValidation(jobId)) {
                                 if (!java.util.Set.of("SUCCEEDED", "PARTIAL", "SKIPPED", "FAILED")
                                         .contains(run.validation())) return false;
+                                repository.startResult(row.get());
                                 repository.finishValidation(
                                         row.get(),
                                         now,
@@ -112,6 +117,7 @@ public class SecretJobExecutionService {
             }
             boolean partial = "PARTIAL".equals(run.collection()) || "PARTIAL".equals(run.detection())
                     || "PARTIAL".equals(run.validation()) || scopes.incomplete() > 0;
+            repository.startResult(row.get());
             repository.finish(row.get(), now, partial ? "PARTIAL" : "SUCCEEDED");
             return true;
         }));

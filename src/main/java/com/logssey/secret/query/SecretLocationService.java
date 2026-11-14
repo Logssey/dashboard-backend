@@ -34,7 +34,7 @@ public class SecretLocationService {
     private com.logssey.secret.risk.SecretRiskQueryService riskQueries;
     private static final Set<String> SAFE_REASONS=Set.of("AUTHENTICATED","INVALID_ACCESS_KEY","SIGNATURE_AMBIGUOUS",
         "EXPIRED_SESSION","DISABLED","INCOMPLETE_PAIR","MISSING_SESSION_TOKEN","ACCESS_AMBIGUOUS",
-        "POST_ACTION_VALIDATION_REQUIRED","RATE_LIMITED","PROVIDER_UNAVAILABLE","CLIENT_FAILURE","SYNTHETIC_FIXTURE","SOURCE_GUARD_BLOCKED","SOURCE_UNAVAILABLE",
+        "POST_ACTION_VALIDATION_REQUIRED","RATE_LIMITED","PROVIDER_UNAVAILABLE","CLIENT_FAILURE","SYNTHETIC_FIXTURE","SOURCE_GUARD_BLOCKED","VALIDATOR_NOT_ALLOWED","SOURCE_UNAVAILABLE",
         "AUTHENTICATION_REJECTED","RESPONSE_UNEXPECTED","UNSUPPORTED_TYPE","INCOMPLETE_CREDENTIAL","NOT_APPROVED",
         "RATE_BUDGET_EXHAUSTED","SOURCE_VALUE_UNAVAILABLE","CREDENTIAL_MISMATCH","APPROVAL_CHANGED","PROFILE_UNCONFIGURED");
 
@@ -43,13 +43,15 @@ public class SecretLocationService {
         this.repository=repository; this.snapshots=snapshots; this.access=access; this.coverageService=coverageService;this.readiness=readiness;this.lifecycle=lifecycle;
     }
 
-    @Transactional(isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> inventory(String loginId,SecretInventoryFilters filters,int page,int size,String snapshotId) {
         return inventory(loginId,filters,page,size,snapshotId,null);
     }
 
-    @Transactional(isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> inventory(String loginId,SecretInventoryFilters filters,int page,int size,String snapshotId,Long runId) {
+        return snapshots.readConsistently(() -> inventoryWithinRead(loginId,filters,page,size,snapshotId,runId));
+    }
+
+    private Map<String,Object> inventoryWithinRead(String loginId,SecretInventoryFilters filters,int page,int size,String snapshotId,Long runId) {
         validatePage(page,size);
         if(runId!=null&&runId<=0)throw new ApiException(ErrorCode.INVALID_INPUT);
         var actor=reader(loginId);
@@ -64,7 +66,7 @@ public class SecretLocationService {
             var base=new SecretInventoryFilters(filters.origin(),"ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL");
             var allVisible=repository.visible(actor.userId(),null,base).stream().collect(Collectors.groupingBy(Row::secretId));
             var riskRows=risks(actor,allVisible.values().stream().flatMap(List::stream).toList());
-            var grouped=repository.visible(actor.userId(),null,filters).stream().filter(r->runOccurrences==null||runOccurrences.contains(r.occurrenceId())).collect(Collectors.groupingBy(
+            var grouped=repository.visible(actor.userId(),null,filters).stream().filter(r->runOccurrences==null||runOccurrences.contains(r.occurrenceId())).filter(r->repository.matchesSearch(r,filters.q())).collect(Collectors.groupingBy(
                 Row::secretId,LinkedHashMap::new,Collectors.toList()));
             var subjects=new ArrayList<SecretReadSnapshots.Subject>();
             for(var entry:grouped.entrySet()) {
@@ -74,7 +76,7 @@ public class SecretLocationService {
                 if("NORMAL_INVENTORY".equals(filters.workBucket()) ? subtype==null : !matchesWorkBucket(rows,filters.workBucket())) continue;
                 var matched=Set.of("ALL","NORMAL_INVENTORY").contains(filters.workBucket())?rows:rows.stream()
                     .filter(row->bucket(row).equals(filters.workBucket())).toList();
-                var item=inventoryItem(keyRows,actor,subtype,riskRows);
+                var item=withReadOrigin(inventoryItem(keyRows,actor,subtype,riskRows),filters.origin());
                 item.put("matchedLocationCount",matched.size());
                 if(!"ALL".equals(filters.validity()) && !filters.validity().equals(item.get("validationStatus"))) continue;
                 if(!"ALL".equals(filters.severity()) && !Objects.equals(filters.severity(),item.get("severity"))) continue;
@@ -97,7 +99,7 @@ public class SecretLocationService {
         var rows=repository.visible(actor.userId(),secretId,filter);
         if(rows.isEmpty()) throw new ApiException(ErrorCode.NOT_FOUND);
         var riskRows=risks(actor,rows);
-        var result=inventoryItem(rows,actor,inventorySubtype(rows),riskRows);
+        var result=withReadOrigin(inventoryItem(rows,actor,inventorySubtype(rows),riskRows),origin);
         result.put("expiryPolicy","UNKNOWN"); result.put("expiresAt",null); result.put("lifecycleStatus","UNKNOWN");
         // Compatibility field contains safe public locations, not original paths or line context.
         result.put("occurrences",rows.stream().map(row-> {
@@ -126,7 +128,7 @@ public class SecretLocationService {
         if(visible.isEmpty()) throw new ApiException(ErrorCode.NOT_FOUND);
         var riskRows=risks(actor,visible);
         String detailVersion=SecretReadSnapshots.digest(visible.stream().map(row -> row.occurrenceId()+":"+
-            row.occurrenceVersion()+":"+row.scopeRevision()+":"+row.presence()+":"+row.lastSeenAt()+":"+
+            row.occurrenceVersion()+":"+row.origin()+":"+repository.originVersion(row)+":"+row.scopeRevision()+":"+row.presence()+":"+row.lastSeenAt()+":"+
             row.caseId()+":"+row.actionStatus()+":"+row.assignedUserId()+":"+row.validationAt()+":"+
             row.storageBindingId()+":"+row.storagePolicyVersion()+":"+row.storagePolicyResult()+":"+
             row.storagePolicyReason()+":"+row.requiresReassessment()+":"+row.allCurrentFindingsCorrected()+":"+
@@ -140,7 +142,7 @@ public class SecretLocationService {
             &&("ALL".equals(exposure)||row.exposure().equals(exposure))
             &&("ALL".equals(actionStatus)||Objects.equals(row.actionStatus()==null?"NO_CASE":row.actionStatus(),actionStatus))).toList();
         var items=filtered.stream().skip((long)page*size).limit(size).map(row -> location(row,actor,loginId,riskRows.getOrDefault(row.occurrenceId(),Map.of()))).toList();
-        return facts("credentialSetId",secretId,"credential",inventoryItem(visible,actor,inventorySubtype(visible),riskRows),"detailVersion",detailVersion,
+        return facts("credentialSetId",secretId,"credential",withReadOrigin(inventoryItem(visible,actor,inventorySubtype(visible),riskRows),filters.origin()),"detailVersion",detailVersion,
             "items",items,"total",filtered.size(),"visibleLocationCount",filtered.size(),"page",page,"size",size,
             "origin",filters.origin(),"unit","Occurrence","restrictedCoverage",!globalSecurity(actor),
             "locationStateCounts",facts("presence",counts(filtered,Row::presence),"exposure",counts(filtered,Row::exposure)),
@@ -195,6 +197,7 @@ public class SecretLocationService {
             .filter(Objects::nonNull).map(v->((java.sql.Timestamp)v).toInstant().atOffset(java.time.ZoneOffset.UTC)).max(Comparator.naturalOrder()).orElse(null);
         boolean needsPostAction=lastMaterial!=null&&(latest.validationCheckedAt()==null||!latest.validationCheckedAt().isAfter(lastMaterial));
         var summary=SecretRemediationSummary.summarize(rows.stream().map(row->summaryFacts(row,actor)).toList(),!globalSecurity(actor));
+        if(rows.stream().map(Row::origin).distinct().count()>1)summary.put("comparisonScope","AUTHORIZED_ALL_ORIGINS");
         var result=facts("id",first.secretId(),"issuer",first.issuer(),"provider",first.issuer(),
             "credentialType",first.credentialType(),"componentState",first.componentState(),"maskedLabel",first.maskedLabel(),
             "severity","UNASSESSED","validationStatus",needsPostAction?"UNCHECKED":latest.validity()==null?"UNCHECKED":latest.validity(),
@@ -203,13 +206,13 @@ public class SecretLocationService {
             "occurrenceCount",rows.size(),"visibleLocationCount",rows.size(),"matchedLocationCount",rows.size(),
             "firstSeenAt",text(rows.stream().map(Row::firstSeenAt).min(Comparator.naturalOrder()).orElse(null)),
             "lastSeenAt",text(rows.stream().map(Row::lastSeenAt).max(Comparator.naturalOrder()).orElse(null)),
-            "origin",first.origin(),"contentKind","METADATA_ONLY".equals(first.componentState())?"METADATA":"VALUE_FINDINGS",
+            "origin",rows.stream().map(Row::origin).distinct().count()==1?first.origin():null,"origins",rows.stream().map(Row::origin).distinct().sorted().toList(),"contentKind","METADATA_ONLY".equals(first.componentState())?"METADATA":"VALUE_FINDINGS",
             "workBucket",bucket,"inventorySubtype",subtype,
-            "whyHereCode","RETIRED_HISTORY".equals(subtype)?"PROVIDER_RETIREMENT_CONFIRMED":reason(representative),
-            "nextActionCode","RETIRED_HISTORY".equals(subtype)?"VIEW_DETAIL":next(representative,actor),
+            "whyHereCode","RETIRED_HISTORY".equals(subtype)?"PROVIDER_RETIREMENT_CONFIRMED":"MANAGED_LOCATIONS".equals(subtype)?"MANAGED_LOCATIONS_CONFIRMED":reason(representative),
+            "nextActionCode",java.util.Arrays.asList("RETIRED_HISTORY","MANAGED_LOCATIONS").contains(subtype)?"VIEW_DETAIL":next(representative,actor),
             "requiresReassessment",rows.stream().anyMatch(Row::requiresReassessment),
-            "safeLocationLabel",repository.safeLocationLabel(representative),"currentCaseId",representative.caseId(),
-            "casesByOrigin",cases.stream().map(id->facts("origin",first.origin(),"caseId",id)).toList(),
+            "safeLocationLabel",repository.safeLocationLabel(representative),"currentCaseId",cases.size()==1?cases.getFirst():null,
+            "casesByOrigin",cases.stream().map(id->facts("origin",rows.stream().filter(r->Objects.equals(r.caseId(),id)).findFirst().orElseThrow().origin(),"caseId",id)).toList(),
             "remediationSummary",summary,"restrictedCoverage",!globalSecurity(actor));
         var priorities=new ArrayList<String>();
         if(((Number)summary.get("postActionRedetectedCount")).longValue()>0)priorities.add("POST_ACTION_REDETECTED");
@@ -325,6 +328,12 @@ public class SecretLocationService {
     }
     private static Map<String,Long> counts(List<Row> rows,java.util.function.Function<Row,String> key) {
         return rows.stream().collect(Collectors.groupingBy(key,LinkedHashMap::new,Collectors.counting()));
+    }
+    @SuppressWarnings("unchecked") private static Map<String,Object> withReadOrigin(Map<String,Object> value,String origin){
+        value.put("readOrigin",origin);
+        if("ALL".equals(origin)&&value.get("remediationSummary") instanceof Map<?,?> summary)
+            ((Map<String,Object>)summary).put("comparisonScope","AUTHORIZED_ALL_ORIGINS");
+        return value;
     }
     private static String text(OffsetDateTime value) { return value==null?null:value.toString(); }
     private static String safeReason(String value) { return value==null?"NO_VERIFICATION_ATTEMPT":SAFE_REASONS.contains(value)?value:"UNSPECIFIED_REASON"; }

@@ -1,5 +1,8 @@
 package com.logssey.secretworker.aws.metadata;
 
+import com.logssey.secret.run.progress.core.ScanExecutionObserver;
+import com.logssey.secret.run.progress.core.ScanExecutionObserver.Operation;
+import com.logssey.secretworker.progress.AwsScanObservation;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.function.Function;
@@ -18,6 +21,7 @@ import software.amazon.awssdk.services.ssm.model.DescribeParametersRequest;
 
 /** SDK implementation restricted to three metadata listing calls. No value or object API is reachable here. */
 public final class AwsSdkMetadataPageClient implements AwsMetadataPageClient {
+    private ScanExecutionObserver observer = ScanExecutionObserver.NONE;
     private static final Duration CALL_TIMEOUT = Duration.ofSeconds(10);
     private final Function<String, SecretsManagerClient> secretsClient;
     private final Function<String, SsmClient> ssmClient;
@@ -48,11 +52,18 @@ public final class AwsSdkMetadataPageClient implements AwsMetadataPageClient {
     }
 
     @Override
+    public AwsMetadataPageClient observed(ScanExecutionObserver observer) {
+        var copy = new AwsSdkMetadataPageClient(secretsClient, ssmClient, s3Client);
+        copy.observer = Objects.requireNonNull(observer);
+        return copy;
+    }
+
+    @Override
     public Page listSecrets(String region, String nextToken) {
         try (SecretsManagerClient client = secretsClient.apply(region)) {
             ListSecretsRequest.Builder request = ListSecretsRequest.builder().maxResults(100);
             if (nextToken != null) request.nextToken(nextToken);
-            var response = client.listSecrets(request.build());
+            var response = AwsScanObservation.call(observer, Operation.AWS_LIST_SECRETS, () -> client.listSecrets(request.build()));
             return new Page(response.secretList().size(), response.nextToken());
         } catch (AwsServiceException error) {
             throw new Failure(map(error));
@@ -68,7 +79,7 @@ public final class AwsSdkMetadataPageClient implements AwsMetadataPageClient {
         try (SsmClient client = ssmClient.apply(region)) {
             DescribeParametersRequest.Builder request = DescribeParametersRequest.builder().maxResults(50);
             if (nextToken != null) request.nextToken(nextToken);
-            var response = client.describeParameters(request.build());
+            var response = AwsScanObservation.call(observer, Operation.AWS_DESCRIBE_PARAMETERS, () -> client.describeParameters(request.build()));
             return new Page(response.parameters().size(), response.nextToken());
         } catch (AwsServiceException error) {
             throw new Failure(map(error));
@@ -84,7 +95,7 @@ public final class AwsSdkMetadataPageClient implements AwsMetadataPageClient {
         try (S3Client client = s3Client.get()) {
             ListBucketsRequest.Builder request = ListBucketsRequest.builder().maxBuckets(1_000);
             if (nextToken != null) request.continuationToken(nextToken);
-            var response = client.listBuckets(request.build());
+            var response = AwsScanObservation.call(observer, Operation.AWS_LIST_BUCKETS, () -> client.listBuckets(request.build()));
             return new Page(response.buckets().size(), response.continuationToken());
         } catch (AwsServiceException error) {
             throw new Failure(map(error));

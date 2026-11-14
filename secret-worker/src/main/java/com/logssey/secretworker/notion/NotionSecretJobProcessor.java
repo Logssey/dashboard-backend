@@ -1,5 +1,7 @@
 package com.logssey.secretworker.notion;
 
+import static com.logssey.secret.run.progress.core.ScanExecutionObserver.*;
+
 import com.logssey.secret.notion.SecretNotionSourceCredentials;
 import com.logssey.secretworker.*;
 import com.logssey.secretworker.detection.SecretFindingNormalizer;
@@ -243,17 +245,19 @@ public final class NotionSecretJobProcessor implements SecretJobProcessor {
     int excluded = 0;
     try {
       var result =
-          collector.collect(
+          collector.observed(execution.observer(job, scope.runScopeId())).collect(
               approved,
               NotionCollectionLimits.DEFAULT,
               (source, bytes) -> {
                 check(job, scope.scopeId(), execution, lost, deadline, false);
                 if (source.nextRetryAt() != null)
                   waitUntil(job, source.nextRetryAt(), source.failureCode(), execution);
-                var scan = detector.scan(bytes);
+                var scan = execution.observer(job, scope.runScopeId()).measure(
+                                    Stage.DETECTION, Operation.GITLEAKS_SCAN, () -> detector.scan(bytes));
                 var inspection =
-                    normalizer.inspect(
-                        job.connectionId(), source.sourceObjectRef(), bytes, scan.findings());
+                    execution.observer(job, scope.runScopeId()).measure(
+                                    Stage.DETECTION, Operation.CANDIDATE_NORMALIZATION, () -> normalizer.inspect(
+                        job.connectionId(), source.sourceObjectRef(), bytes, scan.findings()));
                 persist(
                     job,
                     execution,
@@ -264,7 +268,7 @@ public final class NotionSecretJobProcessor implements SecretJobProcessor {
                             source.version(),
                             inspection,
                             scan,
-                            Instant.now()));
+                            Instant.now(), execution.observer(job, scope.runScopeId())));
                 objects.incrementAndGet();
                 var accounted = new HashSet<com.logssey.secretworker.detector.GitleaksFinding>();
                 inspection.credentials().forEach(c -> accounted.addAll(c.findings()));
@@ -288,6 +292,12 @@ public final class NotionSecretJobProcessor implements SecretJobProcessor {
       failure = result.failureCode();
       if (failure == null && unattributed.get()) failure = "DETECTOR_NORMALIZATION_INCOMPLETE";
       excluded = result.excludedBlockCount();
+      if ("SUCCEEDED".equals(collection) && objects.get() > 0) {
+        // Notion only reports whether the page is published to the web. Record that as the
+        // location's exposure range; it is not severity evidence and adds no ACCESS_SCOPE row.
+        String range = result.publishedToWeb() ? "BROAD" : "BOUNDED";
+        persist(job, execution, () -> recordExposureRange(tool, range));
+      }
     } catch (SecretJobFailure error) {
       throw error;
     } catch (NotionSourceException error) {
@@ -318,9 +328,10 @@ public final class NotionSecretJobProcessor implements SecretJobProcessor {
       Runnable beforeValidation) {
     for (var candidate : inspection.awsCandidates()) {
       beforeValidation.run();
-      if (!progress.first(candidate.credential())) continue;
+      if (!progress.first(candidate.credential(), scope.runScopeId())) continue;
       observe(
           progress,
+          scope.runScopeId(),
           candidate.credential(),
           () -> {
             var result =
@@ -339,9 +350,10 @@ public final class NotionSecretJobProcessor implements SecretJobProcessor {
     }
     for (var candidate : inspection.githubCandidates()) {
       beforeValidation.run();
-      if (!progress.first(candidate.credential())) continue;
+      if (!progress.first(candidate.credential(), scope.runScopeId())) continue;
       observe(
           progress,
+          scope.runScopeId(),
           candidate.credential(),
           () ->
               attempts.validateGitHub(
@@ -354,10 +366,11 @@ public final class NotionSecretJobProcessor implements SecretJobProcessor {
     }
     for (var candidate : inspection.notionCandidates()) {
       beforeValidation.run();
-      if (!progress.first(candidate.credential())) continue;
+      if (!progress.first(candidate.credential(), scope.runScopeId())) continue;
       // The common send boundary also observes this source connection's cooldown.
       observe(
           progress,
+          scope.runScopeId(),
           candidate.credential(),
           () ->
               attempts.validateNotion(
@@ -372,10 +385,11 @@ public final class NotionSecretJobProcessor implements SecretJobProcessor {
 
   private void observe(
       ValidationProgress progress,
+      long runScopeId,
       SecretFindingNormalizer.Credential credential,
       Supplier<CredentialValidationResult> operation) {
     try {
-      progress.record(credential, operation.get());
+      progress.record(credential, runScopeId, operation.get());
     } catch (SecretJobFailure error) {
       throw error;
     } catch (RuntimeException ignored) {
@@ -451,6 +465,16 @@ public final class NotionSecretJobProcessor implements SecretJobProcessor {
                 credentials.authRef()));
   }
 
+  private void recordExposureRange(long toolRunId, String range) {
+    jdbc.update(
+        "UPDATE secret_occurrences o SET exposure_range=? WHERE o.occurrence_id IN"
+            + " (SELECT f.occurrence_id FROM secret_findings f WHERE f.tool_run_id=?"
+            + " AND f.occurrence_id IS NOT NULL) AND o.exposure_range IS DISTINCT FROM ?",
+        range,
+        toolRunId,
+        range);
+  }
+
   private void finishScope(
       ClaimedSecretJob job,
       Scope scope,
@@ -508,16 +532,16 @@ public final class NotionSecretJobProcessor implements SecretJobProcessor {
     private final Set<String> seen = new HashSet<>();
     private int checked, inconclusive, failed;
 
-    boolean first(SecretFindingNormalizer.Credential credential) {
-      return !seen.contains(key(credential));
+    boolean first(SecretFindingNormalizer.Credential credential, long runScopeId) {
+      return !seen.contains(key(credential, runScopeId));
     }
 
-    private String key(SecretFindingNormalizer.Credential credential) {
+    private String key(SecretFindingNormalizer.Credential credential, long runScopeId) {
       byte[] digest =
           "CONFIRMED".equals(credential.componentState())
               ? credential.fingerprint()
               : credential.candidateLocator();
-      return credential.issuer()
+      return runScopeId + ":" + credential.issuer()
           + ":"
           + credential.credentialType()
           + ":"
@@ -528,10 +552,10 @@ public final class NotionSecretJobProcessor implements SecretJobProcessor {
           + HexFormat.of().formatHex(digest);
     }
 
-    void record(SecretFindingNormalizer.Credential credential, CredentialValidationResult result) {
-      if (!"UNCHECKED".equals(result.result())) seen.add(key(credential));
+    void record(SecretFindingNormalizer.Credential credential, long runScopeId, CredentialValidationResult result) {
+      seen.add(key(credential, runScopeId));
       if (Set.of("VALID", "INVALID").contains(result.result())) checked++;
-      else if (!Set.of("DISABLED", "SYNTHETIC_FIXTURE", "SOURCE_GUARD_BLOCKED")
+      else if (!Set.of("DISABLED", "SYNTHETIC_FIXTURE", "SOURCE_GUARD_BLOCKED", "VALIDATOR_NOT_ALLOWED")
           .contains(result.reasonCode())) inconclusive++;
     }
 

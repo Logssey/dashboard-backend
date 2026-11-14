@@ -1,5 +1,8 @@
 package com.logssey.secretworker.aws;
 
+import com.logssey.secret.run.progress.core.ScanExecutionObserver;
+import com.logssey.secret.run.progress.core.ScanExecutionObserver.Operation;
+import com.logssey.secretworker.progress.AwsScanObservation;
 import java.util.List;
 import java.util.Objects;
 
@@ -18,6 +21,7 @@ import software.amazon.awssdk.awscore.exception.AwsServiceException;
 
 /** Deliberately exposes only read-only IAM and STS operations. */
 public final class AwsSdkIamGateway implements AwsIamGateway {
+    private ScanExecutionObserver observer = ScanExecutionObserver.NONE;
     private final StsClient sts;
     private final IamClient iam;
     private final ProfileCredentialsProvider ownedCredentials;
@@ -54,9 +58,16 @@ public final class AwsSdkIamGateway implements AwsIamGateway {
     }
 
     @Override
+    public AwsIamGateway observed(ScanExecutionObserver observer) {
+        var copy = new AwsSdkIamGateway(sts, iam);
+        copy.observer = Objects.requireNonNull(observer);
+        return copy;
+    }
+
+    @Override
     public String accountId() {
         try {
-            return sts.getCallerIdentity(GetCallerIdentityRequest.builder().build()).account();
+            return AwsScanObservation.call(observer, Operation.AWS_GET_CALLER_IDENTITY, () -> sts.getCallerIdentity(GetCallerIdentityRequest.builder().build())).account();
         } catch (AwsServiceException error) {
             throw safe(error);
         } catch (SdkClientException error) {
@@ -69,7 +80,7 @@ public final class AwsSdkIamGateway implements AwsIamGateway {
         try {
             var request = ListUsersRequest.builder().maxItems(100);
             if (marker != null) request.marker(marker);
-            var response = iam.listUsers(request.build());
+            var response = AwsScanObservation.call(observer, Operation.AWS_LIST_USERS, () -> iam.listUsers(request.build()));
             List<String> names = response.users().stream().map(user -> user.userName()).toList();
             return new Page<>(names, next(response.isTruncated(), response.marker()));
         } catch (AwsServiceException error) {
@@ -84,7 +95,7 @@ public final class AwsSdkIamGateway implements AwsIamGateway {
         try {
             var request = ListAccessKeysRequest.builder().userName(userName).maxItems(100);
             if (marker != null) request.marker(marker);
-            var response = iam.listAccessKeys(request.build());
+            var response = AwsScanObservation.call(observer, Operation.AWS_LIST_ACCESS_KEYS, () -> iam.listAccessKeys(request.build()));
             List<AccessKey> keys = response.accessKeyMetadata().stream()
                     .map(key -> new AccessKey(key.accessKeyId(), key.userName(),
                             key.statusAsString(), key.createDate())).toList();
@@ -99,8 +110,8 @@ public final class AwsSdkIamGateway implements AwsIamGateway {
     @Override
     public LastUsed lastUsed(String accessKeyId) {
         try {
-            var response = iam.getAccessKeyLastUsed(GetAccessKeyLastUsedRequest.builder()
-                    .accessKeyId(accessKeyId).build());
+            var response = AwsScanObservation.call(observer, Operation.AWS_GET_ACCESS_KEY_LAST_USED, () -> iam.getAccessKeyLastUsed(GetAccessKeyLastUsedRequest.builder()
+                    .accessKeyId(accessKeyId).build()));
             var usage = response.accessKeyLastUsed();
             if (usage == null) return new LastUsed(null, null, null);
             return new LastUsed(usage.lastUsedDate(), usage.serviceName(), usage.region());
@@ -114,7 +125,7 @@ public final class AwsSdkIamGateway implements AwsIamGateway {
     @Override
     public int rootAccessKeyCount() {
         try {
-            var response = iam.getAccountSummary(GetAccountSummaryRequest.builder().build());
+            var response = AwsScanObservation.call(observer, Operation.AWS_GET_ACCOUNT_SUMMARY, () -> iam.getAccountSummary(GetAccountSummaryRequest.builder().build()));
             Integer count = response.summaryMapAsStrings().get("AccountAccessKeysPresent");
             if (count == null || count < 0) {
                 throw new AwsIamSourceException(AwsIamSourceException.Code.INVALID_RESPONSE);

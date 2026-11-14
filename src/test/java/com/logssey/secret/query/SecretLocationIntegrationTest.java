@@ -188,6 +188,50 @@ class SecretLocationIntegrationTest {
             .thenReturn(Map.of(id,risk("HIGH",2)));
         assertCode(ErrorCode.CONFLICT,()->service.locations("security",key,filter("ALL"),0,20,"ALL","ALL","ALL",first.get("detailVersion").toString()));
     }
+    @Test void allOriginReadDeduplicatesKeyAndRetainsActualCaseOriginsWithoutHiddenFacts() {
+        long key=key("CONFIRMED","ab21");
+        for(String origin:List.of("PRODUCTION","TEST","UNCLASSIFIED")) {
+            long c=connection(),s=scope(c);grant(security,"SECURITY",c);
+            jdbc.update("UPDATE secret_connection_scopes SET response_origin=?,response_origin_set_by_user_id=CASE WHEN ?='UNCLASSIFIED' THEN NULL ELSE ? END,response_origin_set_at=CASE WHEN ?='UNCLASSIFIED' THEN NULL ELSE now() END WHERE scope_id=?",origin,origin,security,origin,s);
+            occurrence(key,c,s,"PRESENT");long o=jdbc.queryForObject("SELECT occurrence_id FROM secret_occurrences WHERE scope_id=?",Long.class,s);
+            long caseId=jdbc.queryForObject("INSERT INTO secret_response_cases(credential_set_id,opening_occurrence_id,opened_by_user_id,opening_reason,case_origin) VALUES(?,?,?,'APPROVED_EVIDENCE',?) RETURNING case_id",Long.class,key,o,security,origin);
+            jdbc.update("INSERT INTO secret_case_occurrences(case_id,occurrence_id,credential_set_id) VALUES(?,?,?)",caseId,o,key);
+        }
+        long hiddenConnection=connection();occurrence(key,hiddenConnection,scope(hiddenConnection),"PRESENT");
+        var all=new SecretInventoryFilters("ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL");
+        var inventory=inventory("security",all,null);assertThat(inventory.get("total")).isEqualTo(1L);
+        var item=service.detail("security",key,"ALL");
+        assertThat(item).containsEntry("origin",null).containsEntry("readOrigin","ALL").containsEntry("currentCaseId",null).containsEntry("occurrenceCount",3);
+        assertThat((List<?>)item.get("origins")).hasSize(3);
+        assertThat(item.get("casesByOrigin").toString()).contains("origin=PRODUCTION","origin=TEST","origin=UNCLASSIFIED");
+        assertThat(service.detail("security",key,"TEST")).containsEntry("origin","TEST").containsEntry("occurrenceCount",1);
+        assertCode(ErrorCode.CONFLICT,()->inventory("security",filter("ALL"),inventory.get("snapshotId").toString()));
+    }
+    @Test void searchUsesVisibleLabelsBeforePaginationAndKeepsSnapshotBoundToQuery() {
+        long c=connection(),s=scope(c);grant(security,"SECURITY",c);
+        jdbc.update("UPDATE secret_connection_scopes SET safe_display_alias='결제 서비스' WHERE scope_id=?",s);
+        for(int i=0;i<3;i++)occurrence(key("CONFIRMED","ab3"+i),c,s,"PRESENT");
+        long other=connection(),otherScope=scope(other);grant(security,"SECURITY",other);
+        jdbc.update("UPDATE secret_connections SET provider='AWS' WHERE connection_id=?",other);
+        jdbc.update("UPDATE secret_connection_scopes SET safe_display_alias='AWS 설정' WHERE scope_id=?",otherScope);
+        occurrence(jdbc.queryForObject("SELECT min(credential_set_id) FROM secret_credential_sets",Long.class),other,otherScope,"PRESENT");
+        assertThat(inventory("security",new SecretInventoryFilters("ALL","AWS","ALL","ALL","ALL","ALL","ALL","ALL","ALL","결제"),null).get("total")).isEqualTo(0L);
+        long hiddenConnection=connection(),hiddenScope=scope(hiddenConnection);
+        jdbc.update("UPDATE secret_connection_scopes SET safe_display_alias='비공개 서비스' WHERE scope_id=?",hiddenScope);
+        occurrence(key("CONFIRMED","ab40"),hiddenConnection,hiddenScope,"PRESENT");
+        var search=new SecretInventoryFilters("ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL"," 결제 ");
+        var first=tx.execute(t->service.inventory("security",search,0,2,null));
+        assertThat(first.get("total")).isEqualTo(3L);assertThat((List<?>)first.get("items")).hasSize(2);
+        var second=tx.execute(t->service.inventory("security",search,1,2,first.get("snapshotId").toString()));
+        assertThat((List<?>)second.get("items")).hasSize(1);
+        var hiddenSearch=new SecretInventoryFilters("ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL","비공개");
+        assertThat(inventory("security",hiddenSearch,null).get("total")).isEqualTo(0L);
+        assertCode(ErrorCode.CONFLICT,()->inventory("security",hiddenSearch,first.get("snapshotId").toString()));
+        assertThat(inventory("security",new SecretInventoryFilters("ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL","credential-secret"),null).get("total")).isEqualTo(0L);
+        long count=jdbc.queryForObject("SELECT count(*) FROM secret_query_snapshots",Long.class);
+        assertCode(ErrorCode.INVALID_INPUT,()->inventory("security",new SecretInventoryFilters("ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL","ALL","ghp_"+"x".repeat(36)),null));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_query_snapshots",Long.class)).isEqualTo(count);
+    }
     private Map<String,Object> risk(String grade,long revision) {
         return Map.of("latestAutomaticAssessment",Map.of("assessmentStatus","ASSESSED","severity",grade,"assessmentId",revision),
             "effectiveAssessment",Map.of("assessmentStatus","ASSESSED","severity",grade,"held",false,"assessmentId",revision),

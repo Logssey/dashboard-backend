@@ -8,6 +8,9 @@ public final class SecretDisplayLabels {
     public static boolean safeAlias(String alias) {
         return alias==null||alias.matches("[A-Za-z가-힣][A-Za-z0-9가-힣 _-]{0,79}")&&!CREDENTIAL_LIKE.matcher(alias).find();
     }
+    public static boolean credentialLike(String value) {
+        return value != null && CREDENTIAL_LIKE.matcher(value).find();
+    }
     public static String location(String alias,long occurrenceId) {
         return (alias!=null&&safeAlias(alias)?alias+" · ":"")+"위치 #"+occurrenceId;
     }

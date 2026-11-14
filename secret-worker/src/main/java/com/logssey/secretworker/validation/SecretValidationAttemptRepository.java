@@ -184,6 +184,10 @@ public class SecretValidationAttemptRepository {
             return recordUnsupported(job, credential, sourceRunScopeId);
         return safely(
                 () -> {
+                    if (!isManual(job) && !jobs.persistIfLeased(job.jobId(), job.leaseToken(), () -> jdbc.update(
+                            "UPDATE secret_scan_runs SET validation_reuse_version=1,validation_reuse_attempt=?"
+                                    + " WHERE run_id=? AND validation_reuse_attempt IS DISTINCT FROM ?",
+                            job.attemptNo(), job.runId(), job.attemptNo()))) throw lease();
                     var c = findContext(job, credential, sourceRunScopeId, sourceRef);
                     if (c != null
                             && sourceRef != null
@@ -531,6 +535,7 @@ WHERE v.connection_id=j.connection_id AND k.issuer=? AND k.credential_type=? AND
                         "GITHUB_FINE_GRAINED_PAT",
                         "NOTION_CONNECTION_TOKEN")
                 .contains(c.get("credential_type"))) return "UNSUPPORTED_TYPE";
+        if (!Boolean.TRUE.equals(c.get("validation_issuer_allowed"))) return "VALIDATOR_NOT_ALLOWED";
         if (!enabled || !Boolean.TRUE.equals(c.get("validation_enabled"))) return "DISABLED";
         if (!"CONFIRMED".equals(c.get("component_state")))
             return "AWS_TEMPORARY_CREDENTIALS".equals(c.get("credential_type"))
@@ -621,7 +626,7 @@ WHERE v.connection_id=j.connection_id AND k.issuer=? AND k.credential_type=? AND
                             var done =
                                     jdbc.queryForList(
                                             "SELECT"
-                                                + " result,reason_code,provider_checked_at,http_status,next_due_at"
+                                                + " attempt_id,result,reason_code,provider_checked_at,http_status,next_due_at"
                                                 + " FROM secret_current_validation_attempts WHERE"
                                                 + " credential_set_id=? AND validator_id=? AND"
                                                 + " validator_version=? AND dedup_key=? AND result"
@@ -636,6 +641,17 @@ WHERE v.connection_id=j.connection_id AND k.issuer=? AND k.credential_type=? AND
                                             fresh.get("action_performed_at"));
                             if (!done.isEmpty()) {
                                 var d = done.getFirst();
+                                // Manual preparation occurs before source reacquisition. Its existing
+                                // HMAC-matching path owns that evidence and must not claim scan reuse.
+                                if (!isManual(job)) {
+                                    boolean recorded = Boolean.TRUE.equals(jdbc.queryForObject(
+                                            "SELECT secret_record_validation_reuse(?,?::uuid,?,"
+                                                    + "(SELECT run_scope_id FROM secret_run_scopes WHERE run_id=? AND scope_id=?),?,?,?)",
+                                            Boolean.class, job.jobId(), job.leaseToken(), job.leaseGeneration(),
+                                            job.runId(), num(fresh, "scope_id"), num(d, "attempt_id"),
+                                            fresh.get("context_version"), dedup));
+                                    if (!recorded) throw lease();
+                                }
                                 out.set(
                                         new Reservation(
                                                 0,

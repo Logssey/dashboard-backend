@@ -137,6 +137,7 @@ class GitHubSecretJobProcessorTest {
     @Test
     void collectsDetectsAndPersistsOneKeyWithoutRawContent() {
         insertRun();
+        jdbc.update("UPDATE secret_connection_scopes SET synthetic_fixture=true WHERE scope_key='fixtures'");
         var job = execution.claimNextJob("GITHUB").orElseThrow();
         processor.process(job, execution);
         assertThat(execution.complete(job.jobId(), job.leaseToken())).isTrue();
@@ -171,7 +172,7 @@ class GitHubSecretJobProcessorTest {
         assertThat(
                         jdbc.queryForObject(
                                 "SELECT reason_code FROM secret_validation_attempts", String.class))
-                .isEqualTo("SOURCE_GUARD_BLOCKED");
+                .isEqualTo("SYNTHETIC_FIXTURE");
         String stored =
                 jdbc.queryForObject(
                         "SELECT masked_label FROM secret_credential_sets", String.class);
@@ -279,8 +280,9 @@ class GitHubSecretJobProcessorTest {
                 .isEqualTo(1L);
     }
 
-    @Test
-    void fixtureExemptionDoesNotSuppressValidationInAnotherApprovedRepository() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {true, false})
+    void aBlockedScopeDoesNotSuppressValidationInAnotherApprovedScope(boolean synthetic) {
         secondScope = true;
         AtomicInteger calls = new AtomicInteger();
         processor = processorWith(key -> {
@@ -291,6 +293,12 @@ class GitHubSecretJobProcessorTest {
                     AwsValidationResult.METHOD, AwsValidationResult.VERSION);
         });
         insertRun();
+
+        if (synthetic) {
+            jdbc.update("UPDATE secret_connection_scopes SET synthetic_fixture=true WHERE scope_key='fixtures'");
+        } else {
+            jdbc.update("UPDATE secret_connection_scopes SET validation_approved=false WHERE scope_key='fixtures'");
+        }
 
         var job = execution.claimNextJob("GITHUB").orElseThrow();
         processor.process(job, execution);
@@ -389,7 +397,6 @@ class GitHubSecretJobProcessorTest {
 
     @Test
     void patIsValidatedFromItsOwnMaterialAndPublishesSafeAccessEvidence() {
-        repository = "candidate-app";
         String token = "ghp_" + "SENTINEL".repeat(4) + "ABCD";
         content = ("GITHUB_TOKEN=" + token + "\n").getBytes(StandardCharsets.UTF_8);
         detector =

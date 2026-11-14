@@ -110,14 +110,30 @@ public final class SecretFindingRepository {
     public ObjectResult recordInspection(long toolRunId, String sourceObjectRef, String objectVersion,
                                          SecretFindingNormalizer.Inspection inspection,
                                          GitleaksScanResult scan, Instant now) {
+        return recordInspection(toolRunId, sourceObjectRef, objectVersion, inspection, scan, now,
+                com.logssey.secret.run.progress.core.ScanExecutionObserver.NONE);
+    }
+
+    public ObjectResult recordInspection(long toolRunId, String sourceObjectRef, String objectVersion,
+                                         SecretFindingNormalizer.Inspection inspection,
+                                         GitleaksScanResult scan, Instant now,
+                                         com.logssey.secret.run.progress.core.ScanExecutionObserver observer) {
         if (toolRunId <= 0 || sourceObjectRef == null || sourceObjectRef.isBlank()
                 || sourceObjectRef.length() > 500 || objectVersion != null && objectVersion.length() > 200
                 || inspection == null || scan == null || now == null) {
             throw new IllegalArgumentException("INVALID_DETECTION_OBJECT");
         }
         try {
-            return transactions.execute(status -> persistObject(toolRunId, sourceObjectRef, objectVersion,
-                    null, inspection, scan, now));
+            return transactions.execute(status -> {
+                long started = System.nanoTime();
+                var result = persistObject(toolRunId, sourceObjectRef, objectVersion, null, inspection, scan, now);
+                observer.record(com.logssey.secret.run.progress.core.ScanExecutionObserver.Stage.DETECTION,
+                        com.logssey.secret.run.progress.core.ScanExecutionObserver.Operation.FINDINGS_COMMIT,
+                        com.logssey.secret.run.progress.core.ScanExecutionObserver.Outcome.COMPLETED,
+                        null, null, (long) result.credentialCount(), null,
+                        com.logssey.secret.run.progress.core.ScanExecutionObserver.elapsed(started));
+                return result;
+            });
         } catch (DataAccessException error) {
             throw new IllegalStateException("SECRET_PERSISTENCE_FAILED");
         }

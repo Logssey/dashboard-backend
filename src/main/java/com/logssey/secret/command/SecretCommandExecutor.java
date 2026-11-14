@@ -24,6 +24,7 @@ public class SecretCommandExecutor {
         MANUAL_SCAN("RUN", "MANUAL_SCAN_REGISTERED"),
         CREDENTIAL_VALIDATION("VALIDATION_REQUEST", "CREDENTIAL_VALIDATION_REQUESTED"),
         VALIDATION_POLICY("SCOPE", "VALIDATION_POLICY_CHANGED"),
+        CONNECTION_VALIDATION_POLICY("CONNECTION", "VALIDATION_PROFILE_CHANGED"),
         SCOPE_CLASSIFICATION("SCOPE_PROPOSAL", "CLASSIFICATION_PROPOSED"),
         SCOPE_CLASSIFICATION_APPROVE("SCOPE_PROPOSAL", "CLASSIFICATION_APPROVED"),
         SCOPE_CLASSIFICATION_REJECT("SCOPE_PROPOSAL", "CLASSIFICATION_REJECTED"),
@@ -114,9 +115,15 @@ public class SecretCommandExecutor {
                     INSERT INTO secret_audit_events
                         (event_type, actor_user_id, target_type, target_id, target_version,
                          command_id, safe_changes)
-                    VALUES (?, ?, ?, ?, ?, ?, jsonb_build_object('status', ?::text))
+                    VALUES (?, ?, ?, ?, ?, ?, jsonb_build_object('status', ?::text) || COALESCE((
+                        SELECT jsonb_build_object('enabled',c.validation_enabled,
+                            'allowedIssuers',to_jsonb(c.validation_allowed_issuers),
+                            'profile',c.validation_profile_version)
+                        FROM secret_connections c WHERE c.connection_id=? AND c.validation_revision=?
+                          AND ?::text='CONNECTION_VALIDATION_POLICY'
+                    ),'{}'::jsonb))
                     """, kind.auditEvent, actor.userId(), kind.targetType, result.targetId(),
-                    result.version(), commandId, result.status().name());
+                    result.version(), commandId, result.status().name(), result.targetId(), result.version(), kind.name());
             return result;
         }));
     }

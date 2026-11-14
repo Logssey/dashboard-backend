@@ -42,6 +42,35 @@ class SecretDecisionIntegrationTest {
         service=new SecretDecisionService(jdbc,access,snapshots,tasks,new SecretLocationRepository(jdbc),
             JsonMapper.builder().findAndAddModules().build(),manager);
     }
+    @Test void collectedUnclassifiedLocationCanCreateCaseWithoutInventedClassificationOrPolicy() {
+        var f=fixture("CONFIRMED","UNCLASSIFIED");
+        assertThat(service.context("security",f.occurrence).allowedDecisions()).contains("ABNORMAL").doesNotContain("NORMAL");
+        var opened=service.decide("security",f.occurrence,request(f,"ABNORMAL","UNAPPROVED_SOURCE_LOCATION","unclassified"));
+        assertThat(opened.caseOperation()).isEqualTo("CREATED");
+        assertThat(jdbc.queryForObject("SELECT case_origin FROM secret_response_cases WHERE case_id=?",String.class,opened.caseId())).isEqualTo("UNCLASSIFIED");
+        assertThat(jdbc.queryForObject("SELECT response_origin FROM secret_connection_scopes WHERE scope_id=?",String.class,f.scope)).isEqualTo("UNCLASSIFIED");
+        assertThat(count("secret_scope_origin_decisions")).isZero();assertThat(count("secret_scope_policy_bindings")).isZero();
+        assertThat(jdbc.queryForObject("SELECT response_origin_set_by_user_id FROM secret_connection_scopes WHERE scope_id=?",Long.class,f.scope)).isNull();
+    }
+    @Test void legacyProductionAndTestNeedRealCollectionEvidenceButNoClassificationLedger() {
+        for(String origin:List.of("PRODUCTION","TEST")) {
+            var f=fixture("CONFIRMED","UNCLASSIFIED");
+            jdbc.update("UPDATE secret_connection_scopes SET response_origin=?,response_origin_set_by_user_id=2,response_origin_set_at=now() WHERE scope_id=?",origin,f.scope);
+            jdbc.update("UPDATE secret_run_scopes SET snapshot_origin=? WHERE scope_id=?",origin,f.scope);
+            assertThat(service.context("security",f.occurrence).allowedDecisions()).contains("ABNORMAL").doesNotContain("NORMAL");
+            var opened=service.decide("security",f.occurrence,request(f,"ABNORMAL","UNAPPROVED_SOURCE_LOCATION","legacy-"+origin));
+            assertThat(jdbc.queryForObject("SELECT case_origin FROM secret_response_cases WHERE case_id=?",String.class,opened.caseId())).isEqualTo(origin);
+        }
+        assertThat(count("secret_scope_origin_decisions")).isZero();assertThat(count("secret_scope_policy_bindings")).isZero();
+    }
+    @Test void unclassifiedCannotUseAnOldRevisionOrPausedSourceAsCurrentCollectionApproval() {
+        var f=fixture("CONFIRMED","UNCLASSIFIED");
+        jdbc.update("UPDATE secret_connections SET status='PAUSED' WHERE connection_id=?",f.connection);
+        assertThat(service.context("security",f.occurrence).allowedDecisions()).doesNotContain("ABNORMAL","NORMAL");
+        jdbc.update("UPDATE secret_connections SET status='ACTIVE' WHERE connection_id=?",f.connection);
+        jdbc.update("UPDATE secret_connection_scopes SET revision=revision+1 WHERE scope_id=?",f.scope);
+        assertThat(service.context("security",f.occurrence).allowedDecisions()).doesNotContain("ABNORMAL","NORMAL");
+    }
     @Test void oneDecisionCreatesReviewedCaseAndFourChecklistItemsAndReplayDoesNotDuplicate() {
         var f=fixture("CONFIRMED","PRODUCTION");var r=request(f,"ABNORMAL","UNAPPROVED_SOURCE_LOCATION","one");
         var first=service.decide("security",f.occurrence,r);var replay=service.decide("security",f.occurrence,r);
