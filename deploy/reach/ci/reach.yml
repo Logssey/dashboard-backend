@@ -1,8 +1,9 @@
 # Reach scan for a service repo. Copy to <service repo>/.github/workflows/reach.yml.
 #
 # DRAFT. It needs, before it can run:
-#   - the dashboard deployed where GitHub runners reach it (repo variable REACH_URL)
-#   - GitHub OIDC auth on /api/v1/reach/ci/** (aud logssey-reach). Today those paths take an ADMIN session only.
+#   - the dashboard URL (repo variable REACH_URL). The token (aud logssey-reach) is accepted only from repos of
+#     logssey.reach.ci.repository-owner listed in logssey.reach.apps; PR checks from pull_request events,
+#     image checks from the default branch (logssey.reach.ci.default-branch, main)
 #   - a GitHub App that can read Logssey/dashboard-backend (secrets REACH_APP_ID, REACH_APP_PRIVATE_KEY)
 #   - an AWS role that can only pull from ECR (secret REACH_ECR_READ_ROLE_ARN), for the image job
 #   - the image repository this repo's CI/CD pushes (repo variable REACH_ECR_REPOSITORY, e.g. logssey/reused-api).

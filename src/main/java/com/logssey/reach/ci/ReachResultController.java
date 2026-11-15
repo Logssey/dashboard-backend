@@ -3,6 +3,7 @@ package com.logssey.reach.ci;
 import java.io.IOException;
 import java.security.Principal;
 
+import com.logssey.reach.ci.auth.ReachCiCaller;
 import com.logssey.reach.ci.dto.ReachResultUploadResponse;
 
 import jakarta.servlet.http.HttpServletRequest;
@@ -34,7 +35,9 @@ public class ReachResultController {
             @RequestHeader(name = "Content-Encoding", required = false) String contentEncoding,
             HttpServletRequest request) throws IOException {
         byte[] body = request.getInputStream().readNBytes(ReachResultService.COMPRESSED_MAX + 1);
-        return ResponseEntity.accepted()
-                .body(service.upload(principal == null ? null : principal.getName(), checkId, contentEncoding, body));
+        var ci = ReachCiCaller.from(principal);
+        return ResponseEntity.accepted().body(ci.isPresent()
+                ? service.uploadForCi(ci.get(), checkId, contentEncoding, body)
+                : service.upload(principal == null ? null : principal.getName(), checkId, contentEncoding, body));
     }
 }

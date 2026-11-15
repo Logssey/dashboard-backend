@@ -15,9 +15,12 @@ import java.util.zip.GZIPInputStream;
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
 import com.logssey.reach.ReachCodes;
+import com.logssey.reach.ci.auth.ReachCiAccess;
+import com.logssey.reach.ci.auth.ReachCiCaller;
 import com.logssey.reach.ci.dto.ReachResultUploadResponse;
 import com.logssey.reach.l1.ReachL1Service;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -54,6 +57,7 @@ public class ReachResultService {
     private final ReachResultRepository repository;
     private final ReachL1Service l1;
     private final TransactionTemplate tx;
+    private final ReachCiAccess access;
     private final JsonMapper mapper = JsonMapper.builder()
             .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)   // 러너가 칸을 더해도 받는다
             .build();
@@ -62,10 +66,18 @@ public class ReachResultService {
             .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
             .build();
 
-    public ReachResultService(ReachResultRepository repository, ReachL1Service l1, PlatformTransactionManager manager) {
+    @Autowired
+    public ReachResultService(ReachResultRepository repository, ReachL1Service l1, PlatformTransactionManager manager,
+                              ReachCiAccess access) {
         this.repository = repository;
         this.l1 = l1;
         this.tx = new TransactionTemplate(manager);
+        this.access = access;
+    }
+
+    /** CI 설정 없이(CI 토큰은 모두 거부) */
+    ReachResultService(ReachResultRepository repository, ReachL1Service l1, PlatformTransactionManager manager) {
+        this(repository, l1, manager, ReachCiAccess.closed());
     }
 
     /** 검사를 마친 Finding 하나. id 칸(대상·스캔·Finding)은 적재하면서 채운다 */
@@ -73,9 +85,19 @@ public class ReachResultService {
                        ReachResultRepository.FindingInput finding, ReachResultRepository.VerdictInput verdict,
                        List<ReachResultRepository.EvidenceInput> evidence, String proposal) {}
 
-    /** API-13 */
+    /** API-13 (대시보드 세션) */
     public ReachResultUploadResponse upload(String loginId, long checkId, String contentEncoding, byte[] body) {
         requireAdmin(loginId);
+        return load(checkId, contentEncoding, body);
+    }
+
+    /** API-13 (CI 토큰). 검사를 만든 레포의 토큰만 올린다. 본문을 풀기 전에 본다 */
+    public ReachResultUploadResponse uploadForCi(ReachCiCaller caller, long checkId, String contentEncoding, byte[] body) {
+        access.requireOwner(caller, repository.checkScope(checkId));
+        return load(checkId, contentEncoding, body);
+    }
+
+    private ReachResultUploadResponse load(long checkId, String contentEncoding, byte[] body) {
         var bundle = parse(contentEncoding, body);
         var scanRecord = scanRecord(bundle);
         var failure = failure(bundle.failure());

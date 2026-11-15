@@ -1,0 +1,116 @@
+package com.logssey.reach.ci.auth;
+
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import java.util.Optional;
+
+import com.logssey.common.error.ApiException;
+import com.logssey.common.error.ErrorCode;
+import com.logssey.reach.ReachTestProperties;
+import com.logssey.reach.ci.ReachCiCheckRequest;
+import com.logssey.reach.ci.ReachTargetRequest;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
+
+/** CI 토큰이 할 수 있는 일 (11/02 결정 ③). 토큰 검증은 ReachCiOidcIntegrationTest */
+class ReachCiAccessTest {
+
+    private static final String COMMIT = "bb4639b".repeat(5) + "00000";
+    private static final String DIGEST = "sha256:" + "a6ffffef".repeat(8);
+    private static final ReachCiAccess ACCESS = new ReachCiAccess(ReachTestProperties.REUSED,
+            new ReachCiProperties("Logssey", null, null));
+
+    private static final ReachCiCaller PR_123 = caller("Logssey/service-backend", "pull_request", "refs/pull/123/merge");
+    private static final ReachCiCaller MAIN = caller("Logssey/service-backend", "workflow_run", "refs/heads/main");
+
+    @Test
+    void pullRequestCheckFromThePullRequestEvent() {
+        allowed(() -> ACCESS.authorizeCreate(PR_123, pr("service-backend", 123)));
+        allowed(() -> ACCESS.authorizeCreate(PR_123, pr("Logssey/service-backend", 123)));   // 소유자를 붙여 와도 된다
+        allowed(() -> ACCESS.authorizeCreate(PR_123, pr("SERVICE-BACKEND", null)));          // 대소문자, PR 번호 없음
+
+        forbidden(() -> ACCESS.authorizeCreate(PR_123, pr("service-backend", 124)));          // 다른 PR 번호
+        forbidden(() -> ACCESS.authorizeCreate(caller("Logssey/service-backend", "push", "refs/heads/main"),
+                pr("service-backend", 123)));                                                // PR 이벤트가 아님
+        forbidden(() -> ACCESS.authorizeCreate(PR_123, pr("service-frontend", 123)));         // 본문 레포가 다름
+        forbidden(() -> ACCESS.authorizeCreate(PR_123, pr("Other/service-backend", 123)));    // 소유자가 다름
+        forbidden(() -> ACCESS.authorizeCreate(PR_123, new ReachCiCheckRequest("PR", "service-backend", COMMIT,
+                null, repoTarget("service-frontend"), null, null, null)));                   // 대상 레포가 다름
+        forbidden(() -> ACCESS.authorizeCreate(PR_123, new ReachCiCheckRequest("PR", "service-frontend", COMMIT,
+                null, repoTarget("service-backend"), null, null, null)));                    // 본문 레포만 다름
+        forbidden(() -> ACCESS.authorizeCreate(MAIN, new ReachCiCheckRequest("IMAGE_BUILD", "service-frontend",
+                COMMIT, null, image("logssey/reused-api", null).target(), null, null, null))); // 이미지는 맞고 본문 레포만 다름
+    }
+
+    @Test
+    void otherChecksOnlyFromTheDefaultBranch() {
+        allowed(() -> ACCESS.authorizeCreate(MAIN, image("logssey/reused-api", null)));
+        allowed(() -> ACCESS.authorizeCreate(MAIN, image("logssey/reused-chat", "CHAT")));   // 같은 레포의 다른 앱
+
+        forbidden(() -> ACCESS.authorizeCreate(caller("Logssey/service-backend", "push", "refs/heads/develop"),
+                image("logssey/reused-api", null)));
+        forbidden(() -> ACCESS.authorizeCreate(PR_123, image("logssey/reused-api", null)));
+        forbidden(() -> ACCESS.authorizeCreate(MAIN, image("logssey/reused-web", null)));     // 다른 레포의 이미지
+        forbidden(() -> ACCESS.authorizeCreate(MAIN, image("logssey/unknown", null)));        // 등록 안 된 이미지
+        forbidden(() -> ACCESS.authorizeCreate(MAIN, image("logssey/reused-api", "WEB")));    // 다른 레포의 앱
+        forbidden(() -> ACCESS.authorizeCreate(MAIN, new ReachCiCheckRequest("SCHEDULE", "service-backend", null,
+                null, null, 7L, null, null)));                                               // 재검사는 사람만
+
+        var develop = new ReachCiAccess(ReachTestProperties.REUSED, new ReachCiProperties("Logssey", "develop", null));
+        allowed(() -> develop.authorizeCreate(caller("Logssey/service-backend", "push", "refs/heads/develop"),
+                image("logssey/reused-api", null)));
+    }
+
+    @Test
+    void onlyWatchedRepositoriesOfTheConfiguredOwner() {
+        forbidden(() -> ACCESS.authorizeCreate(caller("Logssey/dashboard-backend", "pull_request", "refs/pull/1/merge"),
+                pr("dashboard-backend", 1)));
+        forbidden(() -> ACCESS.authorizeCreate(caller("Someone/service-backend", "pull_request", "refs/pull/1/merge"),
+                pr("service-backend", 1)));
+        forbidden(() -> ReachCiAccess.closed().authorizeCreate(PR_123, pr("service-backend", 123)));   // 조직 설정 없음
+        forbidden(() -> new ReachCiAccess(ReachTestProperties.REUSED, new ReachCiProperties(" ", null, null))
+                .authorizeCreate(PR_123, pr("service-backend", 123)));
+    }
+
+    @Test
+    void resultsOnlyForTheRepositoryThatCreatedTheCheck() {
+        allowed(() -> ACCESS.requireOwner(PR_123, Optional.of("CI:Logssey/service-backend")));
+        allowed(() -> ACCESS.requireOwner(MAIN, Optional.of("CI:logssey/Service-Backend")));
+
+        forbidden(() -> ACCESS.requireOwner(PR_123, Optional.of("CI:Logssey/service-frontend")));
+        forbidden(() -> ACCESS.requireOwner(PR_123, Optional.of("USER:1")));                  // 사람이 만든 검사
+        assertThatThrownBy(() -> ACCESS.requireOwner(PR_123, Optional.empty()))
+                .isInstanceOfSatisfying(ApiException.class, e -> org.assertj.core.api.Assertions
+                        .assertThat(e.errorCode()).isEqualTo(ErrorCode.NOT_FOUND));
+        forbidden(() -> ReachCiAccess.closed().requireOwner(PR_123, Optional.of("CI:Logssey/service-backend")));
+    }
+
+    private static ReachCiCaller caller(String repository, String event, String ref) {
+        return new ReachCiCaller(repository, "repo:" + repository + ":test", event, ref);
+    }
+
+    private static ReachCiCheckRequest pr(String repository, Integer number) {
+        var pr = number == null ? null : new ReachCiCheckRequest.PullRequest(number, "main", "feature");
+        return new ReachCiCheckRequest("PR", repository, COMMIT, pr, repoTarget(repository), null, null, null);
+    }
+
+    private static ReachTargetRequest repoTarget(String name) {
+        return new ReachTargetRequest("REPO", null, new ReachTargetRequest.Repo(name, COMMIT, null), null);
+    }
+
+    private static ReachCiCheckRequest image(String repository, String app) {
+        return new ReachCiCheckRequest("IMAGE_BUILD", "service-backend", COMMIT, null,
+                new ReachTargetRequest("IMAGE", app, null, new ReachTargetRequest.Image(repository, DIGEST)), null, null, null);
+    }
+
+    private static void allowed(Executable call) {
+        assertThatCode(call::execute).doesNotThrowAnyException();
+    }
+
+    private static void forbidden(Executable call) {
+        assertThatThrownBy(call::execute).isInstanceOfSatisfying(ApiException.class,
+                e -> org.assertj.core.api.Assertions.assertThat(e.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
+    }
+}

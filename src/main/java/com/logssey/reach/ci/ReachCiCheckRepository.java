@@ -96,6 +96,30 @@ public class ReachCiCheckRepository {
     }
 
     /** 새 스캔은 QUEUED. 러너가 결과를 올리면(API-13) RUNNING을 거쳐 끝난다 */
+    /** CI 토큰이 만든 스캔. 재검사는 사람만 해서 rescan_of는 없다 */
+    long insertCiScan(long targetId, String trigger, String repository, String subject) {
+        return jdbcClient.sql("""
+                        INSERT INTO reach_scans (target_id, trigger_type, requested_by_kind,
+                                                 requested_by_repository, requested_by_subject)
+                        VALUES (:targetId, :trigger, 'CI', :repository, :subject)
+                        RETURNING scan_id
+                        """)
+                .param("targetId", targetId)
+                .param("trigger", trigger)
+                .param("repository", repository)
+                .param("subject", subject)
+                .query(Long.class)
+                .single();
+    }
+
+    /** 검사를 만든 주체 (USER:<id>, CI:<repository>). 검사가 없으면 빈 값 */
+    Optional<String> checkScope(long checkId) {
+        return jdbcClient.sql("SELECT idempotency_scope FROM reach_ci_checks WHERE check_id = :checkId")
+                .param("checkId", checkId)
+                .query(String.class)
+                .optional();
+    }
+
     long insertScan(long targetId, String trigger, Long rescanOf, long userId) {
         return jdbcClient.sql("""
                         INSERT INTO reach_scans (target_id, trigger_type, rescan_of_scan_id,
