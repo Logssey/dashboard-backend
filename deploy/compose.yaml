@@ -13,7 +13,7 @@ services:
     mem_limit: 128m
     pids_limit: 64
     ports: ["127.0.0.1:${SECRET_FRONTEND_PORT:-8088}:8080"]
-    tmpfs: [/tmp:rw,noexec,nosuid,size=16m,uid=101,gid=101,mode=0700]
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=16m,uid=101,gid=101,mode=0700"]
     depends_on: [api]
     logging:
       driver: json-file
@@ -40,7 +40,7 @@ services:
         source: ${SECRET_API_SECRETS_DIR:?Set the external API secret directory}
         target: /run/secrets
         read_only: true
-    tmpfs: [/tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700]
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700"]
     logging:
       driver: json-file
       options: {max-size: 10m, max-file: "3"}
@@ -65,7 +65,7 @@ services:
         source: ${SECRET_WORKER_SECRETS_DIR:?Set the external worker secret directory}
         target: /run/secrets
         read_only: true
-    tmpfs: [/tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700]
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700"]
     logging:
       driver: json-file
       options: {max-size: 10m, max-file: "3"}
