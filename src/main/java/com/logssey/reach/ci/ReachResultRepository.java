@@ -21,6 +21,14 @@ public class ReachResultRepository {
         this.jdbcClient = jdbcClient;
     }
 
+    /** 검사를 만든 주체 (USER:<id>, CI:<repository>). 검사가 없으면 빈 값 */
+    Optional<String> checkScope(long checkId) {
+        return jdbcClient.sql("SELECT idempotency_scope FROM reach_ci_checks WHERE check_id = :checkId")
+                .param("checkId", checkId)
+                .query(String.class)
+                .optional();
+    }
+
     Optional<Long> adminUserId(String loginId) {
         return jdbcClient.sql("SELECT user_id FROM dashboard_users WHERE login_id = :loginId AND role = 'ADMIN'")
                 .param("loginId", loginId)

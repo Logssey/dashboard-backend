@@ -3,6 +3,7 @@ package com.logssey.reach.ci;
 import java.net.URI;
 import java.security.Principal;
 
+import com.logssey.reach.ci.auth.ReachCiCaller;
 import com.logssey.reach.ci.dto.ReachCiCheckCreatedResponse;
 import com.logssey.reach.ci.dto.ReachCiCheckResponse;
 
@@ -33,7 +34,9 @@ public class ReachCiCheckController {
             Principal principal,
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             @RequestBody ReachCiCheckRequest request) {
-        var created = service.create(principal == null ? null : principal.getName(), idempotencyKey, request);
+        var ci = ReachCiCaller.from(principal);
+        var created = ci.isPresent() ? service.createForCi(ci.get(), idempotencyKey, request)
+                : service.create(principal == null ? null : principal.getName(), idempotencyKey, request);
         var response = ResponseEntity.accepted().location(URI.create("/api/v1/reach/ci/checks/" + created.check().id()));
         if (created.replayed()) response.header("Idempotent-Replayed", "true");
         return response.body(created.check());
@@ -42,6 +45,8 @@ public class ReachCiCheckController {
     /** API-12 결과 조회 */
     @GetMapping("/{checkId}")
     public ReachCiCheckResponse check(Principal principal, @PathVariable long checkId) {
-        return service.check(principal == null ? null : principal.getName(), checkId);
+        var ci = ReachCiCaller.from(principal);
+        return ci.isPresent() ? service.checkForCi(ci.get(), checkId)
+                : service.check(principal == null ? null : principal.getName(), checkId);
     }
 }

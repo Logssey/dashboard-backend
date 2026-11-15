@@ -12,16 +12,19 @@ import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
 import com.logssey.reach.ReachCodes;
 import com.logssey.reach.ReachProperties;
+import com.logssey.reach.ci.auth.ReachCiAccess;
+import com.logssey.reach.ci.auth.ReachCiCaller;
 import com.logssey.reach.ci.dto.ReachCiCheckCreatedResponse;
 import com.logssey.reach.ci.dto.ReachCiCheckResponse;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Reach CI 검사 (API-12)와 스캔 요청 (API-01). 실행은 검사와 스캔을 QUEUED로 만들고, 결과 조회는 스캔이 끝났으면 게이트를 계산한다.
- * 명세의 인증은 GitHub OIDC지만 아직 붙이지 않아(SecurityConfig 변경과 라이브러리 추가는 팀 결정) 지금은 대시보드 ADMIN 세션으로 받는다
+ * API-12는 대시보드 ADMIN 세션과 GitHub OIDC 토큰(CI) 둘 다 받는다(명세 2-2). CI가 할 수 있는 일은 ReachCiAccess가 정한다
  */
 @Service
 @Transactional
@@ -38,28 +41,48 @@ public class ReachCiCheckService {
     private final ReachCiCheckRepository repository;
     /** 감시 대상 앱 (PRD FR-15). 요청의 레포·이미지가 어느 앱인지 정한다 */
     private final ReachProperties properties;
+    private final ReachCiAccess access;
     private final JsonMapper mapper = JsonMapper.builder().build();
 
-    public ReachCiCheckService(ReachCiCheckRepository repository, ReachProperties properties) {
+    @Autowired
+    public ReachCiCheckService(ReachCiCheckRepository repository, ReachProperties properties, ReachCiAccess access) {
         this.repository = repository;
         this.properties = properties;
+        this.access = access;
+    }
+
+    /** CI 설정 없이(CI 토큰은 모두 거부) */
+    ReachCiCheckService(ReachCiCheckRepository repository, ReachProperties properties) {
+        this(repository, properties, ReachCiAccess.closed());
     }
 
     /** 실행 결과. replayed면 같은 멱등 키로 이미 만든 검사를 다시 준 것이다 */
     public record Created(ReachCiCheckCreatedResponse check, boolean replayed) {}
 
-    /** API-12 실행 */
+    /** API-12 실행 (대시보드 세션) */
     public Created create(String loginId, String idempotencyKey, ReachCiCheckRequest request) {
         long userId = requireAdmin(loginId);
         if (request == null) throw invalid();
         String key = key(idempotencyKey);
         validate(request);
+        return open(Requester.user(userId), key, request, request.target(), request.rescanOf(), plan(request));
+    }
+
+    /** API-12 실행 (CI 토큰). 본문 형식(400)을 먼저 보고 CI가 할 수 있는 일인지(403) 본다 */
+    public Created createForCi(ReachCiCaller caller, String idempotencyKey, ReachCiCheckRequest request) {
+        if (request == null) throw invalid();
+        String key = key(idempotencyKey);
+        validate(request);
+        access.authorizeCreate(caller, request);
+        return open(Requester.ci(caller), key, request, request.target(), request.rescanOf(), plan(request));
+    }
+
+    private static Plan plan(ReachCiCheckRequest request) {
         var pr = request.pullRequest();
-        var plan = new Plan(request.mode(), request.repository(),
+        return new Plan(request.mode(), request.repository(),
                 request.headCommit() == null ? null : ReachTargets.commit(request.headCommit()),
                 pr == null ? null : pr.number(), pr == null ? null : pr.baseRef(), pr == null ? null : pr.headRef(),
                 request.policy() == null ? "REPORT_ONLY" : request.policy(), request.baselineScanId(), "{}");
-        return open(userId, key, request, request.target(), request.rescanOf(), plan);
     }
 
     /**
@@ -84,7 +107,21 @@ public class ReachCiCheckService {
         boolean repoTarget = request.target() != null && "REPO".equals(request.target().type()) && repo != null;
         var plan = new Plan("MANUAL", repoTarget ? repo.name() : null, repoTarget ? ReachTargets.commit(repo.commit()) : null,
                 null, null, null, "REPORT_ONLY", null, mapper.writeValueAsString(stored));
-        return open(userId, key, request, request.target(), request.rescanOf(), plan);
+        return open(Requester.user(userId), key, request, request.target(), request.rescanOf(), plan);
+    }
+
+    /**
+     * 요청한 주체 (V34 requested_by_*, V37 idempotency_scope). 사람은 USER:<user_id>,
+     * CI는 CI:<토큰의 repository>이고 스캔에 토큰의 repository·sub를 남긴다(11/02 결정 ④)
+     */
+    private record Requester(String scope, Long userId, String repository, String subject) {
+        static Requester user(long userId) {
+            return new Requester("USER:" + userId, userId, null, null);
+        }
+
+        static Requester ci(ReachCiCaller caller) {
+            return new Requester(caller.scope(), null, caller.repository(), caller.subject());
+        }
     }
 
     /** 검사 칸 중 요청마다 다른 것. 스캔 id와 멱등 키는 open()이 채운다 */
@@ -93,10 +130,11 @@ public class ReachCiCheckService {
 
     /**
      * 멱등 키를 보고 처음이면 대상·스캔·검사를 만든다 (명세 2-7).
-     * 키는 호출 주체별이다. 지금은 USER:<user_id>, OIDC를 붙이면 CI:<repository>로 바꾼다
+     * 키는 호출 주체별이다(USER:<user_id>, CI:<repository>)
      */
-    private Created open(long userId, String key, Object request, ReachTargetRequest target, Long rescanOf, Plan plan) {
-        String scope = "USER:" + userId;
+    private Created open(Requester requester, String key, Object request, ReachTargetRequest target, Long rescanOf,
+                         Plan plan) {
+        String scope = requester.scope();
         String hash = sha256(mapper.writeValueAsString(request));
         repository.lockIdempotencyKey(scope, key);
         var existing = repository.checkByKey(scope, key);
@@ -107,17 +145,30 @@ public class ReachCiCheckService {
         }
 
         long targetId = rescanOf != null ? rescanTarget(rescanOf) : target(target);
-        long scanId = repository.insertScan(targetId, plan.mode(), rescanOf, userId);
+        long scanId = requester.userId() != null
+                ? repository.insertScan(targetId, plan.mode(), rescanOf, requester.userId())
+                : repository.insertCiScan(targetId, plan.mode(), requester.repository(), requester.subject());
         long checkId = repository.insertCheck(new ReachCiCheckRepository.NewCheck(scanId, plan.mode(),
                 plan.repository(), plan.headCommit(), plan.prNumber(), plan.prBaseRef(), plan.prHeadRef(),
                 plan.policy(), plan.baselineScanId(), plan.options(), scope, key, hash));
         return new Created(created(checkId), false);
     }
 
-    /** API-12 결과 조회. 명세는 ADMIN 세션도 받는다 */
+    /** API-12 결과 조회 (대시보드 세션) */
     @Transactional(readOnly = true)
     public ReachCiCheckResponse check(String loginId, long checkId) {
         requireAdmin(loginId);
+        return view(checkId);
+    }
+
+    /** API-12 결과 조회 (CI 토큰). 검사를 만든 레포의 토큰만 */
+    @Transactional(readOnly = true)
+    public ReachCiCheckResponse checkForCi(ReachCiCaller caller, long checkId) {
+        access.requireOwner(caller, repository.checkScope(checkId));
+        return view(checkId);
+    }
+
+    private ReachCiCheckResponse view(long checkId) {
         var c = repository.check(checkId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
         boolean done = "SUCCEEDED".equals(c.scanStatus());
         var pr = c.prNumber() == null ? null
