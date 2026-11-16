@@ -17,7 +17,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-/** Reach L1 워크로드 수동 업로드와 Finding deployment 재계산. 권한은 ADMIN (Reach API 명세 2-2) */
+/** Reach L1 워크로드 업로드(ADMIN 수동, 클러스터 수집기)와 Finding deployment 재계산 (Reach API 명세 2-2) */
 @Service
 @Transactional   // 쓰기라 readOnly가 아니다. 조회 행 덮어쓰기·워크로드 교체·재계산이 한 트랜잭션
 public class ReachL1Service {
@@ -58,14 +58,29 @@ public class ReachL1Service {
         this.fresh = fresh;
     }
 
-    /** L1 수동 업로드. 그 (cluster, namespace)의 워크로드를 통째로 바꾸고 deployment를 다시 계산한다 */
+    /** L1 수동 업로드(ADMIN 세션). 그 (cluster, namespace)의 워크로드를 통째로 바꾸고 deployment를 다시 계산한다 */
     public ReachInventoryResponse upload(String loginId, ReachInventoryRequest request) {
         long userId = requireAdmin(loginId);
+        return save(request, "MANUAL", "USER:" + userId);
+    }
+
+    /**
+     * 클러스터 수집기 업로드. 토큰(서명·발급자·aud·수집기 서비스 계정 sub)은 보안 체인이 검사한 뒤다.
+     * 받는 범위와 검사는 수동 업로드와 같고, 기록에 수집기 토큰의 sub를 남긴다
+     */
+    public ReachInventoryResponse uploadFromCollector(String subject, ReachInventoryRequest request) {
+        if (subject == null || subject.isBlank()) {
+            throw new ApiException(ErrorCode.UNAUTHENTICATED);
+        }
+        return save(request, "CLUSTER_READER", subject);
+    }
+
+    private ReachInventoryResponse save(ReachInventoryRequest request, String source, String reportedBy) {
         validate(request);
         repository.lockRecompute();   // Finding을 고치기 전에 잡는다. 재계산하는 쪽이 모두 같은 순서라 교착이 없다
         // 저장된 것보다 오래된 조회는 거절한다(늦게 온 재시도가 최신 상태를 되돌리지 않게). 같은 시각은 받는다
         if (repository.saveObservation(request.cluster(), request.namespace(), request.observedAt(),
-                "MANUAL", "USER:" + userId) == 0) {
+                source, reportedBy) == 0) {
             throw new ApiException(ErrorCode.CONFLICT);
         }
         repository.deleteWorkloads(request.cluster(), request.namespace());

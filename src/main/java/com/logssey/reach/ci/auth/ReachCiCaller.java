@@ -6,7 +6,7 @@ import java.util.Optional;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 
 /**
- * GitHub OIDC 토큰으로 들어온 CI 호출 주체. 클레임은 ReachCiSecurityConfig가 검사한 뒤라 비어 있지 않다.
+ * GitHub OIDC 토큰으로 들어온 CI 호출 주체. 클레임은 ReachTokenSecurityConfig가 검사한 뒤라 비어 있지 않다.
  * repository는 소유자를 붙인 이름(Logssey/service-backend), subject는 sub, ref는 이벤트의 ref(refs/pull/1/merge, refs/heads/main)
  */
 public record ReachCiCaller(String repository, String subject, String eventName, String ref) {
