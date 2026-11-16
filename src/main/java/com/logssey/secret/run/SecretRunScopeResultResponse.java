@@ -2,13 +2,23 @@ package com.logssey.secret.run;
 
 import java.time.OffsetDateTime;
 
-/** Safe snapshotted scope. Never exposes approved_ref, account, ARN, path or credentials. */
+/** Safe snapshotted scope with authorized GitHub target coordinates and no raw approval URI. */
 public record SecretRunScopeResultResponse(
         long runScopeId, String contentType, String region, String collectionStatus,
         Long objectCount, String gapCode, Long scopeId, Long scopeRevision,
         String safeDisplayAlias, String scopeOutcome, Stage collection, Stage detection,
         Stage validation, OffsetDateTime startedAt, OffsetDateTime finishedAt, boolean retryable,
-        int excludedObjectCount, java.util.List<ExclusionReason> exclusionReasons) {
+        int excludedObjectCount, java.util.List<ExclusionReason> exclusionReasons,
+        com.logssey.secret.query.SecretSourceDetails.GitHubTarget githubTarget) {
+    public SecretRunScopeResultResponse(long runScopeId, String contentType, String region, String collectionStatus,
+            Long objectCount, String gapCode, Long scopeId, Long scopeRevision, String safeDisplayAlias,
+            String scopeOutcome, Stage collection, Stage detection, Stage validation,
+            OffsetDateTime startedAt, OffsetDateTime finishedAt, boolean retryable, int excludedObjectCount,
+            java.util.List<ExclusionReason> exclusionReasons) {
+        this(runScopeId,contentType,region,collectionStatus,objectCount,gapCode,scopeId,scopeRevision,
+                safeDisplayAlias,scopeOutcome,collection,detection,validation,startedAt,finishedAt,retryable,
+                excludedObjectCount,exclusionReasons,null);
+    }
     public SecretRunScopeResultResponse(long runScopeId, String contentType, String region, String collectionStatus,
             Long objectCount, String gapCode, Long scopeId, Long scopeRevision, String safeDisplayAlias,
             String scopeOutcome, Stage collection, Stage detection, Stage validation,
