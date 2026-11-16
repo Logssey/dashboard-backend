@@ -43,7 +43,7 @@ final class SecretExplanationCatalog {
             Map.entry("ACTION_RECORDED", "조치 기록이 저장돼 있어요."),
             Map.entry("NO_ACTION_RECORD", "아직 저장된 조치 기록이 없어요."),
             Map.entry("UNRESOLVED_LOCATIONS", "확인이 끝나지 않은 대응 위치가 있어요."),
-            Map.entry("ASSIGNEE_REQUIRED", "대응 담당자를 지정해야 해요."));
+            Map.entry("ASSIGNEE_REQUIRED", "담당자가 없는 대응 위치가 있어요."));
     private static final Map<String, String> ACTIONS = Map.of(
             "VIEW_FINDINGS", "탐지 근거 보기", "VIEW_LOCATIONS", "발견 위치 보기",
             "OPEN_SETTINGS", "연결 설정 확인", "RETRY_FAILED_SCOPES", "재검사 요청으로 이동",
