@@ -70,6 +70,7 @@ class SecretClosureEvaluator {
             snapshotRows.add(facts("occurrenceId",occurrence,"scopeId",row.get("scope_id"),"scopeRevision",row.get("revision"),
                 "scopeOriginVersion",row.get("response_origin_version"),"origin",row.get("response_origin"),
                 "connectionVersion",row.get("connection_version"),"connectionStatus",row.get("connection_status"),"scopeEnabled",row.get("enabled"),
+                "sourceContextCurrent",row.get("source_context_current"),
                 "presence",row.get("presence_status"),"exposure",exposure,"assessmentVersion",row.get("exposure_assessment_version"),
                 "policyBindingId",row.get("binding_id"),"policyVersion",row.get("policy_version"),"policyResult",row.get("policy_result"),
                 "requiresReassessment",row.get("requires_reassessment"),"locationVersion",row.get("location_version"),
@@ -155,6 +156,7 @@ class SecretClosureEvaluator {
             }).map(e->new EvidenceReference(number(e,"evidence_id"),"OUT_OF_SCOPE","승인된 이관 근거 #"+number(e,"evidence_id"),time(e,"submitted_at"))).toList();
     }
     private String coverageReason(Map<String,Object> row,Map<String,Object> c) {
+        if(!yes(row,"source_context_current"))return "SOURCE_APPROVAL_CHANGED";
         if(!Objects.equals(row.get("response_origin"),c.get("case_origin")))return "SOURCE_CLASSIFICATION_CHANGED";
         if(!yes(row,"enabled")||!"ACTIVE".equals(row.get("connection_status")))return "REQUIRED_SCOPE_UNAVAILABLE";
         if(!"SUCCEEDED".equals(row.get("scope_outcome")))return "REQUIRED_SCOPE_INCOMPLETE";

@@ -58,6 +58,7 @@ class SecretRevalidationServiceIntegrationTest {
 
     @Autowired private JdbcTemplate jdbc;
     @Autowired private SecretRevalidationService service;
+    @Autowired private SecretRevalidationRepository revalidationRepository;
     @Autowired private SecretRevalidationBatchService batches;
     @Autowired private SecretLocationReadiness readiness;
     @Autowired private com.logssey.secret.lifecycle.SecretLifecycleService lifecycle;
@@ -297,6 +298,45 @@ class SecretRevalidationServiceIntegrationTest {
                 new SecretRevalidationRequest(occurrenceId, 0L, 0L, "metadata-is-not-a-value"),
                 "revalidation-admin")).isInstanceOf(ApiException.class);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_jobs WHERE purpose='LOCATION_RECHECK'", Long.class)).isZero();
+    }
+
+    @Test
+    void changedGitHubBranchBlocksReadinessBaselineAndTheActualRequestTogether() {
+        var principal = new com.logssey.secret.access.SecretPrincipal(actor());
+        assertThat(readiness.capabilities(principal, caseId, occurrenceId).get("canRequestRevalidation")).isEqualTo(true);
+        assertThat(revalidationRepository.baseline(occurrenceId)).isPresent();
+        jdbc.update("UPDATE secret_connection_scopes SET approved_ref='github://Other/fixture/develop/src/'");
+        var blocked = readiness.capabilities(principal, caseId, occurrenceId);
+        assertThat(blocked).containsEntry("canRequestRevalidation", false)
+                .containsEntry("revalidationBlockReasonCode", "SOURCE_APPROVAL_CHANGED");
+        assertThat(revalidationRepository.baseline(occurrenceId)).isEmpty();
+        assertThatThrownBy(() -> service.request(caseId,
+                new SecretRevalidationRequest(occurrenceId, 0L, 0L, "changed-branch"), "revalidation-admin"))
+                .isInstanceOf(ApiException.class);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_jobs WHERE kind='REVALIDATE'", Long.class)).isZero();
+    }
+
+    @Test
+    void branchAndSnapshotContextAlsoFenceResumeAndAbsenceEvidence() {
+        var accepted = service.request(caseId,
+                new SecretRevalidationRequest(occurrenceId, 0L, 0L, "branch-proof"), "revalidation-admin");
+        jdbc.update("UPDATE secret_jobs SET status='SUCCEEDED',finished_at=clock_timestamp() WHERE job_id=(SELECT job_id FROM secret_scan_runs WHERE run_id=?)", accepted.runId());
+        jdbc.update("UPDATE secret_scan_runs SET collection_status='SUCCEEDED',detection_status='SUCCEEDED',validation_status='SKIPPED',result_status='SUCCEEDED',finished_at=clock_timestamp() WHERE run_id=?", accepted.runId());
+        jdbc.update("UPDATE secret_run_scopes SET collection_status='SUCCEEDED',object_count=1,started_at=clock_timestamp(),finished_at=clock_timestamp(),detection_stage_status='SUCCEEDED',validation_stage_status='SKIPPED',validation_required=false WHERE run_id=?", accepted.runId());
+        jdbc.update("UPDATE secret_case_revalidations SET status='PRESENT',finished_at=clock_timestamp() WHERE run_id=?", accepted.runId());
+        var principal = new com.logssey.secret.access.SecretPrincipal(actor());
+        assertThat(readiness.capabilities(principal, caseId, occurrenceId).get("canResume")).isEqualTo(true);
+        jdbc.update("UPDATE secret_connection_scopes SET approved_ref='github://Other/fixture/develop/src/'");
+        assertThat(readiness.capabilities(principal, caseId, occurrenceId).get("canResume")).isEqualTo(false);
+        jdbc.update("UPDATE secret_connection_scopes SET approved_ref='github://Other/fixture/main/src/'");
+        jdbc.update("UPDATE secret_case_revalidations SET status='MISSING' WHERE run_id=?", accepted.runId());
+        jdbc.update("UPDATE secret_occurrences SET presence_status='MISSING' WHERE occurrence_id=?", occurrenceId);
+        assertThat(((java.util.Map<?, ?>) readiness.capabilities(principal, caseId, occurrenceId).get("locationAbsenceCheck")).get("status"))
+                .isEqualTo("PASSED");
+        jdbc.update("UPDATE secret_run_scopes SET snapshot_approved_ref=NULL WHERE run_id=?", accepted.runId());
+        var unknown = readiness.capabilities(principal, caseId, occurrenceId);
+        assertThat(((java.util.Map<?, ?>) unknown.get("locationAbsenceCheck")).get("status")).isEqualTo("UNKNOWN");
+        assertThat(unknown.get("canResume")).isEqualTo(false);
     }
 
     @Test

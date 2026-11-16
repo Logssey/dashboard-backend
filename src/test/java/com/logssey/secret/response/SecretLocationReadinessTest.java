@@ -68,6 +68,8 @@ class SecretLocationReadinessTest {
                         "PRODUCTION"));
         row.put("actions_completed_at", actionAt);
         row.put("last_material_action_at", actionAt);
+        row.put("source_context_current", true);
+        row.put("revalidation_context_current", true);
         when(jdbc.queryForList(anyString(), eq(31L), eq(12L))).thenReturn(List.of(row));
         when(access.hasConnectionRole(actor, 9L, SecretRole.REMEDIATOR)).thenReturn(true);
     }

@@ -148,6 +148,8 @@ class SecretRevalidationRepository {
                     AND source_run.connection_id=connection.connection_id AND source_run.scope_version=connection.scope_version
                 JOIN secret_jobs source_job ON source_job.job_id=source_run.job_id AND source_job.status='SUCCEEDED'
                 WHERE o.occurrence_id = ? AND current_scope.enabled
+                  AND (current_scope.content_type<>'GITHUB_REPOSITORY_FILES'
+                    OR(o.source_context_ref=current_scope.approved_ref AND rs.snapshot_approved_ref=o.source_context_ref))
                 ORDER BY f.detected_at DESC, f.finding_id DESC LIMIT 1
                 """, (rs, row) -> new Baseline(rs.getString("config_hash"),
                 rs.getString("engine_version")), occurrenceId).stream().findFirst();
