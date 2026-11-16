@@ -12,7 +12,7 @@ import static com.logssey.secret.snapshot.SecretReadSnapshots.facts;
 /** Authorized source coordinates only. Never returns file contents, auth refs or key identities. */
 public final class SecretSourceDetails {
     private SecretSourceDetails() { }
-    private static final Pattern CREDENTIAL = Pattern.compile("AKIA[A-Z0-9]{16}|ASIA[A-Z0-9]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]+|(?:secret_|ntn_)[A-Za-z0-9]{20,}|[A-Za-z0-9_+=-]{32,}");
+    private static final Pattern CREDENTIAL = Pattern.compile("AKIA[A-Z0-9]{16}|ASIA[A-Z0-9]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]+|(?:secret_|ntn_)[A-Za-z0-9]{20,}");
     private static String safe(String value) {
         if(value==null || value.length()>700 || value.chars().anyMatch(c->c<32||c==127)||value.contains("\\")) return null;
         return CREDENTIAL.matcher(value).replaceAll("[마스킹]");

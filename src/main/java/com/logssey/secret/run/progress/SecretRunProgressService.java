@@ -79,7 +79,9 @@ public class SecretRunProgressService {
                 header.latest() == null ? run.requestedAt() : header.latest(), 2500, eventStatus,
                 "AVAILABLE".equals(eventStatus) && header.suppressed() == 0,
                 header.suppressed() > 0, header.suppressed(), header.recorded(), header.expired(),
-                stages(run, header.version() != null), events, next, more, validationSummary(run));
+                stages(run, header.version() != null), events, next, more, validationSummary(run),
+                run.scopeResults().isEmpty()?"UNKNOWN":run.scopeResults().stream()
+                    .allMatch(scope -> scope.contentType().endsWith("_METADATA"))?"METADATA":"CONTENT");
     }
 
     private SecretRunProgress.ValidationSummary validationSummary(SecretRunStatusResponse run) {

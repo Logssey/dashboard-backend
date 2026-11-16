@@ -8,7 +8,17 @@ public record SecretRunScopeResultResponse(
         Long objectCount, String gapCode, Long scopeId, Long scopeRevision,
         String safeDisplayAlias, String scopeOutcome, Stage collection, Stage detection,
         Stage validation, OffsetDateTime startedAt, OffsetDateTime finishedAt, boolean retryable,
-        int excludedObjectCount) {
+        int excludedObjectCount, java.util.List<ExclusionReason> exclusionReasons) {
+    public SecretRunScopeResultResponse(long runScopeId, String contentType, String region, String collectionStatus,
+            Long objectCount, String gapCode, Long scopeId, Long scopeRevision, String safeDisplayAlias,
+            String scopeOutcome, Stage collection, Stage detection, Stage validation,
+            OffsetDateTime startedAt, OffsetDateTime finishedAt, boolean retryable, int excludedObjectCount) {
+        this(runScopeId,contentType,region,collectionStatus,objectCount,gapCode,scopeId,scopeRevision,
+                safeDisplayAlias,scopeOutcome,collection,detection,validation,startedAt,finishedAt,retryable,
+                excludedObjectCount,java.util.List.of());
+    }
+    public record ExclusionReason(String code,long count,boolean expected) { }
+
     public SecretRunScopeResultResponse(long runScopeId, String contentType, String region, String collectionStatus,
             Long objectCount, String gapCode, Long scopeId, Long scopeRevision, String safeDisplayAlias,
             String scopeOutcome, Stage collection, Stage detection, Stage validation,

@@ -21,7 +21,13 @@ public class SecretRunQueryService {
     public Map<String,Object> status(String login,long runId){
         var actor=access.requirePrincipal(login);var result=runs.status(runId,login);
         @SuppressWarnings("unchecked") Map<String,Object> safe=json.convertValue(result,Map.class);
-        safe.put("capabilities",Map.of("canViewFindings",access.hasConnectionRole(actor,result.connectionId(),SecretRole.SECURITY)));
+        boolean canRetry=access.hasConnectionRole(actor,result.connectionId(),SecretRole.OPERATIONS)
+                && Set.of("SUCCEEDED","PARTIAL","FAILED","CANCELLED").contains(result.status())
+                && result.scopeResults().stream().anyMatch(SecretRunScopeResultResponse::retryable);
+        safe.put("capabilities",Map.of("canViewFindings",access.hasConnectionRole(actor,result.connectionId(),SecretRole.SECURITY),
+                "canRetryFailedScopes",canRetry));
+        safe.put("scanKind",result.scopeResults().isEmpty()?"UNKNOWN":result.scopeResults().stream()
+                .allMatch(scope -> scope.contentType().endsWith("_METADATA"))?"METADATA":"CONTENT");
         return safe;
     }
     public Map<String,Object> list(String login,String type,String status,Long connectionId,OffsetDateTime from,OffsetDateTime to,int page,int size,String snapshotId){

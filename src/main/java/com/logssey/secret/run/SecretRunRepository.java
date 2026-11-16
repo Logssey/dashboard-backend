@@ -142,6 +142,10 @@ class SecretRunRepository {
     }
 
     JobRun reserve(Connection connection, long actorId, String idempotencyKey, OffsetDateTime now) {
+        return reserve(connection, actorId, idempotencyKey, now, List.of());
+    }
+
+    JobRun reserve(Connection connection, long actorId, String idempotencyKey, OffsetDateTime now, List<Long> scopeIds) {
         Long jobId = jdbc.queryForObject("""
                 INSERT INTO secret_jobs
                     (kind, connection_id, requested_by_user_id, idempotency_key, scheduled_at,
@@ -160,16 +164,45 @@ class SecretRunRepository {
                 VALUES (?, ?, 'MANUAL', ?, ?, ?, 'PENDING', 'PENDING', 'PENDING', 'PENDING', ?)
                 RETURNING run_id
                 """, Long.class, jobId, connection.id(), connection.scopeVersion(), now, now, now);
+        String selectedScopes = scopeIds.isEmpty() ? "" : " AND scope_id IN ("
+                + String.join(",", java.util.Collections.nCopies(scopeIds.size(), "?")) + ")";
+        var scopeArguments = new java.util.ArrayList<Object>();
+        scopeArguments.add(runId);
+        scopeArguments.add(connection.id());
+        scopeArguments.addAll(scopeIds);
         int scopeCount = jdbc.update("""
                 INSERT INTO secret_run_scopes (run_id, scope_id, collection_status)
                 SELECT ?, scope_id, 'PENDING' FROM secret_connection_scopes
                 WHERE connection_id = ? AND enabled
-                """, runId, connection.id());
+                """ + selectedScopes, scopeArguments.toArray());
         if (scopeCount == 0) {
             throw new NoApprovedScopeException();
         }
         return new JobRun(runId, connection.id(), actorId, idempotencyKey, "PENDING", "PENDING");
     }
+
+    void linkRetry(long runId,long sourceRunId) {
+        jdbc.update("UPDATE secret_scan_runs SET retry_of_run_id=? WHERE run_id=?",sourceRunId,runId);
+    }
+
+    Optional<RetryContext> retryContext(long runId) {
+        return jdbc.query("""
+                SELECT r.connection_id,r.scope_version,j.kind,j.status
+                FROM secret_scan_runs r JOIN secret_jobs j ON j.job_id=r.job_id WHERE r.run_id=?
+                """, (rs,n) -> new RetryContext(rs.getLong("connection_id"),rs.getLong("scope_version"),
+                rs.getString("kind"),rs.getString("status")),runId).stream().findFirst();
+    }
+
+    List<Long> retryScopes(long runId) {
+        return jdbc.queryForList("""
+                SELECT rs.scope_id FROM secret_scope_outcomes rs
+                JOIN secret_connection_scopes s ON s.scope_id=rs.scope_id
+                WHERE rs.run_id=? AND s.enabled AND s.revision=rs.scope_revision
+                  AND rs.scope_outcome IN ('PARTIAL','FAILED','SKIPPED') ORDER BY rs.scope_id
+                """,Long.class,runId);
+    }
+
+    record RetryContext(long connectionId,long scopeVersion,String kind,String jobStatus) { }
 
     Optional<RunStatus> runStatus(long runId) {
         return jdbc.query(RUN_STATUS_SELECT + "WHERE r.run_id = ?",
