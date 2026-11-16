@@ -49,7 +49,7 @@ public final class SecretRiskObservationWriter {
                 + " connection_status,s.enabled FROM secret_run_scopes rs JOIN secret_scan_runs r"
                 + " USING(run_id) JOIN secret_connections c ON c.connection_id=r.connection_id JOIN"
                 + " secret_connection_scopes s ON s.scope_id=rs.scope_id WHERE rs.run_scope_id=?"
-                + " AND c.provider='GITHUB' AND rs.collection_status='SUCCEEDED' AND EXISTS(SELECT"
+                + " AND c.provider='GITHUB' AND rs.collection_status IN('SUCCEEDED','PARTIAL') AND EXISTS(SELECT"
                 + " 1 FROM secret_findings f JOIN secret_tool_runs t USING(tool_run_id) WHERE"
                 + " f.occurrence_id=? AND t.run_scope_id=rs.run_scope_id)",
             runScopeId,

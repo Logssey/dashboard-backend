@@ -114,6 +114,36 @@ class SecretRunServiceTest {
     }
 
     @Test
+    void retriesOnlyCurrentIncompleteScopesAndReplaysWithoutDuplicateJobs() {
+        long connection=connection("ACTIVE",null);
+        long failed=scope(connection,"failed/",true);
+        long complete=scope(connection,"complete/",true);
+        long original=service.register(new SecretRunRequest(connection,"retry-source"),"admin").runId();
+        jdbc.update("UPDATE secret_jobs SET status='SUCCEEDED',finished_at=clock_timestamp() WHERE job_id=(SELECT job_id FROM secret_scan_runs WHERE run_id=?)",original);
+        jdbc.update("UPDATE secret_scan_runs SET collection_status='PARTIAL',detection_status='PARTIAL',validation_status='SKIPPED',result_status='PARTIAL',finished_at=clock_timestamp() WHERE run_id=?",original);
+        jdbc.update("UPDATE secret_run_scopes SET collection_status=CASE scope_id WHEN ? THEN 'FAILED' ELSE 'SUCCEEDED' END,object_count=1,detection_stage_status='SUCCEEDED',validation_stage_status='SKIPPED',validation_required=false,finished_at=clock_timestamp() WHERE run_id=?",failed,original);
+        var retried=service.retryFailed(original,"retry-incomplete","admin");
+        assertThat(retried.status()).isEqualTo("PENDING");
+        assertThat(jdbc.queryForList("SELECT scope_id FROM secret_run_scopes WHERE run_id=?",Long.class,retried.runId())).containsExactly(failed).doesNotContain(complete);
+        assertThat(jdbc.queryForObject("SELECT retry_of_run_id FROM secret_scan_runs WHERE run_id=?",Long.class,retried.runId())).isEqualTo(original);
+        assertThat(service.retryFailed(original,"retry-incomplete","admin").runId()).isEqualTo(retried.runId());
+        assertThat(count("secret_jobs")).isEqualTo(2);
+        assertThatThrownBy(() -> service.retryFailed(original,"another-retry","admin")).isInstanceOf(ApiException.class);
+    }
+
+    @Test
+    void retryRejectsChangedApprovalBaseline() {
+        long connection=connection("ACTIVE",null);
+        scope(connection,"failed/",true);
+        long original=service.register(new SecretRunRequest(connection,"retry-changed"),"admin").runId();
+        jdbc.update("UPDATE secret_jobs SET status='FAILED',finished_at=clock_timestamp() WHERE job_id=(SELECT job_id FROM secret_scan_runs WHERE run_id=?)",original);
+        jdbc.update("UPDATE secret_run_scopes SET collection_status='FAILED',finished_at=clock_timestamp() WHERE run_id=?",original);
+        jdbc.update("UPDATE secret_connections SET scope_version=scope_version+1 WHERE connection_id=?",connection);
+        assertThatThrownBy(() -> service.retryFailed(original,"retry-stale","admin")).isInstanceOf(ApiException.class);
+        assertThat(count("secret_jobs")).isEqualTo(1);
+    }
+
+    @Test
     void registersOnlyApprovedScopeSnapshotWithoutAdvancingScheduleOrScanning() {
         var originalDue = OffsetDateTime.now(ZoneOffset.UTC).minusHours(2).truncatedTo(ChronoUnit.MICROS);
         long connection = connection("ACTIVE", originalDue);

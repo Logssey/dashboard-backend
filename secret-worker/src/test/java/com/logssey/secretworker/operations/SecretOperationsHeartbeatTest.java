@@ -33,6 +33,31 @@ class SecretOperationsHeartbeatTest {
         assertThat(jdbc.queryForObject("SELECT last_success_at IS NOT NULL FROM secret_worker_heartbeats WHERE component='SCHEDULER'",Boolean.class)).isTrue();
     }
 
+    @Test
+    void finishingOneProviderKeepsOtherActiveJobsAndPublishesValidationCapabilities() {
+        var heartbeat=heartbeat(new MockEnvironment()
+                .withProperty("logssey.secret.executor.enabled","true")
+                .withProperty("logssey.secret.github.enabled","true")
+                .withProperty("logssey.secret.validation.aws.enabled","true")
+                .withProperty("logssey.secret.validation.github.enabled","true"));
+        heartbeat.begin("EXECUTOR");
+        heartbeat.activeJob("EXECUTOR",11);
+        heartbeat.activeJob("EXECUTOR",12);
+        heartbeat.tick();
+        assertThat(jdbc.queryForObject("SELECT cardinality(active_job_ids) FROM secret_worker_heartbeats WHERE component='EXECUTOR'",Integer.class)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT validation_issuers::text FROM secret_worker_heartbeats WHERE component='EXECUTOR'",String.class)).isEqualTo("{AWS,GITHUB}");
+        heartbeat.clearJob("EXECUTOR",11);
+        heartbeat.success("EXECUTOR");
+        heartbeat.tick();
+        assertThat(jdbc.queryForMap("SELECT state,active_job_id FROM secret_worker_heartbeats WHERE component='EXECUTOR'"))
+                .containsEntry("state","RUNNING").containsEntry("active_job_id",12L);
+        heartbeat.clearJob("EXECUTOR",12);
+        heartbeat.success("EXECUTOR");
+        heartbeat.tick();
+        assertThat(jdbc.queryForMap("SELECT state,active_job_id FROM secret_worker_heartbeats WHERE component='EXECUTOR'"))
+                .containsEntry("state","IDLE").containsEntry("active_job_id",null);
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {
         "logssey.secret.github.enabled",

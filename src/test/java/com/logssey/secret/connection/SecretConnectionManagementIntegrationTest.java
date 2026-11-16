@@ -411,19 +411,43 @@ class SecretConnectionManagementIntegrationTest {
     }
 
     @Test
+    void renamingPreservesScopeVersionScheduleAndPendingWork() {
+        long id = id(service.create("operator", new Create("AWS", "Account", "rename", null)));
+        jdbc.update("UPDATE secret_connections SET status='ACTIVE',next_due_at=clock_timestamp()+interval '1 hour' WHERE connection_id=?",id);
+        var due=jdbc.queryForObject("SELECT next_due_at FROM secret_connections WHERE connection_id=?",OffsetDateTime.class,id);
+        long job=jdbc.queryForObject("INSERT INTO secret_jobs(kind,connection_id,requested_by_user_id,scheduled_at,available_at,attempt_no,max_attempts,status) "
+                + "VALUES('FULL_SCAN',?,1,now(),now(),0,3,'PENDING') RETURNING job_id",Long.class,id);
+        var result=service.change("operator",id,new SettingsChange(1L,"Renamed",null,null,1L));
+        assertThat(result).containsEntry("scopeVersion",1L).containsEntry("settingsVersion",2L);
+        assertThat(jdbc.queryForObject("SELECT status FROM secret_jobs WHERE job_id=?",String.class,job)).isEqualTo("PENDING");
+        assertThat(jdbc.queryForObject("SELECT next_due_at FROM secret_connections WHERE connection_id=?",OffsetDateTime.class,id)).isEqualTo(due);
+        assertThatThrownBy(() -> service.change("operator",id,new SettingsChange(1L,"Stale",null,null,1L))).isInstanceOf(ApiException.class);
+    }
+
+    @Test
+    void targetSaveCanActivateAndUnknownWorkerCapabilitiesRemainExplicit() {
+        long id=id(service.create("operator",new Create("AWS","Account","activate",null)));
+        var result=service.targets("operator",id,new TargetsChange(1L,List.of(),
+                List.of(new AwsTarget("IAM_ACCESS_KEY_METADATA","global")),true,1L));
+        assertThat(result).containsEntry("status","ACTIVE");
+        assertThat(((Map<?,?>)result.get("validationReadiness")).get("ready")).isEqualTo(false);
+        assertThat((List<String>)((Map<?,?>)result.get("validationReadiness")).get("reasonCodes")).contains("WORKER_CAPABILITIES_UNKNOWN");
+    }
+
+    @Test
     void requiresLiveOperationsRoleAndOptimisticVersionForEveryMutation() {
         long id = id(service.create("operator", new Create("AWS", "Account", "roles", null)));
         assertThatThrownBy(() -> service.settings("stranger", id)).isInstanceOf(ApiException.class);
         assertThatThrownBy(
                         () -> service.create("stranger", new Create("AWS", "Other", "other", null)))
                 .isInstanceOf(ApiException.class);
-        service.change("operator", id, new SettingsChange(1L, "Renamed", null, null));
+        service.change("operator", id, new SettingsChange(1L, "Renamed", null, null, 1L));
         assertThatThrownBy(
                         () ->
                                 service.change(
                                         "operator",
                                         id,
-                                        new SettingsChange(1L, "Stale", null, null)))
+                                        new SettingsChange(1L, "Stale", null, null, 1L)))
                 .isInstanceOf(ApiException.class);
         jdbc.update("UPDATE secret_role_grants SET revoked_at=clock_timestamp() WHERE user_id=1");
         assertThatThrownBy(() -> service.settings("operator", id)).isInstanceOf(ApiException.class);

@@ -27,7 +27,11 @@ public final class SecretConnectionManagementContracts {
             Long expectedScopeVersion,
             String displayName,
             String status,
-            GitHubCredential githubCredential) {}
+            GitHubCredential githubCredential, Long expectedSettingsVersion) {
+        public SettingsChange(Long expectedScopeVersion, String displayName, String status, GitHubCredential githubCredential) {
+            this(expectedScopeVersion,displayName,status,githubCredential,null);
+        }
+    }
 
     public record GitHubTarget(String repository, String branch, String path) {}
 
@@ -36,5 +40,9 @@ public final class SecretConnectionManagementContracts {
     public record TargetsChange(
             Long expectedScopeVersion,
             List<GitHubTarget> githubTargets,
-            List<AwsTarget> awsTargets) {}
+            List<AwsTarget> awsTargets, Boolean activate, Long expectedSettingsVersion) {
+        public TargetsChange(Long expectedScopeVersion, List<GitHubTarget> githubTargets, List<AwsTarget> awsTargets) {
+            this(expectedScopeVersion, githubTargets, awsTargets, null, null);
+        }
+    }
 }

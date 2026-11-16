@@ -23,4 +23,8 @@ class SecretOperationsHealthTest {
     @Test void disabledProcessCannotHideFreshEnabledWorkerButCanReplaceAStaleOne(){var old=row();var current=row();current.put("started_at",now.minusMinutes(1));current.put("enabled",false);assertThat(read(List.of(old,current))).containsEntry("status","HEALTHY");old.put("last_heartbeat_at",now.minusHours(1));assertThat(read(List.of(old,current))).containsEntry("status","DISABLED");}
     @Test void expectedTwoInstancesNeedTwoProgressingWorkers(){var good=row();var bad=row();bad.put("state","FAILED");assertThat(component("EXECUTOR",List.of(good,bad),now,2,Duration.ofMinutes(2))).containsEntry("status","FAILED");}
     @Test void successfulIdlePollNeedsNoScanOrFindingsToBeHealthy(){assertThat(read(List.of(row()))).containsEntry("status","HEALTHY").containsEntry("activeJobs",0L);}
+    @Test void concurrentProviderJobsAreCountedFromValidatedLeases(){
+        var r=row();r.put("state","RUNNING");r.put("active_job_count",3L);r.put("active_lease_valid",true);
+        assertThat(read(List.of(r))).containsEntry("status","HEALTHY").containsEntry("activeJobs",3L);
+    }
 }

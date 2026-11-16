@@ -85,7 +85,7 @@ class SecretConnectionTestServiceTest {
     }
 
     @Test
-    void rejectsMissingOperationsGrantAndPausedBeforeProbing() {
+    void rejectsMissingOperationsGrantAndUnavailableConnectionsBeforeProbing() {
         when(access.requirePrincipal("user")).thenReturn(new SecretPrincipal(2));
         doThrow(new ApiException(ErrorCode.FORBIDDEN)).when(access)
                 .requireConnectionRole(new SecretPrincipal(2), 7, SecretRole.OPERATIONS);
@@ -94,11 +94,25 @@ class SecretConnectionTestServiceTest {
                         error -> assertThat(error.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
         when(access.requirePrincipal("admin")).thenReturn(new SecretPrincipal(1));
         when(repository.connection(7)).thenReturn(Optional.of(new SecretConnectionTestRepository.Connection(
-                7, "AWS", "PAUSED", "aws-profile:test")));
+                7, "AWS", "REMOVED", "aws-profile:test")));
         assertThatThrownBy(() -> service.test(7, "admin"))
                 .isInstanceOfSatisfying(ApiException.class,
                         error -> assertThat(error.errorCode()).isEqualTo(ErrorCode.CONFLICT));
         verifyNoInteractions(aws, github);
+    }
+
+    @Test
+    void testsAPausedConfiguredConnectionWithoutActivatingIt() {
+        when(access.requirePrincipal("admin")).thenReturn(new SecretPrincipal(1));
+        when(repository.connection(7)).thenReturn(Optional.of(new SecretConnectionTestRepository.Connection(
+                7, "AWS", "PAUSED", "aws-profile:test")));
+        when(repository.awsScopes(7)).thenReturn(new SecretConnectionTestRepository.AwsScopeSummary(
+                2, 0, 1, "123456789012"));
+        when(aws.probe("test", "123456789012")).thenReturn(ConnectionProbeResult.connected());
+
+        assertThat(service.test(7, "admin").status()).isEqualTo("CONNECTED");
+        verify(aws).probe("test", "123456789012");
+        verifyNoInteractions(github);
     }
 
     @Test

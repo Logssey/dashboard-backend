@@ -24,6 +24,14 @@ class SecretSourceDetailsTest {
             .containsEntry("path","fixtures/config/sample.env").containsEntry("line","L4-7")
             .containsEntry("sourceUrl","https://github.com/Logssey/test-find-key/blob/main/fixtures/config/sample.env#L4-L7");
     }
+    @Test void longDescriptiveFilenamesRetainTheirSourceLink() {
+        String path="fixtures/VeryLongDescriptiveConfigurationFileNameForTheService.java";
+        var value=SecretSourceDetails.describe("GITHUB","github://Logssey/test-find-key/main/fixtures/",
+                "Logssey/test-find-key/"+path,"L1");
+        assertThat(value).containsEntry("path",path);
+        assertThat(value.get("sourceUrl")).isEqualTo("https://github.com/Logssey/test-find-key/blob/main/"+path+"#L1");
+    }
+
     @Test void rejectsUnapprovedAndMalformedCoordinatesAndMasksCredentialLikeNames() {
         assertThat(SecretSourceDetails.describe("GITHUB","github://Logssey/test-find-key/main/fixtures/","Other/repo/fixtures/secret.env","L1")).containsEntry("status","UNAVAILABLE");
         assertThat(SecretSourceDetails.describe("GITHUB","github://token@Logssey/test-find-key/main/fixtures/","Logssey/test-find-key/fixtures/config.env","L1")).containsEntry("status","UNAVAILABLE");

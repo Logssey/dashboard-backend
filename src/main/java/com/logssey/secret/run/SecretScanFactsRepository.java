@@ -12,9 +12,13 @@ public class SecretScanFactsRepository {
 
     public List<SecretRunScopeResultResponse> scopes(long runId) {
         return jdbc.query("""
-            SELECT o.*, s.content_type AS fallback_type, s.approved_ref,r.excluded_object_count
+            SELECT o.*, s.content_type AS fallback_type, s.approved_ref,r.excluded_object_count,r.exclusion_reasons,
+                (s.enabled AND s.revision=o.scope_revision AND c.status='ACTIVE'
+                    AND c.scope_version=scan.scope_version) AS retry_current
             FROM secret_scope_outcomes o JOIN secret_connection_scopes s ON s.scope_id=o.scope_id
             JOIN secret_run_scopes r ON r.run_scope_id=o.run_scope_id
+            JOIN secret_scan_runs scan ON scan.run_id=o.run_id
+            JOIN secret_connections c ON c.connection_id=scan.connection_id
             WHERE o.run_id=? ORDER BY o.run_scope_id
             """, (rs,n) -> {
             boolean recorded=rs.getObject("evidence_version")!=null;
@@ -29,6 +33,9 @@ public class SecretScanFactsRepository {
             if(failure==null&&outcome.equals("UNKNOWN"))failure=recorded?"STAGE_NOT_RECORDED":"EVIDENCE_NOT_RECORDED";
             String alias=rs.getString("safe_display_alias");
             long scopeId=rs.getLong("scope_id");
+            var exclusions=exclusions(rs.getString("exclusion_reasons"));
+            boolean retryable=rs.getBoolean("retry_current") && Set.of("PARTIAL","FAILED","SKIPPED").contains(outcome)
+                    && (exclusions.isEmpty() || exclusions.stream().anyMatch(reason -> !reason.expected()));
             return new SecretRunScopeResultResponse(rs.getLong("run_scope_id"),type,SecretRunService.region(type,rs.getString("approved_ref")),collection,
                 rs.getObject("object_count",Long.class),failure,scopeId,rs.getObject("scope_revision",Long.class),
                 alias==null?"범위 #"+scopeId:alias,outcome,
@@ -37,8 +44,23 @@ public class SecretScanFactsRepository {
                     stageReason(recorded,rs.getString("detection_stage_status"),rs.getString("detection_reason_code")),!type.endsWith("_METADATA"),at),
                 new SecretRunScopeResultResponse.Stage(recorded?Objects.requireNonNullElse(rs.getString("validation_stage_status"),"UNKNOWN"):"UNKNOWN",
                     stageReason(recorded,rs.getString("validation_stage_status"),rs.getString("validation_reason_code")),rs.getBoolean("validation_required"),at),
-                rs.getObject("started_at",OffsetDateTime.class),at,false,rs.getInt("excluded_object_count"));
+                rs.getObject("started_at",OffsetDateTime.class),at,retryable,rs.getInt("excluded_object_count"),exclusions);
         },runId);
+    }
+
+    private static List<SecretRunScopeResultResponse.ExclusionReason> exclusions(String raw) {
+        if(raw==null)return List.of();
+        var result=new ArrayList<SecretRunScopeResultResponse.ExclusionReason>();
+        try {
+            var node=tools.jackson.databind.json.JsonMapper.builder().build().readTree(raw);
+            for(var entry:node.properties()) {
+                String code=safeCode(entry.getKey());
+                if(code==null || !entry.getValue().isIntegralNumber() || entry.getValue().asLong()<=0)continue;
+                boolean expected=Set.of("GITHUB_BINARY_FILE","GITHUB_GIT_LFS_POINTER","GITHUB_UNSUPPORTED_OBJECT").contains(code);
+                result.add(new SecretRunScopeResultResponse.ExclusionReason(code,entry.getValue().asLong(),expected));
+            }
+        } catch(RuntimeException ignored) { return List.of(); }
+        return List.copyOf(result);
     }
 
     public SecretRunCoverageResponse runCoverage(long runId) {
