@@ -114,6 +114,22 @@ class SecretStoragePolicyIntegrationTest {
         jdbc.update("UPDATE secret_connection_scopes SET response_origin='PRODUCTION',response_origin_set_by_user_id=?,response_origin_set_at=now() WHERE scope_id=?",reviewer,scope);
         assertCode(ErrorCode.INVALID_INPUT,()->changes.preview(scope,new PreviewRequest("UNCLASSIFIED",active.policyId(),1L,applied.scopeVersion()),"policy-creator"));
     }
+
+    @Test void encodedBranchAndUnicodeFolderMatchJavaRulesAndDatabasePolicy() {
+        grant(creator,"OPERATIONS",null);
+        jdbc.update("UPDATE secret_connection_scopes SET approved_ref=? WHERE scope_id=?",
+                "github://Example/project/feature%2Fsecret/%ED%8C%80%20%EC%84%A4%EC%A0%95/",scope);
+        jdbc.update("UPDATE secret_occurrences SET source_object_ref='Example/project/팀 설정/key.txt' WHERE occurrence_id=?",occurrence);
+        var request=new DraftRequest(null,null,"AUTHORIZED_STORAGE","TICKET:SEC-123",now().minusHours(1),null,
+                List.of(new RuleRequest(connection,scope,"GITHUB_REPOSITORY_FILES","ALLOW","PREFIX","feature/secret","팀 설정/")));
+        var drafted=service.draft(request,"policy-creator");
+        var active=service.approvePolicy(drafted.policyId(),1,new VersionRequest(1L),"policy-reviewer");
+        var proposed=service.propose(scope,new ProposalRequest("PRODUCTION",active.policyId(),1L,"SOURCE_CLASSIFICATION","TICKET:SEC-123",0L),"policy-operator");
+        service.approveProposal(scope,proposed.pendingProposal().proposalId(),new ApproveProposalRequest(0L,1L),"policy-reviewer");
+        assertThat(service.evaluateOccurrence(occurrence,"policy-creator").policyResult()).isEqualTo("ALLOWED");
+        assertThat(jdbc.queryForObject("SELECT secret_github_decode_part('folder+name/')",String.class)).isEqualTo("folder+name/");
+        assertThat(jdbc.queryForObject("SELECT (secret_github_scope_parts('github://Example/project/feature%2Fsecret/'))[4]",String.class)).isEmpty();
+    }
     @Test void independentPolicyAndSourceApprovalsProduceExplicitAllowWithoutInventingNormal() {
         var draft=service.draft(draft("ALLOW"),"policy-creator");
         assertThat(draft.status()).isEqualTo("DRAFT");

@@ -17,7 +17,7 @@ class SecretTriageRepository {
             WHERE conn.status = 'ACTIVE' AND scope.enabled
               AND ((conn.provider = 'GITHUB' AND scope.content_type = 'GITHUB_REPOSITORY_FILES'
                 AND scope.history_limit = 'CURRENT_COMMIT_ONLY'
-                AND scope.approved_ref ~ '^github://[A-Za-z0-9-]{1,39}/[A-Za-z0-9_.-]{1,100}/[^/?#]+/([^/?#]+/)+$')
+                AND scope.approved_ref ~ '^github://[A-Za-z0-9-]{1,39}/[A-Za-z0-9_.-]{1,100}/[^/?#]+/([^/?#]+/)*$')
                 OR (conn.provider = 'NOTION' AND scope.content_type = 'NOTION_PAGE_CONTENT'
                 AND scope.history_limit = 'CURRENT_VERSION_ONLY'
                 AND scope.approved_ref ~ '^notion://pages/([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$'))

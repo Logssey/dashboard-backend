@@ -11,6 +11,7 @@ public enum ErrorCode {
     CONFLICT(HttpStatus.CONFLICT, "진행 중인 작업과 충돌합니다."),
     PAYLOAD_TOO_LARGE(HttpStatus.CONTENT_TOO_LARGE, "요청 본문이 너무 큽니다."),
     UNPROCESSABLE(HttpStatus.UNPROCESSABLE_CONTENT, "처리할 수 없는 내용입니다."),
+    SOURCE_CONNECTION_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "연결 인증 설정을 확인할 수 없습니다. 인증 정보와 서비스 접근 권한을 확인하세요."),
     EVIDENCE_REQUIRED(HttpStatus.UNPROCESSABLE_CONTENT, "판단에 필요한 근거가 부족합니다."),
     RISK_ACCEPTANCE_DISABLED(HttpStatus.UNPROCESSABLE_CONTENT, "위험 수용은 현재 비활성화되어 있습니다. 기존 승인 기록 조회와 취소는 가능합니다."),
     RUNTIME_FINDING_NOT_FOUND(HttpStatus.NOT_FOUND, "런타임 Finding을 찾을 수 없습니다."),

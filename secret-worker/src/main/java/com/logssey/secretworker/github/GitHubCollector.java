@@ -265,6 +265,7 @@ public final class GitHubCollector {
     }
 
     private String resolvePrefix(String base, String token, String rootSha, State state) {
+        if (state.scope.pathPrefix().isEmpty()) return rootSha;
         String treeSha = rootSha;
         for (String segment :
                 state.scope

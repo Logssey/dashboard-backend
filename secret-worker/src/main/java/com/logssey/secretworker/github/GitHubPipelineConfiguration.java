@@ -20,20 +20,9 @@ import java.nio.file.Path;
 class GitHubPipelineConfiguration {
 
     @Bean
-    GitHubCollector gitHubCollector(
-            @Value("${logssey.secret.github.app-id}") long appId,
-            @Value("${logssey.secret.github.installation-id}") long installationId,
-            @Value("${logssey.secret.github.private-key-path}") String privateKeyPath) {
-        GitHubRestClient api = new GitHubRestClient();
-        GitHubAppCredentials credentials = new GitHubAppCredentials(appId, installationId,
-                Path.of(privateKeyPath));
-        return new GitHubCollector(api, new GitHubAppTokenProvider(credentials, api));
-    }
-
-    @Bean
     GitHubSecretJobProcessor gitHubSecretJobProcessor(
             JdbcTemplate jdbc,
-            GitHubCollector collector,
+            com.logssey.secret.connection.core.SourceConnectionCredentialResolver credentials,
             SecretContentDetector detector,
             SecretFindingRepository findings,
             SecretFindingNormalizer normalizer,
@@ -46,7 +35,7 @@ class GitHubPipelineConfiguration {
                     accessSinks) {
         return new GitHubSecretJobProcessor(
                 jdbc,
-                collector,
+                null,
                 detector,
                 findings,
                 normalizer,
@@ -55,6 +44,12 @@ class GitHubPipelineConfiguration {
                 jobs,
                 githubValidator,
                 accessSinks.orderedStream().toList(),
-                notionValidator);
+                notionValidator,
+                (connectionId, scopeVersion) -> {
+                    var material = credentials.resolve(connectionId, scopeVersion);
+                    var api = new GitHubRestClient();
+                    return new GitHubCollector(api, new GitHubAppTokenProvider(material.appId(),
+                            material.installationId(), material.privateKey(), api, java.time.Clock.systemUTC()));
+                });
     }
 }

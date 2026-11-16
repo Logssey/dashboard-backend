@@ -17,6 +17,12 @@ logging.level.software.amazon.awssdk=OFF
 logging.level.org.apache.hc.client5.http.wire=OFF
 logging.level.org.apache.hc.client5.http.headers=OFF
 logssey.secret.aws.collection.credentials-mode=WORKLOAD
+logssey.secret.aws.collection.credentials-file=
+# Enable after the dedicated API role and its rotated session file are supplied.
+logssey.secret.connections.enabled=false
+logssey.secret.connections.aws-region=ap-northeast-1
+logssey.secret.connections.aws-account-id=
+logssey.secret.connections.secret-prefix=logssey/dashboard/source-credentials/
 # Match these capability flags to the worker when enabling an approved pipeline.
 logssey.secret.github.enabled=false
 logssey.secret.aws.content.enabled=false

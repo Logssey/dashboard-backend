@@ -26,11 +26,12 @@ public record GitHubApprovedScope(String owner, String repository, String branch
                 || c == '*' || c == '[' || c == '~' || c == '^' || c == ':')) {
             throw new IllegalArgumentException("Invalid GitHub branch");
         }
-        if (pathPrefix == null || pathPrefix.isBlank() || !pathPrefix.endsWith("/")
+        if (pathPrefix == null || !pathPrefix.isEmpty() && (pathPrefix.isBlank() || !pathPrefix.endsWith("/"))
                 || pathPrefix.startsWith("/")) {
             throw new IllegalArgumentException("An approved directory prefix is required");
         }
-        for (String segment : pathPrefix.substring(0, pathPrefix.length() - 1).split("/", -1)) {
+        for (String segment : pathPrefix.isEmpty() ? List.<String>of()
+                : List.of(pathPrefix.substring(0, pathPrefix.length() - 1).split("/", -1))) {
             if (segment.isBlank() || segment.equals(".") || segment.equals("..")
                     || segment.indexOf('\\') >= 0 || segment.chars().anyMatch(c -> c < 32 || c == 127)) {
                 throw new IllegalArgumentException("Invalid approved directory prefix");
@@ -55,13 +56,13 @@ public record GitHubApprovedScope(String owner, String repository, String branch
             throw new IllegalArgumentException("Invalid GitHub approved_ref");
         }
         String[] raw = uri.getRawPath().split("/", -1);
-        if (raw.length < 5 || !raw[0].isEmpty() || !raw[raw.length - 1].isEmpty()) {
+        if (raw.length < 4 || !raw[0].isEmpty() || !raw[raw.length - 1].isEmpty()) {
             throw new IllegalArgumentException("Invalid GitHub approved_ref path");
         }
         List<String> parts = Arrays.stream(raw).skip(1).limit(raw.length - 2L)
                 .map(GitHubApprovedScope::decodeSegment).toList();
         return new GitHubApprovedScope(uri.getHost(), parts.get(0), parts.get(1),
-                String.join("/", parts.subList(2, parts.size())) + "/");
+                parts.size() == 2 ? "" : String.join("/", parts.subList(2, parts.size())) + "/");
     }
 
     private static String decodeSegment(String raw) {

@@ -22,6 +22,16 @@ public final class SecretAwsSourceCredentials implements AwsCredentialsProvider,
     }
 
     public static SecretAwsSourceCredentials fromConfiguration(String mode, String profile) {
+        return fromConfiguration(mode, profile, "");
+    }
+
+    public static SecretAwsSourceCredentials fromConfiguration(String mode, String profile, String credentialsFile) {
+        if (credentialsFile != null && !credentialsFile.isBlank()) {
+            if (!"WORKLOAD".equals(mode) || profile != null && !profile.isBlank())
+                throw new IllegalArgumentException("AWS_WORKLOAD_FILE_CONFIGURATION_INVALID");
+            return new SecretAwsSourceCredentials(WORKLOAD_REF,
+                    new TemporaryCredentialFileProvider(java.nio.file.Path.of(credentialsFile)));
+        }
         return switch (mode == null ? "" : mode) {
             case "PROFILE" -> profile(profile);
             case "WORKLOAD" -> {

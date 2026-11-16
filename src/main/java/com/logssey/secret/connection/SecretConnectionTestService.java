@@ -21,6 +21,8 @@ public class SecretConnectionTestService {
     private final NotionAuthProbe notion;
     private final Clock clock;
     private final SecretAccessService access;
+    private com.logssey.secret.connection.core.SourceConnectionCredentialResolver sourceCredentials;
+    private com.logssey.secret.connection.core.GitHubInstallationClient managedGithub;
 
     SecretConnectionTestService(SecretConnectionTestRepository repository,
                                 AwsIdentityProbe aws, GitHubAuthProbe github, SecretAccessService access) {
@@ -30,8 +32,12 @@ public class SecretConnectionTestService {
     @Autowired
     SecretConnectionTestService(SecretConnectionTestRepository repository,
                                 AwsIdentityProbe aws, GitHubAuthProbe github,
-                                NotionAuthProbe notion, SecretAccessService access) {
+                                NotionAuthProbe notion, SecretAccessService access,
+                                com.logssey.secret.connection.core.SourceConnectionCredentialResolver sourceCredentials,
+                                com.logssey.secret.connection.core.GitHubInstallationClient managedGithub) {
         this(repository, aws, github, notion, Clock.systemUTC(), access);
+        this.sourceCredentials = sourceCredentials;
+        this.managedGithub = managedGithub;
     }
 
     SecretConnectionTestService(SecretConnectionTestRepository repository,
@@ -87,6 +93,18 @@ public class SecretConnectionTestService {
     private ConnectionProbeResult testGitHub(SecretConnectionTestRepository.Connection connection) {
         var scope = repository.firstEnabledScope(connection.id());
         if (scope.isEmpty()) return ConnectionProbeResult.failed("INVALID_APPROVED_SCOPE");
+        if (connection.authRef().startsWith("github-sm:")) {
+            try {
+                if (sourceCredentials == null || managedGithub == null)
+                    return ConnectionProbeResult.unavailable("GITHUB_APP_UNAVAILABLE");
+                var uri = java.net.URI.create(scope.orElseThrow().approvedRef());
+                String repository = uri.getHost() + "/" + uri.getRawPath().split("/")[1];
+                managedGithub.verifyRepository(sourceCredentials.resolve(connection.id()), repository);
+                return ConnectionProbeResult.connected();
+            } catch (RuntimeException ignored) {
+                return ConnectionProbeResult.unavailable("GITHUB_APP_UNAVAILABLE");
+            }
+        }
         return github.probe(scope.orElseThrow());
     }
 

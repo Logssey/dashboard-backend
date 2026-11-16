@@ -13,6 +13,12 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 @Transactional(readOnly=true)
 public class SecretCoverageService {
+    private static String safeConnectionName(String name, long id) {
+        if (name == null || name.isBlank() || name.length() > 200 || name.chars().anyMatch(c -> c < 32 || c == 127)
+                || name.matches("(?s).*(?:-----BEGIN|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_|ntn_|sk-ant-|(?:AKIA|ASIA)[A-Z0-9]{16}).*"))
+            return "연결 #" + id;
+        return name;
+    }
     private final JdbcTemplate jdbc;
     private final SecretAccessService access;
     private final Duration scanInterval;
@@ -60,14 +66,14 @@ public class SecretCoverageService {
     public Map<String,Object> connections(String login,String status,String origin,int page,int size) {
         validatePage(page,size); validate(status,Set.of("ALL","ACTIVE","PAUSED","ERROR")); validateOrigin(origin);
         var a=actor(login); List<Map<String,Object>> result=new ArrayList<>();
-        var connections=jdbc.queryForList("SELECT connection_id,provider,status,scope_version,next_due_at FROM secret_connections ORDER BY connection_id");
+        var connections=jdbc.queryForList("SELECT connection_id,provider,display_name,status,scope_version,next_due_at FROM secret_connections ORDER BY connection_id");
         for(var c:connections) {
             long id=number(c,"connection_id");
             if(!access.canReadConnectionFacts(a,id)||!status.equals("ALL")&&!status.equals(c.get("status"))) continue;
             var scopes=currentScopes(id,origin);
             if(!origin.equals("ALL")&&scopes.isEmpty()) continue;
             Map<String,Object> item=new LinkedHashMap<>();
-            item.put("connectionId",id);item.put("provider",c.get("provider"));item.put("safeDisplayAlias","연결 #"+id);
+            item.put("connectionId",id);item.put("provider",c.get("provider"));item.put("safeDisplayAlias",safeConnectionName((String)c.get("display_name"),id));
             item.put("connectionStatus",c.get("status"));item.put("scopeRevision",c.get("scope_version"));item.put("approvedScopeCount",scopes.size());
             item.put("latestProbe",latestProbe(id));item.put("lastFullScanAttempt",fullRun(id,false));item.put("lastSuccessfulFullScan",fullRun(id,true));
             item.put("nextDueAt",time(c,"next_due_at"));item.put("activeJob",activeJob(id));
@@ -142,7 +148,7 @@ public class SecretCoverageService {
                 Boolean.class,connectionId,connectionId,connectionId));
         }
         String valid=provider.equals("AWS")?com.logssey.secret.run.AwsScopeSql.predicate("s"):
-            "(s.content_type='GITHUB_REPOSITORY_FILES' AND s.history_limit='CURRENT_COMMIT_ONLY' AND s.approved_ref ~ '^github://[^/]+/[^/]+/[^/]+/.+$')";
+            "(s.content_type='GITHUB_REPOSITORY_FILES' AND s.history_limit='CURRENT_COMMIT_ONLY' AND s.approved_ref ~ '^github://[^/]+/[^/]+/[^/]+/([^/?#]+/)*$')";
         String sql="SELECT EXISTS(SELECT 1 FROM secret_connection_scopes s WHERE s.connection_id=? AND s.enabled)"
             +" AND NOT EXISTS(SELECT 1 FROM secret_connection_scopes s WHERE s.connection_id=? AND s.enabled AND ("+valid+") IS NOT TRUE)";
         if(provider.equals("AWS"))sql+=" AND EXISTS(SELECT 1 FROM secret_connections c WHERE c.connection_id=? AND (c.auth_ref ~ '^aws-profile:[A-Za-z0-9._-]{1,100}$' OR c.auth_ref='aws-workload:default'))";
