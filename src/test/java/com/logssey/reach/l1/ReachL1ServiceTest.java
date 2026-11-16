@@ -85,6 +85,25 @@ class ReachL1ServiceTest {
     }
 
     @Test
+    void collectorUploadNeedsNoAdminAndRecordsTheServiceAccount() {
+        String subject = "system:serviceaccount:reach:reach-l1-collector";
+        long running = finding(target(A, now.minusDays(1)));
+
+        var response = service.uploadFromCollector(subject, upload(now, c(A, 2)));
+
+        assertThat(response.findingsUpdated()).isEqualTo(1);
+        assertThat(deployment(running)).isEqualTo("RUNNING");
+        assertThat(jdbc.queryForMap("SELECT source, reported_by FROM reach_workload_observations WHERE namespace = 'reused'"))
+                .containsEntry("source", "CLUSTER_READER").containsEntry("reported_by", subject);
+
+        // 범위·검사·오래된 조회 거절은 수동 업로드와 같다
+        assertError(() -> service.uploadFromCollector(subject, upload("other", now, c(A, 1))), ErrorCode.INVALID_INPUT);
+        assertError(() -> service.uploadFromCollector(subject, upload(now.minusHours(1), c(A, 1))), ErrorCode.CONFLICT);
+        assertError(() -> service.uploadFromCollector(null, upload(now, c(A, 1))), ErrorCode.UNAUTHENTICATED);
+        assertError(() -> service.uploadFromCollector(" ", upload(now, c(A, 1))), ErrorCode.UNAUTHENTICATED);
+    }
+
+    @Test
     void rejectsBadInput() {
         var tooMany = new ArrayList<Container>();
         for (int i = 0; i <= ReachL1Service.MAX_CONTAINERS; i++) {

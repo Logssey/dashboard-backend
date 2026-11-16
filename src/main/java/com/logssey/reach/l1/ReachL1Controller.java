@@ -6,6 +6,7 @@ import java.util.List;
 import com.logssey.reach.l1.dto.ReachInventoryResponse;
 import com.logssey.reach.l1.dto.ReachWorkloadPageResponse;
 
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -37,9 +38,15 @@ public class ReachL1Controller {
         return service.workloads(principal == null ? null : principal.getName(), filter, size, cursor, include);
     }
 
-    /** L1 수동 업로드 (ADMIN 세션). 수집기 경로 /internal/v1/reach/l1/workloads는 따로 둔다 */
+    /**
+     * L1 업로드. ADMIN 세션(수동) 또는 클러스터 수집기의 서비스 계정 토큰.
+     * 토큰은 ReachTokenSecurityConfig가 수집기 서비스 계정만 이 경로에 들인다
+     */
     @PutMapping("/l1/workloads")
     public ReachInventoryResponse upload(Principal principal, @RequestBody ReachInventoryRequest request) {
+        if (principal instanceof JwtAuthenticationToken token) {
+            return service.uploadFromCollector(token.getToken().getSubject(), request);
+        }
         return service.upload(principal == null ? null : principal.getName(), request);
     }
 }
