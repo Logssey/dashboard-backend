@@ -58,6 +58,8 @@ docker compose -f deploy/compose.yaml -f deploy/compliance-compose.yaml --profil
 
 이 Compose 예시는 네트워크와 프로세스 경계를 확인하기 위한 단일 호스트 예시다. AWS 역할이나 점검 대상을 생성하지 않는다.
 
+기존 단일 호스트에 처음 추가할 때는 `deploy/bootstrap-compliance-host.py`를 root로 한 번 실행한다. 기존 Compose·배포 스크립트·API 설정을 먼저 백업하고, 비밀값을 출력하지 않은 채 비활성 Worker 설정을 추가한 뒤 구문 검사를 수행한다. 이 스크립트는 컨테이너를 시작하거나 기존 서비스를 재시작하지 않는다.
+
 ## 배포 전 확인
 
 - API와 Worker 이미지 digest가 검토된 값인가

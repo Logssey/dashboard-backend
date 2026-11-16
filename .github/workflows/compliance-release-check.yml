@@ -11,6 +11,7 @@ on:
       - 'compliance-worker/**'
       - 'deploy/verify-compliance.*'
       - 'deploy/compliance-compose.yaml'
+      - 'deploy/bootstrap-compliance-host.py'
       - '.github/workflows/dashboard-deploy.yml'
       - 'Dockerfile'
       - 'settings.gradle'
@@ -40,7 +41,9 @@ jobs:
           docker build --target api -t logssey-dashboard-api:ci .
           docker build --target compliance-worker -t logssey-compliance-worker:ci .
       - name: Run credential-free compliance E2E
-        run: sh deploy/verify-compliance.sh
+        run: |
+          python3 -m py_compile deploy/bootstrap-compliance-host.py
+          sh deploy/verify-compliance.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
