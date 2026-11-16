@@ -312,6 +312,7 @@ class SecretRevalidationServiceIntegrationTest {
         var principal = new com.logssey.secret.access.SecretPrincipal(actor());
         assertThat(((java.util.Map<?, ?>) readiness.capabilities(principal, caseId, occurrenceId).get("locationAbsenceCheck")).get("status"))
                 .isEqualTo("PASSED");
+        assertThat(workflow.detail(caseId,"revalidation-admin").get("nextActionCode")).isEqualTo("REVIEW_CLOSURE");
 
         long connection = jdbc.queryForObject("SELECT connection_id FROM secret_occurrences WHERE occurrence_id=?", Long.class, occurrenceId);
         long scope = jdbc.queryForObject("SELECT scope_id FROM secret_occurrences WHERE occurrence_id=?", Long.class, occurrenceId);

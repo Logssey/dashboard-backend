@@ -114,9 +114,9 @@ public class SecretLocationWorkflow {
         if(current) {
             if(unassigned&&items.stream().anyMatch(item->Boolean.TRUE.equals(item.get("canAssign"))))next="ASSIGN_LOCATION";
             else if(resumable.isPresent())next="RESUME_REMEDIATION";
+            else if(allMissing)next="REVIEW_CLOSURE";
             else if(items.stream().anyMatch(item->Boolean.TRUE.equals(item.get("canRecordAction"))))next="RECORD_LOCATION_ACTION";
             else if(items.stream().anyMatch(item->Boolean.TRUE.equals(item.get("canRequestRevalidation"))))next="REQUEST_REVALIDATION";
-            else if(allMissing)next="REVIEW_CLOSURE";
             else if(queued.isPresent())next="WAIT_FOR_REVALIDATION";
             else if(unassigned) {next="ASSIGN_LOCATION";executable=false;requiredRole="SECURITY";}
             else if("REVALIDATION_PENDING".equals(c.get("action_status"))) {
