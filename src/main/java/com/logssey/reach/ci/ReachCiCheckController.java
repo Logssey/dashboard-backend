@@ -2,9 +2,13 @@ package com.logssey.reach.ci;
 
 import java.net.URI;
 import java.security.Principal;
+import java.util.List;
 
 import com.logssey.reach.ci.auth.ReachCiCaller;
+import com.logssey.common.error.ApiException;
+import com.logssey.common.error.ErrorCode;
 import com.logssey.reach.ci.dto.ReachCiCheckCreatedResponse;
+import com.logssey.reach.ci.dto.ReachCiCheckPageResponse;
 import com.logssey.reach.ci.dto.ReachCiCheckResponse;
 
 import org.springframework.http.ResponseEntity;
@@ -14,6 +18,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -40,6 +45,24 @@ public class ReachCiCheckController {
         var response = ResponseEntity.accepted().location(URI.create("/api/v1/reach/ci/checks/" + created.check().id()));
         if (created.replayed()) response.header("Idempotent-Replayed", "true");
         return response.body(created.check());
+    }
+
+    /**
+     * API-12 목록 (대시보드 세션만). CI 토큰은 403: 한 레포의 토큰으로 모든 레포의 검사를 보지 않는다.
+     * 쉼표로 준 값은 Spring이 목록으로 나눈다(mode=PR,IMAGE_BUILD)
+     */
+    @GetMapping
+    public ReachCiCheckPageResponse checks(
+            Principal principal,
+            @RequestParam(required = false) String repository,
+            @RequestParam(required = false) List<String> mode,
+            @RequestParam(required = false) List<String> scanStatus,
+            @RequestParam(required = false) Integer size,
+            @RequestParam(required = false) String cursor,
+            @RequestParam(required = false) String include) {
+        if (ReachCiCaller.from(principal).isPresent()) throw new ApiException(ErrorCode.FORBIDDEN);
+        return service.checks(principal == null ? null : principal.getName(),
+                new ReachCiCheckFilter(repository, mode, scanStatus), size, cursor, include);
     }
 
     /** API-12 결과 조회 */

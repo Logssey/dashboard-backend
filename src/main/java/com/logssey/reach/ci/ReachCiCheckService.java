@@ -15,6 +15,7 @@ import com.logssey.reach.ReachProperties;
 import com.logssey.reach.ci.auth.ReachCiAccess;
 import com.logssey.reach.ci.auth.ReachCiCaller;
 import com.logssey.reach.ci.dto.ReachCiCheckCreatedResponse;
+import com.logssey.reach.ci.dto.ReachCiCheckPageResponse;
 import com.logssey.reach.ci.dto.ReachCiCheckResponse;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -34,6 +35,9 @@ public class ReachCiCheckService {
     private static final List<String> CROSS_CHECKS = List.of("GRYPE");
     /** 멱등 키 길이 (명세 2-7: 1~64자) */
     private static final int KEY_MAX = 64;
+    /** 목록 크기 (명세 2-4, 스캔 이력과 같다) */
+    private static final int DEFAULT_SIZE = 20;
+    private static final int MAX_SIZE = 100;
     /** V37 칸 길이 */
     private static final int REPOSITORY_MAX = 200;
     private static final int REF_MAX = 255;
@@ -168,8 +172,34 @@ public class ReachCiCheckService {
         return view(checkId);
     }
 
+    /**
+     * API-12 목록 (대시보드 세션만). 최신 검사부터. 항목은 결과 조회와 같은 모양이고, 끝난 검사는 게이트를 함께 준다.
+     * 게이트는 검사마다 새 Finding을 한 번 센다(페이지 크기만큼 쿼리, 최대 100)
+     */
+    @Transactional(readOnly = true)
+    public ReachCiCheckPageResponse checks(String loginId, ReachCiCheckFilter filter, Integer size, String cursor,
+                                           String include) {
+        requireAdmin(loginId);
+        int limit = size == null ? DEFAULT_SIZE : size;
+        if (limit < 1 || limit > MAX_SIZE) throw invalid();
+        if (include != null && !include.equals("total")) throw invalid();
+        var after = cursor == null ? null : ReachCiCheckCursor.decode(cursor);
+        if (after != null && after.filter() != filter.fingerprint()) throw invalid();
+
+        var rows = repository.checks(filter, after == null ? null : after.checkId(), limit + 1);   // 하나 더 읽어 다음 페이지 확인
+        boolean hasNext = rows.size() > limit;
+        var page = hasNext ? rows.subList(0, limit) : rows;
+        var items = page.stream().map(this::view).toList();
+        String nextCursor = hasNext ? new ReachCiCheckCursor(page.get(page.size() - 1).id(), filter.fingerprint()).encode() : null;
+        Long totalCount = "total".equals(include) ? repository.countChecks(filter) : null;
+        return new ReachCiCheckPageResponse(items, nextCursor, hasNext, totalCount);
+    }
+
     private ReachCiCheckResponse view(long checkId) {
-        var c = repository.check(checkId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+        return view(repository.check(checkId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND)));
+    }
+
+    private ReachCiCheckResponse view(ReachCiCheckRepository.CheckRow c) {
         boolean done = "SUCCEEDED".equals(c.scanStatus());
         var pr = c.prNumber() == null ? null
                 : new ReachCiCheckResponse.PullRequest(c.prNumber(), c.prBaseRef(), c.prHeadRef());
@@ -178,7 +208,7 @@ public class ReachCiCheckService {
                 done ? gate(c.scanId(), c.baselineScanId(), c.policy()) : null,
                 // API-04는 아직 scanId를 받지 않는다(1단계에서 뺌). 명세의 주소를 그대로 준다
                 done ? "/api/v1/reach/findings?scanId=" + c.scanId() : null,
-                c.finishedAt());
+                c.createdAt(), c.finishedAt());
     }
 
     /**

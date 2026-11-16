@@ -220,6 +220,14 @@ class ReachCiOidcIntegrationTest {
         long userCheck = JSON.readTree(byUser.getResponse().getContentAsString()).get("id").asLong();
         expect(403, upload(userCheck, prClaims()));
 
+        // 검사 목록은 대시보드 세션만. 한 레포의 토큰으로 모든 레포의 검사를 보지 않는다
+        expect(403, MockMvcRequestBuilders.get("/api/v1/reach/ci/checks").header(HttpHeaders.AUTHORIZATION, bearer(sign(githubKey, prClaims()))));
+        mvc.perform(MockMvcRequestBuilders.get("/api/v1/reach/ci/checks?mode=PR&include=total").session(admin()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalCount").value(1))
+                .andExpect(jsonPath("$.items[0].id").value(userCheck))
+                .andExpect(jsonPath("$.items[0].createdAt").exists());
+
         // 유효한 CI 토큰이라도 CI 경로 밖 Reach API는 403, Reach 밖은 기존 체인(세션 없음)이 401
         expect(403, MockMvcRequestBuilders.get("/api/v1/reach/findings").header(HttpHeaders.AUTHORIZATION, bearer(sign(githubKey, prClaims()))));
         expect(403, post("/api/v1/reach/scans").header(HttpHeaders.AUTHORIZATION, bearer(sign(githubKey, prClaims())))

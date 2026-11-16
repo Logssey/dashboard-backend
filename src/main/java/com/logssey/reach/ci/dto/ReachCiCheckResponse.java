@@ -4,11 +4,11 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 
-/** API-12 결과 조회. gate·findingsUrl은 스캔이 SUCCEEDED일 때만 있다 (명세 6-3: FAILED면 gate가 없다) */
+/** API-12 결과 조회·목록 항목. gate·findingsUrl은 스캔이 SUCCEEDED일 때만 있다 (명세 6-3: FAILED면 gate가 없다) */
 public record ReachCiCheckResponse(
         long id, String mode, String repository, String headCommit, PullRequest pullRequest,
         long scanId, String scanStatus, String policy, Long baselineScanId,
-        Gate gate, String findingsUrl, OffsetDateTime finishedAt) {
+        Gate gate, String findingsUrl, OffsetDateTime createdAt, OffsetDateTime finishedAt) {
 
     public record PullRequest(int number, String baseRef, String headRef) {}
 
