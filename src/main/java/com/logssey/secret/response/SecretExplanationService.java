@@ -167,16 +167,24 @@ public class SecretExplanationService {
         String href = "/secrets/cases/" + caseId;
         String next = (String) guidance.get("nextActionCode");
         boolean waiting = next != null && next.startsWith("WAIT_");
-        if (!waiting && unassigned && locations.stream().anyMatch(location -> unassigned(location)
-                && Boolean.TRUE.equals(location.get("canAssign")))) {
-            links.put("ASSIGN_SELF", href + "?tab=work#case-assignment");
+        var assignmentTarget = locations.stream().filter(location -> unassigned(location)
+                && Boolean.TRUE.equals(location.get("canAssign"))).findFirst();
+        if (!waiting && assignmentTarget.isPresent()) {
+            links.put("ASSIGN_SELF", href + "?tab=work&occurrence=" + assignmentTarget.get().get("occurrenceId")
+                    + "#case-location-assignment");
         }
-        if (!waiting && locations.stream().anyMatch(location -> Boolean.TRUE.equals(location.get("canRecordAction")))) {
-            links.put("RECORD_ACTION", href + "?tab=work#case-action-form");
+        var actionTarget = locations.stream()
+                .filter(location -> Boolean.TRUE.equals(location.get("canRecordAction"))).findFirst();
+        if (!waiting && actionTarget.isPresent()) {
+            links.put("RECORD_ACTION", href + "?tab=work&occurrence=" + actionTarget.get().get("occurrenceId")
+                    + "#case-action-form");
         }
+        var revalidationTarget = locations.stream()
+                .filter(location -> Boolean.TRUE.equals(location.get("canRequestRevalidation"))).findFirst();
         if ("REQUEST_REVALIDATION".equals(next) && Boolean.TRUE.equals(guidance.get("canExecute"))
-                && locations.stream().anyMatch(location -> Boolean.TRUE.equals(location.get("canRequestRevalidation")))) {
-            links.put("REVALIDATE", href + "?tab=verification&check=locations#case-verification-title");
+                && revalidationTarget.isPresent()) {
+            links.put("REVALIDATE", href + "?tab=verification&check=locations&occurrence="
+                    + revalidationTarget.get().get("occurrenceId") + "#case-verification-title");
         }
         if ("REVIEW_CLOSURE".equals(next)
                 && Boolean.TRUE.equals(guidance.get("canExecute"))) {
@@ -184,7 +192,7 @@ public class SecretExplanationService {
         }
         if (links.isEmpty()) links.put("OPEN_CASE", href);
         var context = context("CASE", "OTHER", (String) detail.get("issuer"), (String) detail.get("credentialType"), facts, links);
-        return new Snapshot(context, Map.copyOf(links), detail.get("version") + ":" + guidance, allReadable);
+        return new Snapshot(context, Map.copyOf(links), detail.get("version") + ":" + guidance + ":" + links, allReadable);
     }
 
     private static boolean unassigned(Map<String, Object> location) {

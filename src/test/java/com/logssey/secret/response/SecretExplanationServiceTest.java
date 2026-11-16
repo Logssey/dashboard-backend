@@ -59,7 +59,7 @@ class SecretExplanationServiceTest {
         generated("RECORD_ACTION");
         var result = service.responseCase(12, "security", true);
         assertThat(result.actions()).extracting(SecretExplanationResponse.Action::href)
-                .containsExactly("/secrets/cases/12?tab=work#case-action-form");
+                .containsExactly("/secrets/cases/12?tab=work&occurrence=14#case-action-form");
         var argument = org.mockito.ArgumentCaptor.forClass(SecretExplanationContext.class);
         verify(provider).explain(argument.capture());
         assertThat(argument.getValue().externalFields()).doesNotContainKeys("caseId", "name", "path", "href", "login");
@@ -75,7 +75,18 @@ class SecretExplanationServiceTest {
         var result = service.responseCase(12, "security", false);
         assertThat(result.facts()).extracting(SecretExplanationResponse.Fact::code).contains("ASSIGNEE_REQUIRED");
         assertThat(result.actions()).extracting(SecretExplanationResponse.Action::code).containsExactly("ASSIGN_SELF");
-        assertThat(result.actions().getFirst().href()).isEqualTo("/secrets/cases/12?tab=work#case-assignment");
+        assertThat(result.actions().getFirst().href()).isEqualTo("/secrets/cases/12?tab=work&occurrence=14#case-location-assignment");
+    }
+
+    @Test void anActionLinkSelectsTheLocationThatActuallyAllowsTheOperation() {
+        var detail = prepare(true);
+        var blocked = location(8L, null, false, false);
+        var available = location(7L, null, true, false);
+        available.put("occurrenceId", 15L);
+        detail.put("occurrences", List.of(blocked, available));
+        var result = service.responseCase(12, "security", false);
+        assertThat(result.actions()).extracting(SecretExplanationResponse.Action::href)
+                .containsExactly("/secrets/cases/12?tab=work&occurrence=15#case-action-form");
     }
 
     @Test void locationAssignmentsAndCapabilitiesOverrideCoarseCaseFlags() {
@@ -96,7 +107,7 @@ class SecretExplanationServiceTest {
         var result = service.responseCase(12, "security", false);
         assertThat(result.actions()).extracting(SecretExplanationResponse.Action::code).containsExactly("REVALIDATE");
         assertThat(result.actions().getFirst().href())
-                .isEqualTo("/secrets/cases/12?tab=verification&check=locations#case-verification-title");
+                .isEqualTo("/secrets/cases/12?tab=verification&check=locations&occurrence=14#case-verification-title");
         detail.put("taskGuidance", guidance("REVIEW_CLOSURE", true));
         assertThat(service.responseCase(12, "security", false).actions()).extracting(SecretExplanationResponse.Action::code)
                 .containsExactly("REVIEW_CLOSURE");
