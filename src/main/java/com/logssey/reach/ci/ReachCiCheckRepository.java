@@ -9,6 +9,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import com.logssey.reach.ci.auth.ReachCiAccess;
+
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
@@ -116,10 +118,12 @@ public class ReachCiCheckRepository {
     }
 
     /** 검사를 만든 주체 (USER:<id>, CI:<repository>). 검사가 없으면 빈 값 */
-    Optional<String> checkScope(long checkId) {
-        return jdbcClient.sql("SELECT idempotency_scope FROM reach_ci_checks WHERE check_id = :checkId")
+    /** 검사를 만든 주체와 레포. CI 토큰이 이 검사를 보고 올릴 수 있는지(ReachCiAccess) 정한다 */
+    Optional<ReachCiAccess.CheckOwner> checkOwner(long checkId) {
+        return jdbcClient.sql("SELECT idempotency_scope, mode, repository FROM reach_ci_checks WHERE check_id = :checkId")
                 .param("checkId", checkId)
-                .query(String.class)
+                .query((rs, n) -> new ReachCiAccess.CheckOwner(rs.getString("idempotency_scope"), rs.getString("mode"),
+                        rs.getString("repository")))
                 .optional();
     }
 

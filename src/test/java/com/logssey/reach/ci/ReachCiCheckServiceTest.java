@@ -10,6 +10,7 @@ import com.logssey.reach.ReachProperties;
 import com.logssey.reach.ReachTestProperties;
 
 import java.util.List;
+import java.util.Map;
 
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterAll;
@@ -273,10 +274,10 @@ class ReachCiCheckServiceTest {
         assertThat(created.replayed()).isFalse();
         long scanId = created.check().scanId();
 
-        // 이미지 대상은 레포를 모른다. options를 빼면 기본값을 남긴다 (명세 API-01)
+        // 이미지 대상은 설정에서 그 이미지 앱의 레포를 남긴다(러너를 띄울 레포). options를 빼면 기본값을 남긴다 (명세 API-01)
         assertThat(jdbc.queryForMap("SELECT mode, repository, head_commit, policy, options::text AS options "
                 + "FROM reach_ci_checks WHERE scan_id = ?", scanId))
-                .containsEntry("mode", "MANUAL").containsEntry("repository", null).containsEntry("head_commit", null)
+                .containsEntry("mode", "MANUAL").containsEntry("repository", "service-backend").containsEntry("head_commit", null)
                 .containsEntry("policy", "REPORT_ONLY")
                 .containsEntry("options", "{\"l1\": true, \"l2\": true, \"crossCheck\": [\"GRYPE\"]}");
 
@@ -327,6 +328,64 @@ class ReachCiCheckServiceTest {
         // 키는 호출 주체마다 하나라 API-12에서 쓴 키를 API-01에 쓰면 본문이 달라 409
         service.create("admin", "shared", pr("GATE"));
         assertError(() -> service.createScan("admin", "shared", rescan), ErrorCode.CONFLICT);
+    }
+
+    @Test
+    void scanRequestDispatchesTheRunnerOfTheTargetRepository() {
+        var dispatcher = new RecordingDispatcher();
+        var apps = new ReachProperties(List.of(
+                new ReachProperties.App("API", "Logssey/service-backend", null, "logssey/reused-api"),
+                new ReachProperties.App("CHAT", "service-backend", "chat-server", "logssey/reused-chat"),
+                new ReachProperties.App("EXT", null, null, "vendor/ext")), null);
+        service = new ReachCiCheckService(new ReachCiCheckRepository(JdbcClient.create(jdbc)), apps, dispatcher);
+
+        // 레포 대상: 요청한 레포의 워크플로, 커밋과 하위 경로. 소유자를 붙인 설정이어도 레포 이름만 보낸다
+        var repo = new ReachTargetRequest("REPO", null, new ReachTargetRequest.Repo("service-backend", COMMIT, "chat-server"), null);
+        long repoCheck = service.createScan("admin", "d1", new ReachScanRequest(repo, null, null)).check().id();
+        // 이미지 대상: 그 이미지 앱의 레포, 앱의 하위 경로
+        var image = new ReachTargetRequest("IMAGE", null, null, new ReachTargetRequest.Image("logssey/reused-chat", DIGEST));
+        long imageCheck = service.createScan("admin", "d2", new ReachScanRequest(image, null, null)).check().id();
+        assertThat(dispatcher.calls).containsExactly(
+                new Call("service-backend", Map.of("check_id", Long.toString(repoCheck), "target_type", "REPO",
+                        "commit", COMMIT, "path", "chat-server", "image_repository", "", "image_digest", "")),
+                new Call("service-backend", Map.of("check_id", Long.toString(imageCheck), "target_type", "IMAGE",
+                        "commit", "", "path", "chat-server", "image_repository", "logssey/reused-chat",
+                        "image_digest", DIGEST)));
+
+        // 같은 키로 다시 보내면 띄우지 않는다. 재대조는 러너가 아직 못 해 띄우지 않는다(QUEUED로 남는다)
+        service.createScan("admin", "d1", new ReachScanRequest(repo, null, null));
+        long done = scan(scanTarget(service.createScan("admin", "d3", new ReachScanRequest(repo, null, null))
+                .check().scanId()), "SUCCEEDED");
+        dispatcher.calls.clear();
+        service.createScan("admin", "d4", new ReachScanRequest(null, done, null));
+        assertThat(dispatcher.calls).isEmpty();
+
+        // 레포가 없는 이미지 앱은 띄울 워크플로가 없다 → 422 (트랜잭션은 Spring이 되돌린다. 통합 테스트에서 본다)
+        var ext = new ReachTargetRequest("IMAGE", null, null, new ReachTargetRequest.Image("vendor/ext", DIGEST));
+        assertError(() -> service.createScan("admin", "d5", new ReachScanRequest(ext, null, null)), ErrorCode.UNPROCESSABLE);
+        assertThat(dispatcher.calls).isEmpty();
+
+        // 띄우는 설정이 없으면 지금처럼 QUEUED로 남는다(레포 없는 이미지 앱도 받는다)
+        dispatcher.enabled = false;
+        service.createScan("admin", "d6", new ReachScanRequest(ext, null, null));
+        assertThat(dispatcher.calls).isEmpty();
+    }
+
+    private record Call(String repository, Map<String, String> inputs) {}
+
+    private static final class RecordingDispatcher implements ReachScanDispatcher {
+        final List<Call> calls = new java.util.ArrayList<>();
+        boolean enabled = true;
+
+        @Override
+        public boolean enabled() {
+            return enabled;
+        }
+
+        @Override
+        public void dispatch(String repository, Map<String, String> inputs) {
+            calls.add(new Call(repository, Map.copyOf(inputs)));
+        }
     }
 
     @Test

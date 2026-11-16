@@ -16,7 +16,8 @@ import org.springframework.stereotype.Component;
  * - 본문·대상의 레포가 토큰 레포와 같아야 한다. 이미지 대상은 그 레포 앱의 이미지여야 한다
  * - PR 검사는 pull_request 이벤트에서만, 그 밖의 검사는 기본 브랜치 ref에서만
  * - 재검사(rescanOf)는 사람만 한다
- * - 결과 조회·업로드는 그 검사를 만든 레포의 토큰만
+ * - 결과 조회·업로드는 그 검사를 만든 레포의 토큰만. 대시보드에서 요청한 스캔(API-01, MANUAL 검사)은
+ *   서버가 workflow_dispatch로 띄운 실행(기본 브랜치)이 그 검사의 레포 토큰으로 올린다
  */
 @Component
 public class ReachCiAccess {
@@ -49,15 +50,31 @@ public class ReachCiAccess {
 
         boolean allowedEvent = "PR".equals(request.mode())
                 ? "pull_request".equals(caller.eventName()) && samePullRequest(caller, request.pullRequest())
-                : ("refs/heads/" + ci.defaultBranch()).equals(caller.ref());
+                : defaultBranch(caller);
         if (!allowedEvent) throw forbidden();
     }
 
-    /** API-12 결과 조회, API-13. scope는 검사의 idempotency_scope(검사가 없으면 빈 값 → 404) */
-    public void requireOwner(ReachCiCaller caller, Optional<String> scope) {
+    private boolean defaultBranch(ReachCiCaller caller) {
+        return ("refs/heads/" + ci.defaultBranch()).equals(caller.ref());
+    }
+
+    /**
+     * 검사를 만든 주체와 레포 (V37 reach_ci_checks.idempotency_scope·mode·repository).
+     * repository는 API-01이면 대상의 레포(이미지면 그 앱의 레포)다
+     */
+    public record CheckOwner(String scope, String mode, String repository) {}
+
+    /** API-12 결과 조회, API-13. 검사가 없으면 404 */
+    public void requireOwner(ReachCiCaller caller, Optional<CheckOwner> check) {
         requireAllowedRepository(caller);
-        String owner = scope.orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
-        if (!owner.equalsIgnoreCase(caller.scope())) throw forbidden();
+        var owner = check.orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+        if (owner.scope().equalsIgnoreCase(caller.scope())) return;
+        // 사람이 대시보드에서 요청한 스캔: 서버가 그 레포의 기본 브랜치 워크플로를 workflow_dispatch로 띄운다.
+        // 기본 브랜치라 리뷰를 거친 워크플로만 올리고, 다른 레포의 토큰은 그 검사를 보지 못한다
+        boolean dispatched = "MANUAL".equals(owner.mode()) && owner.scope().startsWith("USER:")
+                && "workflow_dispatch".equals(caller.eventName()) && defaultBranch(caller)
+                && sameRepository(caller, owner.repository());
+        if (!dispatched) throw forbidden();
     }
 
     private void requireAllowedRepository(ReachCiCaller caller) {
