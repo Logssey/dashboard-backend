@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
@@ -46,18 +47,27 @@ public class ReachCiCheckService {
     /** 감시 대상 앱 (PRD FR-15). 요청의 레포·이미지가 어느 앱인지 정한다 */
     private final ReachProperties properties;
     private final ReachCiAccess access;
+    /** API-01이 러너(서비스 레포의 Reach 워크플로)를 띄운다. 설정이 없으면 스캔은 QUEUED로 남는다 */
+    private final ReachScanDispatcher dispatcher;
     private final JsonMapper mapper = JsonMapper.builder().build();
 
     @Autowired
-    public ReachCiCheckService(ReachCiCheckRepository repository, ReachProperties properties, ReachCiAccess access) {
+    ReachCiCheckService(ReachCiCheckRepository repository, ReachProperties properties, ReachCiAccess access,
+                        ReachScanDispatcher dispatcher) {
         this.repository = repository;
         this.properties = properties;
         this.access = access;
+        this.dispatcher = dispatcher;
     }
 
-    /** CI 설정 없이(CI 토큰은 모두 거부) */
+    /** CI 설정 없이(CI 토큰은 모두 거부, 러너를 띄우지 않음) */
     ReachCiCheckService(ReachCiCheckRepository repository, ReachProperties properties) {
-        this(repository, properties, ReachCiAccess.closed());
+        this(repository, properties, ReachCiAccess.closed(), ReachScanDispatcher.NONE);
+    }
+
+    /** 러너를 띄우는 것만 바꾼다(테스트) */
+    ReachCiCheckService(ReachCiCheckRepository repository, ReachProperties properties, ReachScanDispatcher dispatcher) {
+        this(repository, properties, ReachCiAccess.closed(), dispatcher);
     }
 
     /** 실행 결과. replayed면 같은 멱등 키로 이미 만든 검사를 다시 준 것이다 */
@@ -90,8 +100,10 @@ public class ReachCiCheckService {
     }
 
     /**
-     * API-01 스캔 요청. 명세대로 mode = MANUAL인 CI 검사를 함께 만든다(러너는 검사 ID로 결과를 올린다).
-     * GitHub workflow_dispatch 호출은 아직 하지 않아 스캔은 QUEUED로 남는다
+     * API-01 스캔 요청. 명세대로 mode = MANUAL인 CI 검사를 함께 만들고, 대상의 레포에서 Reach 워크플로를
+     * workflow_dispatch로 띄운다(ARD AD-18 ③). 러너는 받은 검사 ID로 결과를 올린다(API-13).
+     * 띄우지 못하면 503이고 이 요청의 대상·스캔·검사는 되돌아간다(같은 멱등 키로 다시 요청하면 새로 띄운다).
+     * 띄우는 설정이 없거나 재대조(rescanOf)면 띄우지 않아 스캔은 QUEUED로 남는다(러너가 저장된 SBOM 재대조를 아직 못 한다)
      */
     public Created createScan(String loginId, String idempotencyKey, ReachScanRequest request) {
         long userId = requireAdmin(loginId);
@@ -106,12 +118,44 @@ public class ReachCiCheckService {
         stored.put("l1", options == null || options.l1() == null || options.l1());
         stored.put("l2", options == null || options.l2() == null || options.l2());
 
-        // 레포 대상이면 레포와 커밋을 검사에도 남긴다. 이미지 대상은 레포를 모른다(서비스 등록 목록 PRD FR-15 전)
-        var repo = request.target() == null ? null : request.target().repo();
-        boolean repoTarget = request.target() != null && "REPO".equals(request.target().type()) && repo != null;
-        var plan = new Plan("MANUAL", repoTarget ? repo.name() : null, repoTarget ? ReachTargets.commit(repo.commit()) : null,
+        // 검사에 대상의 레포를 남긴다. 러너를 띄울 레포이고, 그 레포의 토큰만 결과를 올린다(ReachCiAccess).
+        // 이미지 대상은 설정(logssey.reach.apps)에서 그 이미지 앱의 레포를 찾는다
+        var resolved = request.target() == null ? null : ReachTargets.resolve(request.target(), properties);
+        var app = resolved == null ? null : app(resolved.app());
+        boolean repoTarget = resolved != null && "REPO".equals(resolved.type());
+        String repo = repoTarget ? resolved.repoName() : app == null ? null : app.repo();
+        var plan = new Plan("MANUAL", repo, repoTarget ? resolved.repoCommit() : null,
                 null, null, null, "REPORT_ONLY", null, mapper.writeValueAsString(stored));
-        return open(Requester.user(userId), key, request, request.target(), request.rescanOf(), plan);
+        var created = open(Requester.user(userId), key, request, request.target(), request.rescanOf(), plan);
+
+        if (!created.replayed() && resolved != null && dispatcher.enabled()) {
+            // 레포가 없는 이미지 앱(설정에 image만)은 띄울 워크플로가 없다 (명세 TARGET_UNRESOLVED → UNPROCESSABLE)
+            if (repo == null) throw new ApiException(ErrorCode.UNPROCESSABLE);
+            dispatcher.dispatch(repo.substring(repo.lastIndexOf('/') + 1),
+                    inputs(created.check().id(), resolved, app));
+        }
+        return created;
+    }
+
+    private ReachProperties.App app(String code) {
+        return properties.apps().stream().filter(a -> a.code().equals(code)).findFirst().orElse(null);
+    }
+
+    /**
+     * 워크플로 inputs (서비스 레포 reach.yml의 workflow_dispatch). 워크플로에 없는 이름을 보내면 GitHub이 거부해
+     * 늘 같은 이름을 모두 보내고 쓰지 않는 값은 빈 문자열이다. path는 레포 대상이면 요청의 하위 경로, 이미지면 앱의 경로
+     */
+    private static Map<String, String> inputs(long checkId, ReachTargets.Resolved target, ReachProperties.App app) {
+        boolean repo = "REPO".equals(target.type());
+        String path = repo ? target.repoPath() : app == null ? null : app.path();
+        var inputs = new LinkedHashMap<String, String>();
+        inputs.put("check_id", Long.toString(checkId));
+        inputs.put("target_type", target.type());
+        inputs.put("commit", repo ? target.repoCommit() : "");
+        inputs.put("path", path == null ? "" : path);
+        inputs.put("image_repository", repo ? "" : target.imageRepository());
+        inputs.put("image_digest", repo ? "" : target.imageDigest());
+        return inputs;
     }
 
     /**
@@ -168,7 +212,7 @@ public class ReachCiCheckService {
     /** API-12 결과 조회 (CI 토큰). 검사를 만든 레포의 토큰만 */
     @Transactional(readOnly = true)
     public ReachCiCheckResponse checkForCi(ReachCiCaller caller, long checkId) {
-        access.requireOwner(caller, repository.checkScope(checkId));
+        access.requireOwner(caller, repository.checkOwner(checkId));
         return view(checkId);
     }
 

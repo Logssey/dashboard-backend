@@ -10,16 +10,22 @@
 
 | 파일 | 내용 |
 | --- | --- |
-| `reach.yml` | 서비스 저장소 `.github/workflows/reach.yml`로 복사할 워크플로. 작업 두 개(`pr`, `image`) |
+| `reach.yml` | 서비스 저장소 `.github/workflows/reach.yml`로 복사할 워크플로. 작업 세 개(`pr`, `image`, `manual`) |
 | `reach-scan.sh` | 검사 등록부터 게이트까지 한 번에. 워크플로 밖(로컬)에서도 같은 순서로 돈다 |
 | `install-tools.sh` | Trivy·Grype를 버전과 SHA-256으로 고정해 설치(infrastructure `iac-gate`와 같은 방식) |
 
-## 두 작업
+## 세 작업
 
 | 작업 | 언제 | 대상(API-12 `mode`) | 무엇을 스캔 |
 | --- | --- | --- | --- |
 | `pr` | PR이 열리거나 커밋이 더해질 때(`src/**`, Gradle 파일) | 레포(`PR`) | PR head에서 빌드한 bootJar(`trivy rootfs`) |
 | `image` | 서비스의 CI/CD 워크플로가 끝난 뒤(`workflow_run`) | 이미지(`IMAGE_BUILD`) | CI/CD가 ECR에 올린 `pr-{sha}` 이미지(`trivy image`) + 그 안의 `/app/app.jar` |
+| `manual` | 대시보드에서 [스캔 요청](API-01)을 누를 때. 대시보드가 `workflow_dispatch`로 띄운다 | 대시보드가 만든 검사(`MANUAL`) | 레포 대상은 그 커밋에서 빌드한 bootJar, 이미지 대상은 그 digest 이미지 + `/app/app.jar` |
+
+- `manual`은 검사를 등록하지 않고 받은 `check_id`에 올린다(`reach-scan.sh` `MODE=MANUAL`). 대시보드는 그 검사의 레포·기본 브랜치·`workflow_dispatch` 토큰만 받는다.
+- `manual`에서 스캔 전 단계(입력 확인, 빌드, 이미지 받기, 도구 설치)가 실패하면 실패 묶음(`failure.code` `BUILD_FAILED`·`IMAGE_PULL_FAILED`)을 올려 대시보드 스캔이 `QUEUED`에 남지 않고 `FAILED`로 끝난다. 스캔 단계 안의 실패는 지금처럼 `ANALYSIS_FAILED`다.
+- `workflow_dispatch`도 기본 브랜치에 있는 파일로만 돈다. 대시보드는 기본 브랜치(`logssey.reach.ci.default-branch`)로 띄운다.
+- 이미지 대상은 이미지 태그 `pr-{sha}`가 있으면 그 커밋을 받아 `verdict.py`에 설정 파일을 준다. 없으면 설정 파일 없이 판정한다.
 
 - 서비스의 CI/CD 워크플로는 고치지 않는다. `image` 작업은 이미지를 받아 읽기만 하고 실행하지 않는다. API가 바뀌지 않아 이미지가 없으면 건너뛴다.
 - 머지할 때도 CI/CD가 돌지만 이미지는 같은 digest라 같은 `Idempotency-Key`가 된다. 이때는 다시 스캔하지 않고 이미 끝난 검사 결과만 보인다.
@@ -37,8 +43,9 @@
 | 이미지 저장소 | 서비스 저장소 변수 `REACH_ECR_REPOSITORY`(예: `logssey/reused-api`). 없으면 이미지 작업을 건너뛴다 | 설치마다 |
 | CI 인증 | 대시보드가 `/api/v1/reach/ci/**`에서 GitHub OIDC 토큰(`aud = logssey-reach`)을 받는다. 스크립트는 호출마다 새 토큰을 받아 `Authorization: Bearer`로 보낸다. 대시보드 설정 `logssey.reach.ci.repository-owner`(조직 이름)가 있어야 받고, PR 검사는 `pull_request` 이벤트, 이미지 검사는 기본 브랜치(`logssey.reach.ci.default-branch`, 기본 `main`)에서만 받는다. 조건은 API 명세 2-2 | 구현됨. 설치마다 조직 설정 |
 | dashboard-backend 읽기 | GitHub App 토큰. 비밀값 `REACH_APP_ID`, `REACH_APP_PRIVATE_KEY`(서비스 CI/CD의 gitops 토큰과 같은 방식) | 앱 미정. 나중에 분석기 이미지(GHCR)로 바꾸면 필요 없다 |
-| ECR 읽기 역할 | 비밀값 `REACH_ECR_READ_ROLE_ARN`. `ecr:DescribeImages`, `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`, `ecr:GetAuthorizationToken`만. 신뢰 정책은 이 저장소의 `workflow_run`으로 제한 | 미정(infrastructure Terraform) |
-| `REACH_REF` | `reach.yml`의 env. 이 폴더가 들어간 dashboard-backend 커밋 | `b261f45`(#94 머지). 규칙·분석기·스크립트가 바뀌면 그 커밋으로 올린다 |
+| ECR 읽기 역할 | 비밀값 `REACH_ECR_READ_ROLE_ARN`. `ecr:DescribeImages`, `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`, `ecr:GetAuthorizationToken`만. 신뢰 정책은 이 저장소의 기본 브랜치 실행(`sub = repo:<조직>/<레포>:ref:refs/heads/main`, `image`의 `workflow_run`과 `manual`의 `workflow_dispatch`)으로 제한 | 미정(infrastructure Terraform). 없으면 이미지 대상 `manual`은 `IMAGE_PULL_FAILED` |
+| 대시보드가 워크플로를 띄우는 앱 | 대시보드 설정 `logssey.reach.dispatch.app-id`·`private-key`(운영은 `/run/secrets` 파일). 권한은 `Actions: write` 하나, 감시 대상 서비스 저장소에만 설치. 위 dashboard-backend 읽기 앱과 따로 둔다(그 앱 키는 서비스 CI가 쓴다). 설정이 없으면 대시보드 스캔 요청은 `QUEUED`로 남는다 | 미정 |
+| `REACH_REF` | `reach.yml`의 env. 이 폴더가 들어간 dashboard-backend 커밋 | `b261f45`(#94 머지). 규칙·분석기·스크립트가 바뀌면 그 커밋으로 올린다. `manual` 작업은 `reach-scan.sh`의 `MODE=MANUAL`이 들어간 커밋 이후여야 한다 |
 
 ## 로컬에서 돌려 보기
 
@@ -58,3 +65,4 @@ bash deploy/reach/ci/reach-scan.sh
 - 같은 값으로 다시 돌리면 같은 검사를 다시 보고만 한다. 값 하나라도 다르면(예: `BASE_REF`를 뺌) 같은 키에 다른 본문이라 409다.
 - 단계가 실패하면 실패 묶음(`failure.code = ANALYSIS_FAILED`, 실패한 단계)을 올려 스캔이 `FAILED`로 끝난다. 검사 등록 전(빌드 실패, 대시보드 연결 실패)은 대시보드에 남지 않고 워크플로만 실패한다.
 - 이미지 모드는 `MODE=IMAGE_BUILD IMAGE_REPOSITORY=logssey/reused-api IMAGE_DIGEST=sha256:… IMAGE_REF=<trivy가 받을 이미지>`와, 그 이미지에서 꺼낸 jar를 `JAR`로 준다.
+- 대시보드에서 요청한 스캔은 `MODE=MANUAL CHECK_ID=<검사 ID> TARGET_TYPE=REPO`(또는 `IMAGE`와 `IMAGE_REF`)로 같은 jar를 준다. 확인용 백엔드에 띄우는 설정이 없으면 스캔 요청이 `QUEUED`로 남아 이렇게 손으로 올려 볼 수 있다.

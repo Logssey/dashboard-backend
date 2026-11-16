@@ -76,15 +76,36 @@ class ReachCiAccessTest {
 
     @Test
     void resultsOnlyForTheRepositoryThatCreatedTheCheck() {
-        allowed(() -> ACCESS.requireOwner(PR_123, Optional.of("CI:Logssey/service-backend")));
-        allowed(() -> ACCESS.requireOwner(MAIN, Optional.of("CI:logssey/Service-Backend")));
+        allowed(() -> ACCESS.requireOwner(PR_123, owner("CI:Logssey/service-backend", "PR", "service-backend")));
+        allowed(() -> ACCESS.requireOwner(MAIN, owner("CI:logssey/Service-Backend", "IMAGE_BUILD", "service-backend")));
 
-        forbidden(() -> ACCESS.requireOwner(PR_123, Optional.of("CI:Logssey/service-frontend")));
-        forbidden(() -> ACCESS.requireOwner(PR_123, Optional.of("USER:1")));                  // 사람이 만든 검사
+        forbidden(() -> ACCESS.requireOwner(PR_123, owner("CI:Logssey/service-frontend", "PR", "service-frontend")));
+        forbidden(() -> ACCESS.requireOwner(PR_123, owner("USER:1", "PR", "service-backend")));   // 사람이 만든 PR 검사
         assertThatThrownBy(() -> ACCESS.requireOwner(PR_123, Optional.empty()))
                 .isInstanceOfSatisfying(ApiException.class, e -> org.assertj.core.api.Assertions
                         .assertThat(e.errorCode()).isEqualTo(ErrorCode.NOT_FOUND));
-        forbidden(() -> ReachCiAccess.closed().requireOwner(PR_123, Optional.of("CI:Logssey/service-backend")));
+        forbidden(() -> ReachCiAccess.closed().requireOwner(PR_123, owner("CI:Logssey/service-backend", "PR", null)));
+    }
+
+    @Test
+    void scanRequestedOnTheDashboardIsUploadedByTheDispatchedRunOfItsRepository() {
+        var dispatched = caller("Logssey/service-backend", "workflow_dispatch", "refs/heads/main");
+        allowed(() -> ACCESS.requireOwner(dispatched, owner("USER:1", "MANUAL", "service-backend")));
+        allowed(() -> ACCESS.requireOwner(dispatched, owner("USER:1", "MANUAL", "Logssey/service-backend")));
+
+        forbidden(() -> ACCESS.requireOwner(dispatched, owner("USER:1", "MANUAL", "service-frontend")));   // 다른 레포의 스캔
+        forbidden(() -> ACCESS.requireOwner(dispatched, owner("USER:1", "MANUAL", null)));                 // 레포를 모르는 스캔
+        forbidden(() -> ACCESS.requireOwner(dispatched, owner("USER:1", "PR", "service-backend")));        // 사람이 만든 PR 검사
+        forbidden(() -> ACCESS.requireOwner(caller("Logssey/service-backend", "workflow_dispatch", "refs/heads/feature"),
+                owner("USER:1", "MANUAL", "service-backend")));                                          // 기본 브랜치가 아님
+        forbidden(() -> ACCESS.requireOwner(MAIN, owner("USER:1", "MANUAL", "service-backend")));          // dispatch가 아님
+        forbidden(() -> ACCESS.requireOwner(PR_123, owner("USER:1", "MANUAL", "service-backend")));
+        forbidden(() -> ACCESS.requireOwner(caller("Logssey/dashboard-backend", "workflow_dispatch", "refs/heads/main"),
+                owner("USER:1", "MANUAL", "dashboard-backend")));                                        // 감시 대상이 아닌 레포
+    }
+
+    private static Optional<ReachCiAccess.CheckOwner> owner(String scope, String mode, String repository) {
+        return Optional.of(new ReachCiAccess.CheckOwner(scope, mode, repository));
     }
 
     private static ReachCiCaller caller(String repository, String event, String ref) {

@@ -1,5 +1,7 @@
 package com.logssey.reach;
 
+import com.logssey.reach.ci.ReachDispatchProperties;
+
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
@@ -7,7 +9,7 @@ import org.springframework.context.annotation.PropertySource;
 
 /** Reach 설정(logssey.reach)을 읽는다. 공용 application.properties는 건드리지 않는다 */
 @Configuration
-@EnableConfigurationProperties(ReachProperties.class)
+@EnableConfigurationProperties({ReachProperties.class, ReachDispatchProperties.class})
 public class ReachConfig {
 
     /**

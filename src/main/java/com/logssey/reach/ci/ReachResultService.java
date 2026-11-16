@@ -93,7 +93,7 @@ public class ReachResultService {
 
     /** API-13 (CI 토큰). 검사를 만든 레포의 토큰만 올린다. 본문을 풀기 전에 본다 */
     public ReachResultUploadResponse uploadForCi(ReachCiCaller caller, long checkId, String contentEncoding, byte[] body) {
-        access.requireOwner(caller, repository.checkScope(checkId));
+        access.requireOwner(caller, repository.checkOwner(checkId));
         return load(checkId, contentEncoding, body);
     }
 
