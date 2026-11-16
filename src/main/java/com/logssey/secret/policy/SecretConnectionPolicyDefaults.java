@@ -57,6 +57,41 @@ public class SecretConnectionPolicyDefaults {
                 "canManage",access.hasConnectionRole(actor,connection,SecretRole.SECURITY));
     }
 
+    /** Safe current pin information for already-authorized connection reads. */
+    public static Map<String,Object> summary(JdbcTemplate jdbc,long connection) {
+        var selected=jdbc.queryForList("""
+            SELECT d.policy_id,d.policy_version,p.status='ACTIVE' AND p.valid_from<=clock_timestamp()
+              AND (p.valid_until IS NULL OR p.valid_until>clock_timestamp()) AS active
+            FROM secret_connection_policy_defaults d JOIN secret_storage_policies p
+              ON p.policy_id=d.policy_id AND p.version=d.policy_version WHERE d.connection_id=?
+            """,connection);
+        if(selected.isEmpty())return facts("status","NOT_SELECTED","selectedPolicyId",null,"selectedPolicyVersion",null,
+            "applicableScopeCount",0L,"appliedScopeCount",0L,"pendingReviewScopeCount",0L,"ruleUpdateRequiredScopeCount",0L);
+        var pin=selected.getFirst();long policy=number(pin,"policy_id"),version=number(pin,"policy_version");
+        var scopes=jdbc.queryForList("""
+            SELECT EXISTS(SELECT 1 FROM secret_storage_policy_rules r WHERE r.policy_id=? AND r.policy_version=?
+                AND r.connection_id=s.connection_id AND r.scope_id=s.scope_id AND r.scope_revision=s.revision
+                AND r.scope_fingerprint=md5(jsonb_build_array(s.content_type,s.approved_ref,s.history_limit)::text)) AS applicable,
+              EXISTS(SELECT 1 FROM secret_scope_policy_bindings b WHERE b.scope_id=s.scope_id AND b.policy_id=?
+                AND b.policy_version=? AND b.effective_from<=clock_timestamp()
+                AND (b.effective_until IS NULL OR b.effective_until>clock_timestamp())) AS applied,
+              EXISTS(SELECT 1 FROM secret_scope_classification_proposals q WHERE q.scope_id=s.scope_id
+                AND q.policy_id=? AND q.policy_version=? AND q.scope_revision=s.revision AND q.status='PENDING_APPROVAL') AS pending
+            FROM secret_connection_scopes s WHERE s.connection_id=? AND s.enabled
+              AND s.content_type IN ('GITHUB_REPOSITORY_FILES','AWS_SECRETS_MANAGER_VALUE',
+                'AWS_SSM_PARAMETER_VALUE','AWS_S3_OBJECT_CONTENT','NOTION_PAGE_CONTENT')
+            """,policy,version,policy,version,policy,version,connection);
+        long applicable=scopes.stream().filter(row->Boolean.TRUE.equals(row.get("applicable"))).count();
+        long applied=scopes.stream().filter(row->Boolean.TRUE.equals(row.get("applicable"))&&Boolean.TRUE.equals(row.get("applied"))).count();
+        long pending=scopes.stream().filter(row->Boolean.TRUE.equals(row.get("applicable"))&&Boolean.TRUE.equals(row.get("pending"))).count();
+        long missing=scopes.size()-applicable;
+        String status=!Boolean.TRUE.equals(pin.get("active"))?"POLICY_EXPIRED":missing>0?"RULE_UPDATE_REQUIRED":
+            pending>0?"PENDING_REVIEW":applied<applicable?"APPLICATION_REQUIRED":"APPLIED";
+        return facts("status",status,"selectedPolicyId",policy,"selectedPolicyVersion",version,
+            "applicableScopeCount",applicable,"appliedScopeCount",applied,"pendingReviewScopeCount",pending,
+            "ruleUpdateRequiredScopeCount",missing);
+    }
+
     public Map<String,Object> select(String login,long connection,Selection request) {
         if(request==null || request.policyId()==null || request.policyVersion()==null
                 || request.policyId()<=0 || request.policyVersion()<=0 || request.expectedSettingsVersion()==null)

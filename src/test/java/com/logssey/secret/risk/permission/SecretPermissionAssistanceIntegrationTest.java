@@ -155,7 +155,14 @@ class SecretPermissionAssistanceIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT verification_level FROM secret_risk_evidence WHERE evidence_id=?",String.class,
                 saved.get("evidenceId"))).isEqualTo("MANUAL_SUBMITTED");
         assertThat(service.confirm("security",occurrence,observation,body)).containsEntry("evidenceId",saved.get("evidenceId"));
-        assertThat(service.preview("security",occurrence,observation)).containsEntry("canSavePartial",true);
+        var reopened=service.preview("security",occurrence,observation);
+        assertThat(reopened).containsEntry("canSavePartial",true);
+        var draft=(Map<String,Object>)reopened.get("latestDraft");
+        assertThat(draft).containsEntry("canRestore",true).containsEntry("evidenceRevision",saved.get("evidenceRevision"));
+        assertThat(draft.get("facts")).isEqualTo(body.facts());
+        jdbc.update("UPDATE secret_occurrences SET risk_evidence_revision=risk_evidence_revision+1 WHERE occurrence_id=?",occurrence);
+        draft=(Map<String,Object>)service.preview("security",occurrence,observation).get("latestDraft");
+        assertThat(draft).containsEntry("canRestore",false).containsEntry("reasonCode","EVIDENCE_REVISION_CHANGED");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_permission_decisions WHERE decision='DRAFTED'",Long.class)).isEqualTo(1L);
     }
 

@@ -185,6 +185,22 @@ class SecretRevalidationServiceIntegrationTest {
     }
 
     @Test
+    void guidanceLinksTheQueuedRunAndThenResumesARedetectedLocation() {
+        var result=service.request(caseId,new SecretRevalidationRequest(occurrenceId,0L,0L,"guidance-run"),"revalidation-admin");
+        var detail=workflow.detail(caseId,"revalidation-admin");
+        assertThat(detail.get("nextActionCode")).isEqualTo("WAIT_FOR_REVALIDATION");
+        var guidance=(java.util.Map<?,?>)detail.get("taskGuidance");
+        assertThat(((java.util.Map<?,?>)guidance.get("target")).get("runId")).isEqualTo(result.runId());
+        jdbc.update("UPDATE secret_jobs SET status='SUCCEEDED',finished_at=clock_timestamp() WHERE job_id=(SELECT job_id FROM secret_scan_runs WHERE run_id=?)",result.runId());
+        jdbc.update("UPDATE secret_case_revalidations SET status='PRESENT',finished_at=clock_timestamp() WHERE revalidation_id=?",result.revalidationId());
+        detail=workflow.detail(caseId,"revalidation-admin");
+        assertThat(detail.get("nextActionCode")).isEqualTo("RESUME_REMEDIATION");
+        guidance=(java.util.Map<?,?>)detail.get("taskGuidance");
+        assertThat(guidance.get("canExecute")).isEqualTo(true);
+        assertThat(((java.util.Map<?,?>)guidance.get("target")).get("occurrenceId")).isEqualTo(occurrenceId);
+    }
+
+    @Test
     void completedPositiveFileInPartialCollectionSuppliesComparableBaseline() {
         jdbc.update("UPDATE secret_run_scopes SET collection_status='PARTIAL'");
         jdbc.update("UPDATE secret_scan_runs SET collection_status='PARTIAL',result_status='PARTIAL'");

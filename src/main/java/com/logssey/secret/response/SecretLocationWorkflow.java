@@ -103,14 +103,35 @@ public class SecretLocationWorkflow {
         if(unassigned)priorities.add("ASSIGNEE_REQUIRED");
         boolean allMissing=((Number)remediation.get("requiredLocationCount")).longValue()>0
             &&Objects.equals(remediation.get("requiredLocationCount"),remediation.get("postActionMissingLocationCount"));
-        String next="RECORD_LOCATION_ACTION";
-        if(unassigned)next="ASSIGN_LOCATION";
-        else if(allMissing)next="REVIEW_CLOSURE";
-        else if(items.stream().anyMatch(i->Boolean.TRUE.equals(i.get("canRequestRevalidation")))
-                ||"REVALIDATION_PENDING".equals(c.get("action_status")))next="REQUEST_REVALIDATION";
-        else if("RESOLVED".equals(c.get("action_status")))next="VIEW_DETAIL";
-        String capability=unassigned?"canAssign":next.equals("REQUEST_REVALIDATION")?"canRequestRevalidation":"canRecordAction";
-        boolean executable=items.stream().anyMatch(i->Boolean.TRUE.equals(i.get(capability)))||Set.of("VIEW_DETAIL","REVIEW_CLOSURE").contains(next);
+        var resumable=items.stream().filter(item->Boolean.TRUE.equals(item.get("canResume"))).findFirst();
+        var queued=items.stream().filter(item->item.get("recentRevalidation") instanceof Map<?,?> recent
+            &&Set.of("PENDING","LEASED").contains(recent.get("jobStatus"))).findFirst();
+        String next="VIEW_DETAIL";
+        String blocked="ROLE_REQUIRED";
+        String requiredRole="REMEDIATOR";
+        boolean executable=true;
+        Map<String,Object> actionTarget=facts("type","CASE","id",caseId);
+        if(current) {
+            if(unassigned&&items.stream().anyMatch(item->Boolean.TRUE.equals(item.get("canAssign"))))next="ASSIGN_LOCATION";
+            else if(resumable.isPresent())next="RESUME_REMEDIATION";
+            else if(items.stream().anyMatch(item->Boolean.TRUE.equals(item.get("canRecordAction"))))next="RECORD_LOCATION_ACTION";
+            else if(items.stream().anyMatch(item->Boolean.TRUE.equals(item.get("canRequestRevalidation"))))next="REQUEST_REVALIDATION";
+            else if(allMissing)next="REVIEW_CLOSURE";
+            else if(queued.isPresent())next="WAIT_FOR_REVALIDATION";
+            else if(unassigned) {next="ASSIGN_LOCATION";executable=false;requiredRole="SECURITY";}
+            else if("REVALIDATION_PENDING".equals(c.get("action_status"))) {
+                next="REQUEST_REVALIDATION";executable=false;
+                blocked=items.stream().map(item->item.get("revalidationBlockReasonCode")).filter(Objects::nonNull)
+                    .map(Object::toString).findFirst().orElse("EVIDENCE_REQUIRED");
+            }
+        }
+        if(next.equals("RESUME_REMEDIATION"))actionTarget.put("occurrenceId",resumable.orElseThrow().get("occurrenceId"));
+        if(next.equals("WAIT_FOR_REVALIDATION")) {
+            var location=queued.orElseThrow();var recent=(Map<?,?>)location.get("recentRevalidation");
+            actionTarget=facts("type","RUN","id",recent.get("runId"),"runId",recent.get("runId"),
+                "caseId",caseId,"occurrenceId",location.get("occurrenceId"));
+            executable=Boolean.TRUE.equals(recent.get("canViewRun"));requiredRole="OPERATIONS";
+        }
         var result=facts("caseId",caseId,"secretId",c.get("credential_set_id"),"maskedLabel",c.get("masked_label"),
             "issuer",c.get("issuer"),"credentialType",c.get("credential_type"),"caseOrigin",c.get("case_origin"),
             "stage",c.get("action_status"),"disposition",c.get("disposition"),"isCurrent",c.get("is_current"),
@@ -128,15 +149,15 @@ public class SecretLocationWorkflow {
                 "canUpdateChecklist",current&&(allSecurity||items.stream().anyMatch(i->Boolean.TRUE.equals(i.get("canRecordAction")))),"canResolve",false,"canRequestRevalidation",items.stream().anyMatch(i->Boolean.TRUE.equals(i.get("canRequestRevalidation")))));
         result.put("remediationSummary",remediation);
         long completed=items.stream().filter(item->item.get("actionsCompletedAt")!=null).count();
-        long queued=items.stream().filter(item->item.get("recentRevalidation") instanceof Map<?,?> recent
+        long queuedCount=items.stream().filter(item->item.get("recentRevalidation") instanceof Map<?,?> recent
             &&Set.of("PENDING","LEASED").contains(recent.get("jobStatus"))).count();
         result.put("responseProgress",facts("unit","Occurrence","visibleLocationCount",items.size(),
             "actionRecordedCount",items.stream().filter(item->item.get("lastMaterialActionAt")!=null).count(),
-            "actionsCompletedCount",completed,"revalidationQueuedCount",queued,
+            "actionsCompletedCount",completed,"revalidationQueuedCount",queuedCount,
             "postActionMissingCount",remediation.get("postActionMissingLocationCount"),"restrictedCoverage",restricted));
         result.put("whyHereCode","ACTIVE_RESPONSE");result.put("nextActionCode",next);
-        result.put("taskGuidance",com.logssey.secret.query.SecretTaskGuidance.build("ACTIVE_RESPONSE",next,facts("type","CASE","id",caseId),executable,
-            next.equals("REQUEST_REVALIDATION")?"EVIDENCE_REQUIRED":"ROLE_REQUIRED",unassigned?"SECURITY":"REMEDIATOR",remediation.get("evidenceObservedAt"),null,null,List.of(),priorities));
+        result.put("taskGuidance",com.logssey.secret.query.SecretTaskGuidance.build("ACTIVE_RESPONSE",next,actionTarget,executable,
+            blocked,requiredRole,remediation.get("evidenceObservedAt"),null,null,List.of(),priorities));
         return result;
     }
 

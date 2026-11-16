@@ -221,6 +221,7 @@ public class SecretConnectionManagementService {
                 "maxTotalBytes", GitHubContentLimits.MAX_TOTAL_BYTES, "maxTreeEntries", GitHubContentLimits.MAX_TREE_ENTRIES,
                 "maxDepth", GitHubContentLimits.MAX_DEPTH));
         result.put("validationReadiness", validationReadiness(id, row, scopes.size()));
+        result.put("defaultStoragePolicy",com.logssey.secret.policy.SecretConnectionPolicyDefaults.summary(jdbc,id));
         return result;
     }
 
