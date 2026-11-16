@@ -51,6 +51,15 @@ final class SecretWorkbenchRecoveryFacts {
           facts("connectionId", id, "source", connection.get("provider"),"connectionLabel",
               com.logssey.secret.connection.SecretDisplayLabels.safeAlias((String)connection.get("display_name"))
                   ? connection.get("display_name") : "연결 #"+id)));
+      var policy=com.logssey.secret.policy.SecretConnectionPolicyDefaults.summary(jdbc,id);
+      if(!Set.of("NOT_SELECTED","APPLIED").contains(policy.get("status"))) {
+        var guidance=SecretTaskGuidance.build("DEFAULT_POLICY_UPDATE_REQUIRED","OPEN_CONNECTION_SETTINGS",
+            facts("type","CONNECTION","id",id,"connectionId",id),
+            access.hasConnectionRole(actor,id,SecretRole.SECURITY)&&access.hasConnectionRole(actor,id,SecretRole.OPERATIONS),
+            "ROLE_REQUIRED","SECURITY",null,null,null,List.of(),List.of());
+        subjects.add(new Subject("DefaultPolicyConnection",id,null,facts("connectionId",id,
+            "whyHereCode","DEFAULT_POLICY_UPDATE_REQUIRED","defaultStoragePolicy",policy,"taskGuidance",guidance)));
+      }
       for (var item : pages(page -> coverage.scopes(login, id, "ALL", "ALL", false, page, 100))) {
         long scope = ((Number) item.get("scopeId")).longValue();
         boolean selected = filters.origin().equals("ALL") || filters.origin().equals(item.get("origin"));
@@ -152,7 +161,7 @@ ORDER BY r.finished_at DESC NULLS LAST,r.run_id DESC LIMIT 1
 
   private Map<String, Object> reviewPreview(Header header, boolean allowed) {
     var rows = allowed ? reviewRows(header) : List.<Map<String, Object>>of();
-    return facts("status", allowed ? "AVAILABLE" : "NOT_AUTHORIZED", "items", rows.stream().limit(5).toList(),
+    return facts("status", allowed ? "AVAILABLE" : "NOT_AUTHORIZED", "items", rows.stream().sorted(Comparator.comparingInt(this::executionPriority)).limit(5).toList(),
         "total", allowed ? rows.size() : null, "unit", "Occurrence", "snapshotId", header.snapshotId());
   }
 
@@ -168,13 +177,17 @@ ORDER BY r.finished_at DESC NULLS LAST,r.run_id DESC LIMIT 1
         "status",
         allowed ? "AVAILABLE" : "NOT_AUTHORIZED",
         "items",
-        items.stream().limit(5).toList(),
+        items.stream().sorted(Comparator.comparingInt(this::executionPriority)).limit(5).toList(),
         "total",
         allowed ? items.size() : null,
         "unit",
         unit,
         "snapshotId",
         header.snapshotId());
+  }
+
+  private int executionPriority(Map<String,Object> item) {
+    return item.get("taskGuidance") instanceof Map<?,?> task && Boolean.TRUE.equals(task.get("canExecute"))?0:1;
   }
 
   Map<String, Object> setup(Header header, String origin, boolean allowed) {

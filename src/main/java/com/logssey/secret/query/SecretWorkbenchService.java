@@ -250,14 +250,14 @@ public class SecretWorkbenchService {
         for(var connection:snapshots.page(header,"HealthConnection",0,Integer.MAX_VALUE))
             if(connection.get("connectionLabel") instanceof String label)
                 labels.put(((Number)connection.get("connectionId")).longValue(),label);
-        for(String type:List.of("UnclassifiedScope","GapScope","DecisionOccurrence","LinkOccurrence")) {
+        for(String type:List.of("UnclassifiedScope","GapScope","DecisionOccurrence","LinkOccurrence","DefaultPolicyConnection")) {
             for(var item:snapshots.page(header,type,0,Integer.MAX_VALUE)) {
                 var guidance=item.get("taskGuidance") instanceof Map<?,?> value?value:Map.of();
                 var target=guidance.get("target") instanceof Map<?,?> value?value:Map.of();
                 Object connection=item.get("connectionId");
                 if(connection==null)connection=target.get("connectionId");
                 if(!(connection instanceof Number id))continue;
-                String unit=type.endsWith("Scope")?"Scope":"Occurrence";
+                String unit=type.endsWith("Scope")?"Scope":type.equals("DefaultPolicyConnection")?"Connection":"Occurrence";
                 String action=Objects.toString(guidance.get("nextActionCode"),"VIEW_DETAIL");
                 String code=Objects.toString(item.get("whyHereCode"),"EXPOSURE_REVIEW_REQUIRED");
                 if(item.get("setupReasonCodes") instanceof List<?> reasons && !reasons.isEmpty())code=reasons.getFirst().toString();

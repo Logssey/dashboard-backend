@@ -84,6 +84,7 @@ VALUES('ENRICH','PERMISSION_ASSISTANCE',?,?,?, ?,?::jsonb,?,clock_timestamp(),cl
         result.put("partialBlockedReasonCodes",partialBlocked(actor,c,o));
         result.put("partialDefaults",facts("observedAt",time(o.get("observed_at")),"validUntil",time(o.get("expires_at"))));
         result.put("sourcePresenceObservedAt",time(c.get("last_seen_at")));
+        result.put("latestDraft",latestDraft(c,o));
         result.put("canReject",access.hasConnectionRole(actor,number(c,"connection_id"),SecretRole.SECURITY)&&jdbc.queryForList("SELECT decision_id FROM secret_permission_decisions WHERE observation_id=? AND decision IN('CONFIRMED','REJECTED')",observation).isEmpty());
         return result;
     }
@@ -129,6 +130,37 @@ VALUES('ENRICH','PERMISSION_ASSISTANCE',?,?,?, ?,?::jsonb,?,clock_timestamp(),cl
         result.put("status","SAVED_PARTIAL");result.put("observationId",observation);
         result.put("evidenceRef",reference);result.put("referenceSource",body.evidenceRef()==null || body.evidenceRef().isBlank()?"INTERNAL":"PROVIDED");
         return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String,Object> latestDraft(Map<String,Object> context,Map<String,Object> observed) {
+        var rows=jdbc.queryForList("""
+            SELECT e.*,(SELECT (command.safe_result->>'evidenceRevision')::bigint
+              FROM secret_command_idempotency command
+              WHERE command.command_kind='RISK_EVIDENCE_SUBMITTED'
+                AND command.safe_result->>'evidenceId'=e.evidence_id::text ORDER BY command.command_id DESC LIMIT 1) AS saved_revision
+            FROM secret_permission_decisions d JOIN secret_risk_evidence e USING(evidence_id)
+            WHERE d.observation_id=? AND d.decision='DRAFTED' AND e.occurrence_id=?
+            ORDER BY d.decision_id DESC LIMIT 1
+            """,observed.get("observation_id"),context.get("occurrence_id"));
+        if(rows.isEmpty())return null;
+        var row=rows.getFirst();var baseline=json.readValue(observed.get("baseline").toString(),Map.class);
+        String reason="CURRENT_DRAFT";
+        if(!jdbc.queryForList("SELECT decision_id FROM secret_permission_decisions WHERE observation_id=? AND decision IN('CONFIRMED','REJECTED')",observed.get("observation_id")).isEmpty())reason="DRAFT_REVIEWED";
+        else if(!Objects.equals(baseline.get("sourceContextVersion"),sourceVersion(context)))reason="DRAFT_CONTEXT_CHANGED";
+        else if(!Objects.equals(row.get("saved_revision"),context.get("risk_evidence_revision")))reason="EVIDENCE_REVISION_CHANGED";
+        else if(!time(row.get("expires_at")).isAfter(OffsetDateTime.now(ZoneOffset.UTC)))reason="DRAFT_EXPIRED";
+        var available=new SecretRiskProvenance(jdbc).available(context);
+        var refs=(List<Map<String,Object>>)json.readValue(row.get("source_refs").toString(),List.class);
+        var visibleRefs=refs.stream().filter(ref->available.stream().anyMatch(candidate->
+            List.of("type","id","version","role").stream().allMatch(key->Objects.toString(ref.get(key),"")
+                .equals(Objects.toString(candidate.get(key),""))))).toList();
+        return facts("evidenceId",row.get("evidence_id"),"evidenceRevision",row.get("saved_revision"),
+            "observationId",observed.get("observation_id"),"savedAt",time(row.get("recorded_at")),
+            "observedAt",time(row.get("observed_at")),"validUntil",time(row.get("expires_at")),
+            "evidenceRef",row.get("evidence_ref"),"facts",json.readValue(row.get("safe_payload").toString(),Map.class),
+            "sourceRefs",visibleRefs,"applicableFrom",time(row.get("fact_valid_from")),
+            "applicableUntil",time(row.get("fact_valid_until")),"canRestore",reason.equals("CURRENT_DRAFT"),"reasonCode",reason);
     }
 
     private List<String> partialBlocked(SecretPrincipal actor,Map<String,Object> context,Map<String,Object> observation) {

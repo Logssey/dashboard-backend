@@ -93,7 +93,9 @@ class SecretClosureEvaluator {
         synthetic=synthetic&&!real&&rows.stream().anyMatch(row->row.get("linked_case_id")!=null);
         var lifeIds=lifecycle.stream().filter(e->!"FIXTURE_RETIRED".equals(e.get("kind"))).map(e->number(e,"evidence_id")).toList();
         var providerIds=lifecycle.stream().filter(e->!"FIXTURE_RETIRED".equals(e.get("kind"))&&"PROVIDER_VERIFIED".equals(e.get("verification_level"))).map(e->number(e,"evidence_id")).toList();
-        var manualIds=lifecycle.stream().filter(e->!"FIXTURE_RETIRED".equals(e.get("kind"))&&"APPROVED_MANUAL".equals(e.get("verification_level"))).map(e->number(e,"evidence_id")).toList();
+        var manualIds=lifecycle.stream().filter(e->!"FIXTURE_RETIRED".equals(e.get("kind"))&&Set.of("APPROVED_MANUAL","SELF_ATTESTED").contains(e.get("verification_level"))).map(e->number(e,"evidence_id")).toList();
+        boolean selfAttested=lifecycle.stream().anyMatch(e->"SELF_ATTESTED".equals(e.get("verification_level")));
+        boolean actionAuthorReviewed=lifecycle.stream().anyMatch(e->yes(e,"action_author_reviewed"));
         var fixtureRetireIds=lifecycle.stream().filter(e->"FIXTURE_RETIRED".equals(e.get("kind"))).map(e->number(e,"evidence_id")).toList();
         var alerts="TEST".equals(c.get("case_origin"))?repository.jdbc().queryForList("SELECT alert_id,status,version,closed_at FROM secret_cross_environment_alerts WHERE credential_set_id=? ORDER BY alert_id",c.get("credential_set_id")):List.<Map<String,Object>>of();
         boolean alertsClosed=alerts.stream().noneMatch(alert->alert.get("closed_at")==null);
@@ -101,7 +103,7 @@ class SecretClosureEvaluator {
             alertsClosed?"RELATED_ALERTS_REVIEWED":"CROSS_ENVIRONMENT_ALERT_OPEN",null,List.of()));
         boolean lifePassed=synthetic?!fixtureRetireIds.isEmpty():!lifeIds.isEmpty();
         checks.add(new Check("CREDENTIAL_LIFECYCLE",lifePassed?"PASSED":"UNKNOWN",lifePassed?synthetic?"SYNTHETIC_FIXTURE_RETIRED":
-            !providerIds.isEmpty()?"PROVIDER_RETIREMENT_CONFIRMED":"EXTERNAL_RETIREMENT_INDEPENDENTLY_APPROVED":"CURRENT_LIFECYCLE_EVIDENCE_REQUIRED",
+            !providerIds.isEmpty()?"PROVIDER_RETIREMENT_CONFIRMED":selfAttested?"EXTERNAL_RETIREMENT_SELF_ATTESTED":"EXTERNAL_RETIREMENT_REVIEWED":"CURRENT_LIFECYCLE_EVIDENCE_REQUIRED",
             null,synthetic?fixtureRetireIds:lifeIds));
         var options=new ArrayList<CoverageOption>();
         boolean active=yes(c,"is_current")&&"IN_SCOPE".equals(c.get("disposition"))&&!"RESOLVED".equals(c.get("action_status"));
@@ -110,7 +112,12 @@ class SecretClosureEvaluator {
             if(synthetic)options.add(new CoverageOption("SIMULATION",List.of("SYNTHETIC_TEST_ONLY","PROVIDER_RETIREMENT_NOT_CLAIMED"),union(revalidationIds,fixtureRetireIds)));
             else {
                 if(!providerIds.isEmpty())options.add(new CoverageOption("FULL",List.of("APPROVED_SUPPORTED_SCOPES_ONLY","MISUSE_NOT_ASSESSED"),union(revalidationIds,providerIds)));
-                if(!manualIds.isEmpty())options.add(new CoverageOption("LIMITED",List.of("PROVIDER_RETIREMENT_NOT_VERIFIED","APPROVED_SUPPORTED_SCOPES_ONLY","MISUSE_NOT_ASSESSED"),union(revalidationIds,manualIds)));
+                if(!manualIds.isEmpty()){
+                    var limitations=new ArrayList<>(List.of("PROVIDER_RETIREMENT_NOT_VERIFIED","APPROVED_SUPPORTED_SCOPES_ONLY","MISUSE_NOT_ASSESSED"));
+                    if(selfAttested)limitations.add("SELF_ATTESTED");
+                    if(actionAuthorReviewed)limitations.add("ACTION_AUTHOR_REVIEWED");
+                    options.add(new CoverageOption("LIMITED",List.copyOf(limitations),union(revalidationIds,manualIds)));
+                }
             }
         }
         var dispositions=repository.jdbc().queryForList("""

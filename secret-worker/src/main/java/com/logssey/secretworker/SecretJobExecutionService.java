@@ -35,7 +35,7 @@ public class SecretJobExecutionService {
         return Objects.requireNonNull(transaction.execute(status -> {
             OffsetDateTime now = repository.databaseNow();
             var available = repository.lockAvailable(now, 1, provider);
-            if (available.isEmpty()) {
+            if (available.isEmpty() || !repository.connectionAvailableForClaim(available.getFirst().jobId())) {
                 return Optional.<ClaimedSecretJob>empty();
             }
                             // A new token on every attempt fences a worker that wakes up after its

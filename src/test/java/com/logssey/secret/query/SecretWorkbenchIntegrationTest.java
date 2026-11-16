@@ -568,6 +568,32 @@ class SecretWorkbenchIntegrationTest {
         assertThat(block(changedScope.get("coverage")).get("lastSuccessfulScan")).isNull();
     }
 
+    @Test void pinnedPolicyMissingNewScopeRulesCreatesOneConnectionCause() {
+        jdbc.update("UPDATE secret_connection_scopes SET content_type='GITHUB_REPOSITORY_FILES',history_limit='CURRENT_COMMIT_ONLY',approved_ref='github://Example/repo/main/' WHERE scope_id=?",scope);
+        long policy=jdbc.queryForObject("""
+            INSERT INTO secret_storage_policies(version,status,reason_code,evidence_ref,created_by_user_id,
+              approved_by_user_id,approved_at,valid_from)
+            VALUES(1,'ACTIVE','AUTHORIZED_STORAGE','TICKET:SEC-1',?,?,now(),now()-interval '1 hour') RETURNING policy_id
+            """,Long.class,security,operations);
+        jdbc.update("""
+            INSERT INTO secret_storage_policy_rules(policy_id,policy_version,effect,connection_id,scope_id,
+              scope_revision,scope_fingerprint,content_type,path_match)
+            SELECT ?,1,'ALLOW',connection_id,scope_id,revision,
+              md5(jsonb_build_array(content_type,approved_ref,history_limit)::text),content_type,'SCOPE'
+            FROM secret_connection_scopes WHERE scope_id=?
+            """,policy,scope);
+        jdbc.update("INSERT INTO secret_connection_policy_defaults(connection_id,policy_id,policy_version,selected_by_user_id) VALUES(?,?,1,?)",connection,policy,security);
+        for(int i=1;i<=2;i++)jdbc.update("""
+            INSERT INTO secret_connection_scopes(connection_id,scope_key,revision,content_type,approved_ref,history_limit,enabled)
+            VALUES(?,?,1,'GITHUB_REPOSITORY_FILES',?,'CURRENT_COMMIT_ONLY',true)
+            """,connection,"extra-"+i,"github://Example/repo-"+i+"/main/");
+        var result=summary("security",filters(),null);
+        var groups=items(result.get("commonCauseGroups")).stream()
+            .filter(group->"DEFAULT_POLICY_UPDATE_REQUIRED".equals(group.get("code"))).toList();
+        assertThat(groups).hasSize(1);
+        assertThat(groups.getFirst()).containsEntry("unit","Connection").containsEntry("count",1L).containsEntry("connectionId",connection);
+    }
+
     @Test void commonCauseCountsUseTheWholeAuthorizedFrozenSet() {
         long run=scan(connection,List.of(scope),true);
         for(int i=0;i<4;i++)reviewOccurrence(connection,scope,run,"UNKNOWN");

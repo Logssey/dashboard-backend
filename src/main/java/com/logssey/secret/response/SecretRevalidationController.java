@@ -16,9 +16,11 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1/secrets/cases/{caseId}")
 public class SecretRevalidationController {
     private final SecretRevalidationService service;
+    private final SecretRevalidationBatchService batches;
 
-    SecretRevalidationController(SecretRevalidationService service) {
+    SecretRevalidationController(SecretRevalidationService service,SecretRevalidationBatchService batches) {
         this.service = service;
+        this.batches = batches;
     }
 
     @PostMapping("/revalidations")
@@ -27,6 +29,13 @@ public class SecretRevalidationController {
                                             @RequestBody SecretRevalidationRequest request,
                                             Authentication authentication) {
         return service.request(caseId, request, loginId(authentication));
+    }
+
+    @PostMapping("/revalidations/batch")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public java.util.Map<String,Object> batch(@PathVariable long caseId,
+            @RequestBody SecretRevalidationBatchService.Request request,Authentication authentication) {
+        return batches.request(caseId,request,loginId(authentication));
     }
 
     @GetMapping("/revalidations")
