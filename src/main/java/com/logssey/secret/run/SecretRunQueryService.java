@@ -25,7 +25,7 @@ public class SecretRunQueryService {
                 && Set.of("SUCCEEDED","PARTIAL","FAILED","CANCELLED").contains(result.status())
                 && result.scopeResults().stream().anyMatch(SecretRunScopeResultResponse::retryable);
         safe.put("capabilities",Map.of("canViewFindings",access.hasConnectionRole(actor,result.connectionId(),SecretRole.SECURITY),
-                "canRetryFailedScopes",canRetry));
+                "canRetryFailedScopes",canRetry,"canManageConnection",access.hasConnectionRole(actor,result.connectionId(),SecretRole.OPERATIONS)));
         safe.put("scanKind",result.scopeResults().isEmpty()?"UNKNOWN":result.scopeResults().stream()
                 .allMatch(scope -> scope.contentType().endsWith("_METADATA"))?"METADATA":"CONTENT");
         return safe;

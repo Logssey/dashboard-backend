@@ -18,8 +18,9 @@ import tools.jackson.databind.json.JsonMapper;
 @Service
 public class SecretPermissionAssistanceService {
     public record Request(String expectedContextVersion,String idempotencyKey,Long collectorConnectionId){}
-    public record Confirm(String expectedContextVersion,Long expectedEvidenceRevision,String idempotencyKey,Boolean attestation,String evidenceRef,OffsetDateTime observedAt,OffsetDateTime validUntil,Map<String,Object> facts,List<SecretRiskProvenance.Ref> sourceRefs,OffsetDateTime applicableFrom,OffsetDateTime applicableUntil){
-        public Confirm(String context,Long revision,String key,Boolean attestation,String ref,OffsetDateTime observed,OffsetDateTime until,Map<String,Object> facts,List<SecretRiskProvenance.Ref> refs){this(context,revision,key,attestation,ref,observed,until,facts,refs,null,null);}
+    public record Confirm(String expectedContextVersion,Long expectedEvidenceRevision,String idempotencyKey,Boolean attestation,String evidenceRef,OffsetDateTime observedAt,OffsetDateTime validUntil,Map<String,Object> facts,List<SecretRiskProvenance.Ref> sourceRefs,OffsetDateTime applicableFrom,OffsetDateTime applicableUntil,@com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) Boolean savePartial){
+        public Confirm(String context,Long revision,String key,Boolean attestation,String ref,OffsetDateTime observed,OffsetDateTime until,Map<String,Object> facts,List<SecretRiskProvenance.Ref> refs,OffsetDateTime from,OffsetDateTime to){this(context,revision,key,attestation,ref,observed,until,facts,refs,from,to,null);}
+        public Confirm(String context,Long revision,String key,Boolean attestation,String ref,OffsetDateTime observed,OffsetDateTime until,Map<String,Object> facts,List<SecretRiskProvenance.Ref> refs){this(context,revision,key,attestation,ref,observed,until,facts,refs,null,null,null);}
     }
     public record Reject(String expectedContextVersion,String idempotencyKey,String reasonCode){}
     private static final Set<String> TYPES=Set.of("AWS_ACCESS_KEY_PAIR","AWS_TEMPORARY_CREDENTIALS","GITHUB_CLASSIC_PAT","GITHUB_FINE_GRAINED_PAT");
@@ -79,8 +80,11 @@ VALUES('ENRICH','PERMISSION_ASSISTANCE',?,?,?, ?,?::jsonb,?,clock_timestamp(),cl
         var actor=reader(login,occurrence);var c=current(occurrence);var o=observation(occurrence,observation);var result=publicObservation(o);var reasons=confirmBlocked(actor,c,o);
         result.put("contextVersion",version(c));result.put("evidenceRevision",c.get("risk_evidence_revision"));result.put("availableSourceRefs",new SecretRiskProvenance(jdbc).available(c));result.put("canConfirm",reasons.isEmpty());result.put("blockedReasonCodes",reasons);
         result.put("supplementation",supplementation(actor,c));
+        result.put("canSavePartial",partialBlocked(actor,c,o).isEmpty());
+        result.put("partialBlockedReasonCodes",partialBlocked(actor,c,o));
+        result.put("partialDefaults",facts("observedAt",time(o.get("observed_at")),"validUntil",time(o.get("expires_at"))));
         result.put("sourcePresenceObservedAt",time(c.get("last_seen_at")));
-        result.put("canReject",access.hasConnectionRole(actor,number(c,"connection_id"),SecretRole.SECURITY)&&jdbc.queryForList("SELECT decision_id FROM secret_permission_decisions WHERE observation_id=?",observation).isEmpty());
+        result.put("canReject",access.hasConnectionRole(actor,number(c,"connection_id"),SecretRole.SECURITY)&&jdbc.queryForList("SELECT decision_id FROM secret_permission_decisions WHERE observation_id=? AND decision IN('CONFIRMED','REJECTED')",observation).isEmpty());
         return result;
     }
 
@@ -88,8 +92,9 @@ VALUES('ENRICH','PERMISSION_ASSISTANCE',?,?,?, ?,?::jsonb,?,clock_timestamp(),cl
         if(body==null||!Boolean.TRUE.equals(body.attestation())||body.expectedEvidenceRevision()==null||body.facts()==null)throw invalid();var actor=reader(login,occurrence);
         return commands.execute(actor,"PERMISSION_ASSISTANCE_CONFIRMED",body.idempotencyKey(),facts("occurrenceId",occurrence,"observationId",observation,"body",body),()->{security(actor,current(occurrence));lockCollector(actor,number(observation(occurrence,observation),"collector_connection_id"));},()->{
             var c=lock(occurrence);same(body.expectedContextVersion(),c);if(number(c,"risk_evidence_revision")!=body.expectedEvidenceRevision())throw new ApiException(ErrorCode.CONFLICT);
-            var observed=observation(occurrence,observation);lockCollector(actor,number(observed,"collector_connection_id"));jdbc.queryForList("SELECT scope_id FROM secret_connection_scopes WHERE connection_id=? FOR SHARE",number(observed,"collector_connection_id"));var blocked=confirmBlocked(actor,c,observed);if(!blocked.isEmpty())throw new ApiException(ErrorCode.EVIDENCE_REQUIRED);
+            var observed=observation(occurrence,observation);lockCollector(actor,number(observed,"collector_connection_id"));jdbc.queryForList("SELECT scope_id FROM secret_connection_scopes WHERE connection_id=? FOR SHARE",number(observed,"collector_connection_id"));var blocked=Boolean.TRUE.equals(body.savePartial())?partialBlocked(actor,c,observed):confirmBlocked(actor,c,observed);if(!blocked.isEmpty())throw new ApiException(ErrorCode.EVIDENCE_REQUIRED);
             var payload=payload(observed);var proposed=SecretRiskFacts.validate("PERMISSION_MAPPING","OCCURRENCE",body.facts());
+            if(Boolean.TRUE.equals(body.savePartial()))return savePartial(login,actor,occurrence,observation,c,observed,body,proposed);
             if(!(payload.get("capabilities") instanceof List<?> capabilities)||!capabilities.contains(proposed.get("capability")))throw new ApiException(ErrorCode.EVIDENCE_REQUIRED);
             for(String field:List.of("permissionCoverage","targetCoverage","restrictionCoverage","classificationCoverage"))if(!"COMPLETE".equals(proposed.get(field)))throw new ApiException(ErrorCode.EVIDENCE_REQUIRED);
             if(body.observedAt()==null||body.observedAt().isBefore(time(observed.get("observed_at")))||body.validUntil()==null||body.validUntil().isAfter(time(observed.get("expires_at"))))throw invalid();
@@ -103,10 +108,39 @@ VALUES('ENRICH','PERMISSION_ASSISTANCE',?,?,?, ?,?::jsonb,?,clock_timestamp(),cl
         });
     }
 
+    private Map<String,Object> savePartial(String login,SecretPrincipal actor,long occurrence,long observation,
+            Map<String,Object> context,Map<String,Object> observed,Confirm body,Map<String,Object> proposed) {
+        var capabilities=payload(observed).get("capabilities");
+        if(!"UNKNOWN".equals(proposed.get("capability"))
+                && (!(capabilities instanceof List<?> available) || !available.contains(proposed.get("capability"))))
+            throw new ApiException(ErrorCode.EVIDENCE_REQUIRED);
+        OffsetDateTime observedAt=body.observedAt()==null?time(observed.get("observed_at")):body.observedAt();
+        OffsetDateTime until=body.validUntil()==null?time(observed.get("expires_at")):body.validUntil();
+        if(observedAt.isBefore(time(observed.get("observed_at"))) || until.isAfter(time(observed.get("expires_at"))))throw invalid();
+        String reference=body.evidenceRef()==null || body.evidenceRef().isBlank()
+                ? "CHANGE:PERMISSION-"+observation : body.evidenceRef();
+        var refs=body.sourceRefs()==null?List.<SecretRiskProvenance.Ref>of():body.sourceRefs();
+        var saved=evidence.submitDraft(login,occurrence,new SecretRiskEvidenceService.Submission(
+                body.expectedEvidenceRevision(),"permission-draft:"+digest(body.idempotencyKey()),"PERMISSION_MAPPING","OCCURRENCE",
+                observedAt,until,reference,proposed,refs,null,body.applicableFrom(),body.applicableUntil()));
+        jdbc.update("INSERT INTO secret_permission_decisions(observation_id,actor_user_id,decision,evidence_id,reason_code,context_version) "
+                + "VALUES(?,?,'DRAFTED',?,'PARTIAL_PERMISSION_RECORDED',?)",observation,actor.userId(),saved.get("evidenceId"),body.expectedContextVersion());
+        var result=new LinkedHashMap<String,Object>(saved);
+        result.put("status","SAVED_PARTIAL");result.put("observationId",observation);
+        result.put("evidenceRef",reference);result.put("referenceSource",body.evidenceRef()==null || body.evidenceRef().isBlank()?"INTERNAL":"PROVIDED");
+        return result;
+    }
+
+    private List<String> partialBlocked(SecretPrincipal actor,Map<String,Object> context,Map<String,Object> observation) {
+        return confirmBlocked(actor,context,observation).stream().filter(reason -> !Set.of(
+                "NO_SUPPORTED_CAPABILITY","ASSET_CLASSIFICATION_REQUIRED","PERMISSION_ASSERTION_REQUIRED",
+                "RESTRICTION_PROOF_REQUIRED").contains(reason)).toList();
+    }
+
     public Map<String,Object> reject(String login,long occurrence,long observation,Reject body){
         if(body==null||body.reasonCode()==null||!Set.of("NOT_APPLICABLE","INSUFFICIENT_EVIDENCE","IDENTITY_MISMATCH").contains(body.reasonCode()))throw invalid();var actor=reader(login,occurrence);
         return commands.execute(actor,"PERMISSION_ASSISTANCE_REJECTED",body.idempotencyKey(),facts("occurrenceId",occurrence,"observation",observation,"body",body),()->security(actor,current(occurrence)),()->{
-            var c=lock(occurrence);same(body.expectedContextVersion(),c);observation(occurrence,observation);if(!jdbc.queryForList("SELECT decision_id FROM secret_permission_decisions WHERE observation_id=?",observation).isEmpty())throw new ApiException(ErrorCode.CONFLICT);
+            var c=lock(occurrence);same(body.expectedContextVersion(),c);observation(occurrence,observation);if(!jdbc.queryForList("SELECT decision_id FROM secret_permission_decisions WHERE observation_id=? AND decision IN('CONFIRMED','REJECTED')",observation).isEmpty())throw new ApiException(ErrorCode.CONFLICT);
             jdbc.update("INSERT INTO secret_permission_decisions(observation_id,actor_user_id,decision,reason_code,context_version) VALUES(?,?,'REJECTED',?,?)",observation,actor.userId(),body.reasonCode(),body.expectedContextVersion());
             return facts("occurrenceId",occurrence,"observationId",observation,"status","REJECTED","evidenceRevision",c.get("risk_evidence_revision"));
         });
@@ -128,8 +162,8 @@ VALUES('ENRICH','PERMISSION_ASSISTANCE',?,?,?, ?,?::jsonb,?,clock_timestamp(),cl
     }
     private Map<String,Object> observation(long occurrence,long id){var rows=jdbc.queryForList("SELECT o.*,r.context_version,r.collector_connection_id,r.identity_id,r.baseline::text AS baseline FROM secret_permission_observations o JOIN secret_permission_requests r USING(request_id) WHERE o.observation_id=? AND r.occurrence_id=?",id,occurrence);if(rows.isEmpty())throw new ApiException(ErrorCode.NOT_FOUND);return rows.getFirst();}
     @SuppressWarnings("unchecked")private Map<String,Object> payload(Map<String,Object> observation){return json.readValue(observation.get("safe_facts").toString(),Map.class);}
-    private Map<String,Object> publicObservation(Map<String,Object> o){var result=new LinkedHashMap<String,Object>(payload(o));result.put("observationId",o.get("observation_id"));result.put("status",o.get("status"));result.put("observerVersion",o.get("observer_version"));result.put("observedAt",time(o.get("observed_at")));result.put("recordedAt",time(o.get("created_at")));result.put("expiresAt",time(o.get("expires_at")));var decisions=jdbc.queryForList("SELECT decision FROM secret_permission_decisions WHERE observation_id=?",o.get("observation_id"));result.put("decision",decisions.isEmpty()?null:decisions.getFirst().get("decision"));return result;}
-    private List<String> confirmBlocked(SecretPrincipal actor,Map<String,Object> c,Map<String,Object> o){var reasons=blocked(actor,c);var baseline=json.readValue(o.get("baseline").toString(),Map.class);if(!Objects.equals(baseline.get("sourceContextVersion"),sourceVersion(c)))reasons.add("CONTEXT_CHANGED");if(!time(o.get("expires_at")).isAfter(OffsetDateTime.now(ZoneOffset.UTC)))reasons.add("OBSERVATION_EXPIRED");if("UNSUPPORTED".equals(o.get("status")))reasons.add("UNSUPPORTED_TYPE");if(!(payload(o).get("capabilities") instanceof List<?> caps)||caps.isEmpty())reasons.add("NO_SUPPORTED_CAPABILITY");if(!jdbc.queryForList("SELECT decision_id FROM secret_permission_decisions WHERE observation_id=?",o.get("observation_id")).isEmpty())reasons.add("ALREADY_REVIEWED");if(!access.canReadConnectionFacts(actor,number(o,"collector_connection_id")))reasons.add("COLLECTOR_NOT_AUTHORIZED");
+    private Map<String,Object> publicObservation(Map<String,Object> o){var result=new LinkedHashMap<String,Object>(payload(o));result.put("observationId",o.get("observation_id"));result.put("status",o.get("status"));result.put("observerVersion",o.get("observer_version"));result.put("observedAt",time(o.get("observed_at")));result.put("recordedAt",time(o.get("created_at")));result.put("expiresAt",time(o.get("expires_at")));var decisions=jdbc.queryForList("SELECT decision FROM secret_permission_decisions WHERE observation_id=? ORDER BY decision_id DESC",o.get("observation_id"));result.put("decision",decisions.isEmpty()?null:decisions.getFirst().get("decision"));return result;}
+    private List<String> confirmBlocked(SecretPrincipal actor,Map<String,Object> c,Map<String,Object> o){var reasons=blocked(actor,c);var baseline=json.readValue(o.get("baseline").toString(),Map.class);if(!Objects.equals(baseline.get("sourceContextVersion"),sourceVersion(c)))reasons.add("CONTEXT_CHANGED");if(!time(o.get("expires_at")).isAfter(OffsetDateTime.now(ZoneOffset.UTC)))reasons.add("OBSERVATION_EXPIRED");if("UNSUPPORTED".equals(o.get("status")))reasons.add("UNSUPPORTED_TYPE");if(!(payload(o).get("capabilities") instanceof List<?> caps)||caps.isEmpty())reasons.add("NO_SUPPORTED_CAPABILITY");if(!jdbc.queryForList("SELECT decision_id FROM secret_permission_decisions WHERE observation_id=? AND decision IN('CONFIRMED','REJECTED')",o.get("observation_id")).isEmpty())reasons.add("ALREADY_REVIEWED");if(!access.canReadConnectionFacts(actor,number(o,"collector_connection_id")))reasons.add("COLLECTOR_NOT_AUTHORIZED");
         boolean collectorCurrent=collectors(actor,c).stream().filter(row->number(row,"connection_id")==number(o,"collector_connection_id")).anyMatch(row->Objects.toString(row.get("auth_ref"),"").equals(Objects.toString(baseline.get("collectorAuthRef"),""))&&Objects.toString(row.get("scope_version"),"").equals(Objects.toString(baseline.get("collectorScopeVersion"),""))&&Objects.toString(row.get("scope_id"),"").equals(Objects.toString(baseline.get("collectorScopeId"),""))&&Objects.toString(row.get("revision"),"").equals(Objects.toString(baseline.get("collectorScopeRevision"),""))&&Objects.equals(row.get("approved_ref"),baseline.get("collectorApprovedRef")));
         if(!collectorCurrent)reasons.add("COLLECTOR_APPROVAL_CHANGED");
         var refs=new SecretRiskProvenance(jdbc).available(c);

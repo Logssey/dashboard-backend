@@ -103,8 +103,13 @@ public class SecretExplanationService {
         if (run.coverage() == null || !run.coverage().coverageComplete()) facts.add("COVERAGE_INCOMPLETE");
         if ("PENDING".equals(run.status()) && run.attemptNo() > 0) facts.add("RETRY_SCHEDULED");
         // Only bounded reason codes cross the boundary; values and source coordinates stay here.
-        var reasons = jdbc.queryForList("SELECT DISTINCT reason_code FROM secret_validation_attempts WHERE run_id=?",
-                String.class, runId);
+        var reasons = jdbc.queryForList("""
+                SELECT DISTINCT reason_code FROM (
+                    SELECT DISTINCT ON(credential_set_id,occurrence_id) reason_code
+                    FROM secret_validation_attempts WHERE run_id=?
+                    ORDER BY credential_set_id,occurrence_id,completed_at DESC,attempt_id DESC
+                ) latest
+                """, String.class, runId);
         for (String reason : reasons) {
             if (reason == null) continue;
             if (Set.of("INCOMPLETE_CREDENTIAL", "INCOMPLETE_PAIR").contains(reason)) facts.add("INCOMPLETE_CREDENTIAL");
@@ -156,9 +161,9 @@ public class SecretExplanationService {
         String href = "/secrets/cases/" + caseId;
         links.put("OPEN_CASE", href);
         if (detail.capabilities().canRecordAction()) links.put("RECORD_ACTION", href + "?tab=work");
-        if (detail.capabilities().canRequestRevalidation()) links.put("REVALIDATE", href + "?tab=verification");
+        if (detail.capabilities().canRequestRevalidation()) links.put("REVALIDATE", href + "?tab=verification&check=locations");
         if (detail.assigneeUserId() == null && detail.capabilities().canReview()) links.put("ASSIGN_SELF", href + "?tab=work");
-        links.put("REVIEW_CLOSURE", href + "?tab=verification");
+        links.put("REVIEW_CLOSURE", href + "?tab=verification&check=closure");
         var context = context("CASE", "OTHER", detail.issuer(), detail.credentialType(), facts, links);
         return new Snapshot(context, Map.copyOf(links), Long.toString(detail.version()), allReadable);
     }

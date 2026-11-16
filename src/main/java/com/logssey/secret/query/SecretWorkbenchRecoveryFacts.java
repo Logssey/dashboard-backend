@@ -40,7 +40,7 @@ final class SecretWorkbenchRecoveryFacts {
     long configuredConnections = 0;
     for (var connection :
         jdbc.queryForList(
-            "SELECT connection_id,provider FROM secret_connections ORDER BY connection_id")) {
+            "SELECT connection_id,provider,display_name FROM secret_connections ORDER BY connection_id")) {
       long id = ((Number) connection.get("connection_id")).longValue();
       if (!access.canReadConnectionFacts(actor, id)
           || filters.connectionId() != null && filters.connectionId() != id
@@ -48,7 +48,9 @@ final class SecretWorkbenchRecoveryFacts {
               && !filters.source().equals(connection.get("provider"))) continue;
       configuredConnections++;
       subjects.add(new Subject("HealthConnection", id, null,
-          facts("connectionId", id, "source", connection.get("provider"))));
+          facts("connectionId", id, "source", connection.get("provider"),"connectionLabel",
+              com.logssey.secret.connection.SecretDisplayLabels.safeAlias((String)connection.get("display_name"))
+                  ? connection.get("display_name") : "연결 #"+id)));
       for (var item : pages(page -> coverage.scopes(login, id, "ALL", "ALL", false, page, 100))) {
         long scope = ((Number) item.get("scopeId")).longValue();
         boolean selected = filters.origin().equals("ALL") || filters.origin().equals(item.get("origin"));

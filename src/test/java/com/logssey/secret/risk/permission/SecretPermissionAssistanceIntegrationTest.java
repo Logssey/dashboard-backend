@@ -138,6 +138,27 @@ class SecretPermissionAssistanceIntegrationTest {
         assertThat(policy()).isEqualTo(policy);
         assertThat(service.context("security",occurrence).toString()).doesNotContain("github-user:123","fixture-app","protected");
     }
+    @Test void partialObservationSavesADraftAndRemainsAvailableForSupplementation() {
+        var context=service.context("security",occurrence);
+        var request=service.request("security",occurrence,new SecretPermissionAssistanceService.Request(
+                context.get("contextVersion").toString(),"partial-request",1L));
+        long observation=publish(request,List.of());
+        var preview=service.preview("security",occurrence,observation);
+        assertThat(preview).containsEntry("canSavePartial",true).containsEntry("canConfirm",false);
+        var body=new SecretPermissionAssistanceService.Confirm(preview.get("contextVersion").toString(),
+                ((Number)preview.get("evidenceRevision")).longValue(),"partial-save",true,null,null,null,
+                Map.of("capability","UNKNOWN","targetScope","UNKNOWN","permissionCoverage","PARTIAL",
+                        "targetCoverage","UNKNOWN","restrictionCoverage","UNKNOWN","classificationCoverage","UNKNOWN"),
+                List.of(),null,null,true);
+        var saved=service.confirm("security",occurrence,observation,body);
+        assertThat(saved).containsEntry("status","SAVED_PARTIAL").containsEntry("referenceSource","INTERNAL");
+        assertThat(jdbc.queryForObject("SELECT verification_level FROM secret_risk_evidence WHERE evidence_id=?",String.class,
+                saved.get("evidenceId"))).isEqualTo("MANUAL_SUBMITTED");
+        assertThat(service.confirm("security",occurrence,observation,body)).containsEntry("evidenceId",saved.get("evidenceId"));
+        assertThat(service.preview("security",occurrence,observation)).containsEntry("canSavePartial",true);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_permission_decisions WHERE decision='DRAFTED'",Long.class)).isEqualTo(1L);
+    }
+
     @Test void realManualSupplementAfterObservationCanConfirmWithoutBackdatingAndReplaysAreAclBound(){
         jdbc.update("INSERT INTO secret_exposure_assessments(occurrence_id,from_status,decision,reason_code,scope_origin,scope_revision,decision_source,evidence_refs,actor_user_id,version) VALUES(?,'UNKNOWN','ABNORMAL','UNAPPROVED_SOURCE_LOCATION','PRODUCTION',1,'HUMAN','[]',1,1)",occurrence);
         var accessAt=databaseNow();evidence.submit("security",occurrence,new SecretRiskEvidenceService.Submission(revision(),"access-range","ACCESS_SCOPE","OCCURRENCE",accessAt,accessAt.plusHours(1),"TICKET:SEC-123",Map.of("audienceClass","BOUNDED","coverageStatus","COMPLETE","publicAccessConfirmed",false,"boundedPrincipalCount",2),List.of(),null,accessAt.minusMinutes(5),accessAt.plusHours(1)));

@@ -87,7 +87,7 @@ public class SecretWorkbenchService {
         return facts("scope","workbench","unit","Mixed","total",null,"origin",f.origin(),"filters",f.normalized(),
             "snapshotId",h.snapshotId(),"asOf",h.asOf(),"expiresAt",h.expiresAt(),"restrictedCoverage",h.restrictedCoverage(),
             "accessScope",access.hasAnyRole(actor,Set.of(SecretRole.SECURITY))?"AUTHORIZED_LOCATIONS":"ASSIGNED_LOCATIONS",
-            "metrics",metrics,"caseSummary",facts("scope","currentCases","unit","ResponseCase","total",caseAccess?allCases.size():null,
+            "metrics",metrics,"commonCauseGroups",commonCauseGroups(h),"caseSummary",facts("scope","currentCases","unit","ResponseCase","total",caseAccess?allCases.size():null,
                 "status",caseAccess?"AVAILABLE":"NOT_AUTHORIZED","actionCounts",caseAccess?counts:null,
                 "severityCounts",caseAccess?severityCounts:null,
                 "severityValidityMatrix",SecretCaseMetrics.matrix(allCases,caseAccess,f.normalized(),h.snapshotId().toString()),
@@ -180,7 +180,7 @@ public class SecretWorkbenchService {
         }
         for(Row r:searchedRows) {
             if(!access.hasConnectionRole(actor,r.connectionId(),SecretRole.SECURITY)||r.componentState().equals("METADATA_ONLY")||!valid.contains(r.occurrenceId()))continue;
-            if(r.exposure().equals("UNKNOWN")||r.requiresReassessment())subjects.add(subject("DecisionOccurrence",r,"NEEDS_REVIEW","OPEN_REVIEW",riskRows.getOrDefault(r.occurrenceId(),Map.of())));
+            if(r.requiresReassessment() || r.exposure().equals("UNKNOWN") && "CONFIRMED".equals(r.componentState()) && "PRESENT".equals(r.presence()))subjects.add(subject("DecisionOccurrence",r,"NEEDS_REVIEW","OPEN_REVIEW",riskRows.getOrDefault(r.occurrenceId(),Map.of())));
             else if(r.exposure().equals("ABNORMAL")&&r.caseId()==null)subjects.add(subject("LinkOccurrence",r,"CASE_LINK_REQUIRED","OPEN_REVIEW",riskRows.getOrDefault(r.occurrenceId(),Map.of())));
         }
         for(var entry:byKey.entrySet()) {
@@ -238,12 +238,46 @@ public class SecretWorkbenchService {
         return h;
     }
     private Subject subject(String type,Row r,String why,String next,Map<String,Object> risk){var item=facts("credentialSetId",r.secretId(),"secretId",r.secretId(),"occurrenceId",r.occurrenceId(),
-        "caseId",r.caseId(),"maskedLabel",r.maskedLabel(),"componentState",r.componentState(),"source",r.source(),"environment",r.environment(),"origin",r.origin(),
+        "caseId",r.caseId(),"connectionId",r.connectionId(),"maskedLabel",r.maskedLabel(),"componentState",r.componentState(),"source",r.source(),"environment",r.environment(),"origin",r.origin(),
         "presence",r.presence(),"exposure",r.exposure(),"validationStatus",r.validity()==null?"UNCHECKED":r.validity(),"severity","UNASSESSED", "safeLocationLabel",locations.safeLocationLabel(r),
         "whyHereCode",why,"nextActionCode",next,"lastSeenAt",r.lastSeenAt(),"capabilities",Map.of("canReview",true));
         SecretRiskReadModel.applyLocation(item,risk,"METADATA_ONLY".equals(r.componentState()));
         item.put("taskGuidance",SecretTaskGuidance.location(item));
         return new Subject(type,r.occurrenceId(),r.secretId(),item,List.of(r.occurrenceId()));}
+    private List<Map<String,Object>> commonCauseGroups(Header header) {
+        var groups=new LinkedHashMap<String,Map<String,Object>>();
+        var labels=new HashMap<Long,String>();
+        for(var connection:snapshots.page(header,"HealthConnection",0,Integer.MAX_VALUE))
+            if(connection.get("connectionLabel") instanceof String label)
+                labels.put(((Number)connection.get("connectionId")).longValue(),label);
+        for(String type:List.of("UnclassifiedScope","GapScope","DecisionOccurrence","LinkOccurrence")) {
+            for(var item:snapshots.page(header,type,0,Integer.MAX_VALUE)) {
+                var guidance=item.get("taskGuidance") instanceof Map<?,?> value?value:Map.of();
+                var target=guidance.get("target") instanceof Map<?,?> value?value:Map.of();
+                Object connection=item.get("connectionId");
+                if(connection==null)connection=target.get("connectionId");
+                if(!(connection instanceof Number id))continue;
+                String unit=type.endsWith("Scope")?"Scope":"Occurrence";
+                String action=Objects.toString(guidance.get("nextActionCode"),"VIEW_DETAIL");
+                String code=Objects.toString(item.get("whyHereCode"),"EXPOSURE_REVIEW_REQUIRED");
+                if(item.get("setupReasonCodes") instanceof List<?> reasons && !reasons.isEmpty())code=reasons.getFirst().toString();
+                if(item.get("coverage") instanceof Map<?,?> coverage && coverage.get("gapReasonCodes") instanceof List<?> reasons && !reasons.isEmpty() && type.equals("GapScope"))code=reasons.getFirst().toString();
+                if(type.equals("LinkOccurrence"))code="CASE_LINK_REQUIRED";
+                String key=id.longValue()+":"+unit+":"+code+":"+action;
+                var group=groups.get(key);
+                if(group==null) {
+                    group=facts("code",code,"connectionId",id.longValue(),"connectionLabel",
+                            labels.getOrDefault(id.longValue(),"연결 #"+id),
+                            "count",0L,"unit",unit,"nextAction",action,"canExecute",Boolean.TRUE.equals(guidance.get("canExecute")),
+                            "target",target,"snapshotId",header.snapshotId());
+                    groups.put(key,group);
+                }
+                group.put("count",((Number)group.get("count")).longValue()+1);
+            }
+        }
+        return List.copyOf(groups.values());
+    }
+
     private static Set<String> stageFilter(String bucket,String stages) {
         if(stages==null)return Set.of();
         var allowed=switch(bucket){
