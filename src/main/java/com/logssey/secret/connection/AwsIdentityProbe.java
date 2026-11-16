@@ -17,11 +17,17 @@ import software.amazon.awssdk.services.sts.model.StsException;
 @Component
 class AwsIdentityProbe {
     private final String credentialsMode;
+    private final String credentialsFile;
 
-    AwsIdentityProbe(@Value("${logssey.secret.aws.collection.credentials-mode:PROFILE}") String credentialsMode) {
+    AwsIdentityProbe(String credentialsMode) { this(credentialsMode, ""); }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    AwsIdentityProbe(@Value("${logssey.secret.aws.collection.credentials-mode:PROFILE}") String credentialsMode,
+            @Value("${logssey.secret.aws.collection.credentials-file:}") String credentialsFile) {
         if (!"PROFILE".equals(credentialsMode) && !"WORKLOAD".equals(credentialsMode))
             throw new IllegalArgumentException("AWS_CREDENTIALS_MODE_INVALID");
         this.credentialsMode = credentialsMode;
+        this.credentialsFile = credentialsFile;
     }
 
     ConnectionProbeResult probe(String profile, String expectedAccount) {
@@ -35,7 +41,7 @@ class AwsIdentityProbe {
     }
 
     private ConnectionProbeResult probeIdentity(String mode, String profile, String expectedAccount) {
-        try (var credentials = SecretAwsSourceCredentials.fromConfiguration(mode, profile);
+        try (var credentials = SecretAwsSourceCredentials.fromConfiguration(mode, profile, credentialsFile);
              var client = StsClient.builder().credentialsProvider(credentials::resolveCredentials)
                      .region(Region.US_EAST_1)
                      .httpClientBuilder(UrlConnectionHttpClient.builder())

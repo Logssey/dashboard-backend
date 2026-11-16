@@ -52,6 +52,7 @@ tasks.named('test') {
 // Only the isolated DB/engine core is shared; the worker never imports API configuration.
 sourceSets.main.java.srcDir(rootProject.file('src/main/java/com/logssey/secret/risk/core'))
 sourceSets.main.java.srcDir(rootProject.file('src/main/java/com/logssey/secret/aws'))
+sourceSets.main.java.srcDir(rootProject.file('src/main/java/com/logssey/secret/connection/core'))
 sourceSets.main.java.srcDir(rootProject.file('src/main/java/com/logssey/secret/notion'))
 sourceSets.main.java.srcDir(rootProject.file('src/main/java/com/logssey/secret/operations'))
 sourceSets.main.java.exclude('**/SecretOperationsService.java','**/SecretOperationsController.java','**/SecretOperationsApiMonitor.java')

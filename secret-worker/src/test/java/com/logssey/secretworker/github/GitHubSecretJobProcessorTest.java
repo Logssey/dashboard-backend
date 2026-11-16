@@ -396,6 +396,25 @@ class GitHubSecretJobProcessorTest {
     }
 
     @Test
+    void changedConnectionVersionDuringDetectionCannotCommitStaleFindings() {
+        insertRun();
+        detector = new SecretContentDetector() {
+            public String engineVersion() { return "8.30.1"; }
+            public String configHash() { return CONFIG_HASH; }
+            public GitleaksScanResult scan(byte[] bytes) {
+                jdbc.update("UPDATE secret_connections SET scope_version=scope_version+1");
+                return new GitleaksScanResult(engineVersion(), configHash(), List.of(
+                        new GitleaksFinding("aws-access-token", 1, 1, 19, 38)));
+            }
+        };
+        processor = processorWith(material -> { throw new AssertionError("Stale result reached validation"); });
+        var job = execution.claimNextJob("GITHUB").orElseThrow();
+        assertThatThrownBy(() -> processor.process(job, execution)).isInstanceOf(SecretJobFailure.class);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_findings", Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_occurrences", Long.class)).isZero();
+    }
+
+    @Test
     void patIsValidatedFromItsOwnMaterialAndPublishesSafeAccessEvidence() {
         String token = "ghp_" + "SENTINEL".repeat(4) + "ABCD";
         content = ("GITHUB_TOKEN=" + token + "\n").getBytes(StandardCharsets.UTF_8);

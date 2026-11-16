@@ -37,6 +37,7 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class GitHubSecretJobProcessor implements SecretJobProcessor {
     private final JdbcTemplate jdbc;
     private final GitHubCollector collector;
+    private final java.util.function.BiFunction<Long, Long, GitHubCollector> connectionCollectors;
     private final SecretContentDetector detector;
     private final SecretFindingRepository findings;
     private final SecretFindingNormalizer normalizer;
@@ -92,11 +93,23 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
             GitHubPatValidator githubValidator,
             List<GitHubRepositoryAccessSink> accessSinks,
             com.logssey.secretworker.validation.NotionTokenValidator notionValidator) {
+        this(jdbc, collector, detector, findings, normalizer, validator, attempts, jobs,
+                githubValidator, accessSinks, notionValidator, null);
+    }
+
+    GitHubSecretJobProcessor(JdbcTemplate jdbc, GitHubCollector collector,
+            SecretContentDetector detector, SecretFindingRepository findings,
+            SecretFindingNormalizer normalizer, AwsValidationService validator,
+            SecretValidationAttemptRepository attempts, SecretJobProperties jobs,
+            GitHubPatValidator githubValidator, List<GitHubRepositoryAccessSink> accessSinks,
+            com.logssey.secretworker.validation.NotionTokenValidator notionValidator,
+            java.util.function.BiFunction<Long, Long, GitHubCollector> connectionCollectors) {
         this.githubValidator = githubValidator;
         this.notionValidator = notionValidator;
         this.accessSinks = List.copyOf(accessSinks);
         this.jdbc = jdbc;
         this.collector = collector;
+        this.connectionCollectors = connectionCollectors;
         this.detector = detector;
         this.findings = findings;
         this.normalizer = normalizer;
@@ -130,7 +143,7 @@ public final class GitHubSecretJobProcessor implements SecretJobProcessor {
                                                         + approved.repository()
                                                         + "/";
                                 if (!ref.startsWith(prefix)) return false;
-                                return collector
+                                return collectorFor(job)
                                                 .collectFile(
                                                         approved,
                                                         ref.substring(prefix.length()),
@@ -295,7 +308,7 @@ WHERE run_scope_id = ?
                 detector.engineVersion(), detector.configHash(), Instant.now())));
         AtomicReference<String> consumerFailure = new AtomicReference<>();
         GitHubCollector.Result result =
-                collector.observed(execution.observer(job, scope.id())).collect(
+                collectorFor(job).observed(execution.observer(job, scope.id())).collect(
                         approved,
                         GitHubCollectionLimits.DEFAULT,
                         (source, bytes) -> {
@@ -414,7 +427,7 @@ WHERE run_scope_id = ?
         withLease(job, execution, () -> findings.finishToolRun(toolRunId.get(), status, code, Instant.now()));
         GitHubCollector.RepositoryAccess access =
                 result.status() == GitHubCollector.Status.SUCCEEDED && !accessSinks.isEmpty()
-                        ? collector.observed(execution.observer(job, scope.id())).repositoryAccess(approved)
+                        ? collectorFor(job).observed(execution.observer(job, scope.id())).repositoryAccess(approved)
                         : null;
         withLease(
                 job,
@@ -473,9 +486,26 @@ WHERE run_scope_id = ?
                                 scopeId));
     }
 
-    private static void withLease(ClaimedSecretJob job, SecretJobExecutionService execution,
+    private GitHubCollector collectorFor(ClaimedSecretJob job) {
+        try {
+            if (connectionCollectors == null) return collector;
+            Long version = jdbc.queryForObject("SELECT scope_version FROM secret_scan_runs WHERE run_id=? AND job_id=?", Long.class, job.runId(), job.jobId());
+            return connectionCollectors.apply(job.connectionId(), version);
+        } catch (RuntimeException ignored) {
+            throw new SecretJobFailure(SecretJobFailureCode.SOURCE_UNAVAILABLE, true);
+        }
+    }
+
+    private void withLease(ClaimedSecretJob job, SecretJobExecutionService execution,
                                   Runnable persistence) {
-        if (!execution.persistIfLeased(job.jobId(), job.leaseToken(), persistence)) {
+        if (!execution.persistIfLeased(job.jobId(), job.leaseToken(), () -> {
+            var current = jdbc.queryForList("""
+                    SELECT c.connection_id FROM secret_connections c JOIN secret_scan_runs r USING(connection_id)
+                    WHERE r.run_id=? AND r.job_id=? AND c.status='ACTIVE' AND c.scope_version=r.scope_version
+                    """, job.runId(), job.jobId());
+            if (current.isEmpty()) throw new SecretJobFailure(SecretJobFailureCode.SOURCE_ACCESS_DENIED, false);
+            persistence.run();
+        })) {
             throw new SecretJobFailure(SecretJobFailureCode.LEASE_EXPIRED, true);
         }
     }

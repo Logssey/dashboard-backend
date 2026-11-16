@@ -30,8 +30,9 @@ class AwsCollectorConfiguration {
     @Bean(destroyMethod = "close")
     SecretAwsSourceCredentials awsSourceCredentials(
             @Value("${logssey.secret.aws.collection.credentials-mode:PROFILE}") String mode,
-            @Value("${logssey.secret.aws.collection.profile}") String profile) {
-        return SecretAwsSourceCredentials.fromConfiguration(mode, profile);
+            @Value("${logssey.secret.aws.collection.profile}") String profile,
+            @Value("${logssey.secret.aws.collection.credentials-file:}") String file) {
+        return SecretAwsSourceCredentials.fromConfiguration(mode, profile, file);
     }
 
     @Bean

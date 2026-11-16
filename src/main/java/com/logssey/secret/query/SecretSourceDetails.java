@@ -27,7 +27,8 @@ public final class SecretSourceDetails {
             if("NOTION".equals(provider)&&approvedRef.matches(com.logssey.secret.notion.NotionScopeSql.REFERENCE_PATTERN)) {
                 return "Notion 페이지 "+com.logssey.secret.notion.NotionScopeSql.pageId(approvedRef).substring(0,8);
             }
-            if("GITHUB".equals(provider)&&"github".equals(uri.getScheme())&&uri.getHost()!=null&&p.length>=5) {
+            if("GITHUB".equals(provider)&&"github".equals(uri.getScheme())&&uri.getHost()!=null&&p.length>=4) {
+                if(p.length==4)return safe(uri.getHost()+"/"+decode(p[1])+" · "+decode(p[2])+" · 전체 저장소");
                 String label=safe(uri.getHost()+"/"+decode(p[1])+" · "+decode(p[2])+" · "+String.join("/",Arrays.stream(p).skip(3).map(SecretSourceDetails::decode).toList()));
                 if(label!=null)return label;
             }
@@ -61,10 +62,10 @@ public final class SecretSourceDetails {
             }
             if("GITHUB".equals(provider)&&"github".equals(uri.getScheme())) {
                 String[] parts=uri.getRawPath().split("/",-1);
-                if(parts.length<5 || !parts[parts.length-1].isEmpty() || uri.getHost()==null) return unavailable;
+                if(parts.length<4 || !parts[parts.length-1].isEmpty() || uri.getHost()==null) return unavailable;
                 String owner=uri.getHost(),repo=decode(parts[1]),branch=decode(parts[2]);
                 if(!owner.matches("[A-Za-z0-9-]{1,39}")||!repo.matches("[A-Za-z0-9_.-]{1,100}")||branch.isBlank())return unavailable;
-                String prefix=String.join("/",Arrays.stream(parts).skip(3).limit(parts.length-4L).map(SecretSourceDetails::decode).toList())+"/";
+                String prefix=parts.length==4?"":String.join("/",Arrays.stream(parts).skip(3).limit(parts.length-4L).map(SecretSourceDetails::decode).toList())+"/";
                 String root=owner+"/"+repo+"/";
                 if(sourceRef==null||!sourceRef.startsWith(root))return unavailable;
                 String path=sourceRef.substring(root.length());

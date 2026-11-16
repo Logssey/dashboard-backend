@@ -27,7 +27,7 @@ import tools.jackson.databind.json.JsonMapper;
 @Component
 class GitHubAuthProbe {
     private static final Pattern SCOPE = Pattern.compile(
-            "^github://([A-Za-z0-9-]{1,39})/([A-Za-z0-9_.-]{1,100})/[^/?#]+/(?:[^/?#]+/)+$");
+            "^github://([A-Za-z0-9-]{1,39})/([A-Za-z0-9_.-]{1,100})/[^/?#]+/(?:[^/?#]+/)*$");
     private static final URI API_BASE = URI.create("https://api.github.com/");
     private static final int MAX_RESPONSE_BYTES = 65_536;
 

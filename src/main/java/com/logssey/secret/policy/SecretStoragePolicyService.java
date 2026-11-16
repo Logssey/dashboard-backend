@@ -28,7 +28,7 @@ public class SecretStoragePolicyService {
             "AWS_SSM_PARAMETER_VALUE","AWS_S3_OBJECT_CONTENT","IAM_ACCESS_KEY_METADATA",
             "AWS_SECRETS_MANAGER_METADATA","AWS_SSM_PARAMETER_METADATA","AWS_S3_BUCKET_METADATA","NOTION_PAGE_CONTENT");
     private static final Pattern EVIDENCE=Pattern.compile("^((TICKET|CHANGE):[A-Z]{2,10}-[1-9][0-9]{0,9}|POLICY:SECRET-[1-9][0-9]{0,9})$");
-    private static final Pattern GITHUB=Pattern.compile("^github://([A-Za-z0-9-]{1,39})/([A-Za-z0-9_.-]{1,100})/([^/?#]+)/(.+/)$");
+    private static final Pattern GITHUB=Pattern.compile("^github://([A-Za-z0-9-]{1,39})/([A-Za-z0-9_.-]{1,100})/([^/?#]+)/([^?#]*)$");
     private static final Pattern SENSITIVE_VALUE=Pattern.compile(".*(?:AKIA[A-Z0-9]{16}|ASIA[A-Z0-9]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|(?:secret_|ntn_)[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AIza[A-Za-z0-9_-]{30,}).*");
     private final org.springframework.jdbc.core.JdbcTemplate jdbc;
     private final SecretPolicyRepository repository;
@@ -383,13 +383,18 @@ public class SecretStoragePolicyService {
         access.requireConnectionRole(actor,scope.connectionId(),SecretRole.OPERATIONS);
         var github=GITHUB.matcher(scope.approvedRef());
         if (!"GITHUB_REPOSITORY_FILES".equals(scope.contentType()) || !github.matches()
-                || !Objects.equals(rule.branchCondition(),github.group(3))) invalid();
+                || !Objects.equals(rule.branchCondition(),decodeGithub(github.group(3)))) invalid();
         String path=rule.protectedPathCondition();
         if (path==null || path.isBlank() || path.length()>500 || !path.equals(path.trim())
                 || path.startsWith("/") || path.contains("\\") || path.contains("..") || path.contains("%")
                 || path.contains("?") || path.contains("#") || path.contains(":") || path.contains("*")
                 || path.chars().anyMatch(c->c<32 || c==127) || SENSITIVE_VALUE.matcher(path).matches()
-                || !path.startsWith(github.group(4)) || "PREFIX".equals(rule.pathMatch()) && !path.endsWith("/")) invalid();
+                || !path.startsWith(decodeGithub(github.group(4))) || "PREFIX".equals(rule.pathMatch()) && !path.endsWith("/")) invalid();
+    }
+
+    private static String decodeGithub(String raw) {
+        try { return java.net.URLDecoder.decode(raw.replace("+", "%2B"), java.nio.charset.StandardCharsets.UTF_8); }
+        catch (IllegalArgumentException ignored) { throw new ApiException(ErrorCode.INVALID_INPUT); }
     }
 
     void validateSupportedScope(Scope scope) {

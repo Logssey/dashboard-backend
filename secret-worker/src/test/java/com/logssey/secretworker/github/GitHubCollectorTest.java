@@ -82,6 +82,18 @@ class GitHubCollectorTest {
         assertThat(privateRepo.metadataComplete()).isTrue();
     }
 
+    @Test
+    void repositoryRootReadsThePinnedTreeIncludingTopLevelFiles() {
+        fixturesTree = tree(FIXTURES, false, List.of(entry("one.txt", "blob", "100644", BLOB, 13)));
+        var scope = GitHubApprovedScope.fromApprovedRef("github://Logssey/test-find-key/main/", "CURRENT_COMMIT_ONLY");
+        var paths = new ArrayList<String>();
+        var result = collector.collect(scope, GitHubCollectionLimits.DEFAULT, (source, bytes) -> paths.add(source.path()));
+        assertThat(scope.pathPrefix()).isEmpty();
+        assertThat(result.status()).isEqualTo(GitHubCollector.Status.SUCCEEDED);
+        assertThat(paths).contains("outside.txt");
+        assertThat(paths).anyMatch(path -> path.startsWith("fixtures/"));
+    }
+
     @BeforeEach
     void setUp() throws Exception {
         KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");

@@ -230,6 +230,27 @@ class SecretCaseSecurityIntegrationTest {
     }
 
     @Test
+    void connectionSettingsAndMutationsRequireSessionCsrfAndLiveOperationsGrant() throws Exception {
+        long connection = jdbc.queryForObject("SELECT connection_id FROM secret_connections", Long.class);
+        var mvc = mvc();
+        mvc.perform(get("/api/v1/secrets/connections/{id}/settings", connection)).andExpect(status().isUnauthorized());
+        var response = mvc.perform(post("/api/v1/auth/login").with(csrf()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"loginId\":\"case-admin\",\"password\":\"case-pass\"}"))
+                .andExpect(status().isOk()).andReturn();
+        var session = (MockHttpSession) response.getRequest().getSession(false);
+        mvc.perform(get("/api/v1/secrets/connections/{id}/settings", connection).session(session)).andExpect(status().isForbidden());
+        String body = "{\"expectedScopeVersion\":1,\"displayName\":\"New name\"}";
+        mvc.perform(patch("/api/v1/secrets/connections/{id}/settings", connection).session(session)
+                .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isForbidden());
+        mvc.perform(patch("/api/v1/secrets/connections/{id}/settings", connection).session(session).with(csrf())
+                .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isForbidden());
+        jdbc.update("INSERT INTO secret_role_grants(user_id,role,granted_by_user_id,grant_source) VALUES(?,'OPERATIONS',?,'MANUAL')", actorId, actorId);
+        mvc.perform(get("/api/v1/secrets/connections/{id}/settings", connection).session(session)).andExpect(status().isOk());
+        jdbc.update("UPDATE secret_role_grants SET revoked_at=clock_timestamp() WHERE user_id=?", actorId);
+        mvc.perform(get("/api/v1/secrets/connections/{id}/settings", connection).session(session)).andExpect(status().isForbidden());
+    }
+
+    @Test
     void triageMutationsRequireSessionCsrfAndSecurityGrant() throws Exception {
         long scopeId = jdbc.queryForObject("SELECT scope_id FROM secret_connection_scopes", Long.class);
         long occurrenceId = jdbc.queryForObject("SELECT occurrence_id FROM secret_occurrences", Long.class);

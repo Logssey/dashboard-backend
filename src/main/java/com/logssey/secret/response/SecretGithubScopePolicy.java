@@ -5,7 +5,7 @@ import java.util.regex.Pattern;
 /** Only current-commit repository directories recognized by the GitHub collector are triageable. */
 public final class SecretGithubScopePolicy {
     private static final Pattern APPROVED_REF = Pattern.compile(
-            "^github://([A-Za-z0-9-]{1,39})/([A-Za-z0-9_.-]{1,100})/[^/?#]+/(?:[^/?#]+/)+$");
+            "^github://([A-Za-z0-9-]{1,39})/([A-Za-z0-9_.-]{1,100})/[^/?#]+/(?:[^/?#]+/)*$");
 
     private SecretGithubScopePolicy() {
     }
