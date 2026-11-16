@@ -167,6 +167,20 @@ public class SecretExplanationService {
         String href = "/secrets/cases/" + caseId;
         String next = (String) guidance.get("nextActionCode");
         boolean waiting = next != null && next.startsWith("WAIT_");
+        if ("WAIT_FOR_REVALIDATION".equals(next) && Boolean.TRUE.equals(guidance.get("canExecute"))
+                && guidance.get("target") instanceof Map<?, ?> target && "RUN".equals(target.get("type"))
+                && target.get("id") instanceof Number runId) {
+            links.put("CHECK_STATUS", "/secrets/history/" + runId.longValue());
+        }
+        if ("RESUME_REMEDIATION".equals(next)) {
+            facts.add("POST_ACTION_REDETECTED");
+            var resumeTarget = locations.stream()
+                    .filter(location -> Boolean.TRUE.equals(location.get("canResume"))).findFirst();
+            if (Boolean.TRUE.equals(guidance.get("canExecute")) && resumeTarget.isPresent()) {
+                links.put("RESUME_REMEDIATION", href + "?tab=verification&check=locations&occurrence="
+                        + resumeTarget.get().get("occurrenceId") + "#case-verification-title");
+            }
+        }
         var assignmentTarget = locations.stream().filter(location -> unassigned(location)
                 && Boolean.TRUE.equals(location.get("canAssign"))).findFirst();
         if (!waiting && assignmentTarget.isPresent()) {

@@ -121,6 +121,25 @@ class SecretExplanationServiceTest {
                 .containsExactly("OPEN_CASE");
     }
 
+    @Test void aQueuedRecheckLinksToTheAuthorizedRunAndRedetectionLinksToResume() {
+        var detail = prepare(true);
+        var next = guidance("WAIT_FOR_REVALIDATION", true);
+        next.put("target", Map.of("type", "RUN", "id", 19L));
+        detail.put("taskGuidance", next);
+        assertThat(service.responseCase(12, "security", false).actions())
+                .extracting(SecretExplanationResponse.Action::href).containsExactly("/secrets/history/19");
+
+        var location = location(7L, null, false, false);
+        location.put("canResume", true);
+        detail.put("occurrences", List.of(location));
+        detail.put("taskGuidance", guidance("RESUME_REMEDIATION", true));
+        var result = service.responseCase(12, "security", false);
+        assertThat(result.facts()).extracting(SecretExplanationResponse.Fact::code).contains("POST_ACTION_REDETECTED");
+        assertThat(result.actions()).extracting(SecretExplanationResponse.Action::code).containsExactly("RESUME_REMEDIATION");
+        assertThat(result.actions().getFirst().href())
+                .isEqualTo("/secrets/cases/12?tab=verification&check=locations&occurrence=14#case-verification-title");
+    }
+
     @Test void aChangedTaskBasisInvalidatesTheModelResponseEvenWithoutACaseVersionChange() {
         var detail = prepare(true);
         var changed = new LinkedHashMap<>(detail);
