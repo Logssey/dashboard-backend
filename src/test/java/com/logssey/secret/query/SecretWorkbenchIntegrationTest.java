@@ -162,7 +162,7 @@ class SecretWorkbenchIntegrationTest {
         jdbc.update("UPDATE secret_connection_scopes SET content_type='GITHUB_REPOSITORY_FILES',history_limit='CURRENT_COMMIT_ONLY',approved_ref='github://Example/project/main/fixtures/' WHERE scope_id=?",scope);
         var snapshots=new SecretReadSnapshots(jdbc,JsonMapper.builder().build());
         var first=summary("operations",filters(),null);String id=first.get("snapshotId").toString();
-        assertThat(metric(first,"unclassifiedScopes").get("value")).isEqualTo(1L);
+        assertThat(metric(first,"unclassifiedScopes").get("value")).isEqualTo(0L);
         long hidden=scope(connection());snapshots.invalidateScope(hidden);
         assertThat(summary("operations",filters(),id)).isEqualTo(first);
         snapshots.invalidateScope(scope);
@@ -215,6 +215,10 @@ class SecretWorkbenchIntegrationTest {
         scope(connection()); // Hidden setup must never contribute to any group.
         // Setup now means missing operational policy, not an absent production/test classification.
         jdbc.update("UPDATE secret_connection_scopes SET content_type='GITHUB_REPOSITORY_FILES',history_limit='CURRENT_COMMIT_ONLY',approved_ref='github://Example/project/main/fixtures/'");
+
+        reviewOccurrence(connection,scope,scan(connection,List.of(scope),true),"UNKNOWN");
+        reviewOccurrence(unclassifiedConnection,unclassified,scan(unclassifiedConnection,List.of(unclassified),true),"UNKNOWN");
+        reviewOccurrence(pausedConnection,paused,scan(pausedConnection,List.of(paused),true),"UNKNOWN");
 
         var production = summary("security", filters(), null);
         var setup = block(production.get("setupSummary"));
@@ -283,6 +287,7 @@ class SecretWorkbenchIntegrationTest {
                         + " content_type='GITHUB_REPOSITORY_FILES',history_limit='CURRENT_COMMIT_ONLY',approved_ref='github://Logssey/test-find-key/main/fixtures/',response_origin='UNCLASSIFIED',response_origin_set_by_user_id=NULL,response_origin_set_at=NULL"
                         + " WHERE scope_id=?",
                 scope);
+        reviewOccurrence(connection,scope,scan(connection,List.of(scope),true),"UNKNOWN");
         var coverage = new SecretCoverageService(jdbc, new SecretAccessService(jdbc));
         var securityScope =
                 items(
@@ -561,6 +566,17 @@ class SecretWorkbenchIntegrationTest {
                         .findFirst()
                         .orElseThrow();
         assertThat(block(changedScope.get("coverage")).get("lastSuccessfulScan")).isNull();
+    }
+
+    @Test void commonCauseCountsUseTheWholeAuthorizedFrozenSet() {
+        long run=scan(connection,List.of(scope),true);
+        for(int i=0;i<4;i++)reviewOccurrence(connection,scope,run,"UNKNOWN");
+        var result=summary("security",filters(),null);
+        var groups=items(result.get("commonCauseGroups"));
+        assertThat(groups.stream().filter(group -> "Occurrence".equals(group.get("unit")))
+                .map(group -> ((Number)group.get("count")).longValue())).containsExactly(4L);
+        reviewOccurrence(connection,scope,run,"UNKNOWN");
+        assertThat(summary("security",filters(),result.get("snapshotId").toString())).isEqualTo(result);
     }
 
     private Map<String, Object> provider(Map<String, Object> health, String source) {

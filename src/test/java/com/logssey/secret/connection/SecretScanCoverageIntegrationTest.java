@@ -13,7 +13,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 import static org.assertj.core.api.Assertions.*;
 
 class SecretScanCoverageIntegrationTest {
-    @Test void notionCoverageGatesRuntimeSupportAndRetainsTheCommonStoragePolicyRequirement() {
+    @Test void notionCoverageChecksRuntimeSupportAndAvoidsPolicyWorkWithoutFindings() {
         long c=connection(),s=scope(c,"NOTION_PAGE_CONTENT");
         jdbc.update("UPDATE secret_connections SET provider='NOTION',auth_ref='notion-internal:default' WHERE connection_id=?",c);
         jdbc.update("UPDATE secret_connection_scopes SET history_limit='CURRENT_VERSION_ONLY',"
@@ -27,7 +27,7 @@ class SecretScanCoverageIntegrationTest {
         assertThat(((Map<?,?>)enabled.get("capabilities")).get("canTest")).isEqualTo(true);
         var scope=items(service.scopes("operator",c,"ALL","ALL",false,0,20)).getFirst();
         assertThat(scope.get("contentType")).isEqualTo("NOTION_PAGE_CONTENT");
-        assertThat(scope.get("setupReasonCodes").toString()).contains("POLICY_MISSING");
+        assertThat(scope.get("setupReasonCodes").toString()).doesNotContain("POLICY_MISSING");
         assertThat(scope.get("setupState")).isEqualTo("READY");
         jdbc.update("UPDATE secret_connection_scopes SET approved_ref=approved_ref||'?all=true' WHERE scope_id=?",s);
         assertThat(items(service.connections("operator","ALL","ALL",0,20)).getFirst().get("scanBlockedReasonCode"))

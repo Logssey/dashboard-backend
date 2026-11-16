@@ -49,6 +49,7 @@ class SecretStoragePolicyIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired SecretStoragePolicyService service;
     @Autowired SecretScopeChangeService changes;
+    @Autowired SecretConnectionPolicyDefaults defaults;
     @Autowired WebApplicationContext context;
     @Autowired com.logssey.secret.query.SecretLocationService locations;
     @Autowired com.logssey.secret.decision.SecretDecisionService decisions;
@@ -96,6 +97,22 @@ class SecretStoragePolicyIntegrationTest {
                 VALUES (?,?,?,'Example/project/fixtures/private/key.txt','L1','UNKNOWN','UNKNOWN','UNKNOWN','PRESENT',now(),now())
                 RETURNING occurrence_id
                 """,Long.class,credential,connection,scope);
+    }
+
+    @Test void defaultPolicyPinsOnlyApprovedRulesAndPreservesRequiredReview() {
+        var drafted=service.draft(draft("ALLOW"),"policy-creator");
+        var active=service.approvePolicy(drafted.policyId(),1,new VersionRequest(1L),"policy-reviewer");
+        var chosen=defaults.select("policy-creator",connection,new SecretConnectionPolicyDefaults.Selection(
+                active.policyId(),1L,1L,"choose-default",true));
+        assertThat(chosen).containsEntry("selectedPolicyId",active.policyId()).containsEntry("applicableScopeCount",1L);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_scope_classification_proposals WHERE status='PENDING_APPROVAL'",Long.class)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_scope_policy_bindings",Long.class)).isZero();
+        var replay=defaults.select("policy-creator",connection,new SecretConnectionPolicyDefaults.Selection(
+                active.policyId(),1L,1L,"choose-default",true));
+        assertThat(replay).containsEntry("selectedPolicyId",active.policyId());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_scope_classification_proposals",Long.class)).isEqualTo(1L);
+        assertCode(ErrorCode.FORBIDDEN,()->defaults.select("policy-operator",connection,
+                new SecretConnectionPolicyDefaults.Selection(active.policyId(),1L,2L,"operator-default",true)));
     }
 
     @Test void policyOnlyApprovalRetainsUnclassifiedProvenanceAndRequiresIndependentReviewer() {
@@ -426,7 +443,7 @@ class SecretStoragePolicyIntegrationTest {
         assertThat(result.origin()).isEqualTo("PRODUCTION");
         assertThat(result.approvalStatus()).isEqualTo("APPROVED");
         assertThat(result.pendingProposal()).isNull();
-        assertThat(result.setupReasonCodes()).containsExactly("POLICY_MISSING");
+        assertThat(result.setupReasonCodes()).isEmpty();
         assertThat(result.changeResult().effect()).isEqualTo("APPLIED");
         assertThat(result.requiresSnapshotRefresh()).isTrue();
         assertThat(result.history().getFirst().approvalMode()).isEqualTo("DIRECT");
@@ -545,7 +562,7 @@ class SecretStoragePolicyIntegrationTest {
         investigations.close("policy-operator",task,new com.logssey.secret.investigation.SecretInvestigationRequests.Close(
             0L,null,null,"close-source-handoff",result.changeResult().decisionId(),null,null));
         assertThat(investigations.detail("policy-operator",task).get("status")).isEqualTo("CLOSED");
-        assertThat(service.classification(scope,"policy-operator").setupReasonCodes()).contains("POLICY_MISSING");
+        assertThat(service.classification(scope,"policy-operator").setupReasonCodes()).isEmpty();
     }
 
     private PolicySummary activate(String effect) {
