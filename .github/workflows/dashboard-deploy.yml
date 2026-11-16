@@ -1,8 +1,10 @@
 # Dashboard deploy: every merge to develop goes to https://logssey.re-used.store.
-# tests -> API image to ECR (tag = commit) -> SSM document logssey-dashboard-deploy runs /opt/logssey/deploy.sh on the host.
-# deploy.sh dumps the database, swaps the digest, checks the site and rolls back to the previous image if it does not come up.
+# tests -> API and Secret worker images to ECR (tag = commit) -> SSM document logssey-dashboard-deploy runs
+# /opt/logssey/deploy.sh on the host, first for the API (it applies migrations), then for the worker of the same commit.
+# deploy.sh dumps the database (API), swaps the digest, checks health and rolls back to the previous image if it fails.
 # AWS side: infrastructure terraform/environments/logssey-dashboard/deploy.tf (the role only accepts develop runs of this repo).
-# Repository variables: DASHBOARD_DEPLOY_ROLE_ARN, DASHBOARD_INSTANCE_ID (terraform output deploy_role_arns.api, instance_id).
+# Repository variables: DASHBOARD_DEPLOY_ROLE_ARN, DASHBOARD_INSTANCE_ID (terraform output deploy_role_arns.api, instance_id),
+# DASHBOARD_DEPLOY_WORKER (true once the host runs the secret-worker service; until then the worker image is only pushed).
 # Actions are pinned to the same commit SHAs as reach-check.yml and deploy/reach/ci/reach.yml.
 name: Dashboard deploy
 
@@ -22,8 +24,8 @@ concurrency:
 
 env:
   AWS_REGION: ap-northeast-1
-  SERVICE: api
-  ECR_REPOSITORY: logssey/dashboard-api
+  API_REPOSITORY: logssey/dashboard-api
+  WORKER_REPOSITORY: logssey/dashboard-secret-worker
   DEPLOY_DOCUMENT: logssey-dashboard-deploy
 
 jobs:
@@ -38,20 +40,23 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: gradle
-      # The API image holds the root project only (Dockerfile target api); Testcontainers uses the runner's Docker
-      - name: Tests (root project)
+      # The images hold the root project (Dockerfile target api) and secret-worker (target worker);
+      # Testcontainers uses the runner's Docker
+      - name: Tests (API and Secret worker)
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon :test --console=plain
+          ./gradlew --no-daemon :test :secret-worker:test --console=plain
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure()
         with:
           name: backend-test-reports
-          path: build/reports/tests/test/
+          path: |
+            build/reports/tests/test/
+            secret-worker/build/reports/tests/test/
           retention-days: 7
 
   deploy:
-    name: Build and deploy the API
+    name: Build and deploy the API and the Secret worker
     needs: test
     if: github.ref == 'refs/heads/develop'
     runs-on: ubuntu-24.04
@@ -74,54 +79,41 @@ jobs:
         with:
           role-to-assume: ${{ vars.DASHBOARD_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: Build and push the image
+      - name: Build and push the images
         id: image
         run: |
           set -euo pipefail
           registry="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com"
           tag="${GITHUB_SHA::12}"
-          image="$registry/$ECR_REPOSITORY:$tag"
-          # Tags are immutable, so a re-run of the same commit reuses the image it already pushed
-          if ! aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="$tag" > /dev/null 2>&1; then
-            aws ecr get-login-password | docker login --username AWS --password-stdin "$registry"
-            docker build --target api -t "$image" .
-            docker push "$image"
-          fi
-          digest=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="$tag" \
-            --query 'imageDetails[0].imageDigest' --output text)
-          if ! [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "::error::No digest for $image"
-            exit 1
-          fi
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          echo "Image: \`$image@$digest\`" >> "$GITHUB_STEP_SUMMARY"
-      - name: Deploy on the dashboard host
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$registry"
+          # push <output name> <Dockerfile target> <ECR repository>
+          push() {
+            local image="$registry/$3:$tag" digest
+            # Tags are immutable, so a re-run of the same commit reuses the image it already pushed
+            if ! aws ecr describe-images --repository-name "$3" --image-ids imageTag="$tag" > /dev/null 2>&1; then
+              docker build --target "$2" -t "$image" .
+              docker push "$image"
+            fi
+            digest=$(aws ecr describe-images --repository-name "$3" --image-ids imageTag="$tag" \
+              --query 'imageDetails[0].imageDigest' --output text)
+            if ! [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::No digest for $image"
+              exit 1
+            fi
+            echo "$1=$digest" >> "$GITHUB_OUTPUT"
+            echo "Image: \`$image@$digest\`" >> "$GITHUB_STEP_SUMMARY"
+          }
+          push api api "$API_REPOSITORY"
+          push worker worker "$WORKER_REPOSITORY"
+      - name: Deploy the API on the dashboard host
         env:
           INSTANCE_ID: ${{ vars.DASHBOARD_INSTANCE_ID }}
-          DIGEST: ${{ steps.image.outputs.digest }}
-        run: |
-          set -euo pipefail
-          command_id=$(aws ssm send-command --instance-ids "$INSTANCE_ID" --document-name "$DEPLOY_DOCUMENT" \
-            --parameters "{\"service\":[\"$SERVICE\"],\"digest\":[\"$DIGEST\"]}" \
-            --comment "${GITHUB_REPOSITORY#*/} ${GITHUB_SHA::12} run $GITHUB_RUN_ID" \
-            --query Command.CommandId --output text)
-          echo "SSM command $command_id"
-          # deploy.sh waits for another deploy, dumps the database and checks the site for up to 5 minutes;
-          # the document stops it after 15 minutes
-          status=Pending
-          for _ in $(seq 1 96); do
-            sleep 10
-            status=$(aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
-              --query Status --output text 2> /dev/null || echo Pending)
-            case $status in Pending|InProgress|Delayed) ;; *) break ;; esac
-          done
-          for stream in StandardOutputContent StandardErrorContent; do
-            echo "--- $stream"
-            aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
-              --query "$stream" --output text || true
-          done
-          echo "Deploy: $status (SSM command \`$command_id\`)" >> "$GITHUB_STEP_SUMMARY"
-          if [ "$status" != Success ]; then
-            echo "::error::Deploy $status. If the output says 'rolled back', the previous image is running."
-            exit 1
-          fi
+          DIGEST: ${{ steps.image.outputs.api }}
+        run: bash .github/scripts/dashboard-deploy-ssm.sh api "$DIGEST"
+      # After the API, so the worker starts on the schema the API just migrated
+      - name: Deploy the Secret worker on the dashboard host
+        if: vars.DASHBOARD_DEPLOY_WORKER == 'true'
+        env:
+          INSTANCE_ID: ${{ vars.DASHBOARD_INSTANCE_ID }}
+          DIGEST: ${{ steps.image.outputs.worker }}
+        run: bash .github/scripts/dashboard-deploy-ssm.sh worker "$DIGEST"
