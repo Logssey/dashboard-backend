@@ -332,7 +332,7 @@ WHERE run_scope_id = ?
                                                 job.connectionId(),
                                                 sourceRef,
                                                 bytes,
-                                                scan.findings()));
+                                                scan.findings(),scope.approvedRef()));
                                 withLease(
                                         job,
                                         execution,

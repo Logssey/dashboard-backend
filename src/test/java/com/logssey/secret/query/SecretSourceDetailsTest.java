@@ -4,6 +4,17 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SecretSourceDetailsTest {
+    @Test void githubLocationRequiresTheObservedBranchToRemainInCurrentScope() {
+        var details=SecretSourceDetails.describeObserved("GITHUB","github://Logssey/project/main/",
+                "github://Logssey/project/main/src/","OBSERVED","Logssey/project/src/app.java","L1");
+        assertThat(details).containsEntry("branch","main").containsEntry("contextStatus","OBSERVED");
+        assertThat(SecretSourceDetails.describeObserved("GITHUB","github://Logssey/project/develop/src/",
+                "github://Logssey/project/main/src/","OBSERVED","Logssey/project/src/app.java","L1"))
+                .containsEntry("status","UNAVAILABLE").containsEntry("reasonCode","SOURCE_APPROVAL_CHANGED");
+        assertThat(SecretSourceDetails.describeObserved("GITHUB","github://Logssey/project/main/src/",
+                null,"UNKNOWN","Logssey/project/src/app.java","L1"))
+                .containsEntry("status","UNAVAILABLE").containsEntry("contextStatus","UNKNOWN");
+    }
     @Test void notionLinksAreBoundToTheApprovedPageAndAnExactBlock() {
         String page="11111111-2222-3333-4444-555555555555",block="66666666-7777-8888-9999-aaaaaaaaaaaa";
         String ref="notion://pages/"+page;

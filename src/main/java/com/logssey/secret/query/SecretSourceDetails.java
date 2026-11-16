@@ -6,6 +6,7 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Pattern;
 import static com.logssey.secret.snapshot.SecretReadSnapshots.facts;
 
@@ -39,6 +40,24 @@ public final class SecretSourceDetails {
         }catch(RuntimeException ignored) { }
         return "검사 대상 #"+scopeId;
     }
+    public static Map<String,Object> describeObserved(String provider,String approvedRef,String contextRef,
+                                                     String contextStatus,String sourceRef,String lineRef) {
+        var details=new java.util.LinkedHashMap<>(describe(provider,
+                "GITHUB".equals(provider)?contextRef:approvedRef,sourceRef,lineRef));
+        if("GITHUB".equals(provider)) {
+            var current=describe(provider,approvedRef,sourceRef,lineRef);
+            if("AVAILABLE".equals(details.get("status"))
+                    && (!"AVAILABLE".equals(current.get("status"))
+                      || !java.util.Objects.equals(current.get("branch"),details.get("branch")))) {
+                details=new java.util.LinkedHashMap<>(facts("status","UNAVAILABLE","label","발견 위치 확인 필요",
+                        "reasonCode","SOURCE_APPROVAL_CHANGED"));
+            }
+            details.put("contextStatus",Set.of("OBSERVED","RECONSTRUCTED").contains(contextStatus==null?"":contextStatus)
+                    ?contextStatus:"UNKNOWN");
+        }
+        return details;
+    }
+
     public static Map<String,Object> describe(String provider,String approvedRef,String sourceRef,String lineRef) {
         var unavailable=facts("status","UNAVAILABLE","label","발견 위치 확인 필요","reasonCode","SOURCE_COORDINATES_UNAVAILABLE");
         try {

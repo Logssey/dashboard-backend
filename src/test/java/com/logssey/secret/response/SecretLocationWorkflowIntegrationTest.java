@@ -151,9 +151,10 @@ class SecretLocationWorkflowIntegrationTest {
                 approved,
                 occurrence);
         jdbc.update(
-                "UPDATE secret_occurrences SET source_object_ref=?,location_key=? WHERE occurrence_id=?",
+                "UPDATE secret_occurrences SET source_object_ref=?,location_key=?,source_context_ref=?,source_context_status='OBSERVED' WHERE occurrence_id=?",
                 path,
                 line,
+                approved,
                 occurrence);
     }
 

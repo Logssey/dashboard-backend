@@ -420,14 +420,16 @@ public class SecretLocationWorkflow {
         return jdbc
                 .query(
                         """
-                        SELECT s.approved_ref,o.source_object_ref,o.location_key
+                        SELECT s.approved_ref,o.source_object_ref,o.location_key,o.source_context_ref,o.source_context_status
                         FROM secret_occurrences o JOIN secret_connection_scopes s USING(scope_id)
                         WHERE o.occurrence_id=? AND o.connection_id=?
                         """,
                         (rs, n) ->
-                                com.logssey.secret.query.SecretSourceDetails.describe(
+                                com.logssey.secret.query.SecretSourceDetails.describeObserved(
                                         (String) authorizedLocation.get("source"),
                                         rs.getString(1),
+                                        rs.getString(4),
+                                        rs.getString(5),
                                         rs.getString(2),
                                         rs.getString(3)),
                         num(authorizedLocation, "occurrence_id"),

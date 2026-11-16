@@ -81,6 +81,28 @@ class SecretRevalidationResultTest {
     }
 
     @Test
+    void revalidatingOneBranchDoesNotChangeTheOtherBranchPresenceOrResponse() {
+        var target=jdbc.queryForMap("SELECT credential_set_id,case_id FROM secret_case_occurrences WHERE occurrence_id=?",seed.occurrenceId());
+        long otherScope=jdbc.queryForObject("INSERT INTO secret_connection_scopes(connection_id,scope_key,revision,content_type,approved_ref,history_limit,enabled) VALUES(?,'other-branch',1,'GITHUB_REPOSITORY_FILES','github://Logssey/test-find-key/feature/fixtures/','CURRENT_COMMIT_ONLY',true) RETURNING scope_id",Long.class,seed.connectionId());
+        long other=jdbc.queryForObject("INSERT INTO secret_occurrences(credential_set_id,connection_id,scope_id,source_object_ref,location_key,environment,exposure_status,exposure_range,presence_status,first_seen_at,last_seen_at) VALUES(?,?,?,'repo/fixture.txt','L1','UNKNOWN','ABNORMAL','UNKNOWN','PRESENT',clock_timestamp(),clock_timestamp()) RETURNING occurrence_id",Long.class,target.get("credential_set_id"),seed.connectionId(),otherScope);
+        jdbc.update("INSERT INTO secret_case_occurrences(case_id,occurrence_id,credential_set_id,response_status) VALUES(?,?,?,'IN_PROGRESS')",target.get("case_id"),other,target.get("credential_set_id"));
+        var claim=claim();
+        completedEvidence("SUCCEEDED","SUCCEEDED","config-v1","gitleaks-v1","hmac-v1");
+        assertThat(execution.complete(claim.jobId(),claim.leaseToken())).isTrue();
+        assertThat(jdbc.queryForObject("SELECT presence_status FROM secret_occurrences WHERE occurrence_id=?",String.class,other)).isEqualTo("PRESENT");
+        assertThat(jdbc.queryForObject("SELECT response_status FROM secret_case_occurrences WHERE occurrence_id=?",String.class,other)).isEqualTo("IN_PROGRESS");
+    }
+
+    @Test
+    void sourceBranchChangeAfterRequestCannotProveRemoval() {
+        jdbc.update("UPDATE secret_connection_scopes SET approved_ref='github://Logssey/test-find-key/renamed/fixtures/' WHERE connection_id=?",seed.connectionId());
+        var claim=claim();
+        completedEvidence("SUCCEEDED","SUCCEEDED","config-v1","gitleaks-v1","hmac-v1");
+        assertThat(execution.complete(claim.jobId(),claim.leaseToken())).isTrue();
+        assertOutcome("UNKNOWN","REVALIDATION_INCOMPLETE","UNKNOWN","SUCCEEDED");
+    }
+
+    @Test
     void aSuccessfulNotionWalkCannotProveRemovalWithoutASnapshotContract() {
         jdbc.update("UPDATE secret_connection_scopes SET content_type='NOTION_PAGE_CONTENT' WHERE connection_id=?",
                 seed.connectionId());

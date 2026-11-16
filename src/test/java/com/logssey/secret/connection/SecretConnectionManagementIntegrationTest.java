@@ -236,15 +236,13 @@ class SecretConnectionManagementIntegrationTest {
     }
 
     @Test
-    void overlappingRepositoryPathsRequireSeparateConnections() {
+    void differentBranchesShareOneConnectionWhileSameBranchOverlapsAreRejected() {
         long id =
                 id(
                         service.create(
                                 "operator",
                                 new Create("GITHUB", "Overlap", "overlap", credential())));
-        assertThatThrownBy(
-                        () ->
-                                service.targets(
+        service.targets(
                                         "operator",
                                         id,
                                         new TargetsChange(
@@ -256,15 +254,21 @@ class SecretConnectionManagementIntegrationTest {
                                                                 "Logssey/project",
                                                                 "feature/secret",
                                                                 "config/")),
-                                                List.of())))
-                .isInstanceOf(ApiException.class);
+                                                List.of()));
         assertThat(
                         jdbc.queryForObject(
                                 "SELECT count(*) FROM secret_connection_scopes WHERE"
                                     + " connection_id=?",
                                 Long.class,
                                 id))
-                .isZero();
+                .isEqualTo(2);
+        assertThatThrownBy(() -> service.targets("operator",id,new TargetsChange(2L,
+                List.of(new GitHubTarget("Logssey/project","main",""),
+                        new GitHubTarget("logssey/PROJECT","main","config/")),List.of())))
+                .isInstanceOf(ApiException.class);
+        service.targets("operator",id,new TargetsChange(2L,
+                List.of(new GitHubTarget("Logssey/project","main",""),
+                        new GitHubTarget("Logssey/project","Main","")),List.of()));
     }
 
     @Test

@@ -750,17 +750,17 @@ public class SecretConnectionManagementService {
                             "CURRENT_STATE_ONLY",
                             target.region() + " · " + target.kind()));
         }
-        // Occurrence identity contains repository/path. Overlapping branches need separate
-        // connections.
+        // Each branch has its own location identity. Overlaps within one branch remain ambiguous.
         for (int i = 0; i < githubTargets.size(); i++) {
             for (int j = i + 1; j < githubTargets.size(); j++) {
                 var first = githubTargets.get(i);
                 var second = githubTargets.get(j);
                 if (first.repository().equalsIgnoreCase(second.repository())
+                        && first.branch().equals(second.branch())
                         && (path(first.path()).startsWith(path(second.path()))
                                 || path(second.path()).startsWith(path(first.path()))))
                     throw new ApiException(
-                            ErrorCode.INVALID_INPUT, "같은 저장소에서 겹치는 검사 경로는 연결을 나눠 등록해 주세요.");
+                            ErrorCode.INVALID_INPUT, "같은 저장소·브랜치의 겹치는 경로는 하나로 합쳐 주세요.");
             }
         }
         if (result.stream().map(Target::ref).distinct().count() != result.size()) invalid();

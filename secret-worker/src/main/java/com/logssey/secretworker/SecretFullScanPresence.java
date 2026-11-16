@@ -17,6 +17,8 @@ final class SecretFullScanPresence {
        AND rs.snapshot_content_type=baseline.snapshot_content_type AND rs.snapshot_content_type=sc.content_type
        AND right(rs.snapshot_content_type,9)<>'_METADATA' AND rs.snapshot_origin=baseline.snapshot_origin AND rs.snapshot_origin=sc.response_origin
        AND rs.snapshot_content_type<>'NOTION_PAGE_CONTENT'
+       AND (rs.snapshot_content_type<>'GITHUB_REPOSITORY_FILES' OR
+          (o.source_context_ref=rs.snapshot_approved_ref AND o.source_context_ref=baseline.snapshot_approved_ref))
        AND r.scope_version=cn.scope_version AND baseline.connection_version=r.scope_version
        AND current_tool.scope_origin_version=sc.response_origin_version AND current_tool.scope_origin_version=baseline.scope_origin_version
        AND baseline.detector_status='SUCCEEDED' AND baseline.collection_status='SUCCEEDED'
@@ -31,7 +33,7 @@ final class SecretFullScanPresence {
     JOIN secret_credential_sets k ON k.credential_set_id=o.credential_set_id AND k.component_state IN ('CONFIRMED','CANDIDATE')
     LEFT JOIN secret_tool_runs current_tool ON current_tool.run_scope_id=rs.run_scope_id AND current_tool.engine='GITLEAKS'
     LEFT JOIN LATERAL (
-      SELECT old_scope.scope_id,old_scope.scope_revision,old_scope.snapshot_content_type,old_scope.snapshot_origin,old_run.scope_version AS connection_version,
+      SELECT old_scope.scope_id,old_scope.scope_revision,old_scope.snapshot_content_type,old_scope.snapshot_origin,old_scope.snapshot_approved_ref,old_run.scope_version AS connection_version,
         old_tool.status AS detector_status,old_scope.collection_status,old_tool.engine_version,old_tool.config_hash,old_tool.fingerprint_key_version,old_tool.scope_origin_version,f.detected_at
       FROM secret_findings f JOIN secret_tool_runs old_tool ON old_tool.tool_run_id=f.tool_run_id
       JOIN secret_run_scopes old_scope ON old_scope.run_scope_id=old_tool.run_scope_id
