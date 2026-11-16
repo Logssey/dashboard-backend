@@ -124,7 +124,10 @@ public class SecretConnectionPolicyDefaults {
     private List<Map<String,Object>> scopes(long connection,long policy,long version) {
         return jdbc.queryForList("""
                 SELECT s.scope_id,s.response_origin,s.response_origin_version FROM secret_connection_scopes s
-                WHERE s.connection_id=? AND s.enabled AND EXISTS(SELECT 1 FROM secret_storage_policies p
+                WHERE s.connection_id=? AND s.enabled
+                  AND s.content_type IN ('GITHUB_REPOSITORY_FILES','AWS_SECRETS_MANAGER_VALUE',
+                    'AWS_SSM_PARAMETER_VALUE','AWS_S3_OBJECT_CONTENT','NOTION_PAGE_CONTENT')
+                  AND EXISTS(SELECT 1 FROM secret_storage_policies p
                   JOIN secret_storage_policy_rules r ON r.policy_id=p.policy_id AND r.policy_version=p.version
                   WHERE p.policy_id=? AND p.version=? AND p.status='ACTIVE' AND p.valid_from<=clock_timestamp()
                     AND (p.valid_until IS NULL OR p.valid_until>clock_timestamp())

@@ -58,6 +58,7 @@ class SecretRevalidationServiceIntegrationTest {
 
     @Autowired private JdbcTemplate jdbc;
     @Autowired private SecretRevalidationService service;
+    @Autowired private SecretRevalidationBatchService batches;
     @Autowired private SecretLocationReadiness readiness;
     @Autowired private com.logssey.secret.lifecycle.SecretLifecycleService lifecycle;
     @Autowired private SecretGuideService guide;
@@ -181,6 +182,57 @@ class SecretRevalidationServiceIntegrationTest {
           UPDATE secret_case_occurrences SET assigned_user_id=?,last_material_action_at=(SELECT max(performed_at) FROM secret_action_records WHERE case_id=?),actions_completed_at=clock_timestamp()-INTERVAL '1 minute'
           WHERE case_id=? AND occurrence_id=?
           """,actor,caseId,caseId,occurrenceId);
+    }
+
+    @Test
+    void completedPositiveFileInPartialCollectionSuppliesComparableBaseline() {
+        jdbc.update("UPDATE secret_run_scopes SET collection_status='PARTIAL'");
+        jdbc.update("UPDATE secret_scan_runs SET collection_status='PARTIAL',result_status='PARTIAL'");
+        jdbc.update("UPDATE secret_tool_runs SET status='PARTIAL'");
+        jdbc.update("UPDATE secret_occurrences SET latest_object_version='collected-blob-sha' WHERE occurrence_id=?",occurrenceId);
+        var result=service.request(caseId,new SecretRevalidationRequest(occurrenceId,0L,0L,"partial-file-baseline"),"revalidation-admin");
+        assertThat(jdbc.queryForMap("SELECT baseline_config_hash,baseline_engine_version,baseline_fingerprint_version FROM secret_case_revalidations WHERE run_id=?",result.runId()))
+            .containsEntry("baseline_config_hash","a".repeat(64)).containsEntry("baseline_engine_version","8.0.0").containsEntry("baseline_fingerprint_version","test-v1");
+        fixture();
+        jdbc.update("UPDATE secret_run_scopes SET collection_status='PARTIAL'");
+        var unknown=service.request(caseId,new SecretRevalidationRequest(occurrenceId,0L,0L,"partial-without-file-proof"),"revalidation-admin");
+        assertThat(jdbc.queryForObject("SELECT baseline_config_hash FROM secret_case_revalidations WHERE run_id=?",String.class,unknown.runId())).isNull();
+    }
+
+    @Test
+    void batchQueuesSameConnectionLocationsAndPreservesItemFailuresAndReplay() {
+        long second=jdbc.queryForObject("""
+            INSERT INTO secret_occurrences(credential_set_id,connection_id,scope_id,source_object_ref,location_key,
+              environment,exposure_status,exposure_range,presence_status,first_seen_at,last_seen_at,last_seen_run_id)
+            SELECT credential_set_id,connection_id,scope_id,source_object_ref,'L9',environment,exposure_status,
+              exposure_range,presence_status,first_seen_at,last_seen_at,last_seen_run_id FROM secret_occurrences
+            WHERE occurrence_id=? RETURNING occurrence_id
+            """,Long.class,occurrenceId);
+        jdbc.update("""
+            INSERT INTO secret_case_occurrences(case_id,occurrence_id,credential_set_id,response_status,assigned_user_id,
+              last_material_action_at,actions_completed_at)
+            SELECT case_id,?,credential_set_id,response_status,assigned_user_id,last_material_action_at,actions_completed_at
+            FROM secret_case_occurrences WHERE case_id=? AND occurrence_id=?
+            """,second,caseId,occurrenceId);
+        jdbc.update("""
+            INSERT INTO secret_action_records(case_id,occurrence_id,action_type,performed_at,recorded_by_user_id,evidence_ref,case_version)
+            SELECT case_id,?,action_type,performed_at,recorded_by_user_id,evidence_ref,case_version+1 FROM secret_action_records
+            WHERE case_id=? AND occurrence_id=?
+            """,second,caseId,occurrenceId);
+        var request=new SecretRevalidationBatchService.Request(0L,"batch-same-connection",java.util.List.of(
+            new SecretRevalidationBatchService.Item(occurrenceId,0L),new SecretRevalidationBatchService.Item(second,0L),
+            new SecretRevalidationBatchService.Item(99999L,0L)));
+        var result=batches.request(caseId,request,"revalidation-admin");
+        assertThat(result).containsEntry("acceptedCount",2L).containsEntry("failedCount",1L).containsEntry("caseVersion",2L);
+        assertThat(batches.request(caseId,request,"revalidation-admin")).isEqualTo(result);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_jobs WHERE kind='REVALIDATE' AND status='PENDING'",Long.class)).isEqualTo(2);
+        assertThatThrownBy(()->service.request(caseId,new SecretRevalidationRequest(occurrenceId,2L,1L,"single-still-busy"),"revalidation-admin"))
+            .isInstanceOf(ApiException.class);
+        long connection=jdbc.queryForObject("SELECT connection_id FROM secret_occurrences WHERE occurrence_id=?",Long.class,occurrenceId);
+        assertThatThrownBy(()->jdbc.update("""
+            INSERT INTO secret_jobs(kind,connection_id,scheduled_at,available_at,attempt_no,max_attempts,status)
+            VALUES('FULL_SCAN',?,now(),now(),0,3,'PENDING')
+            """,connection)).isInstanceOf(org.springframework.dao.DataAccessException.class);
     }
 
     @Test

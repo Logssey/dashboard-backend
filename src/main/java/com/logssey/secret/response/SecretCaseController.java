@@ -73,6 +73,12 @@ public class SecretCaseController {
         return workflow.coordinator(caseId, request, loginId(authentication));
     }
 
+    @PostMapping("/cases/{caseId}/assignment/self")
+    public java.util.Map<String,Object> assignSelf(@PathVariable long caseId,
+            @RequestBody SecretLocationWorkflow.SelfAssignment request,Authentication authentication) {
+        return workflow.assignSelf(caseId,request,loginId(authentication));
+    }
+
     @PostMapping("/cases/{caseId}/review")
     public SecretCaseDetail review(@PathVariable long caseId,
                                    @RequestBody SecretCaseReviewRequest request,

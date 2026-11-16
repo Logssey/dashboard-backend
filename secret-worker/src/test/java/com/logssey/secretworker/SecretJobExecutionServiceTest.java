@@ -376,6 +376,39 @@ class SecretJobExecutionServiceTest {
         assertThat(service.claimNextJob("GITHUB")).isPresent();
     }
 
+    @Test
+    void queuedRechecksShareConnectionButOnlyOneWorkerExecutesIt() throws Exception {
+        long first=scheduledJob(1);
+        jdbc.update("UPDATE secret_jobs SET kind='REVALIDATE',purpose='LOCATION_RECHECK',requested_by_user_id=(SELECT min(user_id) FROM dashboard_users) WHERE job_id=?",first);
+        // Scheduled fixture has no user. Rechecks receive an explicit actor to avoid scheduled-slot uniqueness.
+        long actor=jdbc.queryForObject("INSERT INTO dashboard_users(login_id,password_hash,display_name,role) VALUES('queue-'||md5(random()::text),'hash','queue','ADMIN') RETURNING user_id",Long.class);
+        jdbc.update("UPDATE secret_jobs SET requested_by_user_id=? WHERE job_id=?",actor,first);
+        long second=jdbc.queryForObject("""
+            INSERT INTO secret_jobs(kind,purpose,connection_id,requested_by_user_id,scheduled_at,available_at,attempt_no,max_attempts,status)
+            SELECT 'REVALIDATE','LOCATION_RECHECK',connection_id,?,clock_timestamp(),clock_timestamp(),0,3,'PENDING'
+            FROM secret_jobs WHERE job_id=? RETURNING job_id
+            """,Long.class,actor,first);
+        jdbc.update("""
+            INSERT INTO secret_scan_runs(job_id,connection_id,trigger_type,scope_version,scheduled_at,requested_at,collection_status,detection_status,validation_status,result_status)
+            SELECT ?,connection_id,'REVALIDATION',1,clock_timestamp(),clock_timestamp(),'PENDING','PENDING','PENDING','PENDING'
+            FROM secret_jobs WHERE job_id=?
+            """,second,first);
+        var barrier=new CyclicBarrier(2);
+        var claimed=new ArrayList<ClaimedSecretJob>();
+        try(var executor=Executors.newFixedThreadPool(2)) {
+            var one=executor.submit(()->{barrier.await(10,TimeUnit.SECONDS);return newService().claimNextJob("GITHUB");});
+            var two=executor.submit(()->{barrier.await(10,TimeUnit.SECONDS);return newService().claimNextJob("GITHUB");});
+            one.get(10,TimeUnit.SECONDS).ifPresent(claimed::add);
+            two.get(10,TimeUnit.SECONDS).ifPresent(claimed::add);
+        }
+        assertThat(claimed).hasSize(1);
+        assertThat(service.claimNextJob("GITHUB")).isEmpty();
+        var active=claimed.getFirst();
+        assertThat(service.fail(active.jobId(),active.leaseToken(),SecretJobFailureCode.SOURCE_UNAVAILABLE,false)).isTrue();
+        assertThat(service.claimNextJob("GITHUB")).isPresent();
+
+    }
+
     private long scheduledJob(int scopeCount) {
         var connectionId = jdbc.queryForObject("""
                 INSERT INTO secret_connections (provider, display_name, auth_ref, status, scope_version, next_due_at)

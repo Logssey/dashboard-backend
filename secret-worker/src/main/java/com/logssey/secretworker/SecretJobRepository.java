@@ -41,12 +41,25 @@ JOIN secret_connections c ON c.connection_id = j.connection_id
 JOIN secret_scan_runs r ON r.job_id = j.job_id
 WHERE j.status = 'PENDING' AND j.available_at <= ? AND c.status = 'ACTIVE'
   AND c.provider = COALESCE(?, c.provider)
+  AND (j.kind NOT IN ('FULL_SCAN','REVALIDATE') OR NOT EXISTS(
+    SELECT 1 FROM secret_jobs active WHERE active.connection_id=j.connection_id
+      AND active.kind IN ('FULL_SCAN','REVALIDATE') AND active.status='LEASED'))
   AND (c.provider<>'NOTION' OR NOT EXISTS(SELECT 1 FROM secret_connections cooldown
     WHERE cooldown.provider='NOTION' AND cooldown.auth_ref=c.auth_ref
       AND cooldown.source_retry_at>clock_timestamp()))
 ORDER BY j.available_at, j.job_id
-LIMIT ? FOR UPDATE OF j SKIP LOCKED
+LIMIT ? FOR UPDATE OF c,j SKIP LOCKED
 """, (rs, row) -> jobRow(rs), now, provider, limit);
+    }
+
+    boolean connectionAvailableForClaim(long jobId) {
+        // Recheck in a fresh READ COMMITTED statement after lockAvailable owns the connection lock.
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT j.kind NOT IN ('FULL_SCAN','REVALIDATE') OR NOT EXISTS(
+                  SELECT 1 FROM secret_jobs active WHERE active.connection_id=j.connection_id
+                    AND active.kind IN ('FULL_SCAN','REVALIDATE') AND active.status='LEASED')
+                FROM secret_jobs j WHERE j.job_id=?
+                """,Boolean.class,jobId));
     }
 
     List<JobRow> lockExpired(OffsetDateTime now, int limit) {

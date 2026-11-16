@@ -565,6 +565,16 @@ class SecretStoragePolicyIntegrationTest {
         assertThat(service.classification(scope,"policy-operator").setupReasonCodes()).isEmpty();
     }
 
+    @Test void metadataPolicyDoesNotProduceNegativeContentSetupCounts() {
+        var policy=activate("ALLOW");
+        jdbc.update("UPDATE secret_connections SET provider='AWS' WHERE connection_id=?",connection);
+        jdbc.update("UPDATE secret_connection_scopes SET content_type='IAM_ACCESS_KEY_METADATA',history_limit='CURRENT_STATE_ONLY',approved_ref='aws://123456789012/global/iam/access-keys' WHERE scope_id=?",scope);
+        var settings=defaults.select("policy-creator",connection,new SecretConnectionPolicyDefaults.Selection(
+            policy.policyId(),policy.version(),1L,"metadata-default",true));
+        assertThat(settings).containsEntry("applicableScopeCount",0L).containsEntry("ruleUpdateRequiredScopeCount",0L);
+        assertThat((List<?>)settings.get("items")).isEmpty();
+    }
+
     private PolicySummary activate(String effect) {
         var draft=service.draft(draft(effect),"policy-creator");
         return service.approvePolicy(draft.policyId(),draft.version(),new VersionRequest(draft.version()),"policy-reviewer");
