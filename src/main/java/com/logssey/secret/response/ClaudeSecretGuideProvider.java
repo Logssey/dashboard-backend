@@ -51,6 +51,7 @@ class ClaudeSecretGuideProvider implements SecretGuideProvider {
     private final boolean enabled;
     private final String apiKey;
     private final boolean keyFileUnreadable;
+    private final boolean keyStoreUnavailable;
     private final URI endpoint;
     private final String model;
     private final String workspace;
@@ -62,6 +63,7 @@ class ClaudeSecretGuideProvider implements SecretGuideProvider {
     private final boolean endpointAllowed;
     private final JsonMapper json = new JsonMapper();
     private final Map<SecretGuideContext, CachedSelection> cache = new LinkedHashMap<>();
+    private final Map<SecretExplanationContext, CachedExplanation> explanationCache = new LinkedHashMap<>();
     private long windowStarted = System.nanoTime();
     private int windowCalls;
     private boolean inFlight;
@@ -76,8 +78,14 @@ class ClaudeSecretGuideProvider implements SecretGuideProvider {
             @Value("${logssey.secret.guide.claude.timeout-ms:45000}") int timeoutMillis,
             @Value("${logssey.secret.guide.claude.calls-per-minute:6}") int callsPerMinute,
             @Value("${logssey.secret.guide.claude.cache-seconds:300}") int cacheSeconds,
+            @Value("${logssey.secret.guide.claude.api-key-secret-id:}") String secretId,
+            @Value("${logssey.secret.guide.claude.aws-region:ap-northeast-1}") String awsRegion,
+            @Value("${logssey.secret.aws.collection.credentials-mode:WORKLOAD}") String credentialsMode,
+            @Value("${logssey.secret.aws.collection.profile:}") String profile,
+            @Value("${logssey.secret.aws.collection.credentials-file:}") String credentialsFile,
             SecretAiCallBudget budget) {
-        this(enabled, key(apiKey, keyFile), url, model, workspace,
+        this(enabled, sourceKey(enabled, apiKey, keyFile, secretId, awsRegion,
+                        credentialsMode, profile, credentialsFile), url, model, workspace,
                 HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3))
                         .followRedirects(HttpClient.Redirect.NEVER).build(),
                 timeoutMillis, callsPerMinute, cacheSeconds, false, java.util.Objects.requireNonNull(budget));
@@ -112,6 +120,7 @@ class ClaudeSecretGuideProvider implements SecretGuideProvider {
         this.enabled = enabled;
         this.apiKey = key.value();
         this.keyFileUnreadable = key.unreadable();
+        this.keyStoreUnavailable = key.storeUnavailable();
         this.model = model;
         this.workspace = workspace;
         this.http = http;
@@ -132,6 +141,7 @@ class ClaudeSecretGuideProvider implements SecretGuideProvider {
 
     @Override public String configurationReason() {
         if (!enabled) return "DISABLED";
+        if (keyStoreUnavailable) return "KEY_STORE_UNAVAILABLE";
         if (keyFileUnreadable) return "KEY_FILE_UNREADABLE";
         if (apiKey == null || apiKey.isBlank()) return "KEY_MISSING";
         if (apiKey.chars().anyMatch(character -> character < 0x21 || character > 0x7e)) return "KEY_INVALID";
@@ -182,38 +192,173 @@ class ClaudeSecretGuideProvider implements SecretGuideProvider {
     }
 
     private Selection request(SecretGuideContext context) {
+        var reply = postJson(requestBody(context));
+        return reply.reasonCode() == null ? parse(reply.body()) : Selection.fallback(reply.reasonCode(), true);
+    }
+
+    private ProviderReply postJson(String body) {
         CompletableFuture<HttpResponse<byte[]>> pending = null;
         try {
             var builder = HttpRequest.newBuilder(endpoint).timeout(Duration.ofMillis(timeoutMillis))
                     .header("Authorization", "Bearer " + apiKey).header("anthropic-version", API_VERSION)
                     .header("Content-Type", "application/json").header("Accept", "application/json");
             if (workspace != null && !workspace.isBlank()) builder.header("anthropic-workspace-id", workspace);
-            var request = builder.POST(HttpRequest.BodyPublishers.ofString(requestBody(context), StandardCharsets.UTF_8)).build();
+            var request = builder.POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8)).build();
             pending = http.sendAsync(request, info -> new SecretGuideHttpBody(info.statusCode() == 200,
                     info.headers().firstValueAsLong("Content-Length").orElse(0)));
             var response = pending.get(timeoutMillis, TimeUnit.MILLISECONDS);
             return switch (response.statusCode()) {
-                case 200 -> parse(response.body());
-                case 401 -> Selection.fallback("PROVIDER_AUTHENTICATION_FAILED", true);
-                case 403 -> Selection.fallback("PROVIDER_ACCESS_DENIED", true);
-                case 402 -> Selection.fallback("PROVIDER_BILLING_REQUIRED", true);
-                case 429 -> Selection.fallback("PROVIDER_RATE_LIMITED", true);
-                default -> Selection.fallback(response.statusCode() >= 400 && response.statusCode() < 500
-                        ? "PROVIDER_REJECTED" : "PROVIDER_UNAVAILABLE", true);
+                case 200 -> new ProviderReply(response.body(), null);
+                case 401 -> new ProviderReply(null, "PROVIDER_AUTHENTICATION_FAILED");
+                case 403 -> new ProviderReply(null, "PROVIDER_ACCESS_DENIED");
+                case 402 -> new ProviderReply(null, "PROVIDER_BILLING_REQUIRED");
+                case 429 -> new ProviderReply(null, "PROVIDER_RATE_LIMITED");
+                default -> new ProviderReply(null, response.statusCode() >= 400 && response.statusCode() < 500
+                        ? "PROVIDER_REJECTED" : "PROVIDER_UNAVAILABLE");
             };
         } catch (TimeoutException timeout) {
             if (pending != null) pending.cancel(true);
-            return Selection.fallback("PROVIDER_TIMEOUT", true);
+            return new ProviderReply(null, "PROVIDER_TIMEOUT");
         } catch (InterruptedException interrupted) {
             if (pending != null) pending.cancel(true);
             Thread.currentThread().interrupt();
-            return Selection.fallback("PROVIDER_INTERRUPTED", true);
+            return new ProviderReply(null, "PROVIDER_INTERRUPTED");
         } catch (ExecutionException failure) {
             for (Throwable cause = failure.getCause(); cause != null; cause = cause.getCause()) {
-                if (cause instanceof SecretGuideHttpBody.ResponseTooLarge) return Selection.fallback("PROVIDER_RESPONSE_TOO_LARGE", true);
-                if (cause instanceof java.net.http.HttpTimeoutException) return Selection.fallback("PROVIDER_TIMEOUT", true);
+                if (cause instanceof SecretGuideHttpBody.ResponseTooLarge) return new ProviderReply(null, "PROVIDER_RESPONSE_TOO_LARGE");
+                if (cause instanceof java.net.http.HttpTimeoutException) return new ProviderReply(null, "PROVIDER_TIMEOUT");
             }
-            return Selection.fallback("PROVIDER_UNAVAILABLE", true);
+            return new ProviderReply(null, "PROVIDER_UNAVAILABLE");
+        }
+    }
+
+    Explanation explain(SecretExplanationContext context) {
+        String readiness = configurationReason();
+        if (!"READY".equals(readiness)) return Explanation.fallback(readiness, false);
+        synchronized (this) {
+            long now = System.nanoTime();
+            explanationCache.values().removeIf(value -> now - value.expiresAt() >= 0);
+            var existing = explanationCache.get(context);
+            if (existing != null) return existing.explanation().cachedCopy();
+            if (inFlight) return Explanation.fallback("REQUEST_IN_PROGRESS", false);
+            if (now - windowStarted >= WINDOW_NANOS) { windowStarted = now; windowCalls = 0; }
+            if (windowCalls >= callsPerMinute) return Explanation.fallback("CALL_BUDGET_EXHAUSTED", false);
+            inFlight = true;
+            windowCalls++;
+        }
+        Explanation result;
+        boolean called = false;
+        try (var permit = budget == null ? SecretAiCallBudget.Permit.unmeteredForTests()
+                : budget.acquire(providerId(), modelId(), "BRIEFING", Duration.ofMillis(timeoutMillis))) {
+            if (permit.allowed()) {
+                called = true;
+                var reply = postJson(explanationBody(context));
+                result = reply.reasonCode() == null ? parseExplanation(reply.body(), context)
+                        : Explanation.fallback(reply.reasonCode(), true);
+            } else {
+                result = Explanation.fallback(permit.reasonCode(), false);
+            }
+        } catch (RuntimeException unavailable) {
+            result = Explanation.fallback("PROVIDER_UNAVAILABLE", called);
+        }
+        synchronized (this) {
+            inFlight = false;
+            if (explanationCache.size() >= MAX_CACHE_ENTRIES) {
+                explanationCache.remove(explanationCache.keySet().iterator().next());
+            }
+            long ttl = result.summary() == null ? Duration.ofSeconds(15).toNanos() : cacheNanos;
+            explanationCache.put(context, new CachedExplanation(result, System.nanoTime() + ttl));
+        }
+        return result;
+    }
+
+    private String explanationBody(SecretExplanationContext context) {
+        var schema = Map.of("type", "object", "properties", Map.of(
+                "summary", Map.of("type", "string"),
+                "fact_codes", Map.of("type", "array", "items", Map.of("type", "string", "enum", context.facts())),
+                "action_codes", Map.of("type", "array", "items", Map.of("type", "string", "enum", context.actions()))),
+                "required", List.of("summary", "fact_codes", "action_codes"), "additionalProperties", false);
+        String instructions = """
+                Explain the supplied server observations in Korean in at most three short sentences.
+                Explain completed work, remaining uncertainty and the useful next steps together.
+                Return every supplied fact code and select at most three distinct allowed action codes.
+                Use only the supplied facts. Never infer token expiry, revocation, abuse, permission,
+                severity, safety, or completion. A completed validation stage means processing ended,
+                not that all keys are valid. Partial coverage cannot prove global absence or retirement.
+                Authentication rejection does not identify expiry or revocation. Metadata inventory
+                does not authenticate secret values. Never suggest entering or revealing a secret.
+                sourceProvider is where content was collected; issuer is the key's issuing service.
+                A GitHub scan can contain AWS or Notion credentials. MIXED means multiple or unknown types.
+                Suggest only allowed actions. Do not generate URLs, shell commands or configuration.
+                Do not claim a retry will happen unless RETRY_SCHEDULED is present.
+                The vocabulary below contains public UI definitions, not customer content.
+                """ + json.writeValueAsString(Map.of("facts", SecretExplanationCatalog.publicFacts(),
+                        "actions", SecretExplanationCatalog.publicActions()));
+        return json.writeValueAsString(Map.of("model", model, "max_tokens", 768,
+                "system", instructions, "thinking", Map.of("type", "between_tools"),
+                "messages", List.of(Map.of("role", "user", "content", json.writeValueAsString(context.externalFields()))),
+                "output_config", Map.of("effort", "low", "format", Map.of("type", "json_schema", "schema", schema))));
+    }
+
+    private Explanation parseExplanation(byte[] bytes, SecretExplanationContext context) {
+        try {
+            JsonNode message = json.readTree(bytes);
+            if (!"message".equals(message.path("type").asText())
+                    || !"assistant".equals(message.path("role").asText())
+                    || !"end_turn".equals(message.path("stop_reason").asText())
+                    || !message.path("content").isArray()) return Explanation.fallback("PROVIDER_INVALID_RESPONSE", true);
+            String text = null;
+            for (JsonNode block : message.path("content")) {
+                if ("text".equals(block.path("type").asText())) {
+                    if (text != null || !block.path("text").isTextual()) return Explanation.fallback("PROVIDER_INVALID_RESPONSE", true);
+                    text = block.path("text").asText();
+                } else if (!List.of("thinking", "redacted_thinking").contains(block.path("type").asText())) {
+                    return Explanation.fallback("PROVIDER_INVALID_RESPONSE", true);
+                }
+            }
+            if (text == null || text.length() > MAX_CONTENT_CHARS) return Explanation.fallback("PROVIDER_INVALID_RESPONSE", true);
+            var value = json.readTree(text);
+            String summary = value.path("summary").asText("");
+            if (!value.isObject() || value.size() != 3 || !value.path("summary").isTextual()
+                    || !safeExplanation(summary)) return Explanation.fallback("PROVIDER_INVALID_RESPONSE", true);
+            var facts = stringCodes(value.path("fact_codes"));
+            var actions = stringCodes(value.path("action_codes"));
+            if (facts == null || actions == null || !java.util.Set.copyOf(facts).equals(java.util.Set.copyOf(context.facts()))
+                    || facts.size() != context.facts().size() || actions.size() > 3
+                    || java.util.Set.copyOf(actions).size() != actions.size()
+                    || !context.actions().containsAll(actions)) return Explanation.fallback("PROVIDER_INVALID_RESPONSE", true);
+            return new Explanation(summary, List.copyOf(actions), "CLAUDE_GENERATED", true, false, java.time.Instant.now());
+        } catch (RuntimeException invalid) {
+            return Explanation.fallback("PROVIDER_INVALID_RESPONSE", true);
+        }
+    }
+
+    private static List<String> stringCodes(JsonNode array) {
+        if (!array.isArray() || array.size() > 24) return null;
+        var codes = new ArrayList<String>();
+        for (JsonNode item : array) {
+            if (!item.isTextual()) return null;
+            codes.add(item.asText());
+        }
+        return codes;
+    }
+
+    private static boolean safeExplanation(String text) {
+        if (text.isBlank() || text.length() > 600 || text.chars().anyMatch(value -> value < 0x20 && value != '\n')) return false;
+        return !java.util.regex.Pattern.compile(
+                "(?i)https?://|www\\.|arn:|sk-ant-|ghp_|github_pat_|ntn_|-----BEGIN|[<>`]|"
+                        + "\\b(curl|kubectl|sudo|powershell|terraform)\\b|"
+                        + "만료되었습니다|폐기되었습니다|악용되었습니다|모두 해결|안전합니다|위험이 없습니다|유효합니다|무효입니다")
+                .matcher(text).find();
+    }
+
+    record Explanation(String summary, List<String> actionCodes, String reasonCode,
+                       boolean providerCalled, boolean cached, java.time.Instant generatedAt) {
+        static Explanation fallback(String reason, boolean called) {
+            return new Explanation(null, List.of(), reason, called, false, null);
+        }
+        Explanation cachedCopy() {
+            return new Explanation(summary, actionCodes, reasonCode, false, true, generatedAt);
         }
     }
 
@@ -280,6 +425,22 @@ class ClaudeSecretGuideProvider implements SecretGuideProvider {
         } catch (java.io.IOException | RuntimeException unavailable) { return new Key(null, true); }
     }
 
-    private record Key(String value, boolean unreadable) { }
+    private static Key sourceKey(boolean enabled, String apiKey, String keyFile, String secretId,
+                                 String region, String mode, String profile, String credentialsFile) {
+        if (!enabled || secretId == null || secretId.isBlank()) return key(apiKey, keyFile);
+        // The configured managed source is authoritative, including on read failures.
+        try {
+            return new Key(ClaudeApiKeySource.read(secretId, region, mode, profile, credentialsFile), false);
+        } catch (RuntimeException unavailable) {
+            return new Key(null, false, true);
+        }
+    }
+
+    private record Key(String value, boolean unreadable, boolean storeUnavailable) {
+        Key(String value, boolean unreadable) { this(value, unreadable, false); }
+        @Override public String toString() { return "ClaudeKey[redacted]"; }
+    }
     private record CachedSelection(Selection selection, long expiresAt) { }
+    private record CachedExplanation(Explanation explanation, long expiresAt) { }
+    private record ProviderReply(byte[] body, String reasonCode) { }
 }
