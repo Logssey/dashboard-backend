@@ -329,6 +329,69 @@ class ReachCiCheckServiceTest {
         assertError(() -> service.createScan("admin", "shared", rescan), ErrorCode.CONFLICT);
     }
 
+    @Test
+    void listShowsNewestChecksFirstWithFiltersAndCursor() {
+        long a = service.create("admin", "a", pr("GATE")).check().id();
+        long b = service.create("admin", "b", image("IMAGE_BUILD", "logssey/reused-api", DIGEST)).check().id();
+        long c = service.create("admin", "c", new ReachCiCheckRequest("PR", "Logssey/service-frontend", COMMIT,
+                new ReachCiCheckRequest.PullRequest(7, "main", "feature"), repoOf("service-frontend", null),
+                null, null, null)).check().id();
+        // b의 스캔만 끝난 것으로 둔다. 끝난 검사는 게이트를 함께 준다(새 Finding 없음 → PASS)
+        jdbc.update("UPDATE reach_scans SET scan_status = 'SUCCEEDED', started_at = now(), finished_at = now() "
+                + "WHERE scan_id = (SELECT scan_id FROM reach_ci_checks WHERE check_id = ?)", b);
+
+        var all = service.checks("admin", filter(null, null, null), null, null, "total");
+        assertThat(all.items()).extracting(ReachCiCheckResponse::id).containsExactly(c, b, a);
+        assertThat(all.totalCount()).isEqualTo(3);
+        assertThat(all.hasNext()).isFalse();
+        assertThat(all.nextCursor()).isNull();
+        var done = all.items().get(1);
+        assertThat(done.gate().result()).isEqualTo("PASS");
+        assertThat(done.createdAt()).isNotNull();
+        assertThat(done.finishedAt()).isNotNull();
+        assertThat(all.items().get(0).gate()).isNull();                    // 아직 안 끝났다
+        assertThat(all.items().get(0).pullRequest().number()).isEqualTo(7);
+        assertThat(service.checks("admin", filter(null, null, null), null, null, null).totalCount()).isNull();
+
+        // 커서로 이어 받는다
+        var first = service.checks("admin", filter(null, null, null), 2, null, null);
+        assertThat(first.items()).extracting(ReachCiCheckResponse::id).containsExactly(c, b);
+        assertThat(first.hasNext()).isTrue();
+        var second = service.checks("admin", filter(null, null, null), 2, first.nextCursor(), null);
+        assertThat(second.items()).extracting(ReachCiCheckResponse::id).containsExactly(a);
+        assertThat(second.hasNext()).isFalse();
+
+        // 필터: 실행 종류, 스캔 상태, 레포(대소문자·소유자 무시)
+        assertThat(service.checks("admin", filter(null, List.of("IMAGE_BUILD"), null), null, null, null).items())
+                .extracting(ReachCiCheckResponse::id).containsExactly(b);
+        assertThat(service.checks("admin", filter(null, List.of("PR"), List.of("QUEUED")), null, null, null).items())
+                .extracting(ReachCiCheckResponse::id).containsExactly(c, a);
+        assertThat(service.checks("admin", filter(null, null, List.of("SUCCEEDED")), null, null, null).items())
+                .extracting(ReachCiCheckResponse::id).containsExactly(b);
+        assertThat(service.checks("admin", filter("Service-Backend", null, null), null, null, null).items())
+                .extracting(ReachCiCheckResponse::id).containsExactly(b, a);
+        assertThat(service.checks("admin", filter("logssey/service-frontend", null, null), null, null, null).items())
+                .extracting(ReachCiCheckResponse::id).containsExactly(c);
+        assertThat(service.checks("admin", filter("dashboard-backend", null, null), null, null, null).items()).isEmpty();
+
+        // 400: 커서와 다른 필터, 크기 범위, include 값, 깨진 커서, 허용 밖 값
+        assertError(() -> service.checks("admin", filter(null, List.of("PR"), null), 2, first.nextCursor(), null),
+                ErrorCode.INVALID_INPUT);
+        assertError(() -> service.checks("admin", filter(null, null, null), 0, null, null), ErrorCode.INVALID_INPUT);
+        assertError(() -> service.checks("admin", filter(null, null, null), 101, null, null), ErrorCode.INVALID_INPUT);
+        assertError(() -> service.checks("admin", filter(null, null, null), null, null, "all"), ErrorCode.INVALID_INPUT);
+        assertError(() -> service.checks("admin", filter(null, null, null), null, "!!", null), ErrorCode.INVALID_INPUT);
+        assertError(() -> filter(null, List.of("NIGHTLY"), null), ErrorCode.INVALID_INPUT);
+        assertError(() -> filter(null, null, List.of("DONE")), ErrorCode.INVALID_INPUT);
+
+        assertError(() -> service.checks(null, filter(null, null, null), null, null, null), ErrorCode.UNAUTHENTICATED);
+        assertError(() -> service.checks("nobody", filter(null, null, null), null, null, null), ErrorCode.FORBIDDEN);
+    }
+
+    private static ReachCiCheckFilter filter(String repository, List<String> mode, List<String> scanStatus) {
+        return new ReachCiCheckFilter(repository, mode, scanStatus);
+    }
+
     private static ReachCiCheckRequest pr(String policy) {
         return new ReachCiCheckRequest("PR", "service-backend", COMMIT,
                 new ReachCiCheckRequest.PullRequest(123, "main", "develop"), repo(COMMIT), null, policy, null);

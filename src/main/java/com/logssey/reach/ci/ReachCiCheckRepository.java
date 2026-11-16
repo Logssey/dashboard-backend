@@ -3,7 +3,10 @@ package com.logssey.reach.ci;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -161,17 +164,65 @@ public class ReachCiCheckRepository {
                     Long baselineScanId, OffsetDateTime createdAt, OffsetDateTime finishedAt) {}
 
     Optional<CheckRow> check(long checkId) {
-        return jdbcClient.sql("""
-                        SELECT c.check_id, c.mode, c.repository, c.head_commit, c.pr_number, c.pr_base_ref,
-                               c.pr_head_ref, c.scan_id, s.scan_status, c.policy, c.baseline_scan_id,
-                               c.created_at, s.finished_at
-                        FROM reach_ci_checks c
-                        JOIN reach_scans s ON s.scan_id = c.scan_id
-                        WHERE c.check_id = :checkId
-                        """)
+        return jdbcClient.sql(CHECKS + " WHERE c.check_id = :checkId")
                 .param("checkId", checkId)
                 .query(this::checkRow)
                 .optional();
+    }
+
+    /** 목록·개수가 같이 쓰는 FROM. 상태는 스캔에 있다 */
+    private static final String CHECKS = """
+            SELECT c.check_id, c.mode, c.repository, c.head_commit, c.pr_number, c.pr_base_ref,
+                   c.pr_head_ref, c.scan_id, s.scan_status, c.policy, c.baseline_scan_id,
+                   c.created_at, s.finished_at
+            FROM reach_ci_checks c
+            JOIN reach_scans s ON s.scan_id = c.scan_id""";
+
+    /** CI 검사 목록. 최신(검사 id 큰) 순, afterId보다 작은 것부터 limit개 */
+    List<CheckRow> checks(ReachCiCheckFilter filter, Long afterId, int limit) {
+        var where = where(filter, afterId);
+        var params = new HashMap<>(where.params());
+        params.put("limit", limit);
+        return jdbcClient.sql(CHECKS + where.sql() + " ORDER BY c.check_id DESC LIMIT :limit")
+                .params(params)
+                .query(this::checkRow)
+                .list();
+    }
+
+    long countChecks(ReachCiCheckFilter filter) {
+        var where = where(filter, null);
+        return jdbcClient.sql("SELECT count(*) FROM (" + CHECKS + where.sql() + ") c")
+                .params(where.params())
+                .query(Long.class)
+                .single();
+    }
+
+    private record Where(String sql, Map<String, Object> params) {}
+
+    /**
+     * repository는 대소문자 무시로, 저장된 값이 소유자를 붙였든(Logssey/service-backend) 아니든 이름으로 맞춘다.
+     * 빈 목록인 칸은 거르지 않는다(빈 IN ()은 SQL 오류)
+     */
+    private static Where where(ReachCiCheckFilter filter, Long afterId) {
+        var conditions = new ArrayList<String>();
+        var params = new HashMap<String, Object>();
+        if (filter.repository() != null) {
+            conditions.add("lower(substring(c.repository FROM '[^/]*$')) = lower(:repository)");
+            params.put("repository", filter.repositoryName());
+        }
+        if (!filter.mode().isEmpty()) {
+            conditions.add("c.mode IN (:modes)");
+            params.put("modes", filter.mode());
+        }
+        if (!filter.scanStatus().isEmpty()) {
+            conditions.add("s.scan_status IN (:statuses)");
+            params.put("statuses", filter.scanStatus());
+        }
+        if (afterId != null) {
+            conditions.add("c.check_id < :afterId");
+            params.put("afterId", afterId);
+        }
+        return new Where(conditions.isEmpty() ? "" : " WHERE " + String.join(" AND ", conditions), params);
     }
 
     /** NULL일 수 있는 숫자는 getObject로 읽는다. getInt·getLong은 NULL을 0으로 준다 */
