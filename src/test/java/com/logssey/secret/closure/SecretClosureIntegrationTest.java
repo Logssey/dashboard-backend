@@ -46,6 +46,182 @@ class SecretClosureIntegrationTest {
             """,Long.class,key,first.occurrence);
         link(first);first=missing(first);
     }
+    @Test void soleQualifiedReviewerCanRecordOnlyLimitedSelfAttestation() {
+        jdbc.update("UPDATE secret_role_grants SET revoked_at=now() WHERE user_id=2");
+        var lifecycle=lifecycleService();
+        var submitted=lifecycle.submit(caseId,new com.logssey.secret.lifecycle.SecretLifecycleService.Submission(
+                "REVOKED",OffsetDateTime.now().minusMinutes(20),"CHANGE:SEC-2",version(),"single-submit"),"security");
+        long evidence=((Number)submitted.get("evidenceId")).longValue();
+        var request=new com.logssey.secret.lifecycle.SecretLifecycleService.Review(
+                "APPROVE","SELF_ATTESTATION_LIMITED",1L,version(),"single-review");
+        lifecycle.review(caseId,evidence,request,"security");
+        lifecycle.review(caseId,evidence,request,"security");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_lifecycle_evidence_reviews",Long.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT verification_level FROM secret_current_lifecycle_evidence WHERE evidence_id=?",String.class,evidence))
+                .isEqualTo("SELF_ATTESTED");
+        var checks=service.checks("security",caseId);
+        assertThat(checks.allowedCoverageLevels()).containsExactly("LIMITED");
+        assertThat(checks.coverageOptions().getFirst().limitations()).contains("SELF_ATTESTED");
+        assertThat(service.resolve("security",caseId,resolution(checks,"LIMITED","self-limited"))
+                .coverageLevel()).isEqualTo("LIMITED");
+    }
+
+    @Test void aSecondQualifiedReviewerKeepsIndependentReviewAvailable() {
+        var lifecycle=lifecycleService();
+        var submitted=lifecycle.submit(caseId,new com.logssey.secret.lifecycle.SecretLifecycleService.Submission(
+                "REVOKED",OffsetDateTime.now().minusMinutes(20),"CHANGE:SEC-2",version(),"multiple-submit"),"security");
+        long evidence=((Number)submitted.get("evidenceId")).longValue();
+        code(ErrorCode.FORBIDDEN,()->lifecycle.review(caseId,evidence,
+                new com.logssey.secret.lifecycle.SecretLifecycleService.Review("APPROVE","SELF_ATTESTATION_LIMITED",1L,version(),"multiple-self"),"security"));
+        lifecycle.review(caseId,evidence,new com.logssey.secret.lifecycle.SecretLifecycleService.Review(
+                "APPROVE","EXTERNAL_RECORD_CONFIRMED",1L,version(),"independent"),"reviewer");
+        assertThat(jdbc.queryForObject("SELECT verification_level FROM secret_current_lifecycle_evidence WHERE evidence_id=?",String.class,evidence))
+                .isEqualTo("APPROVED_MANUAL");
+    }
+
+    @Test void aRecordedActionCanBeReusedWithoutReenteringItsFacts() {
+        var lifecycle=lifecycleService();
+        long action=jdbc.queryForObject("SELECT action_id FROM secret_action_records WHERE case_id=?",Long.class,caseId);
+        var submitted=lifecycle.submit(caseId,new com.logssey.secret.lifecycle.SecretLifecycleService.Submission(
+                null,null,null,version(),"reuse-action",action),"security");
+        long evidence=((Number)submitted.get("evidenceId")).longValue();
+        var row=jdbc.queryForMap("SELECT e.source_action_id,e.kind,e.performed_at=e2.performed_at AS same_time,e.evidence_ref=e2.evidence_ref AS same_ref FROM secret_credential_lifecycle_evidence e JOIN secret_action_records e2 ON e2.action_id=e.source_action_id WHERE evidence_id=?",evidence);
+        assertThat(row).containsEntry("source_action_id",action).containsEntry("kind","REVOKED")
+                .containsEntry("same_time",true).containsEntry("same_ref",true);
+        var duplicate=lifecycle.submit(caseId,new com.logssey.secret.lifecycle.SecretLifecycleService.Submission(
+                null,null,null,version(),"reuse-action-again",action),"security");
+        assertThat(duplicate.get("evidenceId")).isEqualTo(evidence);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_credential_lifecycle_evidence",Long.class)).isEqualTo(1);
+    }
+
+    @Test void anActionAuthorReviewPreservesItsLimitedAssuranceAcrossEveryProjection() {
+        var lifecycle=lifecycleService();
+        long action=recordedActionId();
+        long evidence=submitRecordedAction(lifecycle,action,"relay-submit","reviewer");
+        var pending=lifecycleItem(lifecycle,evidence,"security");
+        assertThat(pending).containsEntry("reviewVerificationLevel","SELF_ATTESTED");
+        assertThat(((Map<?,?>)pending.get("capabilities")).get("canReview")).isEqualTo(true);
+        assertThat(pending.get("reviewLimitations")).asList().contains("ACTION_AUTHOR_REVIEWED","SELF_ATTESTED");
+        var request=new com.logssey.secret.lifecycle.SecretLifecycleService.Review(
+                "APPROVE","EXTERNAL_RECORD_CONFIRMED",1L,version(),"relay-review");
+        lifecycle.review(caseId,evidence,request,"security");
+        lifecycle.review(caseId,evidence,request,"security");
+        assertThat(count("secret_lifecycle_evidence_reviews")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT source_action_recorded_by_user_id FROM secret_credential_lifecycle_evidence WHERE evidence_id=?",Long.class,evidence)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT verification_level FROM secret_current_lifecycle_evidence WHERE evidence_id=?",String.class,evidence)).isEqualTo("SELF_ATTESTED");
+        var reviewed=lifecycleItem(lifecycle,evidence,"security");
+        assertThat(reviewed).containsEntry("verificationLevel","SELF_ATTESTED");
+        assertThat(reviewed.get("limitations")).asList().contains("ACTION_AUTHOR_REVIEWED","SELF_ATTESTED");
+        var location=lifecycle.locationCheck(new SecretPrincipal(1),first.occurrence);
+        assertThat(location).containsEntry("verificationLevel","SELF_ATTESTED").containsEntry("coverageLimit","LIMITED");
+        assertThat(location.get("limitations")).asList().contains("ACTION_AUTHOR_REVIEWED");
+        var checks=service.checks("security",caseId);
+        assertThat(checks.allowedCoverageLevels()).containsExactly("LIMITED");
+        assertThat(checks.coverageOptions().getFirst().limitations()).contains("ACTION_AUTHOR_REVIEWED","SELF_ATTESTED");
+        assertThatThrownBy(()->service.resolve("security",caseId,resolution(checks,"FULL","relay-full"))).isInstanceOf(SecretClosureConflict.class);
+        assertThat(service.resolve("security",caseId,resolution(checks,"LIMITED","relay-limited")).coverageLevel()).isEqualTo("LIMITED");
+    }
+
+    @Test void manualEntryOfAnExactRecordedActionRetainsTheOriginalAuthor() {
+        var lifecycle=lifecycleService();
+        var action=jdbc.queryForMap("SELECT * FROM secret_action_records WHERE action_id=?",recordedActionId());
+        var performed=((java.sql.Timestamp)action.get("performed_at")).toInstant().atOffset(ZoneOffset.UTC);
+        var submitted=lifecycle.submit(caseId,new com.logssey.secret.lifecycle.SecretLifecycleService.Submission(
+                action.get("action_type").toString(),performed,action.get("evidence_ref").toString(),version(),"manual-relay"),"reviewer");
+        long evidence=((Number)submitted.get("evidenceId")).longValue();
+        assertThat(jdbc.queryForMap("SELECT source_action_id,source_action_recorded_by_user_id FROM secret_credential_lifecycle_evidence WHERE evidence_id=?",evidence))
+                .containsEntry("source_action_id",action.get("action_id")).containsEntry("source_action_recorded_by_user_id",1L);
+        lifecycle.review(caseId,evidence,new com.logssey.secret.lifecycle.SecretLifecycleService.Review(
+                "APPROVE","EXTERNAL_RECORD_CONFIRMED",1L,version(),"manual-relay-review"),"security");
+        assertThat(lifecycleItem(lifecycle,evidence,"security")).containsEntry("verificationLevel","SELF_ATTESTED");
+    }
+
+    @Test void aLaterIndependentReviewPreservesTheEarlierAuthorReviewInAuditHistory() {
+        var lifecycle=lifecycleService();
+        long evidence=submitRecordedAction(lifecycle,recordedActionId(),"author-submit","reviewer");
+        lifecycle.review(caseId,evidence,new com.logssey.secret.lifecycle.SecretLifecycleService.Review(
+                "APPROVE","EXTERNAL_RECORD_CONFIRMED",1L,version(),"author-review"),"security");
+        jdbc.update("INSERT INTO secret_role_grants(user_id,role,granted_by_user_id,grant_source) VALUES(3,'SECURITY',1,'MANUAL')");
+        assertThat(lifecycleItem(lifecycle,evidence,"scoped")).containsEntry("reviewVerificationLevel","APPROVED_MANUAL");
+        lifecycle.review(caseId,evidence,new com.logssey.secret.lifecycle.SecretLifecycleService.Review(
+                "APPROVE","EXTERNAL_RECORD_CONFIRMED",2L,version(),"independent-review"),"scoped");
+        assertThat(lifecycleItem(lifecycle,evidence,"scoped")).containsEntry("verificationLevel","APPROVED_MANUAL");
+        assertThat(jdbc.queryForList("SELECT limitations::text FROM secret_lifecycle_evidence_reviews WHERE evidence_id=? ORDER BY review_id",String.class,evidence))
+                .hasSize(2).first().asString().contains("ACTION_AUTHOR_REVIEWED");
+        assertThat(service.checks("security",caseId).coverageOptions().getFirst().limitations()).doesNotContain("ACTION_AUTHOR_REVIEWED","SELF_ATTESTED");
+        assertThat(service.checks("security",caseId).allowedCoverageLevels()).containsExactly("LIMITED");
+    }
+
+    @Test void aRejectedEvidenceCannotUseTheFirstSelfAttestationException() {
+        var lifecycle=lifecycleService();
+        long evidence=submitRecordedAction(lifecycle,recordedActionId(),"rejected-submit","security");
+        lifecycle.review(caseId,evidence,new com.logssey.secret.lifecycle.SecretLifecycleService.Review(
+                "REJECT","INSUFFICIENT_EVIDENCE",1L,version(),"reject-evidence"),"reviewer");
+        jdbc.update("UPDATE secret_role_grants SET revoked_at=now() WHERE user_id=2");
+        code(ErrorCode.EVIDENCE_REQUIRED,()->lifecycle.review(caseId,evidence,
+                new com.logssey.secret.lifecycle.SecretLifecycleService.Review("APPROVE","SELF_ATTESTATION_LIMITED",2L,version(),"rejected-self"),"security"));
+        assertThat(((Map<?,?>)lifecycleItem(lifecycle,evidence,"security").get("capabilities")).get("canSelfAttest")).isEqualTo(false);
+    }
+
+    @Test void sourceActionOptionsExplainFutureExpiredAndAlreadySubmittedRecords() {
+        var lifecycle=lifecycleService();
+        long action=recordedActionId();
+        jdbc.update("UPDATE secret_action_records SET performed_at=clock_timestamp()+interval '1 minute' WHERE action_id=?",action);
+        assertThat(sourceAction(lifecycle,action)).containsEntry("reusable",false).containsEntry("unavailableReasonCode","ACTION_TIME_IN_FUTURE");
+        code(ErrorCode.INVALID_INPUT,()->submitRecordedAction(lifecycle,action,"future-action","security"));
+        jdbc.update("UPDATE secret_action_records SET performed_at=clock_timestamp()-interval '91 days' WHERE action_id=?",action);
+        assertThat(sourceAction(lifecycle,action)).containsEntry("reusable",false).containsEntry("unavailableReasonCode","ACTION_TOO_OLD");
+        code(ErrorCode.INVALID_INPUT,()->submitRecordedAction(lifecycle,action,"expired-action","security"));
+        jdbc.update("UPDATE secret_action_records SET performed_at=clock_timestamp()-interval '20 minutes' WHERE action_id=?",action);
+        long evidence=submitRecordedAction(lifecycle,action,"current-action","security");
+        assertThat(sourceAction(lifecycle,action)).containsEntry("reusable",false).containsEntry("unavailableReasonCode","ACTION_ALREADY_SUBMITTED").containsEntry("existingEvidenceId",evidence);
+    }
+
+    @Test void storedActionAuthorCannotBeForgedOrChangedAfterSubmission() {
+        var lifecycle=lifecycleService();
+        assertThatThrownBy(()->jdbc.update("""
+                INSERT INTO secret_credential_lifecycle_evidence(case_id,credential_set_id,source_occurrence_id,origin,kind,
+                  verification_method,verification_level,evidence_ref,performed_at,observed_at,submitted_by_user_id,
+                  source_action_id,source_action_recorded_by_user_id)
+                SELECT a.case_id,?,a.occurrence_id,'PRODUCTION',a.action_type,'EXTERNAL_RECORD','PENDING',a.evidence_ref,
+                  a.performed_at,clock_timestamp(),2,a.action_id,2 FROM secret_action_records a WHERE a.action_id=?
+                """,key,recordedActionId())).hasMessageContaining("LIFECYCLE_SOURCE_ACTION_MISMATCH");
+        long evidence=submitRecordedAction(lifecycle,recordedActionId(),"author-snapshot","reviewer");
+        jdbc.update("UPDATE secret_action_records SET recorded_by_user_id=2 WHERE action_id=?",recordedActionId());
+        assertThat(lifecycleItem(lifecycle,evidence,"security")).containsEntry("reviewVerificationLevel","SELF_ATTESTED");
+        assertThatThrownBy(()->jdbc.update("UPDATE secret_credential_lifecycle_evidence SET source_action_recorded_by_user_id=2 WHERE evidence_id=?",evidence)).hasMessageContaining("IMMUTABLE_LIFECYCLE_EVIDENCE");
+    }
+
+    private long recordedActionId() {
+        return jdbc.queryForObject("SELECT action_id FROM secret_action_records WHERE case_id=? AND occurrence_id=?",Long.class,caseId,first.occurrence);
+    }
+
+    private long submitRecordedAction(com.logssey.secret.lifecycle.SecretLifecycleService lifecycle,long action,String idempotencyKey,String login) {
+        var result=lifecycle.submit(caseId,new com.logssey.secret.lifecycle.SecretLifecycleService.Submission(
+                null,null,null,version(),idempotencyKey,action),login);
+        return ((Number)result.get("evidenceId")).longValue();
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String,Object> lifecycleItem(com.logssey.secret.lifecycle.SecretLifecycleService lifecycle,long evidence,String login) {
+        return ((List<Map<String,Object>>)lifecycle.list(caseId,login).get("items")).stream()
+                .filter(item->Objects.equals(item.get("evidenceId"),evidence)).findFirst().orElseThrow();
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String,Object> sourceAction(com.logssey.secret.lifecycle.SecretLifecycleService lifecycle,long action) {
+        return ((List<Map<String,Object>>)lifecycle.list(caseId,"security").get("sourceActions")).stream()
+                .filter(item->Objects.equals(item.get("actionId"),action)).findFirst().orElseThrow();
+    }
+
+    private com.logssey.secret.lifecycle.SecretLifecycleService lifecycleService() {
+        var access=new SecretAccessService(jdbc);
+        var snapshots=new SecretReadSnapshots(jdbc,JsonMapper.builder().findAndAddModules().build());
+        var commands=new SecretCommandExecutor(jdbc,manager);
+        var workflow=new com.logssey.secret.response.SecretLocationWorkflow(jdbc,access,commands,snapshots);
+        return new com.logssey.secret.lifecycle.SecretLifecycleService(jdbc,access,workflow,commands,snapshots);
+    }
+
     @Test void unclassifiedCaseRetainsActualOriginThroughIndependentLifecycleReviewAndClosure() {
         jdbc.update("UPDATE secret_response_cases SET case_origin='UNCLASSIFIED' WHERE case_id=?",caseId);
         jdbc.update("UPDATE secret_connection_scopes SET response_origin='UNCLASSIFIED',response_origin_set_by_user_id=NULL,response_origin_set_at=NULL WHERE scope_id=?",first.scope);
