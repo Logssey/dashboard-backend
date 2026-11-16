@@ -1,5 +1,6 @@
 package com.logssey.security;
 
+import com.logssey.compliance.ComplianceWorkerAuthenticationFilter;
 import com.logssey.runtime.security.RuntimeCollectorAuthenticationFilter;
 
 import org.springframework.context.annotation.Bean;
@@ -31,9 +32,12 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 public class SecurityConfig {
 
     private final RuntimeCollectorAuthenticationFilter runtimeCollectorAuthenticationFilter;
+    private final ComplianceWorkerAuthenticationFilter complianceWorkerAuthenticationFilter;
 
-    public SecurityConfig(RuntimeCollectorAuthenticationFilter runtimeCollectorAuthenticationFilter) {
+    public SecurityConfig(RuntimeCollectorAuthenticationFilter runtimeCollectorAuthenticationFilter,
+                          ComplianceWorkerAuthenticationFilter complianceWorkerAuthenticationFilter) {
         this.runtimeCollectorAuthenticationFilter = runtimeCollectorAuthenticationFilter;
+        this.complianceWorkerAuthenticationFilter = complianceWorkerAuthenticationFilter;
     }
 
     @Bean
@@ -42,12 +46,14 @@ public class SecurityConfig {
                 .csrf(csrf -> csrf
                         .csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse())
                         .csrfTokenRequestHandler(new CsrfTokenRequestAttributeHandler())
-                        .ignoringRequestMatchers("/internal/v1/runtime/**"))
+                        .ignoringRequestMatchers("/internal/v1/runtime/**", "/internal/v1/compliance/**"))
                 .addFilterAfter(new CsrfCookieFilter(), CsrfFilter.class)
                 .addFilterBefore(runtimeCollectorAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterBefore(complianceWorkerAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/login", "/api/v1/auth/logout").permitAll()
                         .requestMatchers("/internal/v1/runtime/**").permitAll()
+                        .requestMatchers("/internal/v1/compliance/**").permitAll()
                         .requestMatchers("/error").permitAll()
                         .anyRequest().authenticated())
                 .exceptionHandling(exceptions -> exceptions

@@ -31,6 +31,12 @@ logssey.secret.operations.deployment-key=secret-worker
 logssey.secret.operations.expected-instances=1
 logssey.secret.permissions.enabled=false
 logssey.secret.usage.cloudtrail-enabled=false
+# Compliance scan execution stays disabled until an independent Worker is explicitly deployed.
+logssey.compliance.target-key=replace-service-key
+logssey.compliance.target-name=replace-service-name
+logssey.compliance.worker-lease-seconds=900
+logssey.compliance.worker-retry-delay-seconds=30
+# /run/secrets/logssey.compliance.worker-token contains the shared Worker token.
 # Connection tests use the API's identity only. Give it STS identity access, not source-value access.
 # When enabling GitHub connection tests, also mount github-app.pem and set real numeric IDs:
 # SECRET_GITHUB_APP_ID=0

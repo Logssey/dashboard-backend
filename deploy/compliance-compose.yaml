@@ -1,0 +1,32 @@
+# Optional compliance overlay for deploy/compose.yaml.
+# This creates no AWS resources and mounts no host credential directory or Docker socket.
+# Example:
+# docker compose -f deploy/compose.yaml -f deploy/compliance-compose.yaml --profile compliance config
+services:
+  compliance-worker:
+    profiles: [compliance]
+    image: ${COMPLIANCE_WORKER_IMAGE:?Set an immutable compliance worker image reference}
+    # Keep the non-root UID/GID from the pinned official Prowler image.
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 45s
+    mem_limit: 1536m
+    pids_limit: 192
+    volumes:
+      - type: bind
+        source: ${COMPLIANCE_WORKER_CONFIG_FILE:?Set the reviewed compliance worker properties file}
+        target: /run/config/application.properties
+        read_only: true
+      - type: bind
+        source: ${COMPLIANCE_WORKER_SECRETS_DIR:?Set the external compliance worker secret directory}
+        target: /run/secrets
+        read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=256m,uid=1000,gid=1000,mode=0700"]
+    depends_on: [api]
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
