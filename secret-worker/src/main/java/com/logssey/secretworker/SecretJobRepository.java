@@ -228,7 +228,7 @@ WHERE job_id = ?
                 """, code, row.runId());
         jdbc.update("""
                 UPDATE secret_run_scopes SET
-                    collection_status = 'PENDING', object_count = NULL, failure_code = NULL,excluded_object_count=0,
+                    collection_status = 'PENDING', object_count = NULL, failure_code = NULL,excluded_object_count=0,exclusion_reasons=NULL,
                     started_at = NULL, finished_at = NULL
                 WHERE run_id = ? AND collection_status IN ('RUNNING', 'PARTIAL', 'FAILED')
                 """, row.runId());

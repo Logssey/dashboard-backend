@@ -329,8 +329,13 @@ class SecretJobExecutionServiceTest {
         var poller = new SecretJobPoller(service, executionProperties(),
                 factory.getBeanProvider(SecretJobProcessor.class));
         poller.poll();
-        assertThat(jdbc.queryForMap("SELECT status, last_error_code FROM secret_jobs"))
-                .containsEntry("status", "PENDING").containsEntry("last_error_code", "PROCESSOR_FAILURE");
+        try {
+            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                    assertThat(jdbc.queryForMap("SELECT status, last_error_code FROM secret_jobs"))
+                            .containsEntry("status", "PENDING").containsEntry("last_error_code", "PROCESSOR_FAILURE"));
+        } finally {
+            poller.destroy();
+        }
         assertThat(jdbc.queryForObject("SELECT failure_code FROM secret_scan_runs", String.class))
                 .isEqualTo("PROCESSOR_FAILURE");
         assertThat(output.getAll()).doesNotContain(syntheticSecretMarker);

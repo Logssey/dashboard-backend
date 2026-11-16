@@ -75,6 +75,7 @@ class GitHubSecretJobProcessorTest {
     private boolean secondFile;
     private boolean missingSecondBlob;
     private boolean missingPath;
+    private boolean unsupportedObject;
 
     @BeforeAll
     static void startDatabase() {
@@ -183,6 +184,19 @@ class GitHubSecretJobProcessorTest {
     void onePairInTwoFilesHasTwoOccurrencesButOnlyOneValidationOutsideTransaction() {
         repository = "candidate-app";
         secondFile = true;
+        var originalDetector = detector;
+        var inspectedObjects = new AtomicInteger();
+        detector = new SecretContentDetector() {
+            @Override public String engineVersion() { return originalDetector.engineVersion(); }
+            @Override public String configHash() { return originalDetector.configHash(); }
+            @Override public GitleaksScanResult scan(byte[] value) {
+                if (inspectedObjects.incrementAndGet() == 2) {
+                    assertThat(jdbc.queryForObject("SELECT object_count FROM secret_run_scopes", Long.class))
+                            .isEqualTo(1L);
+                }
+                return originalDetector.scan(value);
+            }
+        };
         AtomicInteger calls = new AtomicInteger();
         processor = processorWith(key -> {
             assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
@@ -278,6 +292,31 @@ class GitHubSecretJobProcessorTest {
                         jdbc.queryForObject(
                                 "SELECT count(*) FROM secret_validation_attempts", Long.class))
                 .isEqualTo(1L);
+    }
+
+    @Test
+    void partialCollectionRetainsRepositoryVisibilityAndEveryGapReason() {
+        repository = "candidate-app";
+        secondFile = true;
+        missingSecondBlob = true;
+        unsupportedObject = true;
+        var observed = new java.util.concurrent.atomic.AtomicReference<GitHubRepositoryAccessObservation>();
+        processor = new GitHubSecretJobProcessor(jdbc, collector, detector, findings, normalizer,
+                new com.logssey.secretworker.validation.AwsCredentialValidator(false), attempts, jobs,
+                new com.logssey.secretworker.validation.GitHubPatValidator(false), List.of(observed::set));
+        insertRun();
+        var job = execution.claimNextJob("GITHUB").orElseThrow();
+        processor.process(job, execution);
+        assertThat(execution.complete(job.jobId(), job.leaseToken())).isTrue();
+        assertThat(jdbc.queryForObject("SELECT collection_status FROM secret_run_scopes", String.class))
+                .isEqualTo("PARTIAL");
+        assertThat(observed.get().publicRepository()).isTrue();
+        assertThat(observed.get().metadataComplete()).isTrue();
+        assertThat(observed.get().occurrenceIds()).hasSize(1);
+        var reasons = tools.jackson.databind.json.JsonMapper.builder().build().readTree(
+                jdbc.queryForObject("SELECT exclusion_reasons::text FROM secret_run_scopes", String.class));
+        assertThat(reasons.size()).isEqualTo(2);
+        assertThat(reasons.path("GITHUB_UNSUPPORTED_OBJECT").asLong()).isEqualTo(1L);
     }
 
     @org.junit.jupiter.params.ParameterizedTest
@@ -650,6 +689,8 @@ RETURNING scope_id
                                             + content.length
                                             + "}"
                                     : "")
+                            + (unsupportedObject ? ", {\"path\":\"link\",\"type\":\"blob\",\"mode\":\"120000\",\"sha\":\""
+                                    + SECOND_BLOB + "\",\"size\":1}" : "")
                             + "]}";
         } else if (missingSecondBlob && path.equals(prefix + "blobs/" + SECOND_BLOB)) {
             exchange.sendResponseHeaders(404, -1);
