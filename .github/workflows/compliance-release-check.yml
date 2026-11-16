@@ -1,0 +1,54 @@
+name: Compliance release checks
+on:
+  pull_request:
+    branches: [develop]
+    paths:
+      - 'src/main/java/com/logssey/compliance/**'
+      - 'src/main/resources/compliance/**'
+      - 'src/main/resources/db/migration/V49__create_compliance_assessments.sql'
+      - 'src/main/resources/db/migration/V50__create_compliance_scan_jobs.sql'
+      - 'src/test/java/com/logssey/compliance/**'
+      - 'compliance-worker/**'
+      - 'deploy/verify-compliance.*'
+      - 'deploy/compliance-compose.yaml'
+      - 'deploy/bootstrap-compliance-host.py'
+      - '.github/workflows/dashboard-deploy.yml'
+      - 'Dockerfile'
+      - 'settings.gradle'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: compliance-release-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      - name: Test compliance API and Worker
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :test --tests 'com.logssey.compliance.*' :compliance-worker:test :bootJar :compliance-worker:bootJar --console=plain
+      - name: Build API and pinned Prowler Worker images
+        run: |
+          docker build --target api -t logssey-dashboard-api:ci .
+          docker build --target compliance-worker -t logssey-compliance-worker:ci .
+      - name: Run credential-free compliance E2E
+        run: |
+          python3 -m py_compile deploy/bootstrap-compliance-host.py
+          sh deploy/verify-compliance.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: compliance-test-reports
+          path: |
+            build/reports/tests/test/
+            compliance-worker/build/reports/tests/test/
+          retention-days: 7

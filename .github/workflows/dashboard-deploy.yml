@@ -1,10 +1,11 @@
 # Dashboard deploy: every merge to develop goes to https://logssey.re-used.store.
-# tests -> API and Secret worker images to ECR (tag = commit) -> SSM document logssey-dashboard-deploy runs
-# /opt/logssey/deploy.sh on the host, first for the API (it applies migrations), then for the worker of the same commit.
+# tests -> API, Secret worker, and Compliance worker images to ECR (tag = commit) -> SSM document
+# logssey-dashboard-deploy runs /opt/logssey/deploy.sh on the host, first for the API (it applies migrations),
+# then for the independent workers of the same commit.
 # deploy.sh dumps the database (API), swaps the digest, checks health and rolls back to the previous image if it fails.
 # AWS side: infrastructure terraform/environments/logssey-dashboard/deploy.tf (the role only accepts develop runs of this repo).
 # Repository variables: DASHBOARD_DEPLOY_ROLE_ARN, DASHBOARD_INSTANCE_ID (terraform output deploy_role_arns.api, instance_id),
-# DASHBOARD_DEPLOY_WORKER (true once the host runs the secret-worker service; until then the worker image is only pushed).
+# DASHBOARD_DEPLOY_WORKER and DASHBOARD_DEPLOY_COMPLIANCE_WORKER gate each independent worker deployment.
 # Actions are pinned to the same commit SHAs as reach-check.yml and deploy/reach/ci/reach.yml.
 name: Dashboard deploy
 
@@ -26,6 +27,7 @@ env:
   AWS_REGION: ap-northeast-1
   API_REPOSITORY: logssey/dashboard-api
   WORKER_REPOSITORY: logssey/dashboard-secret-worker
+  COMPLIANCE_WORKER_REPOSITORY: logssey/dashboard-compliance-worker
   DEPLOY_DOCUMENT: logssey-dashboard-deploy
 
 jobs:
@@ -40,12 +42,12 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: gradle
-      # The images hold the root project (Dockerfile target api) and secret-worker (target worker);
+      # The images hold the root project and two independent workers;
       # Testcontainers uses the runner's Docker
-      - name: Tests (API and Secret worker)
+      - name: Tests (API, Secret worker, and Compliance worker)
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon :test :secret-worker:test --console=plain
+          ./gradlew --no-daemon :test :secret-worker:test :compliance-worker:test --console=plain
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure()
         with:
@@ -53,10 +55,11 @@ jobs:
           path: |
             build/reports/tests/test/
             secret-worker/build/reports/tests/test/
+            compliance-worker/build/reports/tests/test/
           retention-days: 7
 
   deploy:
-    name: Build and deploy the API and the Secret worker
+    name: Build and deploy the API and independent workers
     needs: test
     if: github.ref == 'refs/heads/develop'
     runs-on: ubuntu-24.04
@@ -105,6 +108,7 @@ jobs:
           }
           push api api "$API_REPOSITORY"
           push worker worker "$WORKER_REPOSITORY"
+          push compliance_worker compliance-worker "$COMPLIANCE_WORKER_REPOSITORY"
       - name: Deploy the API on the dashboard host
         env:
           INSTANCE_ID: ${{ vars.DASHBOARD_INSTANCE_ID }}
@@ -117,3 +121,10 @@ jobs:
           INSTANCE_ID: ${{ vars.DASHBOARD_INSTANCE_ID }}
           DIGEST: ${{ steps.image.outputs.worker }}
         run: bash .github/scripts/dashboard-deploy-ssm.sh worker "$DIGEST"
+      # Independent and resource-bounded. It starts disabled until AWS workload identity is approved.
+      - name: Deploy the Compliance worker on the dashboard host
+        if: vars.DASHBOARD_DEPLOY_COMPLIANCE_WORKER == 'true'
+        env:
+          INSTANCE_ID: ${{ vars.DASHBOARD_INSTANCE_ID }}
+          DIGEST: ${{ steps.image.outputs.compliance_worker }}
+        run: bash .github/scripts/dashboard-deploy-ssm.sh compliance-worker "$DIGEST"

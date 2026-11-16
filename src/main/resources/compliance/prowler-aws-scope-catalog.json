@@ -1,0 +1,2773 @@
+{
+  "schemaVersion": 1,
+  "provider": "aws",
+  "version": "5.46.0",
+  "commit": "91b86777ce86e2cc2f17f818df21fe3bae7b0677",
+  "checkCount": 668,
+  "serviceCount": 89,
+  "services": [
+    "accessanalyzer",
+    "account",
+    "acm",
+    "acmpca",
+    "amplify",
+    "apigateway",
+    "apigatewayv2",
+    "appstream",
+    "appsync",
+    "athena",
+    "autoscaling",
+    "awslambda",
+    "backup",
+    "batch",
+    "bedrock",
+    "cloudformation",
+    "cloudfront",
+    "cloudtrail",
+    "cloudwatch",
+    "codeartifact",
+    "codebuild",
+    "codecommit",
+    "codepipeline",
+    "cognito",
+    "config",
+    "datapipeline",
+    "datasync",
+    "directconnect",
+    "directoryservice",
+    "dlm",
+    "dms",
+    "documentdb",
+    "drs",
+    "dynamodb",
+    "ec2",
+    "ecr",
+    "ecs",
+    "efs",
+    "eks",
+    "elasticache",
+    "elasticbeanstalk",
+    "elb",
+    "elbv2",
+    "emr",
+    "eventbridge",
+    "firehose",
+    "fms",
+    "fsx",
+    "glacier",
+    "glue",
+    "guardduty",
+    "iam",
+    "inspector2",
+    "kafka",
+    "kinesis",
+    "kms",
+    "lightsail",
+    "macie",
+    "memorydb",
+    "mq",
+    "neptune",
+    "networkfirewall",
+    "opensearch",
+    "organizations",
+    "rds",
+    "redshift",
+    "resourceexplorer2",
+    "rolesanywhere",
+    "route53",
+    "s3",
+    "sagemaker",
+    "secretsmanager",
+    "securityhub",
+    "servicecatalog",
+    "ses",
+    "shield",
+    "sns",
+    "sqs",
+    "ssm",
+    "ssmincidents",
+    "stepfunctions",
+    "storagegateway",
+    "transfer",
+    "trustedadvisor",
+    "vpc",
+    "waf",
+    "wafv2",
+    "wellarchitected",
+    "workspaces"
+  ],
+  "checks": [
+    {
+      "id": "accessanalyzer_enabled",
+      "service": "accessanalyzer"
+    },
+    {
+      "id": "accessanalyzer_enabled_without_findings",
+      "service": "accessanalyzer"
+    },
+    {
+      "id": "account_maintain_current_contact_details",
+      "service": "account"
+    },
+    {
+      "id": "account_maintain_different_contact_details_to_security_billing_and_operations",
+      "service": "account"
+    },
+    {
+      "id": "account_security_contact_information_is_registered",
+      "service": "account"
+    },
+    {
+      "id": "account_security_questions_are_registered_in_the_aws_account",
+      "service": "account"
+    },
+    {
+      "id": "acm_certificates_expiration_check",
+      "service": "acm"
+    },
+    {
+      "id": "acm_certificates_transparency_logs_enabled",
+      "service": "acm"
+    },
+    {
+      "id": "acm_certificates_with_secure_key_algorithms",
+      "service": "acm"
+    },
+    {
+      "id": "acmpca_certificate_authority_pqc_key_algorithm",
+      "service": "acmpca"
+    },
+    {
+      "id": "amplify_app_no_secrets_in_environment",
+      "service": "amplify"
+    },
+    {
+      "id": "apigateway_domain_name_pqc_tls_enabled",
+      "service": "apigateway"
+    },
+    {
+      "id": "apigateway_restapi_authorizers_enabled",
+      "service": "apigateway"
+    },
+    {
+      "id": "apigateway_restapi_cache_encrypted",
+      "service": "apigateway"
+    },
+    {
+      "id": "apigateway_restapi_client_certificate_enabled",
+      "service": "apigateway"
+    },
+    {
+      "id": "apigateway_restapi_logging_enabled",
+      "service": "apigateway"
+    },
+    {
+      "id": "apigateway_restapi_no_secrets_in_stage_variables",
+      "service": "apigateway"
+    },
+    {
+      "id": "apigateway_restapi_public",
+      "service": "apigateway"
+    },
+    {
+      "id": "apigateway_restapi_public_with_authorizer",
+      "service": "apigateway"
+    },
+    {
+      "id": "apigateway_restapi_tracing_enabled",
+      "service": "apigateway"
+    },
+    {
+      "id": "apigateway_restapi_waf_acl_attached",
+      "service": "apigateway"
+    },
+    {
+      "id": "apigatewayv2_api_access_logging_enabled",
+      "service": "apigatewayv2"
+    },
+    {
+      "id": "apigatewayv2_api_authorizers_enabled",
+      "service": "apigatewayv2"
+    },
+    {
+      "id": "appstream_fleet_default_internet_access_disabled",
+      "service": "appstream"
+    },
+    {
+      "id": "appstream_fleet_maximum_session_duration",
+      "service": "appstream"
+    },
+    {
+      "id": "appstream_fleet_session_disconnect_timeout",
+      "service": "appstream"
+    },
+    {
+      "id": "appstream_fleet_session_idle_disconnect_timeout",
+      "service": "appstream"
+    },
+    {
+      "id": "appsync_field_level_logging_enabled",
+      "service": "appsync"
+    },
+    {
+      "id": "appsync_graphql_api_no_api_key_authentication",
+      "service": "appsync"
+    },
+    {
+      "id": "athena_workgroup_encryption",
+      "service": "athena"
+    },
+    {
+      "id": "athena_workgroup_enforce_configuration",
+      "service": "athena"
+    },
+    {
+      "id": "athena_workgroup_logging_enabled",
+      "service": "athena"
+    },
+    {
+      "id": "autoscaling_find_secrets_ec2_launch_configuration",
+      "service": "autoscaling"
+    },
+    {
+      "id": "autoscaling_group_capacity_rebalance_enabled",
+      "service": "autoscaling"
+    },
+    {
+      "id": "autoscaling_group_elb_health_check_enabled",
+      "service": "autoscaling"
+    },
+    {
+      "id": "autoscaling_group_launch_configuration_no_public_ip",
+      "service": "autoscaling"
+    },
+    {
+      "id": "autoscaling_group_launch_configuration_requires_imdsv2",
+      "service": "autoscaling"
+    },
+    {
+      "id": "autoscaling_group_multiple_az",
+      "service": "autoscaling"
+    },
+    {
+      "id": "autoscaling_group_multiple_instance_types",
+      "service": "autoscaling"
+    },
+    {
+      "id": "autoscaling_group_using_ec2_launch_template",
+      "service": "autoscaling"
+    },
+    {
+      "id": "awslambda_function_env_vars_not_encrypted_with_cmk",
+      "service": "awslambda"
+    },
+    {
+      "id": "awslambda_function_inside_vpc",
+      "service": "awslambda"
+    },
+    {
+      "id": "awslambda_function_invoke_api_operations_cloudtrail_logging_enabled",
+      "service": "awslambda"
+    },
+    {
+      "id": "awslambda_function_no_dead_letter_queue",
+      "service": "awslambda"
+    },
+    {
+      "id": "awslambda_function_no_secrets_in_code",
+      "service": "awslambda"
+    },
+    {
+      "id": "awslambda_function_no_secrets_in_variables",
+      "service": "awslambda"
+    },
+    {
+      "id": "awslambda_function_not_publicly_accessible",
+      "service": "awslambda"
+    },
+    {
+      "id": "awslambda_function_url_cors_policy",
+      "service": "awslambda"
+    },
+    {
+      "id": "awslambda_function_url_public",
+      "service": "awslambda"
+    },
+    {
+      "id": "awslambda_function_using_cross_account_layers",
+      "service": "awslambda"
+    },
+    {
+      "id": "awslambda_function_using_supported_runtimes",
+      "service": "awslambda"
+    },
+    {
+      "id": "awslambda_function_vpc_multi_az",
+      "service": "awslambda"
+    },
+    {
+      "id": "awslambda_layer_no_secrets_in_content",
+      "service": "awslambda"
+    },
+    {
+      "id": "backup_plans_exist",
+      "service": "backup"
+    },
+    {
+      "id": "backup_recovery_point_encrypted",
+      "service": "backup"
+    },
+    {
+      "id": "backup_reportplans_exist",
+      "service": "backup"
+    },
+    {
+      "id": "backup_vaults_encrypted",
+      "service": "backup"
+    },
+    {
+      "id": "backup_vaults_exist",
+      "service": "backup"
+    },
+    {
+      "id": "batch_job_definition_no_secrets",
+      "service": "batch"
+    },
+    {
+      "id": "bedrock_agent_guardrail_enabled",
+      "service": "bedrock"
+    },
+    {
+      "id": "bedrock_agent_role_least_privilege",
+      "service": "bedrock"
+    },
+    {
+      "id": "bedrock_agent_role_not_shared_across_agents",
+      "service": "bedrock"
+    },
+    {
+      "id": "bedrock_api_key_no_administrative_privileges",
+      "service": "bedrock"
+    },
+    {
+      "id": "bedrock_api_key_no_long_term_credentials",
+      "service": "bedrock"
+    },
+    {
+      "id": "bedrock_custom_model_encrypted_with_cmk",
+      "service": "bedrock"
+    },
+    {
+      "id": "bedrock_full_access_policy_attached",
+      "service": "bedrock"
+    },
+    {
+      "id": "bedrock_guardrail_contextual_grounding_filter_enabled",
+      "service": "bedrock"
+    },
+    {
+      "id": "bedrock_guardrail_prompt_attack_filter_enabled",
+      "service": "bedrock"
+    },
+    {
+      "id": "bedrock_guardrail_sensitive_information_filter_enabled",
+      "service": "bedrock"
+    },
+    {
+      "id": "bedrock_guardrail_sensitive_information_filter_enforced",
+      "service": "bedrock"
+    },
+    {
+      "id": "bedrock_guardrails_configured",
+      "service": "bedrock"
+    },
+    {
+      "id": "bedrock_knowledge_base_encrypted_with_cmk",
+      "service": "bedrock"
+    },
+    {
+      "id": "bedrock_model_invocation_logging_enabled",
+      "service": "bedrock"
+    },
+    {
+      "id": "bedrock_model_invocation_logging_text_data_enabled",
+      "service": "bedrock"
+    },
+    {
+      "id": "bedrock_model_invocation_logs_encryption_enabled",
+      "service": "bedrock"
+    },
+    {
+      "id": "bedrock_prompt_encrypted_with_cmk",
+      "service": "bedrock"
+    },
+    {
+      "id": "bedrock_prompt_management_exists",
+      "service": "bedrock"
+    },
+    {
+      "id": "bedrock_vpc_endpoints_configured",
+      "service": "bedrock"
+    },
+    {
+      "id": "cloudformation_stack_cdktoolkit_bootstrap_version",
+      "service": "cloudformation"
+    },
+    {
+      "id": "cloudformation_stack_outputs_find_secrets",
+      "service": "cloudformation"
+    },
+    {
+      "id": "cloudformation_stacks_termination_protection_enabled",
+      "service": "cloudformation"
+    },
+    {
+      "id": "cloudfront_distributions_custom_ssl_certificate",
+      "service": "cloudfront"
+    },
+    {
+      "id": "cloudfront_distributions_default_root_object",
+      "service": "cloudfront"
+    },
+    {
+      "id": "cloudfront_distributions_field_level_encryption_enabled",
+      "service": "cloudfront"
+    },
+    {
+      "id": "cloudfront_distributions_geo_restrictions_enabled",
+      "service": "cloudfront"
+    },
+    {
+      "id": "cloudfront_distributions_https_enabled",
+      "service": "cloudfront"
+    },
+    {
+      "id": "cloudfront_distributions_https_sni_enabled",
+      "service": "cloudfront"
+    },
+    {
+      "id": "cloudfront_distributions_logging_enabled",
+      "service": "cloudfront"
+    },
+    {
+      "id": "cloudfront_distributions_multiple_origin_failover_configured",
+      "service": "cloudfront"
+    },
+    {
+      "id": "cloudfront_distributions_origin_traffic_encrypted",
+      "service": "cloudfront"
+    },
+    {
+      "id": "cloudfront_distributions_pqc_tls_enabled",
+      "service": "cloudfront"
+    },
+    {
+      "id": "cloudfront_distributions_s3_origin_access_control",
+      "service": "cloudfront"
+    },
+    {
+      "id": "cloudfront_distributions_s3_origin_non_existent_bucket",
+      "service": "cloudfront"
+    },
+    {
+      "id": "cloudfront_distributions_using_deprecated_ssl_protocols",
+      "service": "cloudfront"
+    },
+    {
+      "id": "cloudfront_distributions_using_waf",
+      "service": "cloudfront"
+    },
+    {
+      "id": "cloudtrail_bedrock_logging_enabled",
+      "service": "cloudtrail"
+    },
+    {
+      "id": "cloudtrail_bucket_requires_mfa_delete",
+      "service": "cloudtrail"
+    },
+    {
+      "id": "cloudtrail_cloudwatch_logging_enabled",
+      "service": "cloudtrail"
+    },
+    {
+      "id": "cloudtrail_insights_exist",
+      "service": "cloudtrail"
+    },
+    {
+      "id": "cloudtrail_kms_encryption_enabled",
+      "service": "cloudtrail"
+    },
+    {
+      "id": "cloudtrail_log_file_validation_enabled",
+      "service": "cloudtrail"
+    },
+    {
+      "id": "cloudtrail_logs_s3_bucket_access_logging_enabled",
+      "service": "cloudtrail"
+    },
+    {
+      "id": "cloudtrail_logs_s3_bucket_is_not_publicly_accessible",
+      "service": "cloudtrail"
+    },
+    {
+      "id": "cloudtrail_multi_region_enabled",
+      "service": "cloudtrail"
+    },
+    {
+      "id": "cloudtrail_multi_region_enabled_logging_management_events",
+      "service": "cloudtrail"
+    },
+    {
+      "id": "cloudtrail_s3_dataevents_read_enabled",
+      "service": "cloudtrail"
+    },
+    {
+      "id": "cloudtrail_s3_dataevents_write_enabled",
+      "service": "cloudtrail"
+    },
+    {
+      "id": "cloudtrail_threat_detection_enumeration",
+      "service": "cloudtrail"
+    },
+    {
+      "id": "cloudtrail_threat_detection_llm_jacking",
+      "service": "cloudtrail"
+    },
+    {
+      "id": "cloudtrail_threat_detection_privilege_escalation",
+      "service": "cloudtrail"
+    },
+    {
+      "id": "cloudwatch_alarm_actions_alarm_state_configured",
+      "service": "cloudwatch"
+    },
+    {
+      "id": "cloudwatch_alarm_actions_enabled",
+      "service": "cloudwatch"
+    },
+    {
+      "id": "cloudwatch_changes_to_network_acls_alarm_configured",
+      "service": "cloudwatch"
+    },
+    {
+      "id": "cloudwatch_changes_to_network_gateways_alarm_configured",
+      "service": "cloudwatch"
+    },
+    {
+      "id": "cloudwatch_changes_to_network_route_tables_alarm_configured",
+      "service": "cloudwatch"
+    },
+    {
+      "id": "cloudwatch_changes_to_vpcs_alarm_configured",
+      "service": "cloudwatch"
+    },
+    {
+      "id": "cloudwatch_cross_account_sharing_disabled",
+      "service": "cloudwatch"
+    },
+    {
+      "id": "cloudwatch_log_group_agentcore_data_protection_policy_enabled",
+      "service": "cloudwatch"
+    },
+    {
+      "id": "cloudwatch_log_group_kms_encryption_enabled",
+      "service": "cloudwatch"
+    },
+    {
+      "id": "cloudwatch_log_group_no_secrets_in_logs",
+      "service": "cloudwatch"
+    },
+    {
+      "id": "cloudwatch_log_group_not_publicly_accessible",
+      "service": "cloudwatch"
+    },
+    {
+      "id": "cloudwatch_log_group_retention_policy_specific_days_enabled",
+      "service": "cloudwatch"
+    },
+    {
+      "id": "cloudwatch_log_metric_filter_and_alarm_for_aws_config_configuration_changes_enabled",
+      "service": "cloudwatch"
+    },
+    {
+      "id": "cloudwatch_log_metric_filter_and_alarm_for_cloudtrail_configuration_changes_enabled",
+      "service": "cloudwatch"
+    },
+    {
+      "id": "cloudwatch_log_metric_filter_authentication_failures",
+      "service": "cloudwatch"
+    },
+    {
+      "id": "cloudwatch_log_metric_filter_aws_organizations_changes",
+      "service": "cloudwatch"
+    },
+    {
+      "id": "cloudwatch_log_metric_filter_disable_or_scheduled_deletion_of_kms_cmk",
+      "service": "cloudwatch"
+    },
+    {
+      "id": "cloudwatch_log_metric_filter_for_s3_bucket_policy_changes",
+      "service": "cloudwatch"
+    },
+    {
+      "id": "cloudwatch_log_metric_filter_policy_changes",
+      "service": "cloudwatch"
+    },
+    {
+      "id": "cloudwatch_log_metric_filter_root_usage",
+      "service": "cloudwatch"
+    },
+    {
+      "id": "cloudwatch_log_metric_filter_security_group_changes",
+      "service": "cloudwatch"
+    },
+    {
+      "id": "cloudwatch_log_metric_filter_sign_in_without_mfa",
+      "service": "cloudwatch"
+    },
+    {
+      "id": "cloudwatch_log_metric_filter_unauthorized_api_calls",
+      "service": "cloudwatch"
+    },
+    {
+      "id": "codeartifact_packages_external_public_publishing_disabled",
+      "service": "codeartifact"
+    },
+    {
+      "id": "codebuild_project_logging_enabled",
+      "service": "codebuild"
+    },
+    {
+      "id": "codebuild_project_no_secrets_in_variables",
+      "service": "codebuild"
+    },
+    {
+      "id": "codebuild_project_not_publicly_accessible",
+      "service": "codebuild"
+    },
+    {
+      "id": "codebuild_project_older_90_days",
+      "service": "codebuild"
+    },
+    {
+      "id": "codebuild_project_s3_logs_encrypted",
+      "service": "codebuild"
+    },
+    {
+      "id": "codebuild_project_source_repo_url_no_sensitive_credentials",
+      "service": "codebuild"
+    },
+    {
+      "id": "codebuild_project_user_controlled_buildspec",
+      "service": "codebuild"
+    },
+    {
+      "id": "codebuild_project_uses_allowed_github_organizations",
+      "service": "codebuild"
+    },
+    {
+      "id": "codebuild_project_webhook_filters_use_anchored_patterns",
+      "service": "codebuild"
+    },
+    {
+      "id": "codebuild_report_group_export_encrypted",
+      "service": "codebuild"
+    },
+    {
+      "id": "codecommit_repository_no_secrets",
+      "service": "codecommit"
+    },
+    {
+      "id": "codepipeline_project_repo_private",
+      "service": "codepipeline"
+    },
+    {
+      "id": "cognito_identity_pool_guest_access_disabled",
+      "service": "cognito"
+    },
+    {
+      "id": "cognito_user_pool_account_recovery_sms_not_preferred",
+      "service": "cognito"
+    },
+    {
+      "id": "cognito_user_pool_advanced_security_enabled",
+      "service": "cognito"
+    },
+    {
+      "id": "cognito_user_pool_blocks_compromised_credentials_sign_in_attempts",
+      "service": "cognito"
+    },
+    {
+      "id": "cognito_user_pool_blocks_potential_malicious_sign_in_attempts",
+      "service": "cognito"
+    },
+    {
+      "id": "cognito_user_pool_client_prevent_user_existence_errors",
+      "service": "cognito"
+    },
+    {
+      "id": "cognito_user_pool_client_token_revocation_enabled",
+      "service": "cognito"
+    },
+    {
+      "id": "cognito_user_pool_deletion_protection_enabled",
+      "service": "cognito"
+    },
+    {
+      "id": "cognito_user_pool_mfa_enabled",
+      "service": "cognito"
+    },
+    {
+      "id": "cognito_user_pool_password_policy_lowercase",
+      "service": "cognito"
+    },
+    {
+      "id": "cognito_user_pool_password_policy_minimum_length_14",
+      "service": "cognito"
+    },
+    {
+      "id": "cognito_user_pool_password_policy_number",
+      "service": "cognito"
+    },
+    {
+      "id": "cognito_user_pool_password_policy_symbol",
+      "service": "cognito"
+    },
+    {
+      "id": "cognito_user_pool_password_policy_uppercase",
+      "service": "cognito"
+    },
+    {
+      "id": "cognito_user_pool_self_registration_disabled",
+      "service": "cognito"
+    },
+    {
+      "id": "cognito_user_pool_temporary_password_expiration",
+      "service": "cognito"
+    },
+    {
+      "id": "cognito_user_pool_waf_acl_attached",
+      "service": "cognito"
+    },
+    {
+      "id": "config_delegated_admin_and_org_aggregator_all_regions",
+      "service": "config"
+    },
+    {
+      "id": "config_recorder_all_regions_enabled",
+      "service": "config"
+    },
+    {
+      "id": "config_recorder_using_aws_service_role",
+      "service": "config"
+    },
+    {
+      "id": "datapipeline_pipeline_no_secrets_in_definition",
+      "service": "datapipeline"
+    },
+    {
+      "id": "datasync_task_logging_enabled",
+      "service": "datasync"
+    },
+    {
+      "id": "directconnect_connection_redundancy",
+      "service": "directconnect"
+    },
+    {
+      "id": "directconnect_virtual_interface_redundancy",
+      "service": "directconnect"
+    },
+    {
+      "id": "directoryservice_directory_log_forwarding_enabled",
+      "service": "directoryservice"
+    },
+    {
+      "id": "directoryservice_directory_monitor_notifications",
+      "service": "directoryservice"
+    },
+    {
+      "id": "directoryservice_directory_snapshots_limit",
+      "service": "directoryservice"
+    },
+    {
+      "id": "directoryservice_ldap_certificate_expiration",
+      "service": "directoryservice"
+    },
+    {
+      "id": "directoryservice_radius_server_security_protocol",
+      "service": "directoryservice"
+    },
+    {
+      "id": "directoryservice_supported_mfa_radius_enabled",
+      "service": "directoryservice"
+    },
+    {
+      "id": "dlm_ebs_snapshot_lifecycle_policy_exists",
+      "service": "dlm"
+    },
+    {
+      "id": "dms_endpoint_mongodb_authentication_enabled",
+      "service": "dms"
+    },
+    {
+      "id": "dms_endpoint_neptune_iam_authorization_enabled",
+      "service": "dms"
+    },
+    {
+      "id": "dms_endpoint_redis_in_transit_encryption_enabled",
+      "service": "dms"
+    },
+    {
+      "id": "dms_endpoint_ssl_enabled",
+      "service": "dms"
+    },
+    {
+      "id": "dms_instance_minor_version_upgrade_enabled",
+      "service": "dms"
+    },
+    {
+      "id": "dms_instance_multi_az_enabled",
+      "service": "dms"
+    },
+    {
+      "id": "dms_instance_no_public_access",
+      "service": "dms"
+    },
+    {
+      "id": "dms_replication_task_source_logging_enabled",
+      "service": "dms"
+    },
+    {
+      "id": "dms_replication_task_target_logging_enabled",
+      "service": "dms"
+    },
+    {
+      "id": "documentdb_cluster_backup_enabled",
+      "service": "documentdb"
+    },
+    {
+      "id": "documentdb_cluster_cloudwatch_log_export",
+      "service": "documentdb"
+    },
+    {
+      "id": "documentdb_cluster_deletion_protection",
+      "service": "documentdb"
+    },
+    {
+      "id": "documentdb_cluster_multi_az_enabled",
+      "service": "documentdb"
+    },
+    {
+      "id": "documentdb_cluster_public_snapshot",
+      "service": "documentdb"
+    },
+    {
+      "id": "documentdb_cluster_storage_encrypted",
+      "service": "documentdb"
+    },
+    {
+      "id": "drs_job_exist",
+      "service": "drs"
+    },
+    {
+      "id": "dynamodb_accelerator_cluster_encryption_enabled",
+      "service": "dynamodb"
+    },
+    {
+      "id": "dynamodb_accelerator_cluster_in_transit_encryption_enabled",
+      "service": "dynamodb"
+    },
+    {
+      "id": "dynamodb_accelerator_cluster_multi_az",
+      "service": "dynamodb"
+    },
+    {
+      "id": "dynamodb_table_autoscaling_enabled",
+      "service": "dynamodb"
+    },
+    {
+      "id": "dynamodb_table_cross_account_access",
+      "service": "dynamodb"
+    },
+    {
+      "id": "dynamodb_table_deletion_protection_enabled",
+      "service": "dynamodb"
+    },
+    {
+      "id": "dynamodb_table_protected_by_backup_plan",
+      "service": "dynamodb"
+    },
+    {
+      "id": "dynamodb_tables_kms_cmk_encryption_enabled",
+      "service": "dynamodb"
+    },
+    {
+      "id": "dynamodb_tables_pitr_enabled",
+      "service": "dynamodb"
+    },
+    {
+      "id": "ec2_ami_account_block_public_access",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_ami_public",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_client_vpn_endpoint_connection_logging_enabled",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_confidential_workload_host_imdsv2_not_enforced",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_confidential_workload_host_not_running",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_confidential_workload_host_public_ip",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_confidential_workload_host_unrestricted_ingress",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_confidential_workload_host_vsock_proxy_exposed",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_ebs_default_encryption",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_ebs_public_snapshot",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_ebs_snapshot_account_block_public_access",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_ebs_snapshots_encrypted",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_ebs_volume_encryption",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_ebs_volume_protected_by_backup_plan",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_ebs_volume_snapshots_exists",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_elastic_ip_shodan",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_elastic_ip_unassigned",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_account_imdsv2_enabled",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_detailed_monitoring_enabled",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_imdsv2_enabled",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_internet_facing_with_instance_profile",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_managed_by_ssm",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_older_than_specific_days",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_paravirtual_type",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_port_cassandra_exposed_to_internet",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_port_cifs_exposed_to_internet",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_port_elasticsearch_kibana_exposed_to_internet",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_port_ftp_exposed_to_internet",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_port_kafka_exposed_to_internet",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_port_kerberos_exposed_to_internet",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_port_ldap_exposed_to_internet",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_port_memcached_exposed_to_internet",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_port_mongodb_exposed_to_internet",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_port_mysql_exposed_to_internet",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_port_oracle_exposed_to_internet",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_port_postgresql_exposed_to_internet",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_port_rdp_exposed_to_internet",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_port_redis_exposed_to_internet",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_port_sqlserver_exposed_to_internet",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_port_ssh_exposed_to_internet",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_port_telnet_exposed_to_internet",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_profile_attached",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_public_ip",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_secrets_user_data",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_stopped_older_than_specific_days",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_uses_single_eni",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_instance_with_outdated_ami",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_launch_template_imdsv2_required",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_launch_template_no_public_ip",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_launch_template_no_secrets",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_networkacl_allow_ingress_any_port",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_networkacl_allow_ingress_tcp_port_22",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_networkacl_allow_ingress_tcp_port_3389",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_networkacl_unused",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_securitygroup_allow_ingress_from_internet_to_all_ports",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_securitygroup_allow_ingress_from_internet_to_any_port",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_securitygroup_allow_ingress_from_internet_to_any_port_from_ip",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_securitygroup_allow_ingress_from_internet_to_high_risk_tcp_ports",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_securitygroup_allow_ingress_from_internet_to_tcp_port_22",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_securitygroup_allow_ingress_from_internet_to_tcp_port_3389",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_securitygroup_allow_ingress_from_internet_to_tcp_port_cassandra_7199_9160_8888",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_securitygroup_allow_ingress_from_internet_to_tcp_port_elasticsearch_kibana_9200_9300_5601",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_securitygroup_allow_ingress_from_internet_to_tcp_port_ftp_20_21",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_securitygroup_allow_ingress_from_internet_to_tcp_port_kafka_9092",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_securitygroup_allow_ingress_from_internet_to_tcp_port_memcached_11211",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_securitygroup_allow_ingress_from_internet_to_tcp_port_mongodb_27017_27018",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_securitygroup_allow_ingress_from_internet_to_tcp_port_mysql_3306",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_securitygroup_allow_ingress_from_internet_to_tcp_port_oracle_1521_2483",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_securitygroup_allow_ingress_from_internet_to_tcp_port_postgres_5432",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_securitygroup_allow_ingress_from_internet_to_tcp_port_redis_6379",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_securitygroup_allow_ingress_from_internet_to_tcp_port_sql_server_1433_1434",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_securitygroup_allow_ingress_from_internet_to_tcp_port_telnet_23",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_securitygroup_allow_wide_open_public_ipv4",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_securitygroup_default_restrict_traffic",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_securitygroup_from_launch_wizard",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_securitygroup_not_used",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_securitygroup_with_many_ingress_egress_rules",
+      "service": "ec2"
+    },
+    {
+      "id": "ec2_transitgateway_auto_accept_vpc_attachments",
+      "service": "ec2"
+    },
+    {
+      "id": "ecr_registry_enhanced_scanning_enabled",
+      "service": "ecr"
+    },
+    {
+      "id": "ecr_registry_scan_images_on_push_enabled",
+      "service": "ecr"
+    },
+    {
+      "id": "ecr_repositories_lifecycle_policy_enabled",
+      "service": "ecr"
+    },
+    {
+      "id": "ecr_repositories_not_publicly_accessible",
+      "service": "ecr"
+    },
+    {
+      "id": "ecr_repositories_scan_images_on_push_enabled",
+      "service": "ecr"
+    },
+    {
+      "id": "ecr_repositories_scan_vulnerabilities_in_latest_image",
+      "service": "ecr"
+    },
+    {
+      "id": "ecr_repositories_tag_immutability",
+      "service": "ecr"
+    },
+    {
+      "id": "ecr_repository_image_no_secrets",
+      "service": "ecr"
+    },
+    {
+      "id": "ecs_cluster_container_insights_enabled",
+      "service": "ecs"
+    },
+    {
+      "id": "ecs_service_fargate_latest_platform_version",
+      "service": "ecs"
+    },
+    {
+      "id": "ecs_service_no_assign_public_ip",
+      "service": "ecs"
+    },
+    {
+      "id": "ecs_task_definitions_containers_readonly_access",
+      "service": "ecs"
+    },
+    {
+      "id": "ecs_task_definitions_host_namespace_not_shared",
+      "service": "ecs"
+    },
+    {
+      "id": "ecs_task_definitions_host_networking_mode_users",
+      "service": "ecs"
+    },
+    {
+      "id": "ecs_task_definitions_logging_block_mode",
+      "service": "ecs"
+    },
+    {
+      "id": "ecs_task_definitions_logging_enabled",
+      "service": "ecs"
+    },
+    {
+      "id": "ecs_task_definitions_no_environment_secrets",
+      "service": "ecs"
+    },
+    {
+      "id": "ecs_task_definitions_no_privileged_containers",
+      "service": "ecs"
+    },
+    {
+      "id": "ecs_task_set_no_assign_public_ip",
+      "service": "ecs"
+    },
+    {
+      "id": "efs_access_point_enforce_root_directory",
+      "service": "efs"
+    },
+    {
+      "id": "efs_access_point_enforce_user_identity",
+      "service": "efs"
+    },
+    {
+      "id": "efs_encryption_at_rest_enabled",
+      "service": "efs"
+    },
+    {
+      "id": "efs_have_backup_enabled",
+      "service": "efs"
+    },
+    {
+      "id": "efs_mount_target_not_publicly_accessible",
+      "service": "efs"
+    },
+    {
+      "id": "efs_multi_az_enabled",
+      "service": "efs"
+    },
+    {
+      "id": "efs_not_publicly_accessible",
+      "service": "efs"
+    },
+    {
+      "id": "eks_cluster_deletion_protection_enabled",
+      "service": "eks"
+    },
+    {
+      "id": "eks_cluster_kms_cmk_encryption_in_secrets_enabled",
+      "service": "eks"
+    },
+    {
+      "id": "eks_cluster_network_policy_enabled",
+      "service": "eks"
+    },
+    {
+      "id": "eks_cluster_not_publicly_accessible",
+      "service": "eks"
+    },
+    {
+      "id": "eks_cluster_private_nodes_enabled",
+      "service": "eks"
+    },
+    {
+      "id": "eks_cluster_uses_a_supported_version",
+      "service": "eks"
+    },
+    {
+      "id": "eks_cluster_vpc_cni_network_policy_enforced",
+      "service": "eks"
+    },
+    {
+      "id": "eks_control_plane_logging_all_types_enabled",
+      "service": "eks"
+    },
+    {
+      "id": "elasticache_cluster_uses_public_subnet",
+      "service": "elasticache"
+    },
+    {
+      "id": "elasticache_redis_cluster_auto_minor_version_upgrades",
+      "service": "elasticache"
+    },
+    {
+      "id": "elasticache_redis_cluster_automatic_failover_enabled",
+      "service": "elasticache"
+    },
+    {
+      "id": "elasticache_redis_cluster_backup_enabled",
+      "service": "elasticache"
+    },
+    {
+      "id": "elasticache_redis_cluster_in_transit_encryption_enabled",
+      "service": "elasticache"
+    },
+    {
+      "id": "elasticache_redis_cluster_multi_az_enabled",
+      "service": "elasticache"
+    },
+    {
+      "id": "elasticache_redis_cluster_rest_encryption_enabled",
+      "service": "elasticache"
+    },
+    {
+      "id": "elasticache_redis_replication_group_auth_enabled",
+      "service": "elasticache"
+    },
+    {
+      "id": "elasticbeanstalk_environment_cloudwatch_logging_enabled",
+      "service": "elasticbeanstalk"
+    },
+    {
+      "id": "elasticbeanstalk_environment_enhanced_health_reporting",
+      "service": "elasticbeanstalk"
+    },
+    {
+      "id": "elasticbeanstalk_environment_managed_updates_enabled",
+      "service": "elasticbeanstalk"
+    },
+    {
+      "id": "elasticbeanstalk_environment_no_secrets_in_configuration",
+      "service": "elasticbeanstalk"
+    },
+    {
+      "id": "elasticbeanstalk_environment_php_platform_updated",
+      "service": "elasticbeanstalk"
+    },
+    {
+      "id": "elb_connection_draining_enabled",
+      "service": "elb"
+    },
+    {
+      "id": "elb_cross_zone_load_balancing_enabled",
+      "service": "elb"
+    },
+    {
+      "id": "elb_desync_mitigation_mode",
+      "service": "elb"
+    },
+    {
+      "id": "elb_insecure_ssl_ciphers",
+      "service": "elb"
+    },
+    {
+      "id": "elb_internet_facing",
+      "service": "elb"
+    },
+    {
+      "id": "elb_is_in_multiple_az",
+      "service": "elb"
+    },
+    {
+      "id": "elb_logging_enabled",
+      "service": "elb"
+    },
+    {
+      "id": "elb_ssl_listeners",
+      "service": "elb"
+    },
+    {
+      "id": "elb_ssl_listeners_use_acm_certificate",
+      "service": "elb"
+    },
+    {
+      "id": "elbv2_alb_drop_invalid_header_fields_enabled",
+      "service": "elbv2"
+    },
+    {
+      "id": "elbv2_cross_zone_load_balancing_enabled",
+      "service": "elbv2"
+    },
+    {
+      "id": "elbv2_deletion_protection",
+      "service": "elbv2"
+    },
+    {
+      "id": "elbv2_desync_mitigation_mode",
+      "service": "elbv2"
+    },
+    {
+      "id": "elbv2_insecure_ssl_ciphers",
+      "service": "elbv2"
+    },
+    {
+      "id": "elbv2_internet_facing",
+      "service": "elbv2"
+    },
+    {
+      "id": "elbv2_is_in_multiple_az",
+      "service": "elbv2"
+    },
+    {
+      "id": "elbv2_listener_fips_tls_enabled",
+      "service": "elbv2"
+    },
+    {
+      "id": "elbv2_listener_pqc_tls_enabled",
+      "service": "elbv2"
+    },
+    {
+      "id": "elbv2_listeners_underneath",
+      "service": "elbv2"
+    },
+    {
+      "id": "elbv2_logging_enabled",
+      "service": "elbv2"
+    },
+    {
+      "id": "elbv2_nlb_tls_termination_enabled",
+      "service": "elbv2"
+    },
+    {
+      "id": "elbv2_ssl_listeners",
+      "service": "elbv2"
+    },
+    {
+      "id": "elbv2_waf_acl_attached",
+      "service": "elbv2"
+    },
+    {
+      "id": "emr_cluster_account_public_block_enabled",
+      "service": "emr"
+    },
+    {
+      "id": "emr_cluster_master_nodes_no_public_ip",
+      "service": "emr"
+    },
+    {
+      "id": "emr_cluster_publicly_accesible",
+      "service": "emr"
+    },
+    {
+      "id": "eventbridge_bus_cross_account_access",
+      "service": "eventbridge"
+    },
+    {
+      "id": "eventbridge_bus_exposed",
+      "service": "eventbridge"
+    },
+    {
+      "id": "eventbridge_global_endpoint_event_replication_enabled",
+      "service": "eventbridge"
+    },
+    {
+      "id": "eventbridge_schema_registry_cross_account_access",
+      "service": "eventbridge"
+    },
+    {
+      "id": "firehose_stream_encrypted_at_rest",
+      "service": "firehose"
+    },
+    {
+      "id": "fms_policy_compliant",
+      "service": "fms"
+    },
+    {
+      "id": "fsx_file_system_copy_tags_to_backups_enabled",
+      "service": "fsx"
+    },
+    {
+      "id": "fsx_file_system_copy_tags_to_volumes_enabled",
+      "service": "fsx"
+    },
+    {
+      "id": "fsx_windows_file_system_multi_az_enabled",
+      "service": "fsx"
+    },
+    {
+      "id": "glacier_vaults_policy_public_access",
+      "service": "glacier"
+    },
+    {
+      "id": "glue_catalog_connection_no_secrets",
+      "service": "glue"
+    },
+    {
+      "id": "glue_data_catalogs_connection_passwords_encryption_enabled",
+      "service": "glue"
+    },
+    {
+      "id": "glue_data_catalogs_metadata_encryption_enabled",
+      "service": "glue"
+    },
+    {
+      "id": "glue_data_catalogs_not_publicly_accessible",
+      "service": "glue"
+    },
+    {
+      "id": "glue_database_connections_ssl_enabled",
+      "service": "glue"
+    },
+    {
+      "id": "glue_development_endpoints_cloudwatch_logs_encryption_enabled",
+      "service": "glue"
+    },
+    {
+      "id": "glue_development_endpoints_job_bookmark_encryption_enabled",
+      "service": "glue"
+    },
+    {
+      "id": "glue_development_endpoints_s3_encryption_enabled",
+      "service": "glue"
+    },
+    {
+      "id": "glue_etl_jobs_amazon_s3_encryption_enabled",
+      "service": "glue"
+    },
+    {
+      "id": "glue_etl_jobs_cloudwatch_logs_encryption_enabled",
+      "service": "glue"
+    },
+    {
+      "id": "glue_etl_jobs_job_bookmark_encryption_enabled",
+      "service": "glue"
+    },
+    {
+      "id": "glue_etl_jobs_logging_enabled",
+      "service": "glue"
+    },
+    {
+      "id": "glue_etl_jobs_no_secrets_in_arguments",
+      "service": "glue"
+    },
+    {
+      "id": "glue_ml_transform_encrypted_at_rest",
+      "service": "glue"
+    },
+    {
+      "id": "guardduty_ai_protection_enabled",
+      "service": "guardduty"
+    },
+    {
+      "id": "guardduty_centrally_managed",
+      "service": "guardduty"
+    },
+    {
+      "id": "guardduty_delegated_admin_enabled_all_regions",
+      "service": "guardduty"
+    },
+    {
+      "id": "guardduty_ec2_malware_protection_enabled",
+      "service": "guardduty"
+    },
+    {
+      "id": "guardduty_eks_audit_log_enabled",
+      "service": "guardduty"
+    },
+    {
+      "id": "guardduty_eks_runtime_monitoring_enabled",
+      "service": "guardduty"
+    },
+    {
+      "id": "guardduty_is_enabled",
+      "service": "guardduty"
+    },
+    {
+      "id": "guardduty_lambda_protection_enabled",
+      "service": "guardduty"
+    },
+    {
+      "id": "guardduty_no_high_severity_findings",
+      "service": "guardduty"
+    },
+    {
+      "id": "guardduty_rds_protection_enabled",
+      "service": "guardduty"
+    },
+    {
+      "id": "guardduty_runtime_monitoring_enabled",
+      "service": "guardduty"
+    },
+    {
+      "id": "guardduty_s3_protection_enabled",
+      "service": "guardduty"
+    },
+    {
+      "id": "iam_administrator_access_with_mfa",
+      "service": "iam"
+    },
+    {
+      "id": "iam_avoid_root_usage",
+      "service": "iam"
+    },
+    {
+      "id": "iam_aws_attached_policy_no_administrative_privileges",
+      "service": "iam"
+    },
+    {
+      "id": "iam_check_saml_providers_sts",
+      "service": "iam"
+    },
+    {
+      "id": "iam_customer_attached_policy_no_administrative_privileges",
+      "service": "iam"
+    },
+    {
+      "id": "iam_customer_unattached_policy_no_administrative_privileges",
+      "service": "iam"
+    },
+    {
+      "id": "iam_group_administrator_access_policy",
+      "service": "iam"
+    },
+    {
+      "id": "iam_inline_policy_allows_privilege_escalation",
+      "service": "iam"
+    },
+    {
+      "id": "iam_inline_policy_no_administrative_privileges",
+      "service": "iam"
+    },
+    {
+      "id": "iam_inline_policy_no_full_access_to_cloudtrail",
+      "service": "iam"
+    },
+    {
+      "id": "iam_inline_policy_no_full_access_to_kms",
+      "service": "iam"
+    },
+    {
+      "id": "iam_inline_policy_no_wildcard_marketplace_subscribe",
+      "service": "iam"
+    },
+    {
+      "id": "iam_no_custom_policy_permissive_role_assumption",
+      "service": "iam"
+    },
+    {
+      "id": "iam_no_expired_server_certificates_stored",
+      "service": "iam"
+    },
+    {
+      "id": "iam_no_root_access_key",
+      "service": "iam"
+    },
+    {
+      "id": "iam_password_policy_expires_passwords_within_90_days_or_less",
+      "service": "iam"
+    },
+    {
+      "id": "iam_password_policy_lowercase",
+      "service": "iam"
+    },
+    {
+      "id": "iam_password_policy_minimum_length_14",
+      "service": "iam"
+    },
+    {
+      "id": "iam_password_policy_number",
+      "service": "iam"
+    },
+    {
+      "id": "iam_password_policy_reuse_24",
+      "service": "iam"
+    },
+    {
+      "id": "iam_password_policy_symbol",
+      "service": "iam"
+    },
+    {
+      "id": "iam_password_policy_uppercase",
+      "service": "iam"
+    },
+    {
+      "id": "iam_policy_allows_privilege_escalation",
+      "service": "iam"
+    },
+    {
+      "id": "iam_policy_attached_only_to_group_or_roles",
+      "service": "iam"
+    },
+    {
+      "id": "iam_policy_cloudshell_admin_not_attached",
+      "service": "iam"
+    },
+    {
+      "id": "iam_policy_no_agentcore_workload_access_token_wildcard",
+      "service": "iam"
+    },
+    {
+      "id": "iam_policy_no_full_access_to_cloudtrail",
+      "service": "iam"
+    },
+    {
+      "id": "iam_policy_no_full_access_to_kms",
+      "service": "iam"
+    },
+    {
+      "id": "iam_policy_no_wildcard_marketplace_subscribe",
+      "service": "iam"
+    },
+    {
+      "id": "iam_policy_passrole_to_bedrock_agentcore_restricted",
+      "service": "iam"
+    },
+    {
+      "id": "iam_role_access_not_stale_to_bedrock",
+      "service": "iam"
+    },
+    {
+      "id": "iam_role_administratoraccess_policy",
+      "service": "iam"
+    },
+    {
+      "id": "iam_role_cross_account_readonlyaccess_policy",
+      "service": "iam"
+    },
+    {
+      "id": "iam_role_cross_service_confused_deputy_prevention",
+      "service": "iam"
+    },
+    {
+      "id": "iam_role_service_trust_restricts_source_to_account",
+      "service": "iam"
+    },
+    {
+      "id": "iam_root_credentials_management_enabled",
+      "service": "iam"
+    },
+    {
+      "id": "iam_root_hardware_mfa_enabled",
+      "service": "iam"
+    },
+    {
+      "id": "iam_root_mfa_enabled",
+      "service": "iam"
+    },
+    {
+      "id": "iam_rotate_access_key_90_days",
+      "service": "iam"
+    },
+    {
+      "id": "iam_securityaudit_role_created",
+      "service": "iam"
+    },
+    {
+      "id": "iam_support_role_created",
+      "service": "iam"
+    },
+    {
+      "id": "iam_user_access_not_stale_to_bedrock",
+      "service": "iam"
+    },
+    {
+      "id": "iam_user_access_not_stale_to_sagemaker",
+      "service": "iam"
+    },
+    {
+      "id": "iam_user_accesskey_unused",
+      "service": "iam"
+    },
+    {
+      "id": "iam_user_administrator_access_policy",
+      "service": "iam"
+    },
+    {
+      "id": "iam_user_console_access_unused",
+      "service": "iam"
+    },
+    {
+      "id": "iam_user_hardware_mfa_enabled",
+      "service": "iam"
+    },
+    {
+      "id": "iam_user_mfa_enabled_console_access",
+      "service": "iam"
+    },
+    {
+      "id": "iam_user_no_setup_initial_access_key",
+      "service": "iam"
+    },
+    {
+      "id": "iam_user_two_active_access_key",
+      "service": "iam"
+    },
+    {
+      "id": "iam_user_with_temporary_credentials",
+      "service": "iam"
+    },
+    {
+      "id": "inspector2_active_findings_exist",
+      "service": "inspector2"
+    },
+    {
+      "id": "inspector2_active_findings_kev_within_due_date",
+      "service": "inspector2"
+    },
+    {
+      "id": "inspector2_active_findings_no_known_exploited_vulnerabilities",
+      "service": "inspector2"
+    },
+    {
+      "id": "inspector2_active_findings_within_max_age",
+      "service": "inspector2"
+    },
+    {
+      "id": "inspector2_coverage_recently_scanned",
+      "service": "inspector2"
+    },
+    {
+      "id": "inspector2_coverage_scan_status_active",
+      "service": "inspector2"
+    },
+    {
+      "id": "inspector2_is_enabled",
+      "service": "inspector2"
+    },
+    {
+      "id": "kafka_cluster_encryption_at_rest_uses_cmk",
+      "service": "kafka"
+    },
+    {
+      "id": "kafka_cluster_enhanced_monitoring_enabled",
+      "service": "kafka"
+    },
+    {
+      "id": "kafka_cluster_in_transit_encryption_enabled",
+      "service": "kafka"
+    },
+    {
+      "id": "kafka_cluster_is_public",
+      "service": "kafka"
+    },
+    {
+      "id": "kafka_cluster_mutual_tls_authentication_enabled",
+      "service": "kafka"
+    },
+    {
+      "id": "kafka_cluster_unrestricted_access_disabled",
+      "service": "kafka"
+    },
+    {
+      "id": "kafka_cluster_uses_latest_version",
+      "service": "kafka"
+    },
+    {
+      "id": "kafka_connector_in_transit_encryption_enabled",
+      "service": "kafka"
+    },
+    {
+      "id": "kinesis_stream_data_retention_period",
+      "service": "kinesis"
+    },
+    {
+      "id": "kinesis_stream_encrypted_at_rest",
+      "service": "kinesis"
+    },
+    {
+      "id": "kms_cmk_are_used",
+      "service": "kms"
+    },
+    {
+      "id": "kms_cmk_not_deleted_unintentionally",
+      "service": "kms"
+    },
+    {
+      "id": "kms_cmk_not_multi_region",
+      "service": "kms"
+    },
+    {
+      "id": "kms_cmk_rotation_enabled",
+      "service": "kms"
+    },
+    {
+      "id": "kms_key_enclave_attestation_bypassable_path",
+      "service": "kms"
+    },
+    {
+      "id": "kms_key_enclave_attestation_no_deployment_binding",
+      "service": "kms"
+    },
+    {
+      "id": "kms_key_enclave_attestation_not_enforced",
+      "service": "kms"
+    },
+    {
+      "id": "kms_key_enclave_attestation_pcr_mismatch",
+      "service": "kms"
+    },
+    {
+      "id": "kms_key_enclave_attestation_unknown_image",
+      "service": "kms"
+    },
+    {
+      "id": "kms_key_enclave_debug_attestation_detected",
+      "service": "kms"
+    },
+    {
+      "id": "kms_key_not_publicly_accessible",
+      "service": "kms"
+    },
+    {
+      "id": "lightsail_database_public",
+      "service": "lightsail"
+    },
+    {
+      "id": "lightsail_instance_automated_snapshots",
+      "service": "lightsail"
+    },
+    {
+      "id": "lightsail_instance_php_blueprint_updated",
+      "service": "lightsail"
+    },
+    {
+      "id": "lightsail_instance_public",
+      "service": "lightsail"
+    },
+    {
+      "id": "lightsail_static_ip_unused",
+      "service": "lightsail"
+    },
+    {
+      "id": "macie_automated_sensitive_data_discovery_enabled",
+      "service": "macie"
+    },
+    {
+      "id": "macie_is_enabled",
+      "service": "macie"
+    },
+    {
+      "id": "memorydb_cluster_auto_minor_version_upgrades",
+      "service": "memorydb"
+    },
+    {
+      "id": "memorydb_cluster_in_transit_encryption_enabled",
+      "service": "memorydb"
+    },
+    {
+      "id": "mq_broker_active_deployment_mode",
+      "service": "mq"
+    },
+    {
+      "id": "mq_broker_auto_minor_version_upgrades",
+      "service": "mq"
+    },
+    {
+      "id": "mq_broker_cluster_deployment_mode",
+      "service": "mq"
+    },
+    {
+      "id": "mq_broker_logging_enabled",
+      "service": "mq"
+    },
+    {
+      "id": "mq_broker_not_publicly_accessible",
+      "service": "mq"
+    },
+    {
+      "id": "neptune_cluster_backup_enabled",
+      "service": "neptune"
+    },
+    {
+      "id": "neptune_cluster_copy_tags_to_snapshots",
+      "service": "neptune"
+    },
+    {
+      "id": "neptune_cluster_deletion_protection",
+      "service": "neptune"
+    },
+    {
+      "id": "neptune_cluster_iam_authentication_enabled",
+      "service": "neptune"
+    },
+    {
+      "id": "neptune_cluster_integration_cloudwatch_logs",
+      "service": "neptune"
+    },
+    {
+      "id": "neptune_cluster_multi_az",
+      "service": "neptune"
+    },
+    {
+      "id": "neptune_cluster_public_snapshot",
+      "service": "neptune"
+    },
+    {
+      "id": "neptune_cluster_snapshot_encrypted",
+      "service": "neptune"
+    },
+    {
+      "id": "neptune_cluster_storage_encrypted",
+      "service": "neptune"
+    },
+    {
+      "id": "neptune_cluster_uses_public_subnet",
+      "service": "neptune"
+    },
+    {
+      "id": "networkfirewall_deletion_protection",
+      "service": "networkfirewall"
+    },
+    {
+      "id": "networkfirewall_in_all_vpc",
+      "service": "networkfirewall"
+    },
+    {
+      "id": "networkfirewall_logging_enabled",
+      "service": "networkfirewall"
+    },
+    {
+      "id": "networkfirewall_multi_az",
+      "service": "networkfirewall"
+    },
+    {
+      "id": "networkfirewall_policy_default_action_fragmented_packets",
+      "service": "networkfirewall"
+    },
+    {
+      "id": "networkfirewall_policy_default_action_full_packets",
+      "service": "networkfirewall"
+    },
+    {
+      "id": "networkfirewall_policy_rule_group_associated",
+      "service": "networkfirewall"
+    },
+    {
+      "id": "opensearch_service_domains_access_control_enabled",
+      "service": "opensearch"
+    },
+    {
+      "id": "opensearch_service_domains_audit_logging_enabled",
+      "service": "opensearch"
+    },
+    {
+      "id": "opensearch_service_domains_cloudwatch_logging_enabled",
+      "service": "opensearch"
+    },
+    {
+      "id": "opensearch_service_domains_encryption_at_rest_enabled",
+      "service": "opensearch"
+    },
+    {
+      "id": "opensearch_service_domains_fault_tolerant_data_nodes",
+      "service": "opensearch"
+    },
+    {
+      "id": "opensearch_service_domains_fault_tolerant_master_nodes",
+      "service": "opensearch"
+    },
+    {
+      "id": "opensearch_service_domains_https_communications_enforced",
+      "service": "opensearch"
+    },
+    {
+      "id": "opensearch_service_domains_internal_user_database_enabled",
+      "service": "opensearch"
+    },
+    {
+      "id": "opensearch_service_domains_node_to_node_encryption_enabled",
+      "service": "opensearch"
+    },
+    {
+      "id": "opensearch_service_domains_not_publicly_accessible",
+      "service": "opensearch"
+    },
+    {
+      "id": "opensearch_service_domains_updated_to_the_latest_service_software_version",
+      "service": "opensearch"
+    },
+    {
+      "id": "opensearch_service_domains_use_cognito_authentication_for_kibana",
+      "service": "opensearch"
+    },
+    {
+      "id": "organizations_account_part_of_organizations",
+      "service": "organizations"
+    },
+    {
+      "id": "organizations_delegated_administrators",
+      "service": "organizations"
+    },
+    {
+      "id": "organizations_opt_out_ai_services_policy",
+      "service": "organizations"
+    },
+    {
+      "id": "organizations_scp_check_deny_regions",
+      "service": "organizations"
+    },
+    {
+      "id": "organizations_tags_policies_enabled_and_attached",
+      "service": "organizations"
+    },
+    {
+      "id": "rds_cluster_backtrack_enabled",
+      "service": "rds"
+    },
+    {
+      "id": "rds_cluster_copy_tags_to_snapshots",
+      "service": "rds"
+    },
+    {
+      "id": "rds_cluster_critical_event_subscription",
+      "service": "rds"
+    },
+    {
+      "id": "rds_cluster_default_admin",
+      "service": "rds"
+    },
+    {
+      "id": "rds_cluster_deletion_protection",
+      "service": "rds"
+    },
+    {
+      "id": "rds_cluster_iam_authentication_enabled",
+      "service": "rds"
+    },
+    {
+      "id": "rds_cluster_integration_cloudwatch_logs",
+      "service": "rds"
+    },
+    {
+      "id": "rds_cluster_minor_version_upgrade_enabled",
+      "service": "rds"
+    },
+    {
+      "id": "rds_cluster_multi_az",
+      "service": "rds"
+    },
+    {
+      "id": "rds_cluster_non_default_port",
+      "service": "rds"
+    },
+    {
+      "id": "rds_cluster_protected_by_backup_plan",
+      "service": "rds"
+    },
+    {
+      "id": "rds_cluster_storage_encrypted",
+      "service": "rds"
+    },
+    {
+      "id": "rds_instance_backup_enabled",
+      "service": "rds"
+    },
+    {
+      "id": "rds_instance_certificate_expiration",
+      "service": "rds"
+    },
+    {
+      "id": "rds_instance_copy_tags_to_snapshots",
+      "service": "rds"
+    },
+    {
+      "id": "rds_instance_critical_event_subscription",
+      "service": "rds"
+    },
+    {
+      "id": "rds_instance_default_admin",
+      "service": "rds"
+    },
+    {
+      "id": "rds_instance_deletion_protection",
+      "service": "rds"
+    },
+    {
+      "id": "rds_instance_deprecated_engine_version",
+      "service": "rds"
+    },
+    {
+      "id": "rds_instance_enhanced_monitoring_enabled",
+      "service": "rds"
+    },
+    {
+      "id": "rds_instance_event_subscription_parameter_groups",
+      "service": "rds"
+    },
+    {
+      "id": "rds_instance_event_subscription_security_groups",
+      "service": "rds"
+    },
+    {
+      "id": "rds_instance_extended_support",
+      "service": "rds"
+    },
+    {
+      "id": "rds_instance_iam_authentication_enabled",
+      "service": "rds"
+    },
+    {
+      "id": "rds_instance_inside_vpc",
+      "service": "rds"
+    },
+    {
+      "id": "rds_instance_integration_cloudwatch_logs",
+      "service": "rds"
+    },
+    {
+      "id": "rds_instance_minor_version_upgrade_enabled",
+      "service": "rds"
+    },
+    {
+      "id": "rds_instance_multi_az",
+      "service": "rds"
+    },
+    {
+      "id": "rds_instance_no_public_access",
+      "service": "rds"
+    },
+    {
+      "id": "rds_instance_non_default_port",
+      "service": "rds"
+    },
+    {
+      "id": "rds_instance_protected_by_backup_plan",
+      "service": "rds"
+    },
+    {
+      "id": "rds_instance_storage_encrypted",
+      "service": "rds"
+    },
+    {
+      "id": "rds_instance_transport_encrypted",
+      "service": "rds"
+    },
+    {
+      "id": "rds_snapshots_encrypted",
+      "service": "rds"
+    },
+    {
+      "id": "rds_snapshots_public_access",
+      "service": "rds"
+    },
+    {
+      "id": "redshift_cluster_audit_logging",
+      "service": "redshift"
+    },
+    {
+      "id": "redshift_cluster_automated_snapshot",
+      "service": "redshift"
+    },
+    {
+      "id": "redshift_cluster_automatic_upgrades",
+      "service": "redshift"
+    },
+    {
+      "id": "redshift_cluster_encrypted_at_rest",
+      "service": "redshift"
+    },
+    {
+      "id": "redshift_cluster_enhanced_vpc_routing",
+      "service": "redshift"
+    },
+    {
+      "id": "redshift_cluster_in_transit_encryption_enabled",
+      "service": "redshift"
+    },
+    {
+      "id": "redshift_cluster_multi_az_enabled",
+      "service": "redshift"
+    },
+    {
+      "id": "redshift_cluster_non_default_database_name",
+      "service": "redshift"
+    },
+    {
+      "id": "redshift_cluster_non_default_username",
+      "service": "redshift"
+    },
+    {
+      "id": "redshift_cluster_public_access",
+      "service": "redshift"
+    },
+    {
+      "id": "resourceexplorer2_indexes_found",
+      "service": "resourceexplorer2"
+    },
+    {
+      "id": "rolesanywhere_profile_restricts_session_permissions",
+      "service": "rolesanywhere"
+    },
+    {
+      "id": "rolesanywhere_trust_anchor_pqc_pki",
+      "service": "rolesanywhere"
+    },
+    {
+      "id": "route53_dangling_ip_subdomain_takeover",
+      "service": "route53"
+    },
+    {
+      "id": "route53_domains_privacy_protection_enabled",
+      "service": "route53"
+    },
+    {
+      "id": "route53_domains_transferlock_enabled",
+      "service": "route53"
+    },
+    {
+      "id": "route53_public_hosted_zones_cloudwatch_logging_enabled",
+      "service": "route53"
+    },
+    {
+      "id": "s3_access_point_public_access_block",
+      "service": "s3"
+    },
+    {
+      "id": "s3_account_level_public_access_blocks",
+      "service": "s3"
+    },
+    {
+      "id": "s3_bucket_acl_prohibited",
+      "service": "s3"
+    },
+    {
+      "id": "s3_bucket_cross_account_access",
+      "service": "s3"
+    },
+    {
+      "id": "s3_bucket_cross_region_replication",
+      "service": "s3"
+    },
+    {
+      "id": "s3_bucket_default_encryption",
+      "service": "s3"
+    },
+    {
+      "id": "s3_bucket_event_notifications_enabled",
+      "service": "s3"
+    },
+    {
+      "id": "s3_bucket_kms_encryption",
+      "service": "s3"
+    },
+    {
+      "id": "s3_bucket_level_public_access_block",
+      "service": "s3"
+    },
+    {
+      "id": "s3_bucket_lifecycle_enabled",
+      "service": "s3"
+    },
+    {
+      "id": "s3_bucket_no_mfa_delete",
+      "service": "s3"
+    },
+    {
+      "id": "s3_bucket_object_lock",
+      "service": "s3"
+    },
+    {
+      "id": "s3_bucket_object_public",
+      "service": "s3"
+    },
+    {
+      "id": "s3_bucket_object_versioning",
+      "service": "s3"
+    },
+    {
+      "id": "s3_bucket_policy_public_write_access",
+      "service": "s3"
+    },
+    {
+      "id": "s3_bucket_public_access",
+      "service": "s3"
+    },
+    {
+      "id": "s3_bucket_public_list_acl",
+      "service": "s3"
+    },
+    {
+      "id": "s3_bucket_public_write_acl",
+      "service": "s3"
+    },
+    {
+      "id": "s3_bucket_secure_transport_policy",
+      "service": "s3"
+    },
+    {
+      "id": "s3_bucket_server_access_logging_enabled",
+      "service": "s3"
+    },
+    {
+      "id": "s3_bucket_shadow_resource_vulnerability",
+      "service": "s3"
+    },
+    {
+      "id": "s3_multi_region_access_point_public_access_block",
+      "service": "s3"
+    },
+    {
+      "id": "sagemaker_clarify_exists",
+      "service": "sagemaker"
+    },
+    {
+      "id": "sagemaker_domain_sso_configured",
+      "service": "sagemaker"
+    },
+    {
+      "id": "sagemaker_endpoint_config_kms_encryption_enabled",
+      "service": "sagemaker"
+    },
+    {
+      "id": "sagemaker_endpoint_config_prod_variant_instances",
+      "service": "sagemaker"
+    },
+    {
+      "id": "sagemaker_models_monitor_enabled",
+      "service": "sagemaker"
+    },
+    {
+      "id": "sagemaker_models_network_isolation_enabled",
+      "service": "sagemaker"
+    },
+    {
+      "id": "sagemaker_models_registry_in_use",
+      "service": "sagemaker"
+    },
+    {
+      "id": "sagemaker_models_vpc_settings_configured",
+      "service": "sagemaker"
+    },
+    {
+      "id": "sagemaker_notebook_instance_encryption_enabled",
+      "service": "sagemaker"
+    },
+    {
+      "id": "sagemaker_notebook_instance_no_secrets",
+      "service": "sagemaker"
+    },
+    {
+      "id": "sagemaker_notebook_instance_root_access_disabled",
+      "service": "sagemaker"
+    },
+    {
+      "id": "sagemaker_notebook_instance_vpc_settings_configured",
+      "service": "sagemaker"
+    },
+    {
+      "id": "sagemaker_notebook_instance_without_direct_internet_access_configured",
+      "service": "sagemaker"
+    },
+    {
+      "id": "sagemaker_training_jobs_intercontainer_encryption_enabled",
+      "service": "sagemaker"
+    },
+    {
+      "id": "sagemaker_training_jobs_network_isolation_enabled",
+      "service": "sagemaker"
+    },
+    {
+      "id": "sagemaker_training_jobs_volume_and_output_encryption_enabled",
+      "service": "sagemaker"
+    },
+    {
+      "id": "sagemaker_training_jobs_vpc_settings_configured",
+      "service": "sagemaker"
+    },
+    {
+      "id": "secretsmanager_automatic_rotation_enabled",
+      "service": "secretsmanager"
+    },
+    {
+      "id": "secretsmanager_has_restrictive_resource_policy",
+      "service": "secretsmanager"
+    },
+    {
+      "id": "secretsmanager_not_publicly_accessible",
+      "service": "secretsmanager"
+    },
+    {
+      "id": "secretsmanager_secret_rotated_periodically",
+      "service": "secretsmanager"
+    },
+    {
+      "id": "secretsmanager_secret_unused",
+      "service": "secretsmanager"
+    },
+    {
+      "id": "securityhub_delegated_admin_enabled_all_regions",
+      "service": "securityhub"
+    },
+    {
+      "id": "securityhub_enabled",
+      "service": "securityhub"
+    },
+    {
+      "id": "servicecatalog_portfolio_shared_within_organization_only",
+      "service": "servicecatalog"
+    },
+    {
+      "id": "ses_identity_dkim_enabled",
+      "service": "ses"
+    },
+    {
+      "id": "ses_identity_not_publicly_accessible",
+      "service": "ses"
+    },
+    {
+      "id": "shield_advanced_protection_in_associated_elastic_ips",
+      "service": "shield"
+    },
+    {
+      "id": "shield_advanced_protection_in_classic_load_balancers",
+      "service": "shield"
+    },
+    {
+      "id": "shield_advanced_protection_in_cloudfront_distributions",
+      "service": "shield"
+    },
+    {
+      "id": "shield_advanced_protection_in_global_accelerators",
+      "service": "shield"
+    },
+    {
+      "id": "shield_advanced_protection_in_internet_facing_load_balancers",
+      "service": "shield"
+    },
+    {
+      "id": "shield_advanced_protection_in_route53_hosted_zones",
+      "service": "shield"
+    },
+    {
+      "id": "sns_subscription_not_using_http_endpoints",
+      "service": "sns"
+    },
+    {
+      "id": "sns_topics_kms_encryption_at_rest_enabled",
+      "service": "sns"
+    },
+    {
+      "id": "sns_topics_not_publicly_accessible",
+      "service": "sns"
+    },
+    {
+      "id": "sqs_queues_not_publicly_accessible",
+      "service": "sqs"
+    },
+    {
+      "id": "sqs_queues_server_side_encryption_enabled",
+      "service": "sqs"
+    },
+    {
+      "id": "ssm_document_secrets",
+      "service": "ssm"
+    },
+    {
+      "id": "ssm_documents_set_as_public",
+      "service": "ssm"
+    },
+    {
+      "id": "ssm_managed_compliant_patching",
+      "service": "ssm"
+    },
+    {
+      "id": "ssmincidents_enabled_with_plans",
+      "service": "ssmincidents"
+    },
+    {
+      "id": "stepfunctions_statemachine_encrypted_with_cmk",
+      "service": "stepfunctions"
+    },
+    {
+      "id": "stepfunctions_statemachine_logging_enabled",
+      "service": "stepfunctions"
+    },
+    {
+      "id": "stepfunctions_statemachine_no_secrets_in_definition",
+      "service": "stepfunctions"
+    },
+    {
+      "id": "storagegateway_fileshare_encryption_enabled",
+      "service": "storagegateway"
+    },
+    {
+      "id": "storagegateway_gateway_fault_tolerant",
+      "service": "storagegateway"
+    },
+    {
+      "id": "transfer_server_fips_security_policy_enabled",
+      "service": "transfer"
+    },
+    {
+      "id": "transfer_server_in_transit_encryption_enabled",
+      "service": "transfer"
+    },
+    {
+      "id": "transfer_server_pqc_ssh_kex_enabled",
+      "service": "transfer"
+    },
+    {
+      "id": "trustedadvisor_errors_and_warnings",
+      "service": "trustedadvisor"
+    },
+    {
+      "id": "trustedadvisor_premium_support_plan_subscribed",
+      "service": "trustedadvisor"
+    },
+    {
+      "id": "vpc_different_regions",
+      "service": "vpc"
+    },
+    {
+      "id": "vpc_endpoint_connections_trust_boundaries",
+      "service": "vpc"
+    },
+    {
+      "id": "vpc_endpoint_for_ec2_enabled",
+      "service": "vpc"
+    },
+    {
+      "id": "vpc_endpoint_multi_az_enabled",
+      "service": "vpc"
+    },
+    {
+      "id": "vpc_endpoint_services_allowed_principals_trust_boundaries",
+      "service": "vpc"
+    },
+    {
+      "id": "vpc_flow_logs_enabled",
+      "service": "vpc"
+    },
+    {
+      "id": "vpc_peering_routing_tables_with_least_privilege",
+      "service": "vpc"
+    },
+    {
+      "id": "vpc_subnet_different_az",
+      "service": "vpc"
+    },
+    {
+      "id": "vpc_subnet_no_public_ip_by_default",
+      "service": "vpc"
+    },
+    {
+      "id": "vpc_subnet_separate_private_public",
+      "service": "vpc"
+    },
+    {
+      "id": "vpc_vpn_connection_tunnels_up",
+      "service": "vpc"
+    },
+    {
+      "id": "waf_global_rule_with_conditions",
+      "service": "waf"
+    },
+    {
+      "id": "waf_global_rulegroup_not_empty",
+      "service": "waf"
+    },
+    {
+      "id": "waf_global_webacl_logging_enabled",
+      "service": "waf"
+    },
+    {
+      "id": "waf_global_webacl_with_rules",
+      "service": "waf"
+    },
+    {
+      "id": "waf_regional_rule_with_conditions",
+      "service": "waf"
+    },
+    {
+      "id": "waf_regional_rulegroup_not_empty",
+      "service": "waf"
+    },
+    {
+      "id": "waf_regional_webacl_logging_enabled",
+      "service": "waf"
+    },
+    {
+      "id": "waf_regional_webacl_with_rules",
+      "service": "waf"
+    },
+    {
+      "id": "wafv2_webacl_logging_enabled",
+      "service": "wafv2"
+    },
+    {
+      "id": "wafv2_webacl_managed_rule_groups_enabled",
+      "service": "wafv2"
+    },
+    {
+      "id": "wafv2_webacl_rule_logging_enabled",
+      "service": "wafv2"
+    },
+    {
+      "id": "wafv2_webacl_with_rules",
+      "service": "wafv2"
+    },
+    {
+      "id": "wellarchitected_workload_no_high_or_medium_risks",
+      "service": "wellarchitected"
+    },
+    {
+      "id": "workspaces_volume_encryption_enabled",
+      "service": "workspaces"
+    },
+    {
+      "id": "workspaces_vpc_2private_1public_subnets_nat",
+      "service": "workspaces"
+    }
+  ]
+}
