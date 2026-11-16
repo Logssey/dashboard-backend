@@ -233,6 +233,7 @@ class ClaudeSecretGuideProvider implements SecretGuideProvider {
     }
 
     Explanation explain(SecretExplanationContext context) {
+        if (context.facts().size() <= 1) return Explanation.fallback("BASIC_CONTEXT", false);
         String readiness = configurationReason();
         if (!"READY".equals(readiness)) return Explanation.fallback(readiness, false);
         synchronized (this) {
@@ -289,6 +290,9 @@ class ClaudeSecretGuideProvider implements SecretGuideProvider {
                 does not authenticate secret values. Never suggest entering or revealing a secret.
                 sourceProvider is where content was collected; issuer is the key's issuing service.
                 A GitHub scan can contain AWS or Notion credentials. MIXED means multiple or unknown types.
+                referenceDocumentCodes names approved public help references. These are never collected files.
+                An empty reference list provides no information about collection, detection or locations.
+                Never claim files, findings or locations are absent unless a supplied fact explicitly states that.
                 Suggest only allowed actions. Do not generate URLs, shell commands or configuration.
                 Do not claim a retry will happen unless RETRY_SCHEDULED is present.
                 The vocabulary below contains public UI definitions, not customer content.
@@ -348,7 +352,8 @@ class ClaudeSecretGuideProvider implements SecretGuideProvider {
         return !java.util.regex.Pattern.compile(
                 "(?i)https?://|www\\.|arn:|sk-ant-|ghp_|github_pat_|ntn_|-----BEGIN|[<>`]|"
                         + "\\b(curl|kubectl|sudo|powershell|terraform)\\b|"
-                        + "만료되었습니다|폐기되었습니다|악용되었습니다|모두 해결|안전합니다|위험이 없습니다|유효합니다|무효입니다")
+                        + "만료되었습니다|폐기되었습니다|악용되었습니다|모두 해결|안전합니다|위험이 없습니다|유효합니다|무효입니다|"
+                        + "(?:수집된 문서|파일|탐지 결과|발견 위치|키 후보).{0,12}(?:없|존재하지|미발견)")
                 .matcher(text).find();
     }
 

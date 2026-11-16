@@ -19,14 +19,14 @@ import org.springframework.stereotype.Service;
 public class SecretExplanationService {
     private final SecretRunService runs;
     private final SecretRunQueryService runQueries;
-    private final SecretCaseService cases;
+    private final SecretLocationWorkflow cases;
     private final SecretCaseRepository caseRepository;
     private final SecretGuideRepository guideRepository;
     private final JdbcTemplate jdbc;
     private final ObjectProvider<ClaudeSecretGuideProvider> providers;
 
     public SecretExplanationService(SecretRunService runs, SecretRunQueryService runQueries,
-            SecretCaseService cases, SecretCaseRepository caseRepository, SecretGuideRepository guideRepository,
+            SecretLocationWorkflow cases, SecretCaseRepository caseRepository, SecretGuideRepository guideRepository,
             JdbcTemplate jdbc, ObjectProvider<ClaudeSecretGuideProvider> providers) {
         this.runs = runs;
         this.runQueries = runQueries;
@@ -48,8 +48,9 @@ public class SecretExplanationService {
     private SecretExplanationResponse explain(Supplier<Snapshot> read, boolean requested) {
         var snapshot = read.get();
         var provider = providers.getIfAvailable();
-        String reason = snapshot.aiReadable() && provider != null ? provider.configurationReason()
-                : snapshot.aiReadable() ? "DISABLED" : "ALL_LOCATIONS_ACCESS_REQUIRED";
+        String reason = !snapshot.aiReadable() ? "ALL_LOCATIONS_ACCESS_REQUIRED"
+                : snapshot.context().facts().size() <= 1 ? "BASIC_CONTEXT"
+                : provider == null ? "DISABLED" : provider.configurationReason();
         boolean available = "READY".equals(reason);
         if (!requested || !available) {
             return response(snapshot, null, List.of(), new SecretGuideReadiness(
@@ -122,7 +123,7 @@ public class SecretExplanationService {
         String history = "/secrets/history/" + runId;
         links.put("CHECK_STATUS", history);
         @SuppressWarnings("unchecked") var capabilities = (Map<String, Object>) status.get("capabilities");
-        if (capabilities != null && Boolean.TRUE.equals(capabilities.get("canViewFindings"))) {
+        if (!metadata && capabilities != null && Boolean.TRUE.equals(capabilities.get("canViewFindings"))) {
             links.put("VIEW_FINDINGS", history + "/findings");
             links.put("VIEW_LOCATIONS", "/secrets/findings?runId=" + runId);
         }
@@ -141,12 +142,17 @@ public class SecretExplanationService {
         var detail = cases.detail(caseId, login);
         long actor = caseRepository.actorId(login).orElseThrow(() -> new ApiException(ErrorCode.UNAUTHENTICATED));
         boolean allReadable = guideRepository.allLocationsReadable(actor, caseId);
+        @SuppressWarnings("unchecked")
+        var locations = (List<Map<String, Object>>) detail.get("occurrences");
+        @SuppressWarnings("unchecked")
+        var guidance = (Map<String, Object>) detail.get("taskGuidance");
         var facts = new LinkedHashSet<String>();
-        String stage = "CASE_" + detail.stage();
+        String stage = "CASE_" + detail.get("stage");
         if (SecretExplanationCatalog.factCodes().contains(stage)) facts.add(stage);
-        facts.add(detail.actions().isEmpty() ? "NO_ACTION_RECORD" : "ACTION_RECORDED");
-        if (detail.assigneeUserId() == null) facts.add("ASSIGNEE_REQUIRED");
-        if (detail.occurrences().stream().anyMatch(location -> !"RESOLVED".equals(location.responseStatus()))) {
+        facts.add(hasVisibleAction(caseId, locations) ? "ACTION_RECORDED" : "NO_ACTION_RECORD");
+        boolean unassigned = locations.stream().anyMatch(SecretExplanationService::unassigned);
+        if (unassigned) facts.add("ASSIGNEE_REQUIRED");
+        if (locations.stream().anyMatch(location -> Boolean.TRUE.equals(location.get("requiredRemediation")))) {
             facts.add("UNRESOLVED_LOCATIONS");
         }
         if (allReadable) {
@@ -159,13 +165,41 @@ public class SecretExplanationService {
         }
         var links = new java.util.LinkedHashMap<String, String>();
         String href = "/secrets/cases/" + caseId;
-        links.put("OPEN_CASE", href);
-        if (detail.capabilities().canRecordAction()) links.put("RECORD_ACTION", href + "?tab=work");
-        if (detail.capabilities().canRequestRevalidation()) links.put("REVALIDATE", href + "?tab=verification&check=locations");
-        if (detail.assigneeUserId() == null && detail.capabilities().canReview()) links.put("ASSIGN_SELF", href + "?tab=work");
-        links.put("REVIEW_CLOSURE", href + "?tab=verification&check=closure");
-        var context = context("CASE", "OTHER", detail.issuer(), detail.credentialType(), facts, links);
-        return new Snapshot(context, Map.copyOf(links), Long.toString(detail.version()), allReadable);
+        String next = (String) guidance.get("nextActionCode");
+        boolean waiting = next != null && next.startsWith("WAIT_");
+        if (!waiting && unassigned && locations.stream().anyMatch(location -> unassigned(location)
+                && Boolean.TRUE.equals(location.get("canAssign")))) {
+            links.put("ASSIGN_SELF", href + "?tab=work#case-assignment");
+        }
+        if (!waiting && locations.stream().anyMatch(location -> Boolean.TRUE.equals(location.get("canRecordAction")))) {
+            links.put("RECORD_ACTION", href + "?tab=work#case-action-form");
+        }
+        if ("REQUEST_REVALIDATION".equals(next) && Boolean.TRUE.equals(guidance.get("canExecute"))
+                && locations.stream().anyMatch(location -> Boolean.TRUE.equals(location.get("canRequestRevalidation")))) {
+            links.put("REVALIDATE", href + "?tab=verification&check=locations#case-verification-title");
+        }
+        if ("REVIEW_CLOSURE".equals(next)
+                && Boolean.TRUE.equals(guidance.get("canExecute"))) {
+            links.put("REVIEW_CLOSURE", href + "?tab=verification&check=closure");
+        }
+        if (links.isEmpty()) links.put("OPEN_CASE", href);
+        var context = context("CASE", "OTHER", (String) detail.get("issuer"), (String) detail.get("credentialType"), facts, links);
+        return new Snapshot(context, Map.copyOf(links), detail.get("version") + ":" + guidance, allReadable);
+    }
+
+    private static boolean unassigned(Map<String, Object> location) {
+        return Boolean.TRUE.equals(location.get("requiredRemediation"))
+                && location.get("assignedUserId") == null && location.get("assignedTeam") == null;
+    }
+
+    private boolean hasVisibleAction(long caseId, List<Map<String, Object>> locations) {
+        if (locations.isEmpty()) return false;
+        var arguments = new ArrayList<Object>();
+        arguments.add(caseId);
+        locations.forEach(location -> arguments.add(location.get("occurrenceId")));
+        String slots = String.join(",", java.util.Collections.nCopies(locations.size(), "?"));
+        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM secret_action_records"
+                + " WHERE case_id=? AND occurrence_id IN (" + slots + "))", Boolean.class, arguments.toArray()));
     }
 
     private static SecretExplanationContext context(String topic, String sourceProvider, String issuer,

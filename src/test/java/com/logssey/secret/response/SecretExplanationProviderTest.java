@@ -37,7 +37,22 @@ class SecretExplanationProviderTest {
             var fields = JSON.readTree(body.path("messages").get(0).path("content").asText());
             assertThat(fields.size()).isEqualTo(8);
             assertThat(fields.path("issuer").asText()).isEqualTo("GITHUB");
+            assertThat(fields.path("referenceDocumentCodes").get(0).asText()).isEqualTo("GITHUB_PAT");
+            assertThat(fields.has("documents")).isFalse();
             assertThat(requestBody.get()).doesNotContain("synthetic-api-key", "repositoryName", "maskedLabel", "caseId", "runId");
+        }
+    }
+
+    @Test void aSingleFactUsesBasicGuidanceWithoutCallingTheProvider() throws Exception {
+        var calls = new AtomicInteger();
+        try (var fixture = fixture(200, "unused", calls, new AtomicReference<>())) {
+            var simple = new SecretExplanationContext("SCAN", "AWS", List.of("METADATA_ONLY"),
+                    List.of("CHECK_STATUS"), List.of());
+            var result = fixture.provider().explain(simple);
+            assertThat(result.reasonCode()).isEqualTo("BASIC_CONTEXT");
+            assertThat(result.providerCalled()).isFalse();
+            assertThat(result.summary()).isNull();
+            assertThat(calls).hasValue(0);
         }
     }
 
@@ -48,6 +63,7 @@ class SecretExplanationProviderTest {
 
         for (var unsafe : List.of(
                 response("만료되었습니다", CONTEXT.facts(), List.of("CHECK_STATUS")),
+                response("수집된 문서가 없어 탐지 결과나 발견 위치를 확인하지 못했어요.", CONTEXT.facts(), List.of("CHECK_STATUS")),
                 response("curl https://example.com 을 실행하세요", CONTEXT.facts(), List.of("CHECK_STATUS")),
                 response("확인하세요", CONTEXT.facts(), List.of("RECORD_ACTION")),
                 response("확인하세요", List.of("COLLECTION_SUCCEEDED"), List.of("CHECK_STATUS")))) {

@@ -26,7 +26,7 @@ record SecretExplanationContext(String topic, String sourceProvider, String issu
     Map<String, Object> externalFields() {
         return Map.of("topic", topic, "sourceProvider", sourceProvider, "issuer", issuer,
                 "credentialType", credentialType, "facts", facts,
-                "allowedActions", actions, "documents", documents,
+                "allowedActions", actions, "referenceDocumentCodes", documents,
                 "contractVersion", SecretExplanationCatalog.VERSION);
     }
 
