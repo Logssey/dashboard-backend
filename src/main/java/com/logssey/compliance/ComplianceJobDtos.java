@@ -17,7 +17,7 @@ public final class ComplianceJobDtos {
                              OffsetDateTime createdAt, OffsetDateTime startedAt, OffsetDateTime finishedAt) {}
     public record JobListResponse(List<JobSummary> items) {}
 
-    public record ScopeCatalogResponse(String provider, String prowlerVersion, String commit,
+    public record ScopeCatalogResponse(String provider, boolean executionEnabled, String prowlerVersion, String commit,
                                        List<String> services, List<ProwlerScopeCatalog.Check> checks) {}
 
     public record ClaimRequest(String workerId) {}

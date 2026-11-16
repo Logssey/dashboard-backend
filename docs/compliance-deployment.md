@@ -26,6 +26,7 @@ API 설정에는 다음 값을 추가한다.
 ```properties
 logssey.compliance.target-key=replace-service-key
 logssey.compliance.target-name=replace-service-name
+logssey.compliance.execution-enabled=false
 logssey.compliance.worker-lease-seconds=900
 logssey.compliance.worker-retry-delay-seconds=30
 ```
@@ -33,6 +34,8 @@ logssey.compliance.worker-retry-delay-seconds=30
 API secret 디렉터리의 `logssey.compliance.worker-token`과 Worker secret 디렉터리의 `logssey.compliance-worker.token`에는 동일한 32바이트 이상의 난수 토큰을 넣는다. 파일 권한은 Worker 또는 API 실행 UID만 읽을 수 있게 제한한다. 토큰을 properties, Compose 환경변수, Git에 저장하지 않는다.
 
 Worker 설정은 [`deploy/compliance-worker.properties.example`](../deploy/compliance-worker.properties.example)을 복사해 외부에서 관리한다. Worker마다 고유한 `worker-id`를 사용한다.
+
+운영에 처음 붙일 때는 API의 `execution-enabled`와 Worker의 `enabled`를 모두 `false`로 둔다. 이 상태에서는 기존 결과와 보고서를 조회할 수 있지만 새 자동 점검은 등록되지 않는다. Worker 이미지, 공유 토큰, workload identity와 합성 점검을 확인한 뒤 두 값을 함께 활성화한다.
 
 ## AWS 자격 증명 경계
 

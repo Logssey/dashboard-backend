@@ -34,6 +34,8 @@ logssey.secret.usage.cloudtrail-enabled=false
 # Compliance scan execution stays disabled until an independent Worker is explicitly deployed.
 logssey.compliance.target-key=replace-service-key
 logssey.compliance.target-name=replace-service-name
+# Keep false until the independent Worker has an approved workload identity and smoke test.
+logssey.compliance.execution-enabled=false
 logssey.compliance.worker-lease-seconds=900
 logssey.compliance.worker-retry-delay-seconds=30
 # /run/secrets/logssey.compliance.worker-token contains the shared Worker token.

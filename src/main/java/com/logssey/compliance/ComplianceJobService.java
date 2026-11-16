@@ -44,6 +44,7 @@ public class ComplianceJobService {
     private final ComplianceService compliance;
     private final ProwlerScopeCatalog scopeCatalog;
     private final String targetKey;
+    private final boolean executionEnabled;
     private final int leaseSeconds;
     private final int retryDelaySeconds;
 
@@ -51,12 +52,14 @@ public class ComplianceJobService {
                                 ComplianceService compliance, ProwlerScopeCatalog scopeCatalog,
                                 @Value("${logssey.compliance.target-key:default}") String targetKey,
                                 @Value("${logssey.compliance.worker-lease-seconds:900}") int leaseSeconds,
-                                @Value("${logssey.compliance.worker-retry-delay-seconds:30}") int retryDelaySeconds) {
+                                @Value("${logssey.compliance.worker-retry-delay-seconds:30}") int retryDelaySeconds,
+                                @Value("${logssey.compliance.execution-enabled:true}") boolean executionEnabled) {
         this.repository = repository;
         this.complianceRepository = complianceRepository;
         this.compliance = compliance;
         this.scopeCatalog = scopeCatalog;
         this.targetKey = targetKey;
+        this.executionEnabled = executionEnabled;
         this.leaseSeconds = Math.max(60, Math.min(3_600, leaseSeconds));
         this.retryDelaySeconds = Math.max(1, Math.min(600, retryDelaySeconds));
     }
@@ -64,6 +67,9 @@ public class ComplianceJobService {
     @Transactional
     public CreateJobResponse create(String loginId, CreateJobRequest request) {
         requireAdmin(loginId);
+        if (!executionEnabled) {
+            throw new ApiException(ErrorCode.CONFLICT, "자동 점검 실행은 운영 연결을 완료한 뒤 활성화됩니다.");
+        }
         if (request == null) throw new ApiException(ErrorCode.INVALID_INPUT);
         String environment = ComplianceService.environment(request.environment(), false);
         ScanScope scope = normalizeScope(request.scope());
@@ -93,7 +99,7 @@ public class ComplianceJobService {
     }
 
     public ScopeCatalogResponse scopeCatalog() {
-        return new ScopeCatalogResponse("aws", scopeCatalog.version(), scopeCatalog.commit(),
+        return new ScopeCatalogResponse("aws", executionEnabled, scopeCatalog.version(), scopeCatalog.commit(),
                 scopeCatalog.services(), scopeCatalog.checkItems());
     }
 

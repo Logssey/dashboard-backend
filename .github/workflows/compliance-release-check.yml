@@ -10,6 +10,8 @@ on:
       - 'src/test/java/com/logssey/compliance/**'
       - 'compliance-worker/**'
       - 'deploy/verify-compliance.*'
+      - 'deploy/compliance-compose.yaml'
+      - '.github/workflows/dashboard-deploy.yml'
       - 'Dockerfile'
       - 'settings.gradle'
   workflow_dispatch:

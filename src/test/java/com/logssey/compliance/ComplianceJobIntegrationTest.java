@@ -26,6 +26,7 @@ class ComplianceJobIntegrationTest {
 
     private static final PostgreSQLContainer<?> DATABASE = new PostgreSQLContainer<>("postgres:16-alpine");
     private static ComplianceJobService jobs;
+    private static ComplianceJobService disabledJobs;
     private static JdbcTemplate jdbc;
 
     @BeforeAll
@@ -43,7 +44,9 @@ class ComplianceJobIntegrationTest {
         var compliance = new ComplianceService(complianceRepository, new ComplianceCatalog(),
                 new ProwlerOcsfNormalizer(), "reused", 8 * 1024 * 1024);
         jobs = new ComplianceJobService(new ComplianceJobRepository(JdbcClient.create(dataSource)),
-                complianceRepository, compliance, new ProwlerScopeCatalog(), "reused", 300, 1);
+                complianceRepository, compliance, new ProwlerScopeCatalog(), "reused", 300, 1, true);
+        disabledJobs = new ComplianceJobService(new ComplianceJobRepository(JdbcClient.create(dataSource)),
+                complianceRepository, compliance, new ProwlerScopeCatalog(), "reused", 300, 1, false);
     }
 
     @AfterAll
@@ -97,6 +100,15 @@ class ComplianceJobIntegrationTest {
                 new ScanScope(java.util.List.of(), java.util.List.of("s3"),
                         java.util.List.of("s3_bucket_public_access_block")))))
                 .isInstanceOf(ApiException.class);
+    }
+
+    @Test
+    void disabledExecutionIsVisibleAndRejectsNewJobs() {
+        assertThat(disabledJobs.scopeCatalog().executionEnabled()).isFalse();
+        assertThatThrownBy(() -> disabledJobs.create("admin", new CreateJobRequest("prod",
+                new ScanScope(java.util.List.of(), java.util.List.of(), java.util.List.of()))))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("운영 연결");
     }
 
     @Test

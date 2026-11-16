@@ -14,7 +14,9 @@ services:
     init: true
     restart: unless-stopped
     stop_grace_period: 45s
-    mem_limit: 1536m
+    mem_limit: 1024m
+    cpus: 0.75
+    oom_score_adj: 500
     pids_limit: 192
     volumes:
       - type: bind
