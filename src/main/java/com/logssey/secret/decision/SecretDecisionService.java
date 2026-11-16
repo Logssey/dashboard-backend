@@ -193,8 +193,8 @@ public class SecretDecisionService {
                 return new Correction(rs.getLong("disposition_id"),rs.getLong("finding_id"),rs.getLong("decision_id"),
                     rs.getString("decision_source"),rs.getObject("reuse_expires_at",OffsetDateTime.class),recheck==null,recheck);
             },id);
-        var coordinates=SecretSourceDetails.describe(text(row,"discovery_source"),text(row,"approved_ref"),
-            text(row,"source_object_ref"),text(row,"location_key"));
+        var coordinates=SecretSourceDetails.describeObserved(text(row,"discovery_source"),text(row,"approved_ref"),
+            text(row,"source_context_ref"),text(row,"source_context_status"),text(row,"source_object_ref"),text(row,"location_key"));
         String label="AVAILABLE".equals(coordinates.get("status"))?coordinates.get("label").toString():
             com.logssey.secret.connection.SecretDisplayLabels.location(text(row,"safe_display_alias"),id);
         return new ReviewContext(number(row,"credential_set_id"),id,number(row,"connection_id"),number(row,"scope_id"),

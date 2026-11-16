@@ -38,18 +38,20 @@ final class SecretExplanationCatalog {
             Map.entry("AUTH_UNCONFIRMED", "현재 사용할 수 있는 근거로 인증 여부를 확인하지 못했어요."),
             Map.entry("CASE_OPEN", "대응을 시작할 단계예요."),
             Map.entry("CASE_IN_PROGRESS", "조치를 진행하고 있어요."),
-            Map.entry("CASE_REVALIDATION_PENDING", "조치 이후의 재검사 결과를 기다리고 있어요."),
+            Map.entry("CASE_REVALIDATION_PENDING", "조치 이후의 재검사 단계예요."),
+            Map.entry("POST_ACTION_REDETECTED", "조치 후 재검사에서 다시 발견된 위치가 있어요."),
             Map.entry("CASE_RESOLVED", "대응 건의 종결 기록이 있어요."),
             Map.entry("ACTION_RECORDED", "조치 기록이 저장돼 있어요."),
             Map.entry("NO_ACTION_RECORD", "아직 저장된 조치 기록이 없어요."),
             Map.entry("UNRESOLVED_LOCATIONS", "확인이 끝나지 않은 대응 위치가 있어요."),
             Map.entry("ASSIGNEE_REQUIRED", "담당자가 없는 대응 위치가 있어요."));
-    private static final Map<String, String> ACTIONS = Map.of(
-            "VIEW_FINDINGS", "탐지 근거 보기", "VIEW_LOCATIONS", "발견 위치 보기",
-            "OPEN_SETTINGS", "연결 설정 확인", "RETRY_FAILED_SCOPES", "재검사 요청으로 이동",
-            "CHECK_STATUS", "검사 상태 보기", "OPEN_CASE", "대응 건 확인",
-            "ASSIGN_SELF", "담당자 지정 열기", "RECORD_ACTION", "조치 기록 열기",
-            "REVALIDATE", "재검사 화면 열기", "REVIEW_CLOSURE", "남은 종결 조건 확인");
+    private static final Map<String, String> ACTIONS = Map.ofEntries(
+            Map.entry("VIEW_FINDINGS", "탐지 근거 보기"), Map.entry("VIEW_LOCATIONS", "발견 위치 보기"),
+            Map.entry("OPEN_SETTINGS", "연결 설정 확인"), Map.entry("RETRY_FAILED_SCOPES", "재검사 요청으로 이동"),
+            Map.entry("CHECK_STATUS", "검사 상태 보기"), Map.entry("OPEN_CASE", "대응 건 확인"),
+            Map.entry("ASSIGN_SELF", "담당자 지정 열기"), Map.entry("RECORD_ACTION", "조치 기록 열기"),
+            Map.entry("REVALIDATE", "재검사 화면 열기"), Map.entry("REVIEW_CLOSURE", "남은 종결 조건 확인"),
+            Map.entry("RESUME_REMEDIATION", "추가 조치 시작 열기"));
 
     static Set<String> factCodes() { return FACTS.keySet(); }
     static Set<String> actionCodes() { return ACTIONS.keySet(); }
@@ -81,8 +83,11 @@ final class SecretExplanationCatalog {
 
     static String fallback(SecretExplanationContext context) {
         if (context.facts().contains("METADATA_ONLY")) return factLabel("METADATA_ONLY");
+        if (context.facts().contains("POST_ACTION_REDETECTED")) {
+            return "조치 후 다시 발견된 위치가 있어요. 추가 조치를 시작하고 이후 재검사 결과를 확인하세요.";
+        }
         if (context.facts().contains("CASE_REVALIDATION_PENDING")) {
-            return "기록된 조치 이후의 검사 결과를 확인하고 남은 위치와 종결 조건을 검토하세요.";
+            return "조치 이후의 검사 결과와 남은 위치, 종결 조건을 확인하세요.";
         }
         return context.facts().stream().limit(3).map(FACTS::get)
                 .collect(java.util.stream.Collectors.joining(" "));

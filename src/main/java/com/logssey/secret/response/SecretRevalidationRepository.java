@@ -24,7 +24,8 @@ class SecretRevalidationRepository {
                        o.occurrence_id, co.response_status, o.connection_id, o.scope_id,
                        o.presence_status, s.fingerprint_key_version,
                        conn.provider, conn.status AS connection_status, conn.scope_version,
-                       scope.enabled, scope.content_type, scope.history_limit,
+                       (scope.enabled AND (scope.content_type<>'GITHUB_REPOSITORY_FILES'
+                         OR o.source_context_ref=scope.approved_ref)) AS enabled, scope.content_type, scope.history_limit,
                        scope.approved_ref, scope.response_origin, scope.revision,scope.response_origin_version, co.version AS occurrence_version, co.action_cycle,
                        co.last_material_action_at, co.actions_completed_at
                 FROM secret_response_cases c
@@ -83,6 +84,7 @@ class SecretRevalidationRepository {
                   AND o.presence_status = 'PRESENT'
                   AND conn.provider IN ('GITHUB','AWS') AND conn.status = 'ACTIVE'
                   AND scope.enabled AND scope.response_origin = c.case_origin
+                  AND (scope.content_type<>'GITHUB_REPOSITORY_FILES' OR o.source_context_ref=scope.approved_ref)
                   AND EXISTS (SELECT 1 FROM secret_action_records a
                       WHERE a.case_id = c.case_id AND a.occurrence_id = o.occurrence_id)
                 """, (rs, row) -> new RequestCandidate(rs.getLong("occurrence_id"),
@@ -146,6 +148,8 @@ class SecretRevalidationRepository {
                     AND source_run.connection_id=connection.connection_id AND source_run.scope_version=connection.scope_version
                 JOIN secret_jobs source_job ON source_job.job_id=source_run.job_id AND source_job.status='SUCCEEDED'
                 WHERE o.occurrence_id = ? AND current_scope.enabled
+                  AND (current_scope.content_type<>'GITHUB_REPOSITORY_FILES'
+                    OR(o.source_context_ref=current_scope.approved_ref AND rs.snapshot_approved_ref=o.source_context_ref))
                 ORDER BY f.detected_at DESC, f.finding_id DESC LIMIT 1
                 """, (rs, row) -> new Baseline(rs.getString("config_hash"),
                 rs.getString("engine_version")), occurrenceId).stream().findFirst();

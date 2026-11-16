@@ -35,6 +35,25 @@ class SecretInvestigationEvidenceIntegrationTest {
   var candidate=fixture("CANDIDATE",true);reconcile(candidate.run);var metadata=fixture("METADATA_ONLY",true);reconcile(metadata.run);var noFinding=fixture("CONFIRMED",false);reconcile(noFinding.run);
   assertThat(count("secret_cross_environment_alerts")).isEqualTo(1);
  }
+ @Test void unknownLegacyGitHubContextRetainsHistoryWithoutCreatingCurrentFixtureOrAlertClaims(){
+  var f=fixture("CONFIRMED",true);
+  jdbc.update("UPDATE secret_occurrences SET source_context_ref=NULL,source_context_status='UNKNOWN' WHERE occurrence_id=?",f.occurrence);
+  reconcile(f.run);
+  assertThat(count("secret_findings")).isEqualTo(1);
+  assertThat(count("secret_current_valid_findings")).isZero();
+  assertThat(count("secret_cross_environment_alerts")).isZero();
+  assertThat(count("secret_investigation_tasks")).isZero();
+  assertThat(count("secret_current_fixture_attestations")).isZero();
+ }
+ @Test void changedGitHubApprovalCannotTreatTheOldBranchAsACurrentTestObservation(){
+  var f=fixture("CONFIRMED",true);
+  jdbc.update("UPDATE secret_connection_scopes SET approved_ref='github://example/private-repo/develop/config/' WHERE scope_id=?",f.scope);
+  reconcile(f.run);
+  assertThat(count("secret_findings")).isEqualTo(1);
+  assertThat(count("secret_current_valid_findings")).isZero();
+  assertThat(count("secret_cross_environment_alerts")).isZero();
+  assertThat(count("secret_current_fixture_attestations")).isZero();
+ }
  @Test void internalRequestsReuseOpenQuestionsAndNeverGrantTargetAccess(){
   var f=fixture("CONFIRMED",true);
   jdbc.update("INSERT INTO secret_role_grants(user_id,role,connection_id,granted_by_user_id,grant_source) VALUES(3,'OPERATIONS',?,1,'MANUAL')",f.connection);
@@ -161,11 +180,11 @@ class SecretInvestigationEvidenceIntegrationTest {
    CASE WHEN ?='METADATA_ONLY' THEN NULL ELSE 'test-v1' END,'AWS ••••1234',now(),now()) RETURNING credential_set_id
   """,Long.class,state,state,identity(),state,identity(),state);return fixtureForKey(key,finding);}
  Fixture fixtureForKey(long key,boolean finding){long c=jdbc.queryForObject("INSERT INTO secret_connections(provider,display_name,auth_ref,status,scope_version) VALUES('GITHUB','private-repo','protected-ref','ACTIVE',1) RETURNING connection_id",Long.class);
-  long s=jdbc.queryForObject("INSERT INTO secret_connection_scopes(connection_id,scope_key,revision,content_type,approved_ref,enabled,response_origin,response_origin_set_by_user_id,response_origin_set_at) VALUES(?,gen_random_uuid()::text,1,'GITHUB_REPOSITORY_FILES','github://private-repo/raw-path',true,'TEST',1,now()) RETURNING scope_id",Long.class,c);
+  long s=jdbc.queryForObject("INSERT INTO secret_connection_scopes(connection_id,scope_key,revision,content_type,approved_ref,history_limit,enabled,response_origin,response_origin_set_by_user_id,response_origin_set_at) VALUES(?,gen_random_uuid()::text,1,'GITHUB_REPOSITORY_FILES','github://example/private-repo/main/config/','CURRENT_COMMIT_ONLY',true,'TEST',1,now()) RETURNING scope_id",Long.class,c);
   long job=jdbc.queryForObject("INSERT INTO secret_jobs(kind,connection_id,scheduled_at,available_at,attempt_no,max_attempts,status,finished_at) VALUES('FULL_SCAN',?,clock_timestamp(),now(),1,3,'SUCCEEDED',now()) RETURNING job_id",Long.class,c);
   long run=jdbc.queryForObject("INSERT INTO secret_scan_runs(job_id,connection_id,trigger_type,scope_version,scheduled_at,requested_at,collection_status,detection_status,validation_status,result_status,finished_at) VALUES(?,?,'MANUAL',1,now(),now(),'SUCCEEDED','SUCCEEDED','SKIPPED','SUCCEEDED',clock_timestamp()) RETURNING run_id",Long.class,job,c);
   long rs=jdbc.queryForObject("INSERT INTO secret_run_scopes(run_id,scope_id,collection_status,object_count,finished_at,detection_stage_status,validation_stage_status,validation_required) VALUES(?,?,'SUCCEEDED',1,clock_timestamp(),'SUCCEEDED','SKIPPED',false) RETURNING run_scope_id",Long.class,run,s);
-  long o=jdbc.queryForObject("INSERT INTO secret_occurrences(credential_set_id,connection_id,scope_id,source_object_ref,location_key,environment,exposure_status,exposure_range,presence_status,first_seen_at,last_seen_at,last_seen_run_id) VALUES(?,?,?,'private-repo/raw-path','L1','UNKNOWN','UNKNOWN','UNKNOWN','PRESENT',now(),now(),?) RETURNING occurrence_id",Long.class,key,c,s,run);
+  long o=jdbc.queryForObject("INSERT INTO secret_occurrences(credential_set_id,connection_id,scope_id,source_object_ref,location_key,environment,exposure_status,exposure_range,presence_status,first_seen_at,last_seen_at,last_seen_run_id) VALUES(?,?,?,'example/private-repo/config/settings.env','L1','UNKNOWN','UNKNOWN','UNKNOWN','PRESENT',now(),now(),?) RETURNING occurrence_id",Long.class,key,c,s,run);
   long tr=jdbc.queryForObject("INSERT INTO secret_tool_runs(run_scope_id,engine,engine_version,config_hash,status,finding_count,finished_at) VALUES(?,'GITLEAKS','8.30.1','test-hash','SUCCEEDED',1,now()) RETURNING tool_run_id",Long.class,rs);
   if(finding)jdbc.update("INSERT INTO secret_findings(occurrence_id,run_id,tool_run_id,finding_key,rule_id,rule_version,detected_at) VALUES(?,?,?,gen_random_uuid()::text,'aws-access-token','1',clock_timestamp())",o,run,tr);
   return new Fixture(c,s,key,o,run,rs);

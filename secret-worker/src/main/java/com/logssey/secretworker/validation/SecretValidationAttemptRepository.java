@@ -368,10 +368,11 @@ VALUES(?,?,?,?,?,'AWS_STS',?,?,?,?,?,0,false,'LEGACY_UNAVAILABLE')
         return jdbc
                 .queryForList(
                         """
-SELECT v.*,o.source_object_ref,o.location_key,k.fingerprint,k.candidate_locator,j.expected_context->>'contextVersion' AS expected_context_version,
+SELECT v.*,o.source_object_ref,o.location_key,o.source_context_ref,k.fingerprint,k.candidate_locator,j.expected_context->>'contextVersion' AS expected_context_version,
  s.approved_ref,s.history_limit,s.content_type FROM secret_jobs j JOIN secret_validation_context v ON v.occurrence_id=j.target_occurrence_id AND v.connection_id=j.connection_id
  JOIN secret_occurrences o USING(occurrence_id) JOIN secret_credential_sets k ON k.credential_set_id=v.credential_set_id
  JOIN secret_connection_scopes s ON s.scope_id=v.scope_id WHERE j.job_id=? AND j.purpose='CREDENTIAL_VALIDITY'
+ AND (s.content_type<>'GITHUB_REPOSITORY_FILES' OR o.source_context_ref=s.approved_ref)
 """,
                         job.jobId())
                 .stream()

@@ -13,6 +13,7 @@ public class SecretScanFactsRepository {
     public List<SecretRunScopeResultResponse> scopes(long runId) {
         return jdbc.query("""
             SELECT o.*, s.content_type AS fallback_type, s.approved_ref,r.excluded_object_count,r.exclusion_reasons,
+                r.snapshot_approved_ref,c.provider,
                 (s.enabled AND s.revision=o.scope_revision AND c.status='ACTIVE'
                     AND c.scope_version=scan.scope_version) AS retry_current
             FROM secret_scope_outcomes o JOIN secret_connection_scopes s ON s.scope_id=o.scope_id
@@ -44,7 +45,9 @@ public class SecretScanFactsRepository {
                     stageReason(recorded,rs.getString("detection_stage_status"),rs.getString("detection_reason_code")),!type.endsWith("_METADATA"),at),
                 new SecretRunScopeResultResponse.Stage(recorded?Objects.requireNonNullElse(rs.getString("validation_stage_status"),"UNKNOWN"):"UNKNOWN",
                     stageReason(recorded,rs.getString("validation_stage_status"),rs.getString("validation_reason_code")),rs.getBoolean("validation_required"),at),
-                rs.getObject("started_at",OffsetDateTime.class),at,retryable,rs.getInt("excluded_object_count"),exclusions);
+                rs.getObject("started_at",OffsetDateTime.class),at,retryable,rs.getInt("excluded_object_count"),exclusions,
+                com.logssey.secret.query.SecretSourceDetails.githubTarget(rs.getString("provider"),
+                    rs.getString("snapshot_content_type"),rs.getString("snapshot_approved_ref")));
         },runId);
     }
 

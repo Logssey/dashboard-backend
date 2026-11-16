@@ -160,7 +160,10 @@ public final class SecretFindingRepository {
                                        byte[] content, SecretFindingNormalizer.Inspection supplied,
                                        GitleaksScanResult scan, Instant now) {
         ToolContext context = jdbc.query("""
-                SELECT sr.run_id, sr.connection_id, rs.scope_id, tr.engine_version, tr.config_hash, tr.status
+                SELECT sr.run_id, sr.connection_id, rs.scope_id, tr.engine_version, tr.config_hash, tr.status,
+                       CASE WHEN sc.content_type='GITHUB_REPOSITORY_FILES' THEN rs.snapshot_approved_ref END AS source_context_ref,
+                       (sc.content_type<>'GITHUB_REPOSITORY_FILES' OR
+                         (rs.snapshot_approved_ref=sc.approved_ref AND secret_github_scope_parts(rs.snapshot_approved_ref) IS NOT NULL)) AS source_context_current
                 FROM secret_tool_runs tr
                 JOIN secret_run_scopes rs ON rs.run_scope_id = tr.run_scope_id
                 JOIN secret_scan_runs sr ON sr.run_id = rs.run_id
@@ -169,14 +172,15 @@ public final class SecretFindingRepository {
                 WHERE tr.tool_run_id = ? AND tr.engine = 'GITLEAKS'
                 """, (rs, row) -> new ToolContext(rs.getLong("run_id"), rs.getLong("connection_id"),
                 rs.getLong("scope_id"), rs.getString("engine_version"), rs.getString("config_hash"),
-                rs.getString("status")), toolRunId).stream().findFirst()
+                rs.getString("status"),rs.getString("source_context_ref"),rs.getBoolean("source_context_current")), toolRunId).stream().findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("TOOL_RUN_SCOPE_MISMATCH"));
         if (!"RUNNING".equals(context.status()) || !context.engineVersion().equals(scan.engineVersion())
                 || !context.configHash().equals(scan.configHash())) {
             throw new IllegalArgumentException("TOOL_RUN_RESULT_MISMATCH");
         }
+        if(!context.sourceContextCurrent())throw new IllegalArgumentException("TOOL_RUN_SOURCE_CONTEXT_MISMATCH");
         SecretFindingNormalizer.Inspection inspection = supplied == null
-                ? normalizer.inspect(context.connectionId(), sourceObjectRef, content, scan.findings()) : supplied;
+                ? normalizer.inspect(context.connectionId(), sourceObjectRef, content, scan.findings(),context.sourceContextRef()) : supplied;
         if (inspection.connectionId() != context.connectionId()
                 || !inspection.sourceObjectRef().equals(sourceObjectRef)
                 || !inspection.detectorFindings().equals(scan.findings())) {
@@ -250,17 +254,18 @@ public final class SecretFindingRepository {
         Long id = jdbc.queryForObject("""
                 INSERT INTO secret_occurrences
                     (credential_set_id, connection_id, scope_id, source_object_ref, location_key,
-                     latest_object_version, environment, exposure_status, exposure_range, presence_status,
+                     latest_object_version, source_context_ref,source_context_status,environment, exposure_status, exposure_range, presence_status,
                      first_seen_at, last_seen_at, last_seen_run_id)
-                VALUES (?, ?, ?, ?, ?, ?, 'UNKNOWN', 'UNKNOWN', 'UNKNOWN', 'PRESENT', ?, ?, ?)
-                ON CONFLICT (credential_set_id, connection_id, source_object_ref, location_key)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'OBSERVED','UNKNOWN', 'UNKNOWN', 'UNKNOWN', 'PRESENT', ?, ?, ?)
+                ON CONFLICT (credential_set_id, connection_id, scope_id,source_context_key,source_object_ref, location_key)
                 DO UPDATE SET latest_object_version = EXCLUDED.latest_object_version,
                     last_seen_at = GREATEST(secret_occurrences.last_seen_at, EXCLUDED.last_seen_at),
                     last_seen_run_id = EXCLUDED.last_seen_run_id,
+                    source_context_status=EXCLUDED.source_context_status,
                     presence_status = 'PRESENT'
                 RETURNING occurrence_id
                 """, Long.class, credentialSetId, context.connectionId(), context.scopeId(), sourceRef,
-                locationKey, objectVersion, utc(now), utc(now), context.runId());
+                locationKey, objectVersion, context.sourceContextRef(),utc(now), utc(now), context.runId());
         return Objects.requireNonNull(id);
     }
 
@@ -290,7 +295,7 @@ public final class SecretFindingRepository {
     }
 
     private record ToolContext(long runId, long connectionId, long scopeId,
-                               String engineVersion, String configHash, String status) { }
+                               String engineVersion, String configHash, String status,String sourceContextRef,boolean sourceContextCurrent) { }
     private record ExistingToolRun(long id, String engineVersion, String configHash,
                                    long runId, long scopeId,String fingerprintVersion,Long originVersion,long currentOriginVersion) { }
     public record ObjectResult(int credentialCount, int newFindingCount) { }

@@ -295,6 +295,9 @@ WHERE job_id = ?
                                   AND rs.collection_status = 'SUCCEEDED'
                                   AND rs.detection_stage_status IN ('SUCCEEDED','SKIPPED')
                                   AND rs.scope_revision = v.scope_revision AND scope.revision = v.scope_revision AND scope.response_origin_version=v.scope_origin_version
+                                  AND (scope.content_type<>'GITHUB_REPOSITORY_FILES' OR
+                                       (target_occurrence.source_context_ref=rs.snapshot_approved_ref
+                                         AND target_occurrence.source_context_ref=scope.approved_ref))
                                   AND co.action_cycle = v.action_cycle AND co.version = v.occurrence_version
                                   AND co.last_material_action_at = v.last_material_action_at
                                   AND co.actions_completed_at = v.actions_completed_at
@@ -327,6 +330,7 @@ WHERE job_id = ?
                     JOIN secret_connections conn ON conn.connection_id = v.connection_id
                     JOIN secret_connection_scopes scope ON scope.scope_id = v.scope_id
                     JOIN secret_case_occurrences co ON co.case_id=v.case_id AND co.occurrence_id=v.occurrence_id
+                    JOIN secret_occurrences target_occurrence ON target_occurrence.occurrence_id=v.occurrence_id
                     JOIN secret_response_cases c ON c.case_id=v.case_id
                     JOIN secret_credential_sets k ON k.credential_set_id=c.credential_set_id
                     JOIN secret_action_records a ON a.action_id = v.action_id

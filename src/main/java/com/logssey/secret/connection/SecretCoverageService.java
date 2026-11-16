@@ -180,6 +180,8 @@ FROM secret_connection_scopes WHERE connection_id=? AND enabled
         item.put("scopeRevision", s.get("revision"));
         item.put("source", c.get("provider"));
         item.put("contentType", safeType((String) s.get("content_type")));
+        item.put("githubTarget", com.logssey.secret.query.SecretSourceDetails.githubTarget(
+                (String)c.get("provider"),(String)s.get("content_type"),(String)s.get("approved_ref")));
         item.put("origin", s.get("response_origin"));
         item.put("connectionStatus", c.get("status"));
         item.put(

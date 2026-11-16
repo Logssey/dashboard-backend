@@ -6,19 +6,55 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Pattern;
 import static com.logssey.secret.snapshot.SecretReadSnapshots.facts;
 
 /** Authorized source coordinates only. Never returns file contents, auth refs or key identities. */
 public final class SecretSourceDetails {
     private SecretSourceDetails() { }
-    private static final Pattern CREDENTIAL = Pattern.compile("AKIA[A-Z0-9]{16}|ASIA[A-Z0-9]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]+|(?:secret_|ntn_)[A-Za-z0-9]{20,}");
+    private static final Pattern CREDENTIAL = Pattern.compile("AKIA[A-Z0-9]{16}|ASIA[A-Z0-9]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]+|(?:secret_|ntn_)[A-Za-z0-9]{20,}|sk-ant-[A-Za-z0-9_-]{20,}");
     private static String safe(String value) {
         if(value==null || value.length()>700 || value.chars().anyMatch(c->c<32||c==127)||value.contains("\\")) return null;
         return CREDENTIAL.matcher(value).replaceAll("[마스킹]");
     }
     private static String decode(String value) { return URLDecoder.decode(value.replace("+","%2B"),StandardCharsets.UTF_8); }
     private static String encode(String value) { return URLEncoder.encode(value,StandardCharsets.UTF_8).replace("+","%20"); }
+
+    public record GitHubTarget(String repository,String branch,String path) { }
+
+    /** Returns display coordinates from the supplied approval snapshot without echoing its URI. */
+    public static GitHubTarget githubTarget(String provider,String contentType,String approvedRef) {
+        if(!"GITHUB".equals(provider)||!"GITHUB_REPOSITORY_FILES".equals(contentType)
+                ||approvedRef==null||approvedRef.length()>500)return null;
+        try {
+            var uri=URI.create(approvedRef);
+            if(!"github".equals(uri.getScheme())||uri.getRawUserInfo()!=null||uri.getPort()!=-1
+                    ||uri.getRawQuery()!=null||uri.getRawFragment()!=null||uri.getHost()==null)return null;
+            String[] parts=uri.getRawPath().split("/",-1);
+            if(parts.length<4||!parts[parts.length-1].isEmpty())return null;
+            String owner=uri.getHost(),repo=decode(parts[1]),branch=decode(parts[2]);
+            if(!owner.matches("[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?")
+                    ||!repo.matches("[A-Za-z0-9_.-]{1,100}")||Set.of(".","..").contains(repo)
+                    ||branch.isBlank()||branch.length()>200||branch.startsWith("/")||branch.endsWith("/")
+                    ||branch.contains("..")||branch.contains("//")||branch.contains("@{")
+                    ||branch.chars().anyMatch(c->c<=32||c==127||"\\?#*[]~^:".indexOf(c)>=0))return null;
+            var pathParts=Arrays.stream(parts).skip(3).limit(parts.length-4L)
+                    .map(SecretSourceDetails::decode).toList();
+            if(pathParts.stream().anyMatch(part->part.isBlank()||part.equals(".")||part.equals("..")))return null;
+            String path=pathParts.isEmpty()?"":String.join("/",pathParts)+"/";
+            if(path.length()>250||path.contains("%")
+                    ||path.chars().anyMatch(c->c<32||c==127||"\\?#*:".indexOf(c)>=0))return null;
+            if(!path.isEmpty()&&Arrays.stream(path.substring(0,path.length()-1).split("/",-1))
+                    .anyMatch(part->part.isBlank()||part.equals(".")||part.equals("..")))return null;
+            String repository=owner+"/"+repo;
+            if(!repository.equals(safe(repository))||!branch.equals(safe(branch))||!path.equals(safe(path)))return null;
+            return new GitHubTarget(repository,branch,path);
+        }catch(RuntimeException ignored) {
+            return null;
+        }
+    }
+
     public static String scopeLabel(String provider,String approvedRef,long scopeId) {
         try {
             var uri=URI.create(approvedRef);
@@ -39,6 +75,24 @@ public final class SecretSourceDetails {
         }catch(RuntimeException ignored) { }
         return "검사 대상 #"+scopeId;
     }
+    public static Map<String,Object> describeObserved(String provider,String approvedRef,String contextRef,
+                                                     String contextStatus,String sourceRef,String lineRef) {
+        var details=new java.util.LinkedHashMap<>(describe(provider,
+                "GITHUB".equals(provider)?contextRef:approvedRef,sourceRef,lineRef));
+        if("GITHUB".equals(provider)) {
+            var current=describe(provider,approvedRef,sourceRef,lineRef);
+            if("AVAILABLE".equals(details.get("status"))
+                    && (!"AVAILABLE".equals(current.get("status"))
+                      || !java.util.Objects.equals(current.get("branch"),details.get("branch")))) {
+                details=new java.util.LinkedHashMap<>(facts("status","UNAVAILABLE","label","발견 위치 확인 필요",
+                        "reasonCode","SOURCE_APPROVAL_CHANGED"));
+            }
+            details.put("contextStatus",Set.of("OBSERVED","RECONSTRUCTED").contains(contextStatus==null?"":contextStatus)
+                    ?contextStatus:"UNKNOWN");
+        }
+        return details;
+    }
+
     public static Map<String,Object> describe(String provider,String approvedRef,String sourceRef,String lineRef) {
         var unavailable=facts("status","UNAVAILABLE","label","발견 위치 확인 필요","reasonCode","SOURCE_COORDINATES_UNAVAILABLE");
         try {

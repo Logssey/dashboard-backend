@@ -222,6 +222,22 @@ class SecretClosureIntegrationTest {
         return new com.logssey.secret.lifecycle.SecretLifecycleService(jdbc,access,workflow,commands,snapshots);
     }
 
+    @Test void aDifferentGitHubApprovalCannotReuseAnOldAbsenceProofAtTheSameRevision() {
+        manual("REVOKED");
+        assertThat(service.checks("security",caseId).allowedCoverageLevels()).containsExactly("LIMITED");
+        jdbc.update("UPDATE secret_connection_scopes SET approved_ref='github://Example/project/develop/src/' WHERE scope_id=?",first.scope);
+        var checks=service.checks("security",caseId);
+        assertThat(checks.allowedCoverageLevels()).isEmpty();
+        assertThat(checks.closureChecks()).anyMatch(check->"SOURCE_APPROVAL_CHANGED".equals(check.reasonCode()));
+    }
+
+    @Test void anUnknownRevalidationSnapshotCannotProveCurrentGitHubAbsence() {
+        manual("REVOKED");
+        assertThat(service.checks("security",caseId).allowedCoverageLevels()).containsExactly("LIMITED");
+        jdbc.update("UPDATE secret_run_scopes SET snapshot_approved_ref=NULL WHERE run_id=(SELECT run_id FROM secret_case_revalidations WHERE revalidation_id=?)",first.revalidation);
+        assertThat(service.checks("security",caseId).allowedCoverageLevels()).isEmpty();
+    }
+
     @Test void unclassifiedCaseRetainsActualOriginThroughIndependentLifecycleReviewAndClosure() {
         jdbc.update("UPDATE secret_response_cases SET case_origin='UNCLASSIFIED' WHERE case_id=?",caseId);
         jdbc.update("UPDATE secret_connection_scopes SET response_origin='UNCLASSIFIED',response_origin_set_by_user_id=NULL,response_origin_set_at=NULL WHERE scope_id=?",first.scope);
