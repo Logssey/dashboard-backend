@@ -34,7 +34,7 @@ if [ "${#source_files[@]}" -eq 0 ]; then
   exit 5
 fi
 
-arguments=(iam-policy-autopilot@latest generate-policies "${source_files[@]}" --language python --pretty)
+arguments=(iam-policy-autopilot@0.4.0 generate-policies "${source_files[@]}" --language python --pretty)
 if [ -n "$account_id" ]; then arguments+=(--account "$account_id"); fi
 if [ -n "$region" ]; then arguments+=(--region "$region"); fi
 

@@ -37,23 +37,29 @@ public class ComplianceReportService {
 
     private final ComplianceRepository repository;
     private final ComplianceCatalog catalog;
+    private final ComplianceTargetRepository targets;
     private final String targetKey;
     private final String targetName;
 
     public ComplianceReportService(ComplianceRepository repository, ComplianceCatalog catalog,
+                                   ComplianceTargetRepository targets,
                                    @Value("${logssey.compliance.target-key:default}") String targetKey,
                                    @Value("${logssey.compliance.target-name:점검 대상}") String targetName) {
         this.repository = repository;
         this.catalog = catalog;
+        this.targets = targets;
         this.targetKey = targetKey;
         this.targetName = targetName;
     }
 
     @Transactional(readOnly = true)
-    public ReportDocument report(long runId, String requestedFramework) {
+    public ReportDocument report(String requestedTarget, long runId, String requestedFramework) {
         String scope = normalizeFramework(requestedFramework);
-        RunSummary run = repository.run(targetKey, runId)
+        String selectedTarget = target(requestedTarget);
+        RunSummary run = repository.run(selectedTarget, runId)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+        String selectedTargetName = targets.find(selectedTarget)
+                .map(ComplianceTargetDtos.TargetSummary::displayName).orElse(targetName);
         List<ComplianceCatalog.Framework> frameworks = scope.equals("all")
                 ? catalog.frameworks()
                 : List.of(requiredFramework(scope));
@@ -80,12 +86,14 @@ public class ComplianceReportService {
 
         String filename = "logssey-compliance-run-" + runId + "-" + (scope.equals("all") ? "integrated" : scope) + ".html";
         return new ReportDocument(filename,
-                render(run, frameworks, assessments, selectedResults, truncated, scope).getBytes(StandardCharsets.UTF_8));
+                render(run, frameworks, assessments, selectedResults, truncated, scope, selectedTargetName)
+                        .getBytes(StandardCharsets.UTF_8));
     }
 
     private String render(RunSummary run, List<ComplianceCatalog.Framework> frameworks,
                           Map<String, ComplianceRepository.AssessmentRow> assessments,
-                          List<ResultItem> findings, boolean findingsTruncated, String scope) {
+                          List<ResultItem> findings, boolean findingsTruncated, String scope,
+                          String selectedTargetName) {
         String reportLabel = scope.equals("all") ? "통합" : frameworks.getFirst().shortName();
         String reportId = "CMP-" + run.runId() + "-" + scope.toUpperCase(Locale.ROOT);
         var html = new StringBuilder(64_000);
@@ -100,7 +108,7 @@ public class ComplianceReportService {
                 .append(h(reportLabel)).append(" 컴플라이언스<br>감사 결과 보고서</h1>")
                 .append("<p>클라우드 구성 점검 결과를 규제 통제별 기술 근거로 정리한 Run Snapshot 보고서입니다.</p></div>")
                 .append("<dl class=\"cover-meta\">")
-                .append(meta("대상 서비스", targetName))
+                .append(meta("대상 서비스", selectedTargetName))
                 .append(meta("대상 환경", environmentLabel(run.environment())))
                 .append(meta("점검 엔진", run.product() + " " + run.scannerVersion()))
                 .append(meta("점검 완료", REPORT_TIME.format(run.finishedAt())))
@@ -199,6 +207,14 @@ public class ComplianceReportService {
             throw new ApiException(ErrorCode.INVALID_INPUT, "지원하지 않는 보고서 기준입니다.");
         }
         return normalized;
+    }
+
+    private String target(String requestedTarget) {
+        String selected = requestedTarget == null || requestedTarget.isBlank() ? targetKey : requestedTarget.trim();
+        if (!selected.matches("^[a-z0-9][a-z0-9-]{1,98}[a-z0-9]$")) {
+            throw new ApiException(ErrorCode.INVALID_INPUT, "점검 대상 키가 올바르지 않습니다.");
+        }
+        return selected;
     }
 
     private static String meta(String label, String value) {

@@ -2,6 +2,7 @@ package com.logssey.complianceworker;
 
 import static com.logssey.complianceworker.WorkerDtos.ClaimedJob;
 import static com.logssey.complianceworker.WorkerDtos.LeaseResponse;
+import static com.logssey.complianceworker.WorkerDtos.AwsCallerIdentity;
 
 import java.io.IOException;
 import java.net.URI;
@@ -73,6 +74,16 @@ public class ComplianceWorkerApiClient {
                 .POST(HttpRequest.BodyPublishers.ofByteArrays(List.of(prefix, Files.readAllBytes(result), suffix)))
                 .build();
         requireStatus(send(request), 200);
+    }
+
+    void completeConnection(ClaimedJob job, AwsCallerIdentity identity)
+            throws IOException, InterruptedException {
+        byte[] body = json.writeValueAsBytes(java.util.Map.of(
+                "leaseToken", job.leaseToken(), "leaseGeneration", job.leaseGeneration(),
+                "accountId", identity.accountId(), "callerArn", identity.arn()));
+        var response = send(jsonRequest(
+                "/internal/v1/compliance/jobs/" + job.jobId() + "/connection-completion", body));
+        requireStatus(response, 200);
     }
 
     void fail(ClaimedJob job, String errorCode, boolean retryable) throws IOException, InterruptedException {

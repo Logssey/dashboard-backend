@@ -27,6 +27,7 @@ API 설정에는 다음 값을 추가한다.
 logssey.compliance.target-key=replace-service-key
 logssey.compliance.target-name=replace-service-name
 logssey.compliance.execution-enabled=false
+logssey.compliance.connection-tests-enabled=false
 logssey.compliance.worker-lease-seconds=900
 logssey.compliance.worker-retry-delay-seconds=30
 ```
@@ -35,17 +36,45 @@ API secret 디렉터리의 `logssey.compliance.worker-token`과 Worker secret �
 
 Worker 설정은 [`deploy/compliance-worker.properties.example`](../deploy/compliance-worker.properties.example)을 복사해 외부에서 관리한다. Worker마다 고유한 `worker-id`를 사용한다.
 
-운영에 처음 붙일 때는 API의 `execution-enabled`와 Worker의 `enabled`를 모두 `false`로 둔다. 이 상태에서는 기존 결과와 보고서를 조회할 수 있지만 새 자동 점검은 등록되지 않는다. Worker 이미지, 공유 토큰, workload identity와 합성 점검을 확인한 뒤 두 값을 함께 활성화한다.
+운영에 처음 붙일 때는 API의 `execution-enabled`, `connection-tests-enabled`와 Worker의 `enabled`를 모두 `false`로 둔다. 이 상태에서는 기존 결과와 보고서를 조회할 수 있지만 AWS 호출은 발생하지 않는다. 전용 workload identity를 붙인 다음 Worker와 `connection-tests-enabled`만 먼저 켜 연결 확인을 수행한다. 대상 계정과 역할이 확인된 뒤 대상 자체를 활성화하고 마지막으로 `execution-enabled`를 켠다.
 
 ## AWS 자격 증명 경계
 
 - ECS에서는 compliance Worker task role만 연결한다. task execution role과 API task role에 점검 권한을 섞지 않는다.
 - EKS에서는 compliance Worker ServiceAccount에만 EKS Pod Identity 또는 IRSA 역할을 연결한다.
 - EC2/단일 호스트에서는 인스턴스 프로파일처럼 자동 회전되는 workload identity를 사용한다.
+- 현재 단일 호스트 Compose에서는 API를 `127.0.0.1:8080`에만 게시하고 Compliance Worker만 host network를 사용한다. IMDS hop limit 1을 유지하므로 bridge network의 API·다른 Worker는 인스턴스 프로파일을 받을 수 없다.
 - 정적 Access Key, 개인 `~/.aws`, Docker 소켓을 컨테이너에 전달하지 않는다.
 - 대시보드 DB와 API 요청에는 AWS 비밀키를 저장하지 않는다.
 
-Prowler는 지원하는 AWS 점검 API가 매우 넓고 버전에 따라 달라진다. 배포 역할의 기준 정책은 수동으로 추측하지 않고 저장소에 포함된 `deploy/generate-compliance-iam-policy.sh`로 Prowler 5.46.0 소스에서 생성한다. 생성 결과는 IAM Policy Simulator와 별도 테스트 계정에서 검토한 뒤 역할에 연결한다.
+권한은 두 단계로 나눈다. Worker의 호스트 역할에는 등록한 대상 역할을 맡을 수 있는 권한만 둔다.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": "sts:AssumeRole",
+    "Resource": "arn:aws:iam::<대상 계정 ID>:role/<대상 점검 역할>"
+  }]
+}
+```
+
+대상 점검 역할의 신뢰 정책은 Worker 호스트 역할과 화면에서 발급한 대상별 External ID를 모두 일치시킨다. `Principal`에 계정 root나 와일드카드를 넣지 않는다.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"AWS": "arn:aws:iam::<Logssey 계정 ID>:role/<Worker 호스트 역할>"},
+    "Action": "sts:AssumeRole",
+    "Condition": {"StringEquals": {"sts:ExternalId": "logssey-<대상별 UUID>"}}
+  }]
+}
+```
+
+실제 AWS 조회 권한은 이 대상 점검 역할에만 연결한다. Prowler는 지원하는 AWS 점검 API가 매우 넓고 버전에 따라 달라지므로 정책을 수동으로 추측하지 않는다. 저장소의 `deploy/generate-compliance-iam-policy.sh`는 Prowler 5.46.0 소스 커밋과 IAM Policy Autopilot 0.4.0을 고정해 검토용 기준 정책을 만든다. 생성 결과는 IAM Access Analyzer·Policy Simulator와 별도 테스트 계정에서 검토한 뒤 역할에 연결한다. 생성 결과를 자동으로 AWS에 반영하지 않는다.
 
 ## Compose 사전 검토
 
@@ -65,6 +94,8 @@ docker compose -f deploy/compose.yaml -f deploy/compliance-compose.yaml --profil
 - API와 Worker 이미지 digest가 검토된 값인가
 - API와 Worker token 파일이 서로 일치하고 저장소 밖에 있는가
 - Worker만 AWS workload role을 갖는가
+- Worker 호스트 역할은 정확한 대상 역할의 `sts:AssumeRole`만 허용하는가
+- 대상 역할 신뢰 정책은 정확한 Worker 역할과 대상별 External ID를 모두 요구하는가
 - 선택한 계정·리전·서비스가 승인 범위와 일치하는가
 - CloudTrail에서 Worker 역할의 읽기 호출을 식별할 수 있는가
 - 작업 취소, 임대 만료, 재시도, 중복 결과 거절을 합성 E2E에서 확인했는가
