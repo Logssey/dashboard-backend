@@ -37,12 +37,10 @@ class ReachPropertiesTest {
     }
 
     @Test
-    void ecosystemDefaultsToMavenAndOnlyMavenAppsAreScannable() {
+    void ecosystemDefaultsToMaven() {
         assertThat(new App("API", "r", null, null).ecosystem()).isEqualTo("maven");
         assertThat(new App("API", "r", null, null, " ").ecosystem()).isEqualTo("maven");
         assertThat(new App("WEB", "r", null, null, "NPM").ecosystem()).isEqualTo("npm");
-        assertThat(new App("API", "r", null, null).scannable()).isTrue();
-        assertThat(new App("WEB", "r", null, null, "npm").scannable()).isFalse();
     }
 
     /** 운영은 properties 파일로 넣는다. 생성자가 둘이라 Spring이 ecosystem까지 받는 쪽으로 묶는지 본다 */

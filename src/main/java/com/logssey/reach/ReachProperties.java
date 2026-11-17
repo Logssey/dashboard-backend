@@ -57,7 +57,7 @@ public record ReachProperties(List<App> apps, L1 l1) {
     /**
      * 서비스 안의 앱 하나. repo는 레포 이름(소유자를 붙여도 이름만 본다), path는 레포 안 하위 경로(없으면 레포 전체),
      * image는 이미지 저장소(태그·digest 없이). repo와 image 중 하나는 있어야 한다.
-     * ecosystem은 maven(기본) 또는 npm. 대시보드 스캔 요청(API-01)은 maven 앱만 받는다
+     * ecosystem은 maven(기본) 또는 npm. 화면 표시용이다(스캔은 러너가 앱 jar 유무로 L2를 정한다)
      */
     public record App(String code, String repo, String path, String image, String ecosystem) {
 
@@ -69,11 +69,6 @@ public record ReachProperties(List<App> apps, L1 l1) {
         /** ecosystem 없이(maven) */
         public App(String code, String repo, String path, String image) {
             this(code, repo, path, image, null);
-        }
-
-        /** Reach가 스캔할 수 있는 앱인가 (분석기·CI 스크립트는 Java/Gradle만) */
-        public boolean scannable() {
-            return MAVEN.equals(ecosystem);
         }
     }
 
