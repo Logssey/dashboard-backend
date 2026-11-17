@@ -56,29 +56,138 @@ public class ReachQueryRepository {
     """;
 
     /**
-     * 기준 범위 (API-04·08 scanId·target).
-     * scanId가 있으면 그 스캔 하나다. PR 검사의 스캔도 이렇게 지정하면 본다 (API-12 findingsUrl).
-     * 없으면 app·대상 종류(REPO/IMAGE)마다 PR이 아닌 최신 SUCCEEDED 스캔 하나다 (ARD SR-09).
-     * 이미지를 다시 빌드하면 digest마다 대상이 생기는데, 대상마다로 두면 옛 이미지의 Finding이 요약에 계속 쌓여서다.
-     * target이 있으면 그 대상의 PR이 아닌 최신 스캔이다. 스캔이 있는지·끝났는지는 Service가 먼저 확인한다
+     * 기본 범위의 기준 (API-04·08 basis). running이면 L1의 신선한 조회에서 실행 중인 digest를 앱마다 먼저 쓴다.
+     * L1이 꺼진 설치는 Service가 LATEST로 만든다
      */
-    private static String latest(Long scanId, Long target) {
+    record Basis(boolean running, String cluster, List<String> namespaces, String fresh) {
+        static final Basis LATEST = new Basis(false, null, List.of(), null);
+    }
+
+    /** app·대상 종류(REPO/IMAGE)마다 PR이 아닌 최신 SUCCEEDED 스캔 (basis=LATEST, 그리고 RUNNING의 대신 쓰는 값) */
+    private static final String NEWEST = """
+            SELECT DISTINCT ON (t.app, t.target_type) s.target_id, s.scan_id, t.app, t.target_type, t.image_digest
+            FROM reach_scans s JOIN reach_targets t ON t.target_id = s.target_id
+            WHERE s.scan_status = 'SUCCEEDED' AND s.trigger_type <> 'PR'
+            ORDER BY t.app, t.target_type, s.finished_at DESC, s.scan_id DESC""";
+
+    /**
+     * basis=RUNNING의 기준 스캔 (PRD 목표 3 "실제 배포물 기준").
+     * 실행 중 digest(L1 재계산과 같은 신선도)의 이미지 대상마다 PR이 아닌 최신 SUCCEEDED 스캔을 쓴다. 같은 앱이 두 digest로
+     * 돌면 둘 다다. 실행 중 스캔이 없는 앱의 이미지와 레포 대상은 NEWEST를 그대로 쓴다(running=false)
+     */
+    private static final String RUNNING_SCOPE = """
+            WITH running AS (
+                SELECT DISTINCT w.image_digest
+                FROM reach_workloads w
+                JOIN reach_workload_observations o ON o.cluster = w.cluster AND o.namespace = w.namespace
+                WHERE o.cluster = :basisCluster AND o.namespace IN (:basisNamespaces)
+                  AND o.observed_at > now() - CAST(:basisFresh AS interval)
+            ), running_scans AS (
+                SELECT DISTINCT ON (t.target_id) s.target_id, s.scan_id, t.app, t.target_type, t.image_digest
+                FROM reach_scans s JOIN reach_targets t ON t.target_id = s.target_id
+                WHERE s.scan_status = 'SUCCEEDED' AND s.trigger_type <> 'PR' AND t.target_type = 'IMAGE'
+                  AND t.image_digest IN (SELECT image_digest FROM running)
+                ORDER BY t.target_id, s.finished_at DESC, s.scan_id DESC
+            ), newest AS (
+                %s
+            )
+            SELECT target_id, scan_id, app, target_type, image_digest, true AS running FROM running_scans
+            UNION ALL
+            SELECT n.target_id, n.scan_id, n.app, n.target_type, n.image_digest, false AS running FROM newest n
+            WHERE n.target_type = 'REPO' OR NOT EXISTS (SELECT 1 FROM running_scans r WHERE r.app = n.app)""".formatted(NEWEST);
+
+    /** 기본 범위의 스캔 목록 (app, target_type, target_id, scan_id, image_digest, running) */
+    private static String scopeScans(Basis basis) {
+        return basis.running() ? RUNNING_SCOPE
+                : "SELECT n.target_id, n.scan_id, n.app, n.target_type, n.image_digest, false AS running FROM (" + NEWEST + ") n";
+    }
+
+    /**
+     * 기준 범위 (API-04·08 scanId·target·basis).
+     * scanId가 있으면 그 스캔 하나다. PR 검사의 스캔도 이렇게 지정하면 본다 (API-12 findingsUrl).
+     * target이 있으면 그 대상의 PR이 아닌 최신 스캔이다. 스캔이 있는지·끝났는지는 Service가 먼저 확인한다.
+     * 둘 다 없으면 기본 범위다(basis). LATEST는 app·대상 종류(REPO/IMAGE)마다 PR이 아닌 최신 SUCCEEDED 스캔 하나(ARD SR-09):
+     * 이미지를 다시 빌드하면 digest마다 대상이 생기는데, 대상마다로 두면 옛 이미지의 Finding이 요약에 계속 쌓여서다.
+     * RUNNING은 실행 중 이미지의 스캔을 앱마다 먼저 쓴다(RUNNING_SCOPE)
+     */
+    private static String latest(Long scanId, Long target, Basis basis) {
         if (scanId != null) return "SELECT target_id, scan_id FROM reach_scans WHERE scan_id = :scopeScan";
+        if (target == null) return "SELECT target_id, scan_id FROM (" + scopeScans(basis) + ") scope";
         return """
                 SELECT DISTINCT ON (t.app, t.target_type) s.target_id, s.scan_id
                 FROM reach_scans s JOIN reach_targets t ON t.target_id = s.target_id
-                WHERE s.scan_status = 'SUCCEEDED' AND s.trigger_type <> 'PR'%s
-                ORDER BY t.app, t.target_type, s.finished_at DESC, s.scan_id DESC""".formatted(target == null ? "" : " AND s.target_id = :scopeTarget");
+                WHERE s.scan_status = 'SUCCEEDED' AND s.trigger_type <> 'PR' AND s.target_id = :scopeTarget
+                ORDER BY t.app, t.target_type, s.finished_at DESC, s.scan_id DESC""";
     }
 
-    static String currentFindings(Long scanId, Long target) {
-        return CURRENT_FINDINGS.formatted(latest(scanId, target));
+    static String currentFindings(Long scanId, Long target, Basis basis) {
+        return CURRENT_FINDINGS.formatted(latest(scanId, target, basis));
     }
 
     /** latest()가 쓰는 파라미터를 넣는다 */
-    private static void scope(Map<String, Object> params, Long scanId, Long target) {
+    private static void scope(Map<String, Object> params, Long scanId, Long target, Basis basis) {
         if (scanId != null) params.put("scopeScan", scanId);
         else if (target != null) params.put("scopeTarget", target);
+        else basisParams(params, basis);
+    }
+
+    private static void basisParams(Map<String, Object> params, Basis basis) {
+        if (!basis.running()) return;
+        params.put("basisCluster", basis.cluster());
+        params.put("basisNamespaces", basis.namespaces());
+        params.put("basisFresh", basis.fresh());
+    }
+
+    /** 기본 범위로 쓴 스캔 (API-08 basis.scans) */
+    record ScopeScan(String app, String targetType, long targetId, long scanId, String imageDigest, boolean running) {}
+
+    List<ScopeScan> scopeScanList(Basis basis) {
+        var params = new HashMap<String, Object>();
+        basisParams(params, basis);
+        return jdbcClient.sql("SELECT * FROM (" + scopeScans(basis) + ") scope ORDER BY app, target_type, running DESC, scan_id")
+                .params(params)
+                .query((rs, i) -> new ScopeScan(rs.getString("app"), rs.getString("target_type"), rs.getLong("target_id"),
+                        rs.getLong("scan_id"), rs.getString("image_digest"), rs.getBoolean("running")))
+                .list();
+    }
+
+    /** 신선한 조회가 하나라도 있나. 없으면 RUNNING을 줄 수 없어 LATEST와 같다 (API-08 basis.applied) */
+    boolean hasFreshObservation(Basis basis) {
+        if (!basis.running()) return false;
+        var params = new HashMap<String, Object>();
+        basisParams(params, basis);
+        return Boolean.TRUE.equals(jdbcClient.sql("""
+                        SELECT EXISTS (SELECT 1 FROM reach_workload_observations o
+                                       WHERE o.cluster = :basisCluster AND o.namespace IN (:basisNamespaces)
+                                         AND o.observed_at > now() - CAST(:basisFresh AS interval))""")
+                .params(params)
+                .query(Boolean.class)
+                .single());
+    }
+
+    /** 실행 중인데 PR이 아닌 성공 스캔이 없는 워크로드 (API-08 basis.unscannedRunning). repository는 API-07과 같은 식 */
+    record UnscannedWorkload(String namespace, String name, String container, String imageRepository, String imageDigest) {}
+
+    List<UnscannedWorkload> unscannedRunning(Basis basis) {
+        if (!basis.running()) return List.of();
+        var params = new HashMap<String, Object>();
+        basisParams(params, basis);
+        return jdbcClient.sql("""
+                        SELECT w.namespace, w.name, w.container, w.image_digest,
+                               regexp_replace(regexp_replace(split_part(w.image, '@', 1), ':[^/:]*$', ''),
+                                              '^(localhost|[^/]*[.:][^/]*)/', '') AS repository
+                        FROM reach_workloads w
+                        JOIN reach_workload_observations o ON o.cluster = w.cluster AND o.namespace = w.namespace
+                        WHERE o.cluster = :basisCluster AND o.namespace IN (:basisNamespaces)
+                          AND o.observed_at > now() - CAST(:basisFresh AS interval)
+                          AND NOT EXISTS (SELECT 1 FROM reach_scans s JOIN reach_targets t ON t.target_id = s.target_id
+                                          WHERE t.target_type = 'IMAGE' AND t.image_digest = w.image_digest
+                                            AND s.scan_status = 'SUCCEEDED' AND s.trigger_type <> 'PR')
+                        ORDER BY w.namespace, w.name, w.container, w.image_digest""")
+                .params(params)
+                .query((rs, i) -> new UnscannedWorkload(rs.getString("namespace"), rs.getString("name"),
+                        rs.getString("container"), rs.getString("repository"), rs.getString("image_digest")))
+                .list();
     }
 
     /** 기본 정렬: 상태 -> 심각도 -> CVE(연도·번호를 숫자로) -> id (Reach API 명세 2-5). */
@@ -121,7 +230,7 @@ public class ReachQueryRepository {
 
     /** 대상 하나의 기준 스캔 (API-08 scope.scanId). 없으면 null */
     Long baselineScan(long targetId) {
-        return jdbcClient.sql(latest(null, targetId))
+        return jdbcClient.sql(latest(null, targetId, Basis.LATEST))
                 .param("scopeTarget", targetId)
                 .query((rs, i) -> rs.getLong("scan_id"))
                 .optional()
@@ -169,29 +278,29 @@ public class ReachQueryRepository {
 
     private record Where(String sql, Map<String, Object> params) {}
 
-    List<Row> findings(ReachFindingFilter filter, ReachFindingCursor after, int limit) {
-        var where = where(filter, after);
+    List<Row> findings(ReachFindingFilter filter, Basis basis, ReachFindingCursor after, int limit) {
+        var where = where(filter, basis, after);
         var params = new HashMap<>(where.params());
         params.put("limit", limit);
-        return jdbcClient.sql("SELECT * FROM (" + currentFindings(filter.scanId(), filter.target()) + ") c"
+        return jdbcClient.sql("SELECT * FROM (" + currentFindings(filter.scanId(), filter.target(), basis) + ") c"
                         + where.sql() + DEFAULT_ORDER + " LIMIT :limit")
                 .params(params)
                 .query(this::row)
                 .list();
     }
 
-    long countFindings(ReachFindingFilter filter) {
-        var where = where(filter, null);   // 개수는 커서와 무관하게 필터 전체
-        return jdbcClient.sql("SELECT count(*) FROM (" + currentFindings(filter.scanId(), filter.target()) + ") c" + where.sql())
+    long countFindings(ReachFindingFilter filter, Basis basis) {
+        var where = where(filter, basis, null);   // 개수는 커서와 무관하게 필터 전체
+        return jdbcClient.sql("SELECT count(*) FROM (" + currentFindings(filter.scanId(), filter.target(), basis) + ") c" + where.sql())
                 .params(where.params())
                 .query(Long.class)
                 .single();
     }
 
-    private Where where(ReachFindingFilter filter, ReachFindingCursor after) {
+    private Where where(ReachFindingFilter filter, Basis basis, ReachFindingCursor after) {
         var conditions = new ArrayList<String>();
         var params = new HashMap<String, Object>();
-        scope(params, filter.scanId(), filter.target());
+        scope(params, filter.scanId(), filter.target(), basis);
         in(conditions, params, "status", filter.status());
         in(conditions, params, "severity", filter.severity());
         in(conditions, params, "review_state", filter.reviewState());
@@ -236,16 +345,16 @@ public class ReachQueryRepository {
             long count) {}
 
     /** API-08. 목록과 같은 CURRENT_FINDINGS를 조합별로 센다. 차원별 합계는 Service가 낸다 */
-    List<SummaryRow> summaryRows(Long scanId, Long target, List<String> deployment) {
+    List<SummaryRow> summaryRows(Long scanId, Long target, Basis basis, List<String> deployment) {
         var params = new HashMap<String, Object>();
-        scope(params, scanId, target);
+        scope(params, scanId, target, basis);
         var where = deployment.isEmpty() ? "" : " WHERE deployment IN (:deployment)";
         if (!deployment.isEmpty()) params.put("deployment", deployment);
         var spec = jdbcClient.sql("""
                 SELECT status, severity, method, review_state, deployment, not_analyzed_reason, count(*) AS n
                 FROM (%s) c%s
                 GROUP BY status, severity, method, review_state, deployment, not_analyzed_reason
-                """.formatted(currentFindings(scanId, target), where))
+                """.formatted(currentFindings(scanId, target, basis), where))
                 .params(params);
         return spec.query((rs, i) -> new SummaryRow(rs.getString("status"), rs.getString("severity"),
                         rs.getString("method"), rs.getString("review_state"), rs.getString("deployment"),
