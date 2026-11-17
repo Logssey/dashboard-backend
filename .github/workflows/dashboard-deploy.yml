@@ -132,3 +132,74 @@ jobs:
           INSTANCE_ID: ${{ vars.DASHBOARD_INSTANCE_ID }}
           DIGEST: ${{ steps.image.outputs.compliance_worker }}
         run: bash .github/scripts/dashboard-deploy-ssm.sh compliance-worker "$DIGEST"
+
+  # IaC worker (IaC security ADR-13). Separate jobs so the API, Secret worker, and Compliance worker
+  # deploy as before even if the IaC tests fail; the IaC worker deploys after them with the same commit.
+  iac-worker-test:
+    name: IaC worker tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      # Testcontainers (PostgreSQL, Neo4j) uses the runner's Docker
+      - name: Tests (IaC worker)
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :iac-worker:test --console=plain
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: iac-worker-test-reports
+          path: iac-worker/build/reports/tests/test/
+          retention-days: 7
+
+  deploy-iac-worker:
+    name: Build and deploy the IaC worker
+    needs: [deploy, iac-worker-test]
+    # Off until the host has the iac-worker service, its DB role, and its AWS role (repository variable)
+    if: github.ref == 'refs/heads/develop' && vars.DASHBOARD_DEPLOY_IAC_WORKER == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      IAC_WORKER_REPOSITORY: logssey/dashboard-iac-worker
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.DASHBOARD_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Build and push the image
+        id: image
+        run: |
+          set -euo pipefail
+          registry="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com"
+          tag="${GITHUB_SHA::12}"
+          image="$registry/$IAC_WORKER_REPOSITORY:$tag"
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$registry"
+          # Tags are immutable, so a re-run of the same commit reuses the image it already pushed
+          if ! aws ecr describe-images --repository-name "$IAC_WORKER_REPOSITORY" --image-ids imageTag="$tag" > /dev/null 2>&1; then
+            docker build --target iac-worker -t "$image" .
+            docker push "$image"
+          fi
+          digest=$(aws ecr describe-images --repository-name "$IAC_WORKER_REPOSITORY" --image-ids imageTag="$tag" \
+            --query 'imageDetails[0].imageDigest' --output text)
+          if ! [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::No digest for $image"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Image: \`$image@$digest\`" >> "$GITHUB_STEP_SUMMARY"
+      # After the API job, so the worker starts on the schema the API just migrated
+      - name: Deploy the IaC worker on the dashboard host
+        env:
+          INSTANCE_ID: ${{ vars.DASHBOARD_INSTANCE_ID }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: bash .github/scripts/dashboard-deploy-ssm.sh iac-worker "$DIGEST"
