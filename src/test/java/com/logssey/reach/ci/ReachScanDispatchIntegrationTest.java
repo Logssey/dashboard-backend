@@ -224,10 +224,19 @@ class ReachScanDispatchIntegrationTest {
                 .andExpect(jsonPath("$.details.dependency").value("github"));
         assertThat(count("reach_scans") + count("reach_ci_checks") + count("reach_targets")).isZero();
 
-        // 앱이 그 레포에 설치되지 않음, GitHub에 닿지 않음도 503
+        // 그 레포에 앱이 설치되지 않았거나(설치 404) 기본 브랜치에 워크플로가 없으면(dispatch 404) 다시 해도 같아 422
         github.stubFor(get(urlPathEqualTo("/repos/Logssey/service-backend/installation"))
                 .willReturn(aResponse().withStatus(404)));
-        expect(503, scanRequest("f1", repoBody()));
+        mvc.perform(scanRequest("f1", repoBody()))
+                .andExpect(status().is(422))
+                .andExpect(jsonPath("$.code").value("UNPROCESSABLE"))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.startsWith("RUNNER_NOT_INSTALLED")));
+        github.stubFor(get(urlPathEqualTo("/repos/Logssey/service-backend/installation")).willReturn(okJson("{\"id\":42}")));
+        github.stubFor(post(urlPathEqualTo(DISPATCH)).willReturn(aResponse().withStatus(404)));
+        expect(422, scanRequest("f1", repoBody()));
+        assertThat(count("reach_scans") + count("reach_ci_checks") + count("reach_targets")).isZero();
+
+        // GitHub에 닿지 않으면 503
         github.stubFor(get(urlPathEqualTo("/repos/Logssey/service-backend/installation"))
                 .willReturn(aResponse().withFault(com.github.tomakehurst.wiremock.http.Fault.CONNECTION_RESET_BY_PEER)));
         expect(503, scanRequest("f1", repoBody()));

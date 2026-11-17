@@ -105,10 +105,6 @@ public class ReachCiCheckService {
      * 띄우지 못하면 503이고 이 요청의 대상·스캔·검사는 되돌아간다(같은 멱등 키로 다시 요청하면 새로 띄운다).
      * 띄우는 설정이 없거나 재대조(rescanOf)면 띄우지 않아 스캔은 QUEUED로 남는다(러너가 저장된 SBOM 재대조를 아직 못 한다)
      */
-    /** API-01 422 메시지. 명세의 사유 코드 UNSUPPORTED_ECOSYSTEM (공통 ErrorCode에 없어 메시지로 준다) */
-    static final String UNSUPPORTED_ECOSYSTEM =
-            "UNSUPPORTED_ECOSYSTEM: Reach는 Java(maven) 앱만 스캔합니다. 이 앱은 설치 설정에서 다른 생태계로 등록돼 있습니다.";
-
     public Created createScan(String loginId, String idempotencyKey, ReachScanRequest request) {
         long userId = requireAdmin(loginId);
         if (request == null) throw invalid();
@@ -128,11 +124,6 @@ public class ReachCiCheckService {
         var app = resolved == null ? null : app(resolved.app());
         boolean repoTarget = resolved != null && "REPO".equals(resolved.type());
         String repo = repoTarget ? resolved.repoName() : app == null ? null : app.repo();
-        // 지금 Reach 워크플로는 Gradle bootJar·이미지의 /app/app.jar를 전제로 해서, maven이 아닌 앱(Node·프론트)은
-        // 빌드·jar 꺼내기에서 실패한 스캔만 남는다. 아무것도 남기지 않고 422 (러너가 jar 없는 대상을 받게 되면 푼다)
-        if (app != null && !app.scannable() && dispatcher.enabled()) {
-            throw new ApiException(ErrorCode.UNPROCESSABLE, UNSUPPORTED_ECOSYSTEM);
-        }
         var plan = new Plan("MANUAL", repo, repoTarget ? resolved.repoCommit() : null,
                 null, null, null, "REPORT_ONLY", null, mapper.writeValueAsString(stored));
         var created = open(Requester.user(userId), key, request, request.target(), request.rescanOf(), plan);
