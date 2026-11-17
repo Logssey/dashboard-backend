@@ -37,6 +37,30 @@ class ReachPropertiesTest {
     }
 
     @Test
+    void ecosystemDefaultsToMavenAndOnlyMavenAppsAreScannable() {
+        assertThat(new App("API", "r", null, null).ecosystem()).isEqualTo("maven");
+        assertThat(new App("API", "r", null, null, " ").ecosystem()).isEqualTo("maven");
+        assertThat(new App("WEB", "r", null, null, "NPM").ecosystem()).isEqualTo("npm");
+        assertThat(new App("API", "r", null, null).scannable()).isTrue();
+        assertThat(new App("WEB", "r", null, null, "npm").scannable()).isFalse();
+    }
+
+    /** 운영은 properties 파일로 넣는다. 생성자가 둘이라 Spring이 ecosystem까지 받는 쪽으로 묶는지 본다 */
+    @Test
+    void bindsTheInstallationProperties() throws Exception {
+        var source = new org.springframework.core.io.support.ResourcePropertySource(
+                new org.springframework.core.io.ClassPathResource("reach/local-targets.properties"));
+        var bound = new org.springframework.boot.context.properties.bind.Binder(
+                org.springframework.boot.context.properties.source.ConfigurationPropertySources.from(source))
+                .bind("logssey.reach", ReachProperties.class).get();
+        assertThat(bound.apps()).extracting(App::code, App::ecosystem)
+                .containsExactly(org.assertj.core.api.Assertions.tuple("API", "maven"),
+                        org.assertj.core.api.Assertions.tuple("WEB", "npm"),
+                        org.assertj.core.api.Assertions.tuple("CHAT", "npm"));
+        assertThat(bound).isEqualTo(ReachTestProperties.REUSED);   // 테스트 설정과 로컬 설정이 같다
+    }
+
+    @Test
     void onlyAPathRegistrationDoesNotCoverTheWholeRepo() {
         var props = new ReachProperties(List.of(new App("BATCH", "order-service", "batch", null)), null);
         assertThat(props.appOfRepo("order-service", "batch")).hasValue("BATCH");
@@ -52,7 +76,8 @@ class ReachPropertiesTest {
                 List.of(new App("API", null, null, null)),                      // 레포도 이미지도 없음
                 List.of(new App("API", "r", null, null), new App("API", "s", null, null)),
                 List.of(new App("A", "org/r", null, null), new App("B", "r", null, null)),   // 소유자만 다른 같은 레포
-                List.of(new App("A", null, null, "i"), new App("B", null, null, "i")))) {
+                List.of(new App("A", null, null, "i"), new App("B", null, null, "i")),
+                List.of(new App("A", "r", null, null, "pypi")))) {                 // 모르는 생태계
             assertThatThrownBy(() -> new ReachProperties(apps, null)).isInstanceOf(IllegalStateException.class);
         }
     }
