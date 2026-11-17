@@ -52,7 +52,8 @@ class ReachAppServiceTest {
         var items = service(ReachTestProperties.REUSED).apps("admin").items();
         assertThat(items).extracting(ReachAppListResponse.Item::code).containsExactly("API", "WEB", "CHAT");
         assertThat(items.get(2)).isEqualTo(
-                new ReachAppListResponse.Item("CHAT", "service-backend", "chat-server", "logssey/reused-chat"));
+                new ReachAppListResponse.Item("CHAT", "service-backend", "chat-server", "logssey/reused-chat", "npm"));
+        assertThat(items.get(0).ecosystem()).isEqualTo("maven");
         assertThat(service(new ReachProperties(null, null)).apps("admin").items()).isEmpty();
     }
 

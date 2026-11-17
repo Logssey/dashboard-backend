@@ -25,7 +25,7 @@ public class ReachAppService {
         if (loginId == null) throw new ApiException(ErrorCode.UNAUTHENTICATED);
         if (!repository.isAdmin(loginId)) throw new ApiException(ErrorCode.FORBIDDEN);
         return new ReachAppListResponse(properties.apps().stream()
-                .map(app -> new ReachAppListResponse.Item(app.code(), app.repo(), app.path(), app.image()))
+                .map(app -> new ReachAppListResponse.Item(app.code(), app.repo(), app.path(), app.image(), app.ecosystem()))
                 .toList());
     }
 }

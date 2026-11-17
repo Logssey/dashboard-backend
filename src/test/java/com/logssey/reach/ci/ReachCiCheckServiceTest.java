@@ -371,6 +371,39 @@ class ReachCiCheckServiceTest {
         assertThat(dispatcher.calls).isEmpty();
     }
 
+    @Test
+    void scanRequestRefusesAppsReachCannotScan() {
+        var dispatcher = new RecordingDispatcher();
+        service = new ReachCiCheckService(new ReachCiCheckRepository(JdbcClient.create(jdbc)),
+                ReachTestProperties.REUSED, dispatcher);   // WEB·CHAT은 npm
+
+        // npm 앱(CHAT: service-backend 하위 경로, WEB)은 지금 러너로 스캔할 수 없다 → 아무것도 남기지 않고 422
+        var chatRepo = new ReachTargetRequest("REPO", null, new ReachTargetRequest.Repo("service-backend", COMMIT, "chat-server"), null);
+        var chatImage = new ReachTargetRequest("IMAGE", null, null, new ReachTargetRequest.Image("logssey/reused-chat", DIGEST));
+        var webImage = new ReachTargetRequest("IMAGE", null, null, new ReachTargetRequest.Image("logssey/reused-web", DIGEST));
+        for (var target : List.of(chatRepo, chatImage, webImage)) {
+            assertThatThrownBy(() -> service.createScan("admin", "n-" + target.type() + target.hashCode(),
+                    new ReachScanRequest(target, null, null)))
+                    .isInstanceOfSatisfying(ApiException.class, e -> {
+                        assertThat(e.errorCode()).isEqualTo(ErrorCode.UNPROCESSABLE);
+                        assertThat(e.getMessage()).startsWith("UNSUPPORTED_ECOSYSTEM");
+                    });
+        }
+        assertThat(dispatcher.calls).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM reach_scans", Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM reach_targets", Long.class)).isZero();
+
+        // 같은 레포의 maven 앱(API)은 그대로 띄운다
+        var apiRepo = new ReachTargetRequest("REPO", null, new ReachTargetRequest.Repo("service-backend", COMMIT, null), null);
+        service.createScan("admin", "m1", new ReachScanRequest(apiRepo, null, null));
+        assertThat(dispatcher.calls).hasSize(1);
+
+        // 띄우는 설정이 없으면(손으로 올리는 설치) npm 앱도 QUEUED로 받는다
+        dispatcher.enabled = false;
+        service.createScan("admin", "m2", new ReachScanRequest(webImage, null, null));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM reach_scans", Long.class)).isEqualTo(2);
+    }
+
     private record Call(String repository, Map<String, String> inputs) {}
 
     private static final class RecordingDispatcher implements ReachScanDispatcher {

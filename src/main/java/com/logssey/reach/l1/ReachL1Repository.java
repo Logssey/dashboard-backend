@@ -56,7 +56,9 @@ public class ReachL1Repository {
      * API-07 항목과 스캔 연결. %s는 필터·커서 조건이다.
      * - repository: 파드 이미지에서 @digest, :태그(마지막 / 뒤의 :만), 레지스트리(첫 칸에 . 또는 :가 있거나 localhost)를 뗀 값
      * - revision: 태그. 없으면 null
-     * - app: 이 digest의 이미지 대상, 없으면 repository가 같은 이미지 대상(둘 다 최신 대상). 없으면 null
+     * - app: 이 digest의 이미지 대상 → 설치 설정(logssey.reach.apps)에서 image가 repository인 앱 → repository가 같은
+     *   이미지 대상(대상은 최신 것). 없으면 null. 설정 단계가 있어 한 번도 스캔하지 않은 이미지도 앱이 보인다(PRD FR-15).
+     *   %2$s는 설정의 (image, app) 목록이다(configApps)
      * - match_scan_id: 이 digest의 이미지 대상에서 PR이 아닌 최신 SUCCEEDED 스캔 (MATCH)
      * - app_scan_id: MATCH가 아닐 때 같은 app 이미지 대상의 기본 범위 스캔 (MISMATCH). 순서는 query 기준 범위와 같다
      * - fresh: 재계산(RECOMPUTE)과 같은 식이라 Finding deployment와 어긋나지 않는다
@@ -78,6 +80,7 @@ public class ReachL1Repository {
                        (SELECT t.app FROM reach_targets t
                         WHERE t.target_type = 'IMAGE' AND t.image_digest = b.image_digest
                         ORDER BY t.created_at DESC, t.target_id DESC LIMIT 1),
+                       %2$s,
                        (SELECT t.app FROM reach_targets t
                         WHERE t.target_type = 'IMAGE' AND t.image_repository = b.repository
                         ORDER BY t.created_at DESC, t.target_id DESC LIMIT 1)) AS app,
@@ -98,7 +101,7 @@ public class ReachL1Repository {
             FROM linked l
         )
         SELECT * FROM matched
-        WHERE true %s
+        WHERE true %1$s
         """;
 
     /** 순서는 명세대로 고정. 커서 행 비교와 칸·순서가 같아야 한다 */
@@ -190,8 +193,9 @@ public class ReachL1Repository {
 
     /** API-07 한 페이지. limit은 페이지 크기 + 1(다음 페이지 확인용) */
     List<ReachWorkloadResponse> workloads(String cluster, List<String> namespaces, String fresh,
-                                          ReachWorkloadFilter filter, ReachWorkloadCursor after, int limit) {
-        var params = params(cluster, namespaces, fresh, filter);
+                                          Map<String, String> imageApps, ReachWorkloadFilter filter,
+                                          ReachWorkloadCursor after, int limit) {
+        var params = params(cluster, namespaces, fresh, imageApps, filter);
         var where = new StringBuilder(conditions(filter));
         if (after != null) {
             where.append(" AND (namespace, name, kind, container, image_digest)"
@@ -203,22 +207,44 @@ public class ReachL1Repository {
             params.put("afterDigest", after.digest());
         }
         params.put("limit", limit);
-        return jdbcClient.sql(WORKLOADS.formatted(where) + WORKLOAD_ORDER)
+        return jdbcClient.sql(WORKLOADS.formatted(where, configApps(imageApps)) + WORKLOAD_ORDER)
                 .params(params)
                 .query((rs, i) -> workload(rs))
                 .list();
     }
 
-    long countWorkloads(String cluster, List<String> namespaces, String fresh, ReachWorkloadFilter filter) {
-        return jdbcClient.sql("SELECT count(*) FROM (" + WORKLOADS.formatted(conditions(filter)) + ") c")
-                .params(params(cluster, namespaces, fresh, filter))
+    long countWorkloads(String cluster, List<String> namespaces, String fresh, Map<String, String> imageApps,
+                        ReachWorkloadFilter filter) {
+        return jdbcClient.sql("SELECT count(*) FROM (" + WORKLOADS.formatted(conditions(filter), configApps(imageApps))
+                        + ") c")
+                .params(params(cluster, namespaces, fresh, imageApps, filter))
                 .query(Long.class)
                 .single();
     }
 
+    /**
+     * 설정의 이미지 저장소 → 앱 코드를 SQL 값 목록으로. 값은 이름 붙은 파라미터(cfgImage0, cfgApp0, …)로만 넘긴다.
+     * 설정에 이미지가 없으면 NULL(이 단계를 건너뛴다)
+     */
+    private static String configApps(Map<String, String> imageApps) {
+        if (imageApps.isEmpty()) return "CAST(NULL AS VARCHAR)";
+        var rows = new StringBuilder();
+        for (int i = 0; i < imageApps.size(); i++) {
+            if (i > 0) rows.append(", ");
+            rows.append("(CAST(:cfgImage").append(i).append(" AS VARCHAR), CAST(:cfgApp").append(i).append(" AS VARCHAR))");
+        }
+        return "(SELECT c.app FROM (VALUES " + rows + ") AS c(image, app) WHERE c.image = b.repository LIMIT 1)";
+    }
+
     private static Map<String, Object> params(String cluster, List<String> namespaces, String fresh,
-                                              ReachWorkloadFilter filter) {
+                                              Map<String, String> imageApps, ReachWorkloadFilter filter) {
         var params = new HashMap<String, Object>();
+        int i = 0;
+        for (var entry : imageApps.entrySet()) {
+            params.put("cfgImage" + i, entry.getKey());
+            params.put("cfgApp" + i, entry.getValue());
+            i++;
+        }
         params.put("cluster", cluster);
         params.put("namespaces", namespaces);
         params.put("fresh", fresh);
