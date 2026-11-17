@@ -15,6 +15,9 @@ COPY compliance-worker/build.gradle compliance-worker/build.gradle
 COPY compliance-worker/src/ compliance-worker/src/
 RUN --mount=type=cache,target=/root/.gradle \
     chmod 755 gradlew && ./gradlew --no-daemon :bootJar :secret-worker:bootJar :compliance-worker:bootJar
+# IaC worker (IaC security ADR-13). Separate step so the line above stays as the other images expect.
+RUN --mount=type=cache,target=/root/.gradle \
+    ./gradlew --no-daemon :iac-worker:bootJar
 
 FROM eclipse-temurin:21-jdk-jammy@sha256:4b1a74fbffbe6b4e7b6f0171a472478282fb463790a51edf10e465d578f22b69 AS detector
 ARG TARGETARCH
@@ -39,6 +42,12 @@ COPY --from=build --chown=10001:10001 /workspace/secret-worker/build/libs/secret
 COPY --from=detector --chmod=0555 /out/gitleaks /usr/local/bin/gitleaks
 COPY --from=detector /out/LICENSE /usr/share/doc/gitleaks/LICENSE
 ENTRYPOINT ["java", "-jar", "/app/worker.jar", "--spring.config.import=file:/run/config/application.properties,configtree:/run/secrets/"]
+
+# IaC worker: graph enrichment, path analysis, State and drift checks (IaC security ADR-13). No web port.
+# AWS credentials come from a short-lived session file through AWS_CONFIG_FILE credential_process (host compose).
+FROM runtime AS iac-worker
+COPY --from=build --chown=10001:10001 /workspace/iac-worker/build/libs/iac-worker-*.jar /app/iac-worker.jar
+ENTRYPOINT ["java", "-jar", "/app/iac-worker.jar", "--spring.config.import=file:/run/config/application.properties,configtree:/run/secrets/"]
 
 # Prowler is pinned to the same immutable 5.46.0 release used by the API scope catalog.
 # The API image never receives this executable or a Docker socket.
