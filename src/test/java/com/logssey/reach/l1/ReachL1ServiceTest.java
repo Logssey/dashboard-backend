@@ -25,6 +25,7 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ReachL1ServiceTest {
@@ -373,11 +374,12 @@ class ReachL1ServiceTest {
         assertThat(items.get(1).app()).isEqualTo("API");
         assertThat(items.get(1).scanMatch()).isEqualTo(new ReachWorkloadResponse.ScanMatch("MISMATCH", apiScan, null));
         assertThat(items.get(2).name()).isEqualTo("reused-chat");
-        assertThat(items.get(2).app()).isNull();
+        assertThat(items.get(2).app()).isEqualTo("CHAT");   // 스캔한 적이 없어도 설치 설정의 이미지로 앱을 안다
         assertThat(items.get(2).scanMatch()).isEqualTo(new ReachWorkloadResponse.ScanMatch("NO_SCAN", null, null));
 
         assertThat(service.workloads("admin", filter(null, List.of("API"), null, null), null, null, null).items()).hasSize(2);
-        assertThat(service.workloads("admin", filter(null, List.of("CHAT"), null, null), null, null, null).items()).isEmpty();
+        assertThat(service.workloads("admin", filter(null, List.of("CHAT"), null, null), null, null, null).items())
+                .singleElement().satisfies(w -> assertThat(w.name()).isEqualTo("reused-chat"));
         assertThat(service.workloads("admin", filter(null, null, B, null), null, null, null).items())
                 .singleElement().satisfies(w -> assertThat(w.image().digest()).isEqualTo(B));
     }
@@ -393,6 +395,33 @@ class ReachL1ServiceTest {
 
         assertThat(item.app()).isEqualTo("WEB");
         assertThat(item.scanMatch()).isEqualTo(new ReachWorkloadResponse.ScanMatch("MATCH", scan, "DIGEST"));
+    }
+
+    @Test
+    void appComesFromTheInstallationConfigWhenTheImageWasNeverScanned() {
+        service.upload("admin", new ReachInventoryRequest("reused-prod", "reused", now, List.of(
+                new Workload("Deployment", "reused-web", List.of(new Container("web", ECR + "logssey/reused-web:1", A, 1))),
+                new Workload("Deployment", "sidecar", List.of(new Container("proxy", ECR + "vendor/proxy:2", B, 1))))));
+
+        var page = service.workloads("admin", ALL, null, null, "total");
+
+        assertThat(page.items()).extracting(ReachWorkloadResponse::name, ReachWorkloadResponse::app)
+                .containsExactly(tuple("reused-web", "WEB"), tuple("sidecar", null));   // 설정에 없는 이미지는 그대로 모름
+        assertThat(page.items()).allSatisfy(w ->
+                assertThat(w.scanMatch()).isEqualTo(new ReachWorkloadResponse.ScanMatch("NO_SCAN", null, null)));
+        assertThat(service.workloads("admin", filter(null, List.of("WEB"), null, null), null, null, "total").totalCount())
+                .isEqualTo(1);   // 앱 필터와 개수도 같은 기준
+    }
+
+    @Test
+    void aTargetOfTheSameDigestWinsOverTheInstallationConfig() {
+        long target = imageTarget("API", "logssey/reused-web", A);   // 같은 digest의 대상이 다른 앱으로 등록됐으면 그것을 따른다
+        scan(target, "MANUAL", "SUCCEEDED");
+        service.upload("admin", new ReachInventoryRequest("reused-prod", "reused", now, List.of(
+                new Workload("Deployment", "reused-web", List.of(new Container("web", ECR + "logssey/reused-web:1", A, 1))))));
+
+        assertThat(service.workloads("admin", ALL, null, null, null).items()).singleElement()
+                .satisfies(w -> assertThat(w.app()).isEqualTo("API"));
     }
 
     @Test
