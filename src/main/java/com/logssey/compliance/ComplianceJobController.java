@@ -38,17 +38,19 @@ public class ComplianceJobController {
     }
 
     @GetMapping("/jobs")
-    public JobListResponse jobs(@RequestParam(defaultValue = "20") int limit) {
-        return service.jobs(limit);
+    public JobListResponse jobs(@RequestParam(required = false) String targetKey,
+                                @RequestParam(defaultValue = "20") int limit) {
+        return service.jobs(targetKey, limit);
     }
 
     @GetMapping("/jobs/{jobId}")
-    public JobSummary job(@PathVariable long jobId) {
-        return service.job(jobId);
+    public JobSummary job(@PathVariable long jobId, @RequestParam(required = false) String targetKey) {
+        return service.job(targetKey, jobId);
     }
 
     @PostMapping("/jobs/{jobId}/cancel")
-    public CancelJobResponse cancel(Principal principal, @PathVariable long jobId) {
-        return service.cancel(principal == null ? null : principal.getName(), jobId);
+    public CancelJobResponse cancel(Principal principal, @PathVariable long jobId,
+                                    @RequestParam(required = false) String targetKey) {
+        return service.cancel(principal == null ? null : principal.getName(), targetKey, jobId);
     }
 }

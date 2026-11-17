@@ -12,18 +12,18 @@ def verify(base: str) -> None:
     jar = http.cookiejar.CookieJar()
     client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
 
-    def request(path: str, body=None, expect_json=True):
+    def request(path: str, body=None, expect_json=True, method=None):
         headers = {"Accept": "application/json" if expect_json else "text/html"}
         data = None
-        method = "GET"
+        request_method = method or "GET"
         if body is not None:
-            method = "POST"
+            request_method = method or "POST"
             data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
             token = next((cookie.value for cookie in jar if cookie.name == "XSRF-TOKEN"), None)
             if token:
                 headers["X-XSRF-TOKEN"] = urllib.parse.unquote(token)
-        req = urllib.request.Request(base + path, data=data, headers=headers, method=method)
+        req = urllib.request.Request(base + path, data=data, headers=headers, method=request_method)
         try:
             with client.open(req, timeout=10) as response:
                 payload = response.read()
@@ -55,7 +55,44 @@ def verify(base: str) -> None:
         request("/api/v1/auth/me")
         time.sleep(1)
 
+    status, target = request("/api/v1/compliance/targets", {
+        "targetKey": "synthetic-service",
+        "displayName": "Synthetic Service",
+        "awsAccountId": "000000000000",
+        "roleArn": "arn:aws:iam::000000000000:role/LogsseyProwlerScan",
+        "defaultRegions": ["ap-northeast-2"],
+    })
+    assert status == 200 and target["connectionStatus"] == "NOT_TESTED"
+    assert target["externalId"].startswith("logssey-")
+
+    status, connection = request("/api/v1/compliance/targets/synthetic-service/connection-tests", {})
+    assert status == 200 and connection["status"] == "QUEUED"
+    connection_job = connection["jobId"]
+    for _ in range(45):
+        status, job = request(f"/api/v1/compliance/jobs/{connection_job}?targetKey=synthetic-service")
+        assert status == 200
+        if job["status"] == "SUCCEEDED":
+            break
+        if job["status"] in ("FAILED", "CANCELLED"):
+            raise RuntimeError(f"COMPLIANCE_CONNECTION_{job['status']}_{job.get('errorCode')}")
+        time.sleep(1)
+    else:
+        raise RuntimeError("COMPLIANCE_CONNECTION_TIMEOUT")
+
+    status, target = request("/api/v1/compliance/targets/synthetic-service")
+    assert status == 200 and target["connectionStatus"] == "VERIFIED"
+    status, target = request("/api/v1/compliance/targets/synthetic-service", {
+        "expectedVersion": target["version"],
+        "displayName": target["displayName"],
+        "awsAccountId": target["awsAccountId"],
+        "roleArn": target["roleArn"],
+        "defaultRegions": target["defaultRegions"],
+        "enabled": True,
+    }, method="PATCH")
+    assert status == 200 and target["enabled"] is True
+
     status, created = request("/api/v1/compliance/jobs", {
+        "targetKey": "synthetic-service",
         "environment": "prod",
         "scope": {"regions": ["ap-northeast-2"], "services": ["securityhub"], "checks": []},
     })
@@ -63,7 +100,7 @@ def verify(base: str) -> None:
     job_id = created["jobId"]
 
     for _ in range(90):
-        status, job = request(f"/api/v1/compliance/jobs/{job_id}")
+        status, job = request(f"/api/v1/compliance/jobs/{job_id}?targetKey=synthetic-service")
         assert status == 200
         if job["status"] == "SUCCEEDED":
             break
@@ -75,12 +112,15 @@ def verify(base: str) -> None:
 
     run_id = job["runId"]
     assert isinstance(run_id, int) and run_id > 0
-    status, overview = request("/api/v1/compliance/overview?environment=PROD")
+    status, overview = request("/api/v1/compliance/overview?targetKey=synthetic-service&environment=PROD")
     assert status == 200 and overview["latestRun"]["runId"] == run_id
     assert {item["id"] for item in overview["frameworks"]} == {"isms", "iso", "csap"}
     assert overview["latestRun"]["counts"]["fail"] == 1
 
-    status, report = request(f"/api/v1/compliance/runs/{run_id}/report?framework=all", expect_json=False)
+    status, report = request(
+        f"/api/v1/compliance/runs/{run_id}/report?targetKey=synthetic-service&framework=all",
+        expect_json=False,
+    )
     assert status == 200
     assert "ISMS-P" in report and "ISO/IEC 27001" in report and "CSAP" in report
     assert "인증 적합 판정이 아닙니다" in report

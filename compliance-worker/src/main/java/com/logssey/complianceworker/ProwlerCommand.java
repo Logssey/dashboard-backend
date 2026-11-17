@@ -12,6 +12,10 @@ final class ProwlerCommand {
     static List<String> build(String executable, ClaimedJob job, Path outputDirectory) {
         var args = new ArrayList<>(List.of(
                 executable, "aws",
+                "--role", job.target().roleArn(),
+                "--external-id", job.target().externalId(),
+                "--role-session-name", "logssey-" + job.jobId(),
+                "--session-duration", "3600",
                 "--output-formats", "json-ocsf",
                 "--output-directory", outputDirectory.toString(),
                 "--output-filename", "result",

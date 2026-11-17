@@ -36,25 +36,28 @@ public class ComplianceController {
     }
 
     @GetMapping("/overview")
-    public OverviewResponse overview(@RequestParam(defaultValue = "ALL") String environment) {
-        return service.overview(environment);
+    public OverviewResponse overview(@RequestParam(required = false) String targetKey,
+                                     @RequestParam(defaultValue = "ALL") String environment) {
+        return service.overview(targetKey, environment);
     }
 
     @GetMapping("/runs")
-    public RunListResponse runs(@RequestParam(defaultValue = "ALL") String environment,
+    public RunListResponse runs(@RequestParam(required = false) String targetKey,
+                                @RequestParam(defaultValue = "ALL") String environment,
                                 @RequestParam(defaultValue = "20") int limit) {
-        return service.runs(environment, limit);
+        return service.runs(targetKey, environment, limit);
     }
 
     @GetMapping("/runs/{runId}")
-    public RunDetailResponse run(@PathVariable long runId) {
-        return service.run(runId);
+    public RunDetailResponse run(@PathVariable long runId, @RequestParam(required = false) String targetKey) {
+        return service.run(targetKey, runId);
     }
 
     @GetMapping(value = "/runs/{runId}/report", produces = "text/html;charset=UTF-8")
     public ResponseEntity<byte[]> report(@PathVariable long runId,
+                                         @RequestParam(required = false) String targetKey,
                                          @RequestParam(defaultValue = "all") String framework) {
-        var report = reports.report(runId, framework);
+        var report = reports.report(targetKey, runId, framework);
         var disposition = ContentDisposition.inline()
                 .filename(report.filename(), StandardCharsets.UTF_8)
                 .build();
@@ -72,8 +75,9 @@ public class ComplianceController {
 
     @PostMapping(value = "/imports", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ImportResponse importProwler(Principal principal,
+                                        @RequestParam(required = false) String targetKey,
                                         @RequestParam(defaultValue = "prod") String environment,
                                         @RequestPart("file") MultipartFile file) {
-        return service.importProwler(principal == null ? null : principal.getName(), environment, file);
+        return service.importProwler(principal == null ? null : principal.getName(), targetKey, environment, file);
     }
 }

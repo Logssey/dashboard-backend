@@ -1,12 +1,13 @@
 # Copy OUTSIDE the repository. The Worker obtains temporary AWS credentials from its workload role.
 spring.main.web-application-type=none
 logssey.compliance-worker.enabled=true
-logssey.compliance-worker.api-base-url=http://api:8080
+logssey.compliance-worker.api-base-url=http://127.0.0.1:8080
 logssey.compliance-worker.worker-id=replace-unique-worker-id
 logssey.compliance-worker.poll-delay=10s
 logssey.compliance-worker.heartbeat-delay=60s
 logssey.compliance-worker.scan-timeout=45m
 logssey.compliance-worker.prowler-executable=prowler
+logssey.compliance-worker.aws-region=ap-northeast-1
 # /run/secrets/logssey.compliance-worker.token contains the shared Worker token.
 # Do not put AWS access keys in this file or the secret directory.
 logging.level.software.amazon.awssdk=OFF

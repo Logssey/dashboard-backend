@@ -38,7 +38,8 @@ class ComplianceImportIntegrationTest {
         var catalog = new ComplianceCatalog();
         service = new ComplianceService(repository, catalog, new ProwlerOcsfNormalizer(),
                 "reused", 8 * 1024 * 1024);
-        reports = new ComplianceReportService(repository, catalog, "reused", "Re:Used");
+        reports = new ComplianceReportService(repository, catalog,
+                new ComplianceTargetRepository(JdbcClient.create(dataSource)), "reused", "Re:Used");
     }
 
     @AfterAll
@@ -62,9 +63,9 @@ class ComplianceImportIntegrationTest {
         var file = new MockMultipartFile("file", "prowler.json", "application/json",
                 payload.getBytes(StandardCharsets.UTF_8));
 
-        var imported = service.importProwler("admin", "prod", file);
-        var overview = service.overview("PROD");
-        var detail = service.run(imported.runId());
+        var imported = service.importProwler("admin", "reused", "prod", file);
+        var overview = service.overview("reused", "PROD");
+        var detail = service.run("reused", imported.runId());
 
         assertThat(imported.importedCount()).isEqualTo(1);
         assertThat(overview.latestRun()).isNotNull();
@@ -77,8 +78,8 @@ class ComplianceImportIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT length(artifact_sha256) FROM compliance_runs", Integer.class))
                 .isEqualTo(64);
 
-        String integrated = new String(reports.report(imported.runId(), "all").content(), StandardCharsets.UTF_8);
-        String iso = new String(reports.report(imported.runId(), "iso").content(), StandardCharsets.UTF_8);
+        String integrated = new String(reports.report("reused", imported.runId(), "all").content(), StandardCharsets.UTF_8);
+        String iso = new String(reports.report("reused", imported.runId(), "iso").content(), StandardCharsets.UTF_8);
         assertThat(integrated).contains("통합 컴플라이언스", "Security Hub is disabled", "인증 적합 판정이 아닙니다", "&lt;script&gt;")
                 .doesNotContain("123456789012", "<script>");
         assertThat(iso).contains("ISO/IEC 27001:2022").doesNotContain("ISMS-P 2023", "CSAP SaaS 표준등급");

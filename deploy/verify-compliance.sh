@@ -8,6 +8,7 @@ task_network="$task_prefix-network"
 task_db="$task_prefix-db"
 task_api="$task_prefix-api"
 task_worker="$task_prefix-worker"
+task_sts="$task_prefix-sts"
 
 cleanup() {
   task_exit=$?
@@ -15,7 +16,7 @@ cleanup() {
     docker logs "$task_api" 2>&1 | tail -60 || true
     docker logs "$task_worker" 2>&1 | tail -60 || true
   fi
-  docker rm -f "$task_api" "$task_worker" "$task_db" >/dev/null 2>&1 || true
+  docker rm -f "$task_api" "$task_worker" "$task_sts" "$task_db" >/dev/null 2>&1 || true
   docker network rm "$task_network" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT INT TERM
@@ -35,6 +36,8 @@ logssey.admin.display-name=Compliance CI
 logssey.runtime.collector-token=
 logssey.compliance.target-key=synthetic-service
 logssey.compliance.target-name=Synthetic Service
+logssey.compliance.execution-enabled=true
+logssey.compliance.connection-tests-enabled=true
 logssey.compliance.worker-lease-seconds=60
 logssey.compliance.worker-retry-delay-seconds=1
 EOF
@@ -47,7 +50,36 @@ logssey.compliance-worker.poll-delay=1s
 logssey.compliance-worker.heartbeat-delay=10s
 logssey.compliance-worker.scan-timeout=30s
 logssey.compliance-worker.prowler-executable=/opt/logssey/fake-prowler
+logssey.compliance-worker.aws-region=ap-northeast-1
+logssey.compliance-worker.sts-endpoint=http://$task_sts:8080
 EOF
+
+cat > "$task_dir/fake-sts.py" <<'PY'
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import parse_qs
+
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("content-length", "0"))).decode()
+        action = parse_qs(body).get("Action", [""])[0]
+        if action == "AssumeRole":
+            payload = """<AssumeRoleResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><AssumeRoleResult><Credentials><AccessKeyId>ASIASYNTHETIC123456</AccessKeyId><SecretAccessKey>synthetic-secret-access-key-000000000000000</SecretAccessKey><SessionToken>synthetic-session-token</SessionToken><Expiration>2030-01-01T00:00:00Z</Expiration></Credentials><AssumedRoleUser><Arn>arn:aws:sts::000000000000:assumed-role/LogsseyProwlerScan/logssey-ci</Arn><AssumedRoleId>synthetic:logssey-ci</AssumedRoleId></AssumedRoleUser></AssumeRoleResult><ResponseMetadata><RequestId>00000000-0000-0000-0000-000000000001</RequestId></ResponseMetadata></AssumeRoleResponse>"""
+        elif action == "GetCallerIdentity":
+            payload = """<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult><Arn>arn:aws:sts::000000000000:assumed-role/LogsseyProwlerScan/logssey-ci</Arn><UserId>synthetic:logssey-ci</UserId><Account>000000000000</Account></GetCallerIdentityResult><ResponseMetadata><RequestId>00000000-0000-0000-0000-000000000002</RequestId></ResponseMetadata></GetCallerIdentityResponse>"""
+        else:
+            self.send_error(400)
+            return
+        encoded = payload.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/xml")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+    def log_message(self, *_):
+        pass
+
+HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+PY
 
 cat > "$task_dir/fake-prowler" <<'EOF'
 #!/bin/sh
@@ -79,6 +111,11 @@ chmod 755 "$task_dir" "$task_dir/api-secrets" "$task_dir/worker-secrets" "$task_
 chmod 644 "$task_dir/"*.properties "$task_dir/api-secrets/"* "$task_dir/worker-secrets/"*
 
 docker network create --internal "$task_network" >/dev/null
+docker run -d --name "$task_sts" --network "$task_network" --read-only --cap-drop ALL \
+  --security-opt no-new-privileges \
+  -v "$task_dir/fake-sts.py:/fake-sts.py:ro" \
+  python:3.13-alpine@sha256:7984cf56ceaddebe4fefeb75d64000b9f45d8b77b11a09b24524da6cdc3af0c8 \
+  python -B /fake-sts.py >/dev/null
 docker run -d --name "$task_db" --network "$task_network" \
   -e POSTGRES_USER=compliance_ci -e POSTGRES_DB=compliance_ci -e POSTGRES_PASSWORD=isolated-ci-database \
   postgres:18.6 >/dev/null
@@ -100,6 +137,7 @@ docker run -d --name "$task_worker" --network "$task_network" --read-only \
   -v "$task_dir/worker.properties:/run/config/application.properties:ro" \
   -v "$task_dir/worker-secrets:/run/secrets:ro" \
   -v "$task_dir/fake-prowler:/opt/logssey/fake-prowler:ro" \
+  -e AWS_ACCESS_KEY_ID=synthetic-base-key -e AWS_SECRET_ACCESS_KEY=synthetic-base-secret \
   logssey-compliance-worker:ci >/dev/null
 
 docker run --rm --network "container:$task_api" --read-only --cap-drop ALL \

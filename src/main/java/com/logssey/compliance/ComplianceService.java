@@ -52,23 +52,23 @@ public class ComplianceService {
     }
 
     @Transactional(readOnly = true)
-    public OverviewResponse overview(String environment) {
+    public OverviewResponse overview(String requestedTarget, String environment) {
         String selectedEnvironment = environment(environment, true);
-        var latest = repository.latestRun(targetKey, selectedEnvironment).orElse(null);
+        var latest = repository.latestRun(target(requestedTarget), selectedEnvironment).orElse(null);
         return new OverviewResponse(latest, latest == null
                 ? emptyFrameworkSummaries()
                 : frameworkSummaries(latest.runId()));
     }
 
     @Transactional(readOnly = true)
-    public RunListResponse runs(String environment, int limit) {
+    public RunListResponse runs(String requestedTarget, String environment, int limit) {
         if (limit < 1 || limit > MAX_RUNS) throw new ApiException(ErrorCode.INVALID_INPUT);
-        return new RunListResponse(repository.runs(targetKey, environment(environment, true), limit));
+        return new RunListResponse(repository.runs(target(requestedTarget), environment(environment, true), limit));
     }
 
     @Transactional(readOnly = true)
-    public RunDetailResponse run(long runId) {
-        var run = repository.run(targetKey, runId)
+    public RunDetailResponse run(String requestedTarget, long runId) {
+        var run = repository.run(target(requestedTarget), runId)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
         var results = repository.results(runId, DETAIL_RESULTS + 1);
         boolean truncated = results.size() > DETAIL_RESULTS;
@@ -87,13 +87,15 @@ public class ComplianceService {
     }
 
     @Transactional
-    public ImportResponse importProwler(String loginId, String environment, MultipartFile file) {
+    public ImportResponse importProwler(String loginId, String requestedTarget,
+                                        String environment, MultipartFile file) {
         if (!repository.isAdmin(loginId)) throw new ApiException(ErrorCode.FORBIDDEN);
-        return importProwlerResult(loginId, environment, file);
+        return importProwlerResult(target(requestedTarget), loginId, environment, file);
     }
 
     /** Worker endpoint가 유효한 임대를 잠근 뒤 같은 트랜잭션에서 호출한다. */
-    ImportResponse importProwlerResult(String actor, String environment, MultipartFile file) {
+    ImportResponse importProwlerResult(String selectedTarget, String actor,
+                                       String environment, MultipartFile file) {
         String selectedEnvironment = environment(environment, false);
         if (file == null || file.isEmpty()) {
             throw new ApiException(ErrorCode.INVALID_INPUT, "Prowler JSON 파일을 선택해 주세요.");
@@ -113,7 +115,7 @@ public class ComplianceService {
         var counts = counts(normalized);
         var assessments = assess(normalized);
         String status = normalized.warningCount() > 0 ? "COMPLETED_WITH_WARNINGS" : "COMPLETED";
-        long runId = repository.insertRun(targetKey, selectedEnvironment, status, normalized.product(),
+        long runId = repository.insertRun(selectedTarget, selectedEnvironment, status, normalized.product(),
                 normalized.version(), sha256(bytes), normalized, counts, actor);
         repository.insertResults(runId, new ArrayList<>(normalized.results().values()));
         repository.insertAssessments(runId, assessments);
@@ -207,6 +209,14 @@ public class ComplianceService {
             case "DEV" -> "dev";
             default -> throw new ApiException(ErrorCode.INVALID_INPUT, "환경은 prod 또는 dev만 선택할 수 있습니다.");
         };
+    }
+
+    private String target(String requestedTarget) {
+        String selected = requestedTarget == null || requestedTarget.isBlank() ? targetKey : requestedTarget.trim();
+        if (!selected.matches("^[a-z0-9][a-z0-9-]{1,98}[a-z0-9]$")) {
+            throw new ApiException(ErrorCode.INVALID_INPUT, "점검 대상 키가 올바르지 않습니다.");
+        }
+        return selected;
     }
 
     private static String sha256(byte[] bytes) {

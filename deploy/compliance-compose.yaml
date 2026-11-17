@@ -18,6 +18,9 @@ services:
     cpus: 0.75
     oom_score_adj: 500
     pids_limit: 192
+    # Only this Worker shares the host network. It can use IMDS with hop limit 1;
+    # the API and other bridge-network containers cannot obtain the instance profile.
+    network_mode: host
     volumes:
       - type: bind
         source: ${COMPLIANCE_WORKER_CONFIG_FILE:?Set the reviewed compliance worker properties file}

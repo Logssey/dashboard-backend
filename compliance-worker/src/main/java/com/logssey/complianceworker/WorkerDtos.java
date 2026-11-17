@@ -8,7 +8,11 @@ final class WorkerDtos {
     private WorkerDtos() {}
 
     record ScanScope(List<String> regions, List<String> services, List<String> checks) {}
-    record ClaimedJob(long jobId, String environment, ScanScope scope, UUID leaseToken,
-                      long leaseGeneration, OffsetDateTime leaseUntil, String prowlerVersion) {}
+    record TargetIdentity(String targetKey, String awsAccountId, String roleArn, String externalId,
+                          long targetVersion) {}
+    record ClaimedJob(long jobId, String jobKind, String environment, ScanScope scope,
+                      TargetIdentity target, UUID leaseToken, long leaseGeneration,
+                      OffsetDateTime leaseUntil, String prowlerVersion) {}
     record LeaseResponse(OffsetDateTime leaseUntil) {}
+    record AwsCallerIdentity(String accountId, String arn) {}
 }
