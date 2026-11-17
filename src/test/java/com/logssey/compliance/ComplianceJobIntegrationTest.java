@@ -129,7 +129,7 @@ class ComplianceJobIntegrationTest {
     @Test
     void disabledGatesDoNotLeaseAlreadyQueuedWork() {
         var created = jobs.create("admin", new CreateJobRequest("reused", "prod",
-                new ScanScope(java.util.List.of(), java.util.List.of("sts"), java.util.List.of())));
+                new ScanScope(java.util.List.of(), java.util.List.of("s3"), java.util.List.of())));
 
         assertThat(disabledJobs.claim("disabled-worker")).isNull();
 
