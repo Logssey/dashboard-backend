@@ -12,18 +12,21 @@
 #        -> bundle.py -> API-13. A failed step after the check is registered uploads a failure bundle,
 #        so the scan ends FAILED on the dashboard instead of staying QUEUED.
 #
-# Required: MODE (PR | IMAGE_BUILD | MANUAL), JAR, REACH_URL. REPOSITORY and COMMIT for PR and IMAGE_BUILD
-# MODE=PR: PR_NUMBER (optional BASE_REF, HEAD_REF). Target is the repo at COMMIT; the SBOM comes from JAR.
+# Required: MODE (PR | IMAGE_BUILD | MANUAL), REACH_URL. REPOSITORY and COMMIT for PR and IMAGE_BUILD
+# JAR: the Java app jar (bootJar) to analyse (L2). Leave it empty for a target without one (a Node image,
+#   a repo path without a Gradle build): then L2 is skipped and every finding is NOT_ANALYZED with its reason.
+#   A repo target without JAR needs FS_DIR, the checked-out path whose lock files give the SBOM (trivy fs).
+# MODE=PR: PR_NUMBER (optional BASE_REF, HEAD_REF). Target is the repo at COMMIT; the SBOM comes from JAR (or FS_DIR).
 # MODE=IMAGE_BUILD: IMAGE_REPOSITORY (e.g. logssey/reused-api), IMAGE_DIGEST (sha256:...), IMAGE_REF
 #   (what `trivy image` pulls, e.g. <registry>/<repo>@<digest>). JAR is the app jar copied out of that image.
-# MODE=MANUAL: CHECK_ID (the dashboard's check), TARGET_TYPE (REPO: SBOM from JAR | IMAGE: SBOM from IMAGE_REF).
+# MODE=MANUAL: CHECK_ID (the dashboard's check), TARGET_TYPE (REPO: SBOM from JAR or FS_DIR | IMAGE: SBOM from IMAGE_REF).
 # Optional: APP (app code; when empty the dashboard picks it from its logssey.reach.apps), POLICY (REPORT_ONLY | GATE, default REPORT_ONLY), SOURCE (service repo checkout,
 #   gives verdict.py the config files), OUT (./reach-out), WAIT_SECONDS (300), REACH_UI_URL (link in the summary),
 #   REACH_HOME (dashboard-backend checkout; default: this script's repo), ANALYZER (reach-analyzer.jar path).
 # Auth: in GitHub Actions a fresh OIDC token (aud logssey-reach) is fetched for every call
 #   (needs `permissions: id-token: write`). Otherwise REACH_TOKEN is sent as a bearer token.
 #   REACH_CURL_OPTS adds raw curl arguments (local checks only: session cookie and CSRF header).
-# Needs: bash, curl, jq, java 21, python3, trivy. grype is used when installed.
+# Needs: bash, curl, jq, python3, trivy (java 21 when JAR is given). grype is used when installed.
 set -Eeuo pipefail
 
 : "${MODE:?MODE=PR, IMAGE_BUILD or MANUAL}"
@@ -31,7 +34,8 @@ if [ "$MODE" != MANUAL ]; then
   : "${REPOSITORY:?REPOSITORY=<repository name, e.g. service-backend>}"
   : "${COMMIT:?COMMIT=<40-character commit sha>}"
 fi
-: "${JAR:?JAR=<bootJar to analyse>}"
+JAR="${JAR:-}"
+FS_DIR="${FS_DIR:-}"
 : "${REACH_URL:?REACH_URL=<dashboard base URL>}"
 APP="${APP:-}"
 POLICY="${POLICY:-REPORT_ONLY}"
@@ -45,7 +49,7 @@ REACH_URL="${REACH_URL%/}"
 
 # SBOM source: the jar (repo target) or the image
 case "$MODE" in
-  PR) : "${PR_NUMBER:?PR_NUMBER is required for MODE=PR}"; SBOM_FROM=jar ;;
+  PR) : "${PR_NUMBER:?PR_NUMBER is required for MODE=PR}"; SBOM_FROM=repo ;;
   IMAGE_BUILD)
     : "${IMAGE_REPOSITORY:?IMAGE_REPOSITORY is required for MODE=IMAGE_BUILD}"
     : "${IMAGE_DIGEST:?IMAGE_DIGEST is required for MODE=IMAGE_BUILD}"
@@ -54,7 +58,7 @@ case "$MODE" in
   MANUAL)
     [[ "${CHECK_ID:-}" =~ ^[0-9]+$ ]] || { echo "CHECK_ID must be the dashboard check id: ${CHECK_ID:-}" >&2; exit 2; }
     case "${TARGET_TYPE:-}" in
-      REPO) SBOM_FROM=jar ;;
+      REPO) SBOM_FROM=repo ;;
       IMAGE) : "${IMAGE_REF:?IMAGE_REF is required for TARGET_TYPE=IMAGE}"; SBOM_FROM=image ;;
       *) echo "TARGET_TYPE must be REPO or IMAGE: ${TARGET_TYPE:-}" >&2; exit 2 ;;
     esac ;;
@@ -63,8 +67,14 @@ esac
 if [ "$MODE" != MANUAL ]; then
   [ "${#COMMIT}" -eq 40 ] || { echo "COMMIT must be the full 40-character sha: $COMMIT" >&2; exit 2; }
 fi
-[ -f "$JAR" ] || { echo "JAR not found: $JAR" >&2; exit 2; }
-[ -f "$ANALYZER" ] || { echo "analyzer jar not found: $ANALYZER (./gradlew :reach-analyzer:jar)" >&2; exit 2; }
+if [ -n "$JAR" ]; then
+  [ -f "$JAR" ] || { echo "JAR not found: $JAR" >&2; exit 2; }
+  [ -f "$ANALYZER" ] || { echo "analyzer jar not found: $ANALYZER (./gradlew :reach-analyzer:jar)" >&2; exit 2; }
+  [ "$SBOM_FROM" = repo ] && SBOM_FROM=jar
+elif [ "$SBOM_FROM" = repo ]; then
+  [ -d "$FS_DIR" ] || { echo "a repo target needs JAR (Java) or FS_DIR (lock files): FS_DIR=$FS_DIR" >&2; exit 2; }
+  SBOM_FROM=dir
+fi
 mkdir -p "$OUT"
 
 log() { echo "[reach] $*" >&2; }
@@ -189,6 +199,9 @@ sbom() {
     mkdir -p "$dir"
     cp "$JAR" "$dir/"
     trivy rootfs --quiet --format cyclonedx -o "$OUT/sbom.cdx.json" "$dir"
+  elif [ "$SBOM_FROM" = dir ]; then
+    # no Java build at this path: the lock files (package-lock.json, …) list the packages
+    trivy fs --quiet --format cyclonedx -o "$OUT/sbom.cdx.json" "$FS_DIR"
   else
     trivy image --quiet --format cyclonedx -o "$OUT/sbom.cdx.json" "$IMAGE_REF"
   fi
@@ -212,11 +225,11 @@ l2() {
 }
 
 report() {
-  local grype_args=()
+  local grype_args=() l2_args=(--no-l2)
   [ -f "$OUT/grype.json" ] && grype_args=(--grype "$OUT/grype.json")
+  [ -n "$JAR" ] && l2_args=(--reach "$OUT/reach-result.json" --verdicts "$OUT/verdicts.json" --jar "$JAR")
   python3 "$VERDICT/bundle.py" --sbom "$OUT/sbom.cdx.json" --trivy "$OUT/trivy.json" "${grype_args[@]}" \
-    --reach "$OUT/reach-result.json" --verdicts "$OUT/verdicts.json" \
-    --spec "$DATA/vuln-functions.json" --rules "$DATA/rules.json" --jar "$JAR" \
+    "${l2_args[@]}" --spec "$DATA/vuln-functions.json" --rules "$DATA/rules.json" \
     "${TOOLS[@]}" "${STAGES[@]}" --stage "report=succeeded" --out "$OUT/bundle.json.gz"
 }
 
@@ -226,7 +239,11 @@ if [ "$ALREADY" = QUEUED ]; then
   [ -n "$db_updated" ] && TOOLS+=(--tool "trivyDbUpdatedAt=$db_updated")
   stage sbom sbom
   stage match match
-  stage l2 l2
+  if [ -n "$JAR" ]; then
+    stage l2 l2
+  else
+    log "no app jar: L2 skipped, findings are NOT_ANALYZED with their reason"
+  fi
   stage report report
   CURRENT=report
   upload "$OUT/bundle.json.gz"
