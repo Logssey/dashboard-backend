@@ -25,7 +25,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class ReachL1Service {
 
     /** 이 안의 조회만 믿는다. 하루 한 번 수집이 한 번 빠져도 UNKNOWN이 안 되게 */
-    static final String FRESH = "48 hours";
+    public static final String FRESH = "48 hours";
     /** 명세에 없어 정한 것: 한 번에 받는 컨테이너 수 상한 */
     static final int MAX_CONTAINERS = 1000;
     /** 명세에 없어 정한 것: observedAt이 이만큼까지 미래인 것은 시계 차이로 보고 받는다 */

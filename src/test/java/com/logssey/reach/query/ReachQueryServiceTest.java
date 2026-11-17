@@ -2,6 +2,7 @@ package com.logssey.reach.query;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
+import com.logssey.reach.ReachTestProperties;
 import com.logssey.reach.query.dto.ReachFindingDetailResponse;
 import com.logssey.reach.query.dto.ReachFindingPageResponse;
 import com.logssey.reach.query.dto.ReachFindingResponse;
@@ -47,11 +48,12 @@ class ReachQueryServiceTest {
     @BeforeEach
     void reset() {
         jdbc.execute("TRUNCATE reach_review_history, reach_reviews, reach_evidence, reach_verdicts, "
-                + "reach_findings, reach_scans, reach_targets, dashboard_users RESTART IDENTITY CASCADE");
+                + "reach_findings, reach_scans, reach_targets, reach_workloads, reach_workload_observations, "
+                + "dashboard_users RESTART IDENTITY CASCADE");
         jdbc.update("INSERT INTO dashboard_users (login_id, password_hash, display_name, role) "
                 + "VALUES ('admin', 'h', 'Admin', 'ADMIN')");
         scan = scan(target("sha256:a"), "SUCCEEDED", 1);
-        service = new ReachQueryService(new ReachQueryRepository(JdbcClient.create(jdbc)));
+        service = new ReachQueryService(new ReachQueryRepository(JdbcClient.create(jdbc)), ReachTestProperties.REUSED);
     }
 
     @Test
@@ -361,6 +363,96 @@ class ReachQueryServiceTest {
 
     private static List<String> cves(ReachFindingPageResponse page) {
         return page.items().stream().map(ReachFindingResponse::vulnerability).map(ReachFindingResponse.Vulnerability::id).toList();
+    }
+
+    @Test
+    void runningBasisUsesTheRunningImageOfEachAppFirst() {
+        String running = digest('1'), built = digest('2'), chat = digest('3');
+        long runningScan = scan(target(running), "SUCCEEDED", 5);
+        finding(runningScan, "running-lib", "CVE-2026-0001", "HIGH", "REACHABLE", "UNREVIEWED");
+        long builtScan = scan(target(built), "SUCCEEDED", 0);        // 더 최근이지만 배포되지 않은 빌드
+        finding(builtScan, "built-lib", "CVE-2026-0002", "HIGH", "REACHABLE", "UNREVIEWED");
+        long repoScan = scan(repoTarget("API", "c1"), "SUCCEEDED", 0);
+        finding(repoScan, "repo-lib", "CVE-2026-0003", "LOW", "UNKNOWN", "UNREVIEWED");
+        observe(2, new String[] {"reused-api", "logssey/reused-api:1", running},
+                new String[] {"reused-chat", "logssey/reused-chat:9", chat});   // chat은 스캔이 없다
+
+        // 기본(RUNNING): API 이미지는 실행 중 digest의 스캔, 레포는 그대로 최신
+        assertThat(cves(service.findings("admin", ALL, null, null, null)))
+                .containsExactlyInAnyOrder("CVE-2026-0001", "CVE-2026-0003");
+        var summary = service.summary("admin", null, null, null, null, null);
+        assertThat(summary.totals().findings()).isEqualTo(2);
+        assertThat(summary.basis().requested()).isEqualTo("RUNNING");
+        assertThat(summary.basis().applied()).isEqualTo("RUNNING");
+        assertThat(summary.basis().scans())
+                .extracting(s -> s.app() + "/" + s.targetType() + "/" + s.scanId() + "/" + s.running())
+                .containsExactly("API/IMAGE/" + runningScan + "/true", "API/REPO/" + repoScan + "/false");
+        assertThat(summary.basis().unscannedRunning()).singleElement().satisfies(w -> {
+            assertThat(w.app()).isEqualTo("CHAT");   // 설치 설정의 이미지로 앱을 안다
+            assertThat(w.name()).isEqualTo("reused-chat");
+            assertThat(w.imageRepository()).isEqualTo("logssey/reused-chat");
+            assertThat(w.imageDigest()).isEqualTo(chat);
+        });
+
+        // LATEST: 지금까지처럼 앱·대상 종류마다 최신 스캔
+        var latest = new ReachFindingFilter(null, null, null, null, null, null, null, "LATEST");
+        assertThat(cves(service.findings("admin", latest, null, null, null)))
+                .containsExactlyInAnyOrder("CVE-2026-0002", "CVE-2026-0003");
+        var latestSummary = service.summary("admin", null, null, null, null, "LATEST");
+        assertThat(latestSummary.basis().applied()).isEqualTo("LATEST");
+        assertThat(latestSummary.basis().unscannedRunning()).isEmpty();
+        assertThat(latestSummary.basis().scans()).extracting(s -> s.scanId()).contains(builtScan);
+
+        // 커서는 basis와 묶인다 (명세 2-4)
+        var page = service.findings("admin", ALL, 1, null, null);
+        assertError(() -> service.findings("admin", latest, 1, page.nextCursor(), null), ErrorCode.INVALID_INPUT);
+    }
+
+    @Test
+    void runningBasisFallsBackToTheLatestScanWithoutAFreshObservation() {
+        String running = digest('1');
+        long runningScan = scan(target(running), "SUCCEEDED", 5);
+        finding(runningScan, "running-lib", "CVE-2026-0001", "HIGH", "REACHABLE", "UNREVIEWED");
+        long builtScan = scan(target(digest('2')), "SUCCEEDED", 0);
+        finding(builtScan, "built-lib", "CVE-2026-0002", "HIGH", "REACHABLE", "UNREVIEWED");
+        observe(72, new String[] {"reused-api", "logssey/reused-api:1", running});   // 48시간이 지난 조회
+
+        assertThat(cves(service.findings("admin", ALL, null, null, null))).containsExactly("CVE-2026-0002");
+        var summary = service.summary("admin", null, null, null, null, null);
+        assertThat(summary.basis().requested()).isEqualTo("RUNNING");
+        assertThat(summary.basis().applied()).isEqualTo("LATEST");
+        assertThat(summary.basis().unscannedRunning()).isEmpty();
+
+        // L1이 꺼진 설치도 LATEST와 같다
+        var noL1 = new ReachQueryService(new ReachQueryRepository(JdbcClient.create(jdbc)),
+                ReachTestProperties.withL1(null, List.of()));
+        assertThat(noL1.summary("admin", null, null, null, null, "RUNNING").basis().applied()).isEqualTo("LATEST");
+    }
+
+    @Test
+    void basisIsCheckedAndOnlyDescribesTheDefaultScope() {
+        assertError(() -> service.summary("admin", null, null, null, null, "OLDEST"), ErrorCode.INVALID_INPUT);
+        assertError(() -> service.findings("admin", new ReachFindingFilter(null, null, null, null, null, null, null, "x"),
+                null, null, null), ErrorCode.INVALID_INPUT);
+        assertThat(service.summary("admin", null, scan, null, null, null).basis()).isNull();   // scanId·target이면 basis 없음
+    }
+
+    private static String digest(char c) {
+        return "sha256:" + String.valueOf(c).repeat(64);
+    }
+
+    /** reused-prod/reused 조회 한 번과 워크로드들 ({이름, 이미지, digest}) */
+    private static void observe(int hoursAgo, String[]... workloads) {
+        jdbc.update("""
+                INSERT INTO reach_workload_observations (cluster, namespace, observed_at, source, reported_by)
+                VALUES ('reused-prod', 'reused', now() - make_interval(hours => ?), 'CLUSTER_READER', 'test')
+                """, hoursAgo);
+        for (var w : workloads) {
+            jdbc.update("""
+                    INSERT INTO reach_workloads (cluster, namespace, kind, name, container, image, image_digest, ready_replicas)
+                    VALUES ('reused-prod', 'reused', 'Deployment', ?, ?, ?, ?, 1)
+                    """, w[0], w[0], "123.dkr.ecr.ap-northeast-1.amazonaws.com/" + w[1] + "@" + w[2], w[2]);
+        }
     }
 
     /** 기준 범위만 지정한 필터 */
