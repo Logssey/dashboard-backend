@@ -15,7 +15,17 @@ public record ReachFindingResponse(
         String deployment,
         Verdict verdict,
         Review review,
+        L3 l3,
         OffsetDateTime firstSeenAt) {
+
+    /**
+     * L3 능동 관측이 닿은 곳 (FR-14). 판정(verdict)과 따로인 근거다. 이 이미지를 띄워 본 결과가 없으면 null.
+     * reached: REGION(취약 구간 실행) / FUNCTION(취약 함수까지) / NONE(실행 없음) / NOT_RECORDED(확인 못 함).
+     * regionsChecked는 FUNCTION일 때 구간을 봤는지(true면 봤고 미실행), startupOnly는 앱이 뜨는 동안에만 실행됐는지
+     */
+    public record L3(String reached, boolean regionsChecked, boolean startupOnly) {
+    }
+
 
     public record Component(String purl, String name, String version) {
     }

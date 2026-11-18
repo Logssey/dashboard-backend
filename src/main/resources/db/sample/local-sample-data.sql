@@ -216,6 +216,15 @@ DELETE FROM reach_ci_checks
 WHERE scan_id IN (SELECT s.scan_id FROM reach_scans s
                   JOIN reach_targets t ON t.target_id = s.target_id
                   WHERE t.image_digest = 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a');
+-- L3 결과와 실행 (V55). Finding·스캔을 가리키니 먼저 지운다
+DELETE FROM reach_l3_results
+WHERE finding_id IN (SELECT f.finding_id FROM reach_findings f
+                     JOIN reach_targets t ON t.target_id = f.target_id
+                     WHERE t.image_digest = 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a');
+DELETE FROM reach_l3_runs
+WHERE scan_id IN (SELECT s.scan_id FROM reach_scans s
+                  JOIN reach_targets t ON t.target_id = s.target_id
+                  WHERE t.image_digest = 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a');
 DELETE FROM reach_review_history
 WHERE finding_id IN (SELECT f.finding_id FROM reach_findings f
                      JOIN reach_targets t ON t.target_id = f.target_id
@@ -385,6 +394,73 @@ SET observed_at = EXCLUDED.observed_at, received_at = now(),
     source = EXCLUDED.source, reported_by = EXCLUDED.reported_by;
 INSERT INTO reach_workloads (cluster, namespace, kind, name, container, image, image_digest, ready_replicas)
 VALUES ('reused-prod', 'reused', 'Deployment', 'reused-api', 'api', 'logssey/reused-api:sample', 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a', 2);
+
+-- L3 샘플 (PRD FR-14): 샘플 이미지를 띄워 시나리오 4단계를 보낸 실행 하나. L2 판정 옆에 놓는 근거이고 판정·검토를 바꾸지 않는다.
+-- 화면에 네 가지 도달 수준이 다 보이게 지어낸 값이다: 구간 실행 1(89407, L2는 도달 불가), 함수까지 2(65182는 구간 미실행,
+-- 83557은 기동 중에만·구간 확인 못 함), 기록 안 됨 1(0636), 나머지 10건은 실행 없음(91776에는 L2 경로를 2단계까지 탄 예)
+INSERT INTO reach_l3_runs (scan_id, run_status, scenario, observation_method, observed_at, counts, detail)
+SELECT scan_id, 'SUCCEEDED', 'sample-1', 'COVERAGE', finished_at,
+       '{"REGION": 1, "FUNCTION": 2, "NONE": 10, "NOT_RECORDED": 1}'::jsonb,
+       '{"build": {"imageDigest": "sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"},
+         "configKeys": [{"name": "SPRING_PROFILES_ACTIVE", "enabled": true}, {"name": "KAKAO_STUB", "enabled": true},
+                        {"name": "MAIL_ENABLED", "enabled": false}],
+         "invocations": [
+           {"segment": "001", "name": "categories", "request": "GET /api/v1/categories", "count": 1, "ok": 1, "failed": 0, "skipped": 0},
+           {"segment": "002", "name": "create listing", "request": "POST /api/v1/listings", "count": 22, "ok": 22, "failed": 0, "skipped": 0},
+           {"segment": "003", "name": "create listing, price as text", "request": "POST /api/v1/listings", "count": 1, "ok": 1, "failed": 0, "skipped": 0},
+           {"segment": "004", "name": "listings page 2", "request": "GET /api/v1/listings", "count": 1, "ok": 1, "failed": 0, "skipped": 0}],
+         "requests": {"count": 25, "ok": 25, "failed": 0, "skipped": 0},
+         "segments": ["startup", "001", "002", "003", "004"],
+         "scope": "java.util.*:com.*:org.*:tools.*", "tool": "reach-l3 0.2.0", "javaRelease": 21}'::jsonb
+FROM reach_sample_scan;
+
+INSERT INTO reach_l3_results (finding_id, scan_id, reached, regions_checked, startup_only, detail)
+SELECT f.finding_id, s.scan_id, x.reached, x.regions_checked, x.startup_only, x.detail::jsonb
+FROM (VALUES
+    ('CVE-2026-89407', 'tools.jackson.core', 'REGION', TRUE, FALSE,
+     '{"during": ["003"], "installedVersions": ["3.1.5"], "regionVersion": "3.1.5",
+       "functions": [{"function": "tools.jackson.core.io.NumberInput#looksLikeValidNumber(Ljava/lang/String;)Z", "during": ["003"]},
+                     {"function": "tools.jackson.databind.deser.jdk.NumberDeserializers$BigDecimalDeserializer#deserialize", "during": ["002", "003"]}],
+       "regions": [{"class": "tools.jackson.core.io.NumberInput", "method": "looksLikeValidNumber", "lines": [[626, 627]],
+                    "executedLines": [626, 627], "executed": true, "during": ["003"]}]}'),
+    ('CVE-2026-65182', 'org.apache.tomcat.embed', 'FUNCTION', TRUE, FALSE,
+     '{"during": ["startup", "001", "002", "003", "004"], "installedVersions": ["11.0.24"], "regionVersion": "11.0.24",
+       "functions": [{"function": "org.apache.catalina.realm.RealmBase#findSecurityConstraints", "during": ["startup", "001", "002", "003", "004"]}],
+       "regions": [{"class": "org.apache.catalina.realm.RealmBase", "method": "findSecurityConstraints", "lines": [[639, 639]],
+                    "executedLines": [], "executed": false, "during": []}]}'),
+    ('CVE-2026-83557', 'tools.jackson.core', 'FUNCTION', FALSE, TRUE,
+     '{"during": ["startup"], "installedVersions": ["3.1.5"], "regionVersion": "3.1.5", "regions": [],
+       "note": "The fix changes deny-list data only; running the method does not tell the versions apart.",
+       "functions": [{"function": "tools.jackson.databind.jsontype.DefaultBaseTypeLimitingValidator#isUnsafeBaseType", "during": ["startup"]}]}'),
+    ('CVE-2026-0636', 'org.bouncycastle', 'NOT_RECORDED', FALSE, FALSE,
+     '{"during": [], "installedVersions": ["1.81"], "regionVersion": "1.81", "functions": [],
+       "regions": [{"class": "org.bouncycastle.jce.provider.X509LDAPCertStoreSpi", "method": "parseDN", "wholeMethod": true,
+                    "executed": false, "during": [], "unchecked": "NO_CLASS_FILE"}],
+       "functionsUnchecked": ["org.bouncycastle.jce.provider.X509LDAPCertStoreSpi#parseDN"]}'),
+    ('CVE-2026-91776', 'tools.jackson.core', 'NONE', TRUE, FALSE,
+     '{"during": [], "installedVersions": ["3.1.5"], "regionVersion": "3.1.5", "functions": [],
+       "regions": [{"class": "tools.jackson.databind.jsontype.impl.TypeDeserializerBase", "method": "_findDeserializer",
+                    "lines": [[166, 166], [198, 198]], "executedLines": [], "executed": false, "during": []}],
+       "paths": [{"target": "tools.jackson.databind.jsontype.impl.TypeDeserializerBase#_findDeserializer", "reachedStep": 2, "of": 5,
+                  "steps": [{"method": "com.reused.common.pagination.CursorCodec.decode(Ljava/lang/String;)Ljava/lang/Object;", "executed": true},
+                            {"method": "tools.jackson.databind.ObjectMapper.readTree(Ljava/lang/String;)Ltools/jackson/databind/JsonNode;", "executed": true},
+                            {"method": "tools.jackson.databind.deser.impl.TypeWrappedDeserializer.deserialize(Ltools/jackson/core/JsonParser;Ltools/jackson/databind/DeserializationContext;)Ljava/lang/Object;", "executed": false},
+                            {"method": "tools.jackson.databind.jsontype.impl.AsArrayTypeDeserializer._deserialize(Ltools/jackson/core/JsonParser;Ltools/jackson/databind/DeserializationContext;)Ljava/lang/Object;", "executed": false},
+                            {"method": "tools.jackson.databind.jsontype.impl.TypeDeserializerBase._findDeserializer(Ltools/jackson/databind/DeserializationContext;Ljava/lang/String;)Ltools/jackson/databind/ValueDeserializer;", "executed": false}]}]}')
+) AS x(cve, grp, reached, regions_checked, startup_only, detail)
+CROSS JOIN reach_sample_scan s
+JOIN reach_findings f ON f.last_scan_id = s.scan_id AND f.vulnerability_id = x.cve
+                     AND f.purl LIKE 'pkg:maven/' || x.grp || '/%';
+
+-- 판정이 있는 나머지 Java Finding: 모두 확인했고 실행 없음
+INSERT INTO reach_l3_results (finding_id, scan_id, reached, regions_checked, startup_only, detail)
+SELECT f.finding_id, s.scan_id, 'NONE', TRUE, FALSE,
+       jsonb_build_object('during', '[]'::jsonb, 'functions', '[]'::jsonb, 'regions', '[]'::jsonb,
+                          'installedVersions', jsonb_build_array(f.component_version), 'regionVersion', f.component_version)
+FROM reach_sample_scan s
+JOIN reach_findings f ON f.last_scan_id = s.scan_id
+JOIN reach_verdicts v ON v.finding_id = f.finding_id AND v.is_current AND v.status <> 'NOT_ANALYZED'
+WHERE NOT EXISTS (SELECT 1 FROM reach_l3_results x WHERE x.finding_id = f.finding_id);
 
 DROP TABLE reach_sample_rows;
 DROP TABLE reach_sample_scan;
