@@ -80,9 +80,11 @@ public class ComplianceCheckPolicyCatalog {
 
     ImprovementGuide guide(String provider, String checkId, String fallbackRecommendation) {
         var policy = policy(provider, checkId);
+        String fallbackExpectedState = valueOr(plainGuideText(fallbackRecommendation),
+                "Prowler Check 원문에서 요구하는 목표 상태를 확인한 뒤 현재 설정과 비교합니다.");
         return new ImprovementGuide(
                 valueOr(policy.disposition(), "DIRECT_ACTION"),
-                valueOr(policy.expectedState(), fallbackRecommendation),
+                valueOr(policy.expectedState(), fallbackExpectedState),
                 valueOr(policy.applicability(), "이 Check가 가리키는 자산이 실제 점검 범위에 포함되는지 확인한 뒤 조치합니다."),
                 valueOr(policy.changeImpact(), "변경 전 의존 서비스와 접근 경로를 확인하고 기존 설정을 기록합니다."),
                 valueOr(policy.verification(), "동일 범위에서 Check를 다시 실행하고 대상 자산의 결과가 PASS인지 확인합니다."),
@@ -120,6 +122,21 @@ public class ComplianceCheckPolicyCatalog {
 
     private static String valueOr(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value;
+    }
+
+    /** Prowler remediation의 간단한 Markdown 표기를 UI·HTML 보고서용 일반 문장으로 바꾼다. */
+    private static String plainGuideText(String value) {
+        if (value == null || value.isBlank()) return value;
+        return value
+                .replaceAll("\\[([^\\]]+)]\\([^)]+\\)", "$1")
+                .replace("**", "")
+                .replace("__", "")
+                .replace("`", "")
+                .replaceAll("\\s*\\R\\s*", " ")
+                .replaceAll(":\\s+-\\s+", ": ")
+                .replaceAll("\\s+-\\s+", " · ")
+                .replaceAll("\\s+", " ")
+                .trim();
     }
 
     record PolicyFile(int schemaVersion, String policyVersion, String prowlerVersion,
