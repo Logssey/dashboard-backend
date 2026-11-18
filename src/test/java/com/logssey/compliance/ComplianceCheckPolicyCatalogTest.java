@@ -44,4 +44,16 @@ class ComplianceCheckPolicyCatalogTest {
         assertThat(guide.applicability()).contains("콘솔", "비콘솔");
         assertThat(guide.expectedState()).contains("IAM Role", "임시 자격증명");
     }
+
+    @Test
+    void fallbackGuideRemovesProwlerMarkdownForDashboardAndReport() {
+        var guide = catalog.guide("aws", "unmapped_check", """
+                Apply **least privilege**: - Restrict `iam:PassRole`
+                - See [Prowler guide](https://hub.prowler.com/check/unmapped_check)
+                """);
+
+        assertThat(guide.expectedState())
+                .isEqualTo("Apply least privilege: Restrict iam:PassRole · See Prowler guide")
+                .doesNotContain("**", "`", "[", "](");
+    }
 }
