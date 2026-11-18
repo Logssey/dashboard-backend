@@ -222,7 +222,7 @@ public class SecretLocationRepository {
     /** Caller has already applied the shared occurrence ACL. No original path or key identity is loaded. */
     public Map<String,Object> operationalFacts(long occurrenceId) {
         var rows=jdbc.queryForList("""
-          SELECT fs.fixture_status,co.last_material_action_at,co.version AS location_version,co.action_cycle,
+          SELECT fs.fixture_status,o.exposure_range,co.last_material_action_at,co.version AS location_version,co.action_cycle,
              (SELECT max(a.performed_at) FROM secret_action_records a WHERE a.case_id=co.case_id AND a.occurrence_id=o.occurrence_id
                AND a.action_type IN ('ROTATED','REVOKED','REMOVED_FROM_SOURCE')) AS validation_after_action_at,
              co.actions_completed_at,v.result AS previous_validation_result,v.reason_code AS previous_validation_reason,

@@ -233,6 +233,30 @@ class BundleTest(unittest.TestCase):
         self.assertEqual(bundle.main(self.no_l2_args(trivy(trivy_vuln("CVE-2026-1000", LIB)), out)), 1)
         self.assertFalse(os.path.exists(out))
 
+    def test_no_app_jar_makes_java_packages_not_analyzed(self):
+        out = os.path.join(self.dir.name, "nojar.json")
+        args = self.no_l2_args(trivy(trivy_vuln("CVE-2026-1000", LIB), trivy_vuln("CVE-2026-3000", OTHER),
+                                     trivy_vuln("CVE-2026-5000", "pkg:npm/left-pad@1.0.0")), out) + ["--no-l2"]
+        self.assertEqual(bundle.main(args), 0)
+        with open(out, encoding="utf-8") as f:
+            b = json.load(f)
+        reasons = {(i["vulnerability"]["id"], i["component"]["purl"]): i["verdict"]["notAnalyzedReason"] for i in b["verdicts"]}
+        self.assertEqual(reasons, {
+            ("CVE-2026-1000", LIB): "UNANALYZED_COPY",          # data exists but there was no jar to analyse
+            ("CVE-2026-3000", OTHER): "NO_VULN_FUNCTION_DATA",
+            ("CVE-2026-5000", "pkg:npm/left-pad@1.0.0"): "UNSUPPORTED_ECOSYSTEM",
+        })
+        self.assertTrue(all("앱 jar를 찾지 못해" in i["verdict"]["summary"] for i in b["verdicts"]
+                            if i["component"]["purl"].startswith("pkg:maven/")))
+        self.assertEqual([s["name"] for s in b["stages"]], ["SBOM", "MATCH", "REPORT"])
+
+    def test_no_l2_goes_without_l2_inputs(self):
+        out = os.path.join(self.dir.name, "bad.json")
+        args = self.no_l2_args(trivy(), out) + ["--no-l2", "--reach", self.file("reach.json", reach()),
+                                                "--verdicts", self.file("v.json", verdicts())]
+        self.assertEqual(bundle.main(args), 1)
+        self.assertEqual(bundle.main(self.no_l2_args(trivy(), out) + ["--no-l2", "--jar", self.file("j", {})]), 1)
+
     def test_reach_without_verdicts_fails(self):
         out = os.path.join(self.dir.name, "r.json")
         args = self.no_l2_args(trivy(), out) + ["--reach", self.file("reach.json", reach())]

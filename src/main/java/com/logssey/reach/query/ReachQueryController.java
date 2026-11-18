@@ -35,9 +35,10 @@ public class ReachQueryController {
             @RequestParam(required = false) String cveContains,
             @RequestParam(required = false) Integer size,
             @RequestParam(required = false) String cursor,
-            @RequestParam(required = false) String include)
+            @RequestParam(required = false) String include,
+            @RequestParam(required = false) String basis)
              {
-        var filter = new ReachFindingFilter(status, severity, reviewState, deployment, cveContains, scanId, target);
+        var filter = new ReachFindingFilter(status, severity, reviewState, deployment, cveContains, scanId, target, basis);
         return service.findings(principal == null ? null : principal.getName(), filter, size, cursor, include);
     }
 
@@ -47,8 +48,9 @@ public class ReachQueryController {
                                         @RequestParam(required = false) Long target,
                                         @RequestParam(required = false) Long scanId,
                                         @RequestParam(required = false) List<String> deployment,
-                                        @RequestParam(required = false) List<String> include) {
-        return service.summary(principal == null ? null : principal.getName(), target, scanId, deployment, include);
+                                        @RequestParam(required = false) List<String> include,
+                                        @RequestParam(required = false) String basis) {
+        return service.summary(principal == null ? null : principal.getName(), target, scanId, deployment, include, basis);
     }
 
     /** API-05 */

@@ -133,6 +133,9 @@ class ReachScanDispatchIntegrationTest {
     @Autowired
     private JdbcTemplate jdbc;
 
+    @Autowired
+    private ReachCiCheckService checks;
+
     private MockMvc mvc;
 
     @BeforeEach
@@ -224,10 +227,19 @@ class ReachScanDispatchIntegrationTest {
                 .andExpect(jsonPath("$.details.dependency").value("github"));
         assertThat(count("reach_scans") + count("reach_ci_checks") + count("reach_targets")).isZero();
 
-        // 앱이 그 레포에 설치되지 않음, GitHub에 닿지 않음도 503
+        // 그 레포에 앱이 설치되지 않았거나(설치 404) 기본 브랜치에 워크플로가 없으면(dispatch 404) 다시 해도 같아 422
         github.stubFor(get(urlPathEqualTo("/repos/Logssey/service-backend/installation"))
                 .willReturn(aResponse().withStatus(404)));
-        expect(503, scanRequest("f1", repoBody()));
+        mvc.perform(scanRequest("f1", repoBody()))
+                .andExpect(status().is(422))
+                .andExpect(jsonPath("$.code").value("UNPROCESSABLE"))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.startsWith("RUNNER_NOT_INSTALLED")));
+        github.stubFor(get(urlPathEqualTo("/repos/Logssey/service-backend/installation")).willReturn(okJson("{\"id\":42}")));
+        github.stubFor(post(urlPathEqualTo(DISPATCH)).willReturn(aResponse().withStatus(404)));
+        expect(422, scanRequest("f1", repoBody()));
+        assertThat(count("reach_scans") + count("reach_ci_checks") + count("reach_targets")).isZero();
+
+        // GitHub에 닿지 않으면 503
         github.stubFor(get(urlPathEqualTo("/repos/Logssey/service-backend/installation"))
                 .willReturn(aResponse().withFault(com.github.tomakehurst.wiremock.http.Fault.CONNECTION_RESET_BY_PEER)));
         expect(503, scanRequest("f1", repoBody()));
@@ -240,7 +252,51 @@ class ReachScanDispatchIntegrationTest {
         assertThat(count("reach_scans")).isEqualTo(1);
     }
 
+    @Test
+    void dailyRescanDispatchesWithTheScanAndTheRunReadsItsStoredSbom() throws Exception {
+        // 처음 스캔: 이미지 대상, 띄운 실행이 올리면 SBOM을 보관한다
+        mvc.perform(scanRequest("i1", """
+                        {"target":{"type":"IMAGE","image":{"repository":"logssey/reused-api","digest":"%s"}}}
+                        """.formatted(DIGEST)))
+                .andExpect(status().isAccepted());
+        long firstCheck = jdbc.queryForObject("SELECT max(check_id) FROM reach_ci_checks", Long.class);
+        expect(202, upload(firstCheck, claims -> { }));
+        long firstScan = jdbc.queryForObject("SELECT scan_id FROM reach_ci_checks WHERE check_id = ?", Long.class, firstCheck);
+        expect(404, sbom(firstCheck, claims -> { }));   // 재대조가 아닌 검사
+
+        // 예약 작업이 부르는 재대조: SCHEDULE 검사를 만들고 rescan_of와 함께 띄운다
+        var rescan = checks.createRescan(firstScan, java.time.LocalDate.of(2026, 11, 18)).orElseThrow().check();
+        github.verify(postRequestedFor(urlPathEqualTo(DISPATCH)).withRequestBody(equalToJson("""
+                {"ref":"main","inputs":{"check_id":"%d","target_type":"IMAGE","commit":"","path":"",
+                 "image_repository":"logssey/reused-api","image_digest":"%s","rescan_of":"%d"}}"""
+                .formatted(rescan.id(), DIGEST, firstScan))));
+
+        // 띄운 실행의 그 레포 토큰만 보관한 SBOM을 받는다(gzip 그대로)
+        expect(403, sbom(rescan.id(), claims -> claims.claim("repository", "Logssey/service-frontend")
+                .subject("repo:Logssey/service-frontend:ref:refs/heads/main")));
+        expect(403, sbom(rescan.id(), claims -> claims.claim("ref", "refs/heads/feature")));
+        var stored = mvc.perform(sbom(rescan.id(), claims -> { }))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.content()
+                        .contentType("application/gzip"))
+                .andReturn().getResponse().getContentAsByteArray();
+        try (var in = new java.util.zip.GZIPInputStream(new java.io.ByteArrayInputStream(stored))) {
+            assertThat(JSON.readTree(in.readAllBytes()).get("bomFormat").asString()).isEqualTo("CycloneDX");
+        }
+
+        // 재대조 결과도 같은 토큰으로 올리고, 그 SBOM도 보관한다(다음 날의 입력)
+        mvc.perform(upload(rescan.id(), claims -> { }))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.scanStatus").value("SUCCEEDED"));
+        assertThat(count("reach_sboms")).isEqualTo(2);
+    }
+
     // ---- 도우미 ----
+
+    private static MockHttpServletRequestBuilder sbom(long checkId, Consumer<JWTClaimsSet.Builder> change) throws JOSEException {
+        return MockMvcRequestBuilders.get("/api/v1/reach/ci/checks/" + checkId + "/sbom")
+                .header(HttpHeaders.AUTHORIZATION, bearer(change));
+    }
 
     private MockHttpServletRequestBuilder scanRequest(String key, String body) throws Exception {
         return MockMvcRequestBuilders.post("/api/v1/reach/scans").session(admin()).with(csrf())

@@ -11,7 +11,9 @@
         [--tool name=value ...] [--stage name=status[:seconds] ...] --out bundle.json.gz
 
 A target without Java code (npm, OS packages only) has no L2 run: leave out --reach and --verdicts and
-every match is NOT_ANALYZED. Maven matches without --reach/--verdicts are an error (the L2 step was skipped).
+every match is NOT_ANALYZED. Maven matches without --reach/--verdicts are an error (the L2 step was skipped),
+unless --no-l2 says the runner found no app jar to analyse (an image or repo path without one): then they are
+NOT_ANALYZED too (NO_VULN_FUNCTION_DATA when the CVE has no data, otherwise UNANALYZED_COPY).
 
 One bundle item per scanner match (purl x CVE). Matches that verdict.py analysed get its verdict and
 evidence; the rest are NOT_ANALYZED with the reason (OS package, unsupported ecosystem, another copy of
@@ -153,8 +155,10 @@ def merge_matches(matches):
 # ---------------------------------------------------------------- verdicts
 
 class Context:
-    def __init__(self, reach, verdicts, spec, rules):
+    def __init__(self, reach, verdicts, spec, rules, no_app_jar=False):
         self.l2 = reach is not None
+        # the runner found no app jar (no /app/app.jar in the image, no Gradle build at the repo path)
+        self.no_app_jar = no_app_jar
         reach = reach or {}
         verdicts = verdicts or {}
         self.reach_by_cve = {c["cve"]: c for c in reach.get("cves", [])}
@@ -200,9 +204,16 @@ def verdict_for(match, ctx, analysed_at):
         return not_analyzed("OS_PACKAGE", "OS 패키지라 Java 호출 그래프로 판정하지 않았다.", ctx, analysed_at)
     if ptype != "maven":
         return not_analyzed("UNSUPPORTED_ECOSYSTEM", f"{ptype} 패키지는 아직 L2 판정을 지원하지 않는다.", ctx, analysed_at)
-    if not ctx.l2:
+    if not ctx.l2 and not ctx.no_app_jar:
         raise BundleError(f"{match['purl']} is a maven package but there is no L2 input (--reach, --verdicts)")
     cve, coords = match["cve"], coordinates(match["purl"])
+    if not ctx.l2:
+        # Java packages in a target whose app jar the runner did not find (e.g. a tool jar in a Node image)
+        if cve not in ctx.spec_by_cve:
+            return not_analyzed("NO_VULN_FUNCTION_DATA", "취약 함수 데이터(vuln-functions.json)가 없어 판정하지 않았다. "
+                                "이 대상에서 앱 jar를 찾지 못해 호출 경로도 분석하지 않았다.", ctx, analysed_at)
+        return not_analyzed("UNANALYZED_COPY", "이 대상에서 앱 jar를 찾지 못해(이미지에 /app/app.jar 없음 등) "
+                            "호출 경로를 분석하지 않았다. 이 패키지 사본은 판정하지 않았다.", ctx, analysed_at)
     v = ctx.analysed.get((cve, coords))
     if v is not None:
         return analysed_verdict(v, ctx, analysed_at)
@@ -431,12 +442,14 @@ def build(a):
             raise BundleError(f"--{name} is required unless --failure-code is given")
     if bool(a.reach) != bool(a.verdicts):
         raise BundleError("--reach and --verdicts go together (both from the L2 step, or neither)")
+    if a.no_l2 and (a.reach or a.jar):
+        raise BundleError("--no-l2 means no app jar was found; leave out --reach, --verdicts and --jar")
     sbom, trivy = load(a.sbom), load(a.trivy)
     reach = load(a.reach) if a.reach else None
     verdicts = load(a.verdicts) if a.verdicts else None
     grype = load(a.grype) if a.grype else None
     spec, rules = load(a.spec), load(a.rules)
-    ctx = Context(reach, verdicts, spec, rules)
+    ctx = Context(reach, verdicts, spec, rules, no_app_jar=a.no_l2)
     analysed_at = a.analyzed_at or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     matches = trivy_matches(trivy) + (grype_matches(grype) if grype else [])
@@ -484,6 +497,8 @@ def main(argv=None):
     ap.add_argument("--spec")
     ap.add_argument("--rules")
     ap.add_argument("--jar", help="the analysed bootJar, for analysis.jarSha256")
+    ap.add_argument("--no-l2", action="store_true",
+                    help="the runner found no app jar; Java packages are NOT_ANALYZED instead of an error")
     ap.add_argument("--tool", action="append", default=[], help="extra or overriding tools entry, name=value")
     ap.add_argument("--stage", action="append", default=[], help="name=status[:seconds]; default: sbom, match, l2, report succeeded")
     ap.add_argument("--analyzed-at", help="ISO-8601 time for every verdict (default: now)")
