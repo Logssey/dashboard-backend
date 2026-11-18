@@ -36,7 +36,25 @@
         "https://raw.githubusercontent.com/apache/tomcat/2c2c510ab10ae7796de6c6f7b70abae85c99d30d/java/org/apache/catalina/realm/RealmBase.java",
         "https://raw.githubusercontent.com/apache/tomcat/11.0.25/test/org/apache/catalina/realm/TestRealmBase.java",
         "https://raw.githubusercontent.com/apache/tomcat/11.0.25/webapps/docs/changelog.xml"
-      ]
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.catalina.realm.RealmBase",
+            "method": "findSecurityConstraints",
+            "desc": "(Lorg/apache/catalina/connector/Request;Lorg/apache/catalina/Context;)[Lorg/apache/tomcat/util/descriptor/web/SecurityConstraint;",
+            "source": "org/apache/catalina/realm/RealmBase.java",
+            "lines": [
+              [
+                639,
+                639
+              ]
+            ]
+          }
+        ],
+        "note": "Only the /xxx/* pattern comparison, which runs only when security constraints are configured."
+      }
     },
     {
       "cve": "CVE-2026-65905",
@@ -77,7 +95,24 @@
         "https://raw.githubusercontent.com/apache/tomcat/11.0.25/test/org/apache/catalina/authenticator/TestDigestAuthenticatorNonceInfo.java",
         "https://raw.githubusercontent.com/apache/tomcat/11.0.25/webapps/docs/changelog.xml",
         "https://raw.githubusercontent.com/apache/tomcat-site/trunk/xdocs/security-11.xml"
-      ]
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.catalina.authenticator.DigestAuthenticator$NonceInfo",
+            "method": "nonceCountValid",
+            "desc": "(J)Z",
+            "source": "org/apache/catalina/authenticator/DigestAuthenticator.java",
+            "lines": [
+              [
+                806,
+                808
+              ]
+            ]
+          }
+        ]
+      }
     },
     {
       "cve": "CVE-2026-68525",
@@ -118,7 +153,25 @@
         "https://raw.githubusercontent.com/apache/tomcat/11.0.25/java/org/apache/catalina/authenticator/FormAuthenticator.java",
         "https://raw.githubusercontent.com/apache/tomcat/10d048e16034ddf12055e0cede0da05b15c823b8/java/org/apache/catalina/authenticator/AuthenticatorBase.java",
         "https://raw.githubusercontent.com/apache/tomcat/10d048e16034ddf12055e0cede0da05b15c823b8/java/org/apache/catalina/authenticator/FormAuthenticator.java"
-      ]
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.catalina.authenticator.FormAuthenticator",
+            "method": "restoreRequest",
+            "desc": "(Lorg/apache/catalina/connector/Request;Lorg/apache/catalina/Session;)Z",
+            "source": "org/apache/catalina/authenticator/FormAuthenticator.java",
+            "lines": [
+              [
+                641,
+                641
+              ]
+            ]
+          }
+        ],
+        "note": "Restoring the saved request method after FORM login."
+      }
     },
     {
       "cve": "CVE-2025-14813",
@@ -165,7 +218,19 @@
         "https://raw.githubusercontent.com/bcgit/bc-java/r1rv80v2/core/src/main/java/org/bouncycastle/crypto/modes/G3413CTRBlockCipher.java",
         "https://raw.githubusercontent.com/bcgit/bc-java/r1rv59/core/src/main/java/org/bouncycastle/crypto/modes/G3413CTRBlockCipher.java",
         "https://raw.githubusercontent.com/bcgit/bc-java/701686cb0184cd9ae103c801b3581fdf95c6d4f3/core/src/main/java/org/bouncycastle/crypto/modes/G3413CTRBlockCipher.java"
-      ]
+      ],
+      "l3": {
+        "version": "1.81",
+        "regions": [
+          {
+            "class": "org.bouncycastle.crypto.modes.G3413CTRBlockCipher",
+            "method": "generateCRT",
+            "desc": "()V",
+            "source": "org/bouncycastle/crypto/modes/G3413CTRBlockCipher.java"
+          }
+        ],
+        "note": "bcprov jars have no line numbers: whole method."
+      }
     },
     {
       "cve": "CVE-2026-8763",
@@ -254,7 +319,25 @@
         "https://raw.githubusercontent.com/bcgit/bc-java/2c28b253a44681fbbc562561eab6ad383d2ae558/core/src/main/java/org/bouncycastle/asn1/x509/PKIXNameConstraintValidator.java",
         "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81v1/core/src/main/java/org/bouncycastle/asn1/x509/PKIXNameConstraintValidator.java",
         "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81/prov/src/main/java/org/bouncycastle/jce/provider/PKIXNameConstraintValidator.java"
-      ]
+      ],
+      "l3": {
+        "version": "1.81",
+        "regions": [
+          {
+            "class": "org.bouncycastle.asn1.x509.PKIXNameConstraintValidator",
+            "method": "emailIsConstrained",
+            "desc": "(Ljava/lang/String;Ljava/lang/String;)Z",
+            "source": "org/bouncycastle/asn1/x509/PKIXNameConstraintValidator.java"
+          },
+          {
+            "class": "org.bouncycastle.asn1.x509.PKIXNameConstraintValidator",
+            "method": "isUriConstrained",
+            "desc": "(Ljava/lang/String;Ljava/lang/String;)Z",
+            "source": "org/bouncycastle/asn1/x509/PKIXNameConstraintValidator.java"
+          }
+        ],
+        "note": "bcprov jars have no line numbers: whole method. rfc822Name and URI checks only (shared DNS helpers are left out)."
+      }
     },
     {
       "cve": "CVE-2026-13506",
@@ -296,7 +379,31 @@
         "https://github.com/bcgit/bc-java/commit/77454da9b3dcaaa2991412d1c3c1a6e1a338ff84",
         "https://github.com/bcgit/bc-java/wiki/CVE-2026-13506",
         "https://github.com/advisories/GHSA-qp49-qgx5-5m26"
-      ]
+      ],
+      "l3": {
+        "version": "1.81",
+        "regions": [
+          {
+            "class": "org.bouncycastle.asn1.LazyEncodedSequence",
+            "method": "force",
+            "desc": "()V",
+            "source": "org/bouncycastle/asn1/LazyEncodedSequence.java"
+          },
+          {
+            "class": "org.bouncycastle.asn1.LazyEncodedSequence",
+            "method": "getObjects",
+            "desc": "()Ljava/util/Enumeration;",
+            "source": "org/bouncycastle/asn1/LazyEncodedSequence.java"
+          },
+          {
+            "class": "org.bouncycastle.asn1.LazyConstructionEnumeration",
+            "method": "<init>",
+            "desc": "([B)V",
+            "source": "org/bouncycastle/asn1/LazyConstructionEnumeration.java"
+          }
+        ],
+        "note": "bcprov jars have no line numbers: whole method."
+      }
     },
     {
       "cve": "CVE-2026-0636",
@@ -346,7 +453,19 @@
         "https://github.com/bcgit/bc-java/commit/d20cdb8430e09224114fec0179a71859929fcbde",
         "https://github.com/bcgit/bc-java/wiki/CVE%E2%80%902026%E2%80%900636",
         "https://github.com/advisories/GHSA-c3fc-8qff-9hwx"
-      ]
+      ],
+      "l3": {
+        "version": "1.81",
+        "regions": [
+          {
+            "class": "org.bouncycastle.x509.util.LDAPStoreHelper",
+            "method": "parseDN",
+            "desc": "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+            "source": "org/bouncycastle/x509/util/LDAPStoreHelper.java"
+          }
+        ],
+        "note": "bcprov jars have no line numbers: whole method. X509LDAPCertStoreSpi.parseDN already escapes in 1.81."
+      }
     },
     {
       "cve": "CVE-2026-89407",
@@ -398,7 +517,25 @@
         "https://nvd.nist.gov/vuln/detail/CVE-2026-89407",
         "https://www.tenable.com/cve/CVE-2026-89407",
         "https://app.opencve.io/cve/CVE-2026-89407"
-      ]
+      ],
+      "l3": {
+        "version": "3.1.5",
+        "regions": [
+          {
+            "class": "tools.jackson.core.io.NumberInput",
+            "method": "looksLikeValidNumber",
+            "desc": "(Ljava/lang/String;)Z",
+            "source": "tools/jackson/core/io/NumberInput.java",
+            "lines": [
+              [
+                626,
+                627
+              ]
+            ]
+          }
+        ],
+        "note": "The regular expression match only."
+      }
     },
     {
       "cve": "CVE-2026-89425",
@@ -438,7 +575,25 @@
         "GHSA-7hhh-6rmp-j9qf",
         "https://app.opencve.io/cve/CVE-2026-89425",
         "https://www.wiz.io/vulnerability-database/cve/cve-2026-89425"
-      ]
+      ],
+      "l3": {
+        "version": "3.1.5",
+        "regions": [
+          {
+            "class": "tools.jackson.core.json.UTF8DataInputJsonParser",
+            "method": "_reportInvalidToken",
+            "desc": "(ILjava/lang/String;Ljava/lang/String;)V",
+            "source": "tools/jackson/core/json/UTF8DataInputJsonParser.java",
+            "lines": [
+              [
+                2981,
+                2982
+              ]
+            ]
+          }
+        ],
+        "note": "The unbounded token loop."
+      }
     },
     {
       "cve": "CVE-2026-68497",
@@ -478,7 +633,29 @@
         "GHSA-q4xh-88c3-wmh7",
         "https://www.tenable.com/cve/CVE-2026-68497",
         "https://app.opencve.io/cve/CVE-2026-68497"
-      ]
+      ],
+      "l3": {
+        "version": "3.1.5",
+        "regions": [
+          {
+            "class": "tools.jackson.databind.ext.CoreXMLDeserializers$Std",
+            "method": "_deserialize",
+            "desc": "(Ljava/lang/String;Ltools/jackson/databind/DeserializationContext;)Ljava/lang/Object;",
+            "source": "tools/jackson/databind/ext/CoreXMLDeserializers.java",
+            "lines": [
+              [
+                137,
+                137
+              ],
+              [
+                141,
+                141
+              ]
+            ]
+          }
+        ],
+        "note": "Duration and XMLGregorianCalendar values (QName is not affected)."
+      }
     },
     {
       "cve": "CVE-2026-91776",
@@ -518,7 +695,29 @@
         "GHSA-wv8q-qhhj-9h54",
         "https://app.opencve.io/cve/CVE-2026-91776",
         "https://www.wiz.io/vulnerability-database/cve/cve-2026-91776"
-      ]
+      ],
+      "l3": {
+        "version": "3.1.5",
+        "regions": [
+          {
+            "class": "tools.jackson.databind.jsontype.impl.TypeDeserializerBase",
+            "method": "_findDeserializer",
+            "desc": "(Ltools/jackson/databind/DeserializationContext;Ljava/lang/String;)Ltools/jackson/databind/ValueDeserializer;",
+            "source": "tools/jackson/databind/jsontype/impl/TypeDeserializerBase.java",
+            "lines": [
+              [
+                166,
+                166
+              ],
+              [
+                198,
+                198
+              ]
+            ]
+          }
+        ],
+        "note": "Unknown type ids resolved by a problem handler or defaultImpl."
+      }
     },
     {
       "cve": "CVE-2026-91777",
@@ -558,7 +757,37 @@
         "GHSA-cxp5-3px4-pw24",
         "https://app.opencve.io/cve/CVE-2026-91777",
         "https://www.wiz.io/vulnerability-database/cve/cve-2026-91777"
-      ]
+      ],
+      "l3": {
+        "version": "3.1.5",
+        "regions": [
+          {
+            "class": "tools.jackson.databind.deser.jdk.CollectionDeserializer$CollectionReferringAccumulator",
+            "method": "resolveForwardReference",
+            "desc": "(Ltools/jackson/databind/DeserializationContext;Ljava/lang/Object;Ljava/lang/Object;)V",
+            "source": "tools/jackson/databind/deser/jdk/CollectionDeserializer.java",
+            "lines": [
+              [
+                647,
+                656
+              ]
+            ]
+          },
+          {
+            "class": "tools.jackson.databind.deser.jdk.MapDeserializer$MapReferringAccumulator",
+            "method": "resolveForwardReference",
+            "desc": "(Ltools/jackson/databind/DeserializationContext;Ljava/lang/Object;Ljava/lang/Object;)V",
+            "source": "tools/jackson/databind/deser/jdk/MapDeserializer.java",
+            "lines": [
+              [
+                969,
+                978
+              ]
+            ]
+          }
+        ],
+        "note": "The linear scan over pending forward references."
+      }
     },
     {
       "cve": "CVE-2026-19032",
@@ -591,7 +820,25 @@
         "https://github.com/FasterXML/jackson-databind/commit/ce26eda3481cd796f76ba4c53ffe1da23b53f166",
         "https://github.com/FasterXML/jackson-databind/commit/d94bb632becfe0ba96926b9909ab06d1f87aad6d",
         "https://github.com/FasterXML/jackson-databind/commit/cc6756b61ed90b6b9227f670e0408d5d9bd48551"
-      ]
+      ],
+      "l3": {
+        "version": "3.1.5",
+        "regions": [
+          {
+            "class": "tools.jackson.databind.deser.jdk.JDKFromStringDeserializer$NioPathHelper",
+            "method": "deserialize",
+            "desc": "(Ltools/jackson/databind/DeserializationContext;Ljava/lang/String;)Ljava/nio/file/Path;",
+            "source": "tools/jackson/databind/deser/jdk/JDKFromStringDeserializer.java",
+            "lines": [
+              [
+                375,
+                396
+              ]
+            ]
+          }
+        ],
+        "note": "URI-form paths only (plain file paths return earlier)."
+      }
     },
     {
       "cve": "CVE-2026-83557",
@@ -628,7 +875,12 @@
         "https://github.com/FasterXML/jackson-databind/security/advisories/GHSA-gx83-3vf8-gh7j",
         "https://github.com/FasterXML/jackson-databind/pull/6155",
         "https://github.com/FasterXML/jackson-databind/commit/eb3b7fc0f9c0d27f471550ac3316b17d1987388f"
-      ]
+      ],
+      "l3": {
+        "version": "3.1.5",
+        "regions": [],
+        "note": "The fix changes deny-list data only, so execution alone cannot tell; the sink methods are reported as method evidence."
+      }
     }
   ]
 }
