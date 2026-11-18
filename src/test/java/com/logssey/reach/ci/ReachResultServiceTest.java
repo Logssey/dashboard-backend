@@ -145,6 +145,18 @@ class ReachResultServiceTest {
                 .isEqualTo("UNREACHABLE");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM reach_review_history", Long.class)).isZero();
 
+        // SBOM은 재대조 입력으로 스캔마다 gzip으로 보관한다 (V56). 해시는 푼 JSON의 것, 구성요소 수는 components 개수
+        var sbom = jdbc.queryForMap("SELECT content_gzip, content_sha256, component_count FROM reach_sboms WHERE scan_id = ?", scanId);
+        String json;
+        try (var in = new java.util.zip.GZIPInputStream(new java.io.ByteArrayInputStream((byte[]) sbom.get("content_gzip")))) {
+            json = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        } catch (java.io.IOException e) {
+            throw new AssertionError(e);
+        }
+        assertThat(json).contains("\"bomFormat\":\"CycloneDX\"").contains("\"name\":\"jackson-core\"");
+        assertThat(sbom).containsEntry("component_count", 2);
+        assertThat((String) sbom.get("content_sha256")).isEqualTo(ReachCiCheckService.sha256(json));
+
         // 같은 검사에 다시 올리면 409
         assertError(() -> service.upload("admin", check, "gzip", gzip(bundle(List.of()))), ErrorCode.CONFLICT);
     }
@@ -194,6 +206,7 @@ class ReachResultServiceTest {
                 .containsEntry("scan_status", "FAILED").containsEntry("failure_code", "BUILD_FAILED")
                 .containsEntry("failure_stage", "SBOM").containsEntry("finished", true);
         assertError(() -> service.upload("admin", check, "gzip", gzip(failed)), ErrorCode.CONFLICT);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM reach_sboms", Long.class)).isZero();   // 실패 묶음은 SBOM이 없다
     }
 
     @Test
@@ -444,9 +457,10 @@ class ReachResultServiceTest {
                 + "FROM reach_review_history WHERE finding_id = ? ORDER BY version", String.class, findingId);
     }
 
-    /** 러너가 올리는 묶음. sbom·matches·reachResult는 저장하지 않아 모양만 맞춘다 */
+    /** 러너가 올리는 묶음. sbom은 보관만 하고 matches·reachResult는 저장하지 않아 모양만 맞춘다 */
     private static Map<String, Object> bundle(List<Map<String, Object>> items) {
-        return map("sbom", map("bomFormat", "CycloneDX"), "matches", map("trivy", map()), "verdicts", items,
+        return map("sbom", map("bomFormat", "CycloneDX", "components",
+                        List.of(map("name", "jackson-core"), map("name", "zlib"))), "matches", map("trivy", map()), "verdicts", items,
                 "reachResult", map("facts", List.of()), "tools", map("trivy", "0.69.3", "reach", "v0"),
                 "analysis", map("appClasses", 412),
                 "stages", List.of(map("name", "sbom", "status", "succeeded", "durationSeconds", 8),

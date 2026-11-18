@@ -352,13 +352,21 @@ class ReachCiCheckServiceTest {
                         "commit", "", "path", "chat-server", "image_repository", "logssey/reused-chat",
                         "image_digest", DIGEST)));
 
-        // 같은 키로 다시 보내면 띄우지 않는다. 재대조는 러너가 아직 못 해 띄우지 않는다(QUEUED로 남는다)
-        service.createScan("admin", "d1", new ReachScanRequest(repo, null, null));
-        long done = scan(scanTarget(service.createScan("admin", "d3", new ReachScanRequest(repo, null, null))
-                .check().scanId()), "SUCCEEDED");
+        // 같은 키로 다시 보내면 띄우지 않는다
         dispatcher.calls.clear();
-        service.createScan("admin", "d4", new ReachScanRequest(null, done, null));
+        service.createScan("admin", "d1", new ReachScanRequest(repo, null, null));
         assertThat(dispatcher.calls).isEmpty();
+
+        // 재대조는 원래 스캔의 대상으로 띄우고 rescan_of를 더한다(러너가 보관한 SBOM으로 대조)
+        long done = scan(scanTarget(imageCheckScan(imageCheck)), "SUCCEEDED");
+        long rescan = service.createScan("admin", "d4", new ReachScanRequest(null, done, null)).check().id();
+        assertThat(dispatcher.calls).containsExactly(
+                new Call("service-backend", Map.of("check_id", Long.toString(rescan), "target_type", "IMAGE",
+                        "commit", "", "path", "chat-server", "image_repository", "logssey/reused-chat",
+                        "image_digest", DIGEST, "rescan_of", Long.toString(done))));
+        assertThat(jdbc.queryForObject("SELECT repository FROM reach_ci_checks WHERE check_id = ?", String.class, rescan))
+                .isEqualTo("service-backend");
+        dispatcher.calls.clear();
 
         // 레포가 없는 이미지 앱은 띄울 워크플로가 없다 → 422 (트랜잭션은 Spring이 되돌린다. 통합 테스트에서 본다)
         var ext = new ReachTargetRequest("IMAGE", null, null, new ReachTargetRequest.Image("vendor/ext", DIGEST));
@@ -383,6 +391,70 @@ class ReachCiCheckServiceTest {
         assertThat(dispatcher.calls).containsExactly(new Call("service-backend", Map.of("check_id", Long.toString(check),
                 "target_type", "IMAGE", "commit", "", "path", "chat-server", "image_repository", "logssey/reused-chat",
                 "image_digest", DIGEST)));
+    }
+
+    @Test
+    void dailyRescanCreatesASystemScheduleCheckOncePerDayAndDispatchesIt() {
+        var dispatcher = new RecordingDispatcher();
+        service = new ReachCiCheckService(new ReachCiCheckRepository(JdbcClient.create(jdbc)),
+                ReachTestProperties.REUSED, dispatcher);
+        long target = imageTarget();
+        long done = scan(target, "SUCCEEDED");
+        var day = java.time.LocalDate.of(2026, 11, 18);
+
+        var created = service.createRescan(done, day).orElseThrow();
+        assertThat(created.replayed()).isFalse();
+        var check = service.check("admin", created.check().id());
+        assertThat(check.mode()).isEqualTo("SCHEDULE");
+        assertThat(check.repository()).isEqualTo("service-backend");
+        assertThat(scanTarget(check.scanId())).isEqualTo(target);
+        assertThat(jdbc.queryForMap("SELECT trigger_type, rescan_of_scan_id, requested_by_kind FROM reach_scans "
+                + "WHERE scan_id = ?", check.scanId()))
+                .containsEntry("trigger_type", "SCHEDULE").containsEntry("rescan_of_scan_id", done)
+                .containsEntry("requested_by_kind", "SYSTEM");
+        assertThat(jdbc.queryForObject("SELECT idempotency_scope FROM reach_ci_checks WHERE check_id = ?", String.class,
+                check.id())).isEqualTo("SYSTEM");
+        assertThat(dispatcher.calls).containsExactly(new Call("service-backend", Map.of("check_id",
+                Long.toString(check.id()), "target_type", "IMAGE", "commit", "", "path", "",
+                "image_repository", "logssey/reused-api", "image_digest", "sha256:main", "rescan_of", Long.toString(done))));
+
+        // 같은 날 다시 부르면 그 검사를 주고 띄우지 않는다. 다음 날은 새로
+        dispatcher.calls.clear();
+        assertThat(service.createRescan(done, day).orElseThrow().replayed()).isTrue();
+        assertThat(dispatcher.calls).isEmpty();
+        assertThat(service.createRescan(done, day.plusDays(1)).orElseThrow().replayed()).isFalse();
+        assertThat(dispatcher.calls).hasSize(1);
+
+        // 안 끝난 스캔은 재대조하지 않는다(422). 띄우는 설정이 없으면 만들지 않는다
+        long running = scan(target, "RUNNING");
+        assertError(() -> service.createRescan(running, day), ErrorCode.UNPROCESSABLE);
+        dispatcher.enabled = false;
+        long before = jdbc.queryForObject("SELECT count(*) FROM reach_ci_checks", Long.class);
+        assertThat(service.createRescan(done, day.plusDays(2))).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM reach_ci_checks", Long.class)).isEqualTo(before);
+    }
+
+    @Test
+    void rescanSbomIsTheStoredSbomOfTheOriginalScan() {
+        long target = imageTarget();
+        long done = scan(target, "SUCCEEDED");
+        var plain = service.create("admin", "p", image("MANUAL", "logssey/reused-api", DIGEST)).check();
+        var rescan = service.create("admin", "r", request("SCHEDULE", null, done, null)).check();
+
+        // 원래 스캔에 보관한 SBOM이 없으면(보관 전 스캔) 404, 재대조가 아닌 검사도 404, 없는 검사도 404
+        assertError(() -> service.sbom("admin", rescan.id()), ErrorCode.NOT_FOUND);
+        assertError(() -> service.sbom("admin", plain.id()), ErrorCode.NOT_FOUND);
+        assertError(() -> service.sbom("admin", 999), ErrorCode.NOT_FOUND);
+        assertError(() -> service.sbom(null, rescan.id()), ErrorCode.UNAUTHENTICATED);
+
+        byte[] gzip = {31, -117, 8, 0, 1, 2, 3};
+        jdbc.update("INSERT INTO reach_sboms (scan_id, content_gzip, content_sha256, component_count) VALUES (?, ?, ?, 3)",
+                done, gzip, "0".repeat(64));
+        assertThat(service.sbom("admin", rescan.id())).isEqualTo(gzip);
+    }
+
+    private static long imageCheckScan(long checkId) {
+        return jdbc.queryForObject("SELECT scan_id FROM reach_ci_checks WHERE check_id = ?", Long.class, checkId);
     }
 
     private record Call(String repository, Map<String, String> inputs) {}

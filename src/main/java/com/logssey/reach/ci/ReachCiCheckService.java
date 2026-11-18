@@ -3,11 +3,13 @@ package com.logssey.reach.ci;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
@@ -103,7 +105,8 @@ public class ReachCiCheckService {
      * API-01 스캔 요청. 명세대로 mode = MANUAL인 CI 검사를 함께 만들고, 대상의 레포에서 Reach 워크플로를
      * workflow_dispatch로 띄운다(ARD AD-18 ③). 러너는 받은 검사 ID로 결과를 올린다(API-13).
      * 띄우지 못하면 503이고 이 요청의 대상·스캔·검사는 되돌아간다(같은 멱등 키로 다시 요청하면 새로 띄운다).
-     * 띄우는 설정이 없거나 재대조(rescanOf)면 띄우지 않아 스캔은 QUEUED로 남는다(러너가 저장된 SBOM 재대조를 아직 못 한다)
+     * 재대조(rescanOf)는 원래 스캔의 대상으로 띄우고 inputs에 rescan_of를 더한다. 러너는 보관한 SBOM으로 대조부터 다시 한다.
+     * 띄우는 설정이 없으면 띄우지 않아 스캔은 QUEUED로 남는다
      */
     public Created createScan(String loginId, String idempotencyKey, ReachScanRequest request) {
         long userId = requireAdmin(loginId);
@@ -120,7 +123,9 @@ public class ReachCiCheckService {
 
         // 검사에 대상의 레포를 남긴다. 러너를 띄울 레포이고, 그 레포의 토큰만 결과를 올린다(ReachCiAccess).
         // 이미지 대상은 설정(logssey.reach.apps)에서 그 이미지 앱의 레포를 찾는다
-        var resolved = request.target() == null ? null : ReachTargets.resolve(request.target(), properties);
+        // 재대조는 원래 스캔의 대상을 쓴다. 원래 스캔이 없거나 안 끝났으면 open()이 422를 준다
+        var resolved = request.target() != null ? ReachTargets.resolve(request.target(), properties)
+                : repository.rescanTarget(request.rescanOf()).orElse(null);
         var app = resolved == null ? null : app(resolved.app());
         boolean repoTarget = resolved != null && "REPO".equals(resolved.type());
         String repo = repoTarget ? resolved.repoName() : app == null ? null : app.repo();
@@ -132,9 +137,34 @@ public class ReachCiCheckService {
             // 레포가 없는 이미지 앱(설정에 image만)은 띄울 워크플로가 없다 (명세 TARGET_UNRESOLVED → UNPROCESSABLE)
             if (repo == null) throw new ApiException(ErrorCode.UNPROCESSABLE);
             dispatcher.dispatch(repo.substring(repo.lastIndexOf('/') + 1),
-                    inputs(created.check().id(), resolved, app));
+                    inputs(created.check().id(), resolved, app, request.rescanOf()));
         }
         return created;
+    }
+
+    /**
+     * 하루 1번 재대조 (PRD FR-11, 명세 6-1 SCHEDULE). 대시보드 예약 작업(ReachRescanJob)이 실행 중인 이미지의 스캔마다 부른다.
+     * mode = SCHEDULE, rescanOf = 그 스캔인 검사를 만들고(요청 주체 SYSTEM) 그 앱 레포의 Reach 워크플로를 띄운다.
+     * 멱등 키는 스캔·날짜라 같은 날 다시 불러도 한 번만 띄운다. 띄우는 설정이 없으면 만들지 않는다(빈 값).
+     * 띄우지 못하면 예외이고 이 검사는 되돌아간다
+     */
+    public Optional<Created> createRescan(long scanId, LocalDate day) {
+        if (!dispatcher.enabled()) return Optional.empty();
+        var target = repository.rescanTarget(scanId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+        var app = app(target.app());
+        String repo = app == null ? null : app.repo();
+        if (repo == null) throw new ApiException(ErrorCode.UNPROCESSABLE);   // 띄울 레포가 없는 앱
+        var request = new LinkedHashMap<String, Object>();
+        request.put("rescanOf", scanId);
+        request.put("day", day.toString());
+        var plan = new Plan("SCHEDULE", repo, null, null, null, null, "REPORT_ONLY", null,
+                mapper.writeValueAsString(Map.of("crossCheck", List.of("GRYPE"), "l1", true, "l2", true)));
+        var created = open(Requester.system(), "schedule-" + scanId + "-" + day, request, null, scanId, plan);
+        if (!created.replayed()) {
+            dispatcher.dispatch(repo.substring(repo.lastIndexOf('/') + 1),
+                    inputs(created.check().id(), target, app, scanId));
+        }
+        return Optional.of(created);
     }
 
     private ReachProperties.App app(String code) {
@@ -143,9 +173,11 @@ public class ReachCiCheckService {
 
     /**
      * 워크플로 inputs (서비스 레포 reach.yml의 workflow_dispatch). 워크플로에 없는 이름을 보내면 GitHub이 거부해
-     * 늘 같은 이름을 모두 보내고 쓰지 않는 값은 빈 문자열이다. path는 레포 대상이면 요청의 하위 경로, 이미지면 앱의 경로
+     * 늘 같은 이름을 모두 보내고 쓰지 않는 값은 빈 문자열이다. path는 레포 대상이면 요청의 하위 경로, 이미지면 앱의 경로.
+     * rescan_of는 재대조일 때만 보낸다. 그 입력이 없는 옛 reach.yml로도 보통 스캔 요청은 그대로 띄운다
      */
-    private static Map<String, String> inputs(long checkId, ReachTargets.Resolved target, ReachProperties.App app) {
+    private static Map<String, String> inputs(long checkId, ReachTargets.Resolved target, ReachProperties.App app,
+                                              Long rescanOf) {
         boolean repo = "REPO".equals(target.type());
         String path = repo ? target.repoPath() : app == null ? null : app.path();
         var inputs = new LinkedHashMap<String, String>();
@@ -155,12 +187,14 @@ public class ReachCiCheckService {
         inputs.put("path", path == null ? "" : path);
         inputs.put("image_repository", repo ? "" : target.imageRepository());
         inputs.put("image_digest", repo ? "" : target.imageDigest());
+        if (rescanOf != null) inputs.put("rescan_of", Long.toString(rescanOf));
         return inputs;
     }
 
     /**
      * 요청한 주체 (V34 requested_by_*, V37 idempotency_scope). 사람은 USER:<user_id>,
-     * CI는 CI:<토큰의 repository>이고 스캔에 토큰의 repository·sub를 남긴다(11/02 결정 ④)
+     * CI는 CI:<토큰의 repository>이고 스캔에 토큰의 repository·sub를 남긴다(11/02 결정 ④).
+     * 대시보드 예약 작업(하루 1번 재대조)은 SYSTEM이다
      */
     private record Requester(String scope, Long userId, String repository, String subject) {
         static Requester user(long userId) {
@@ -169,6 +203,10 @@ public class ReachCiCheckService {
 
         static Requester ci(ReachCiCaller caller) {
             return new Requester(caller.scope(), null, caller.repository(), caller.subject());
+        }
+
+        static Requester system() {
+            return new Requester(ReachCiAccess.SYSTEM_SCOPE, null, null, null);
         }
     }
 
@@ -195,11 +233,32 @@ public class ReachCiCheckService {
         long targetId = rescanOf != null ? rescanTarget(rescanOf) : target(target);
         long scanId = requester.userId() != null
                 ? repository.insertScan(targetId, plan.mode(), rescanOf, requester.userId())
-                : repository.insertCiScan(targetId, plan.mode(), requester.repository(), requester.subject());
+                : requester.repository() != null
+                ? repository.insertCiScan(targetId, plan.mode(), requester.repository(), requester.subject())
+                : repository.insertSystemScan(targetId, plan.mode(), rescanOf);
         long checkId = repository.insertCheck(new ReachCiCheckRepository.NewCheck(scanId, plan.mode(),
                 plan.repository(), plan.headCommit(), plan.prNumber(), plan.prBaseRef(), plan.prHeadRef(),
                 plan.policy(), plan.baselineScanId(), plan.options(), scope, key, hash));
         return new Created(created(checkId), false);
+    }
+
+    /** 재대조 입력 SBOM (대시보드 세션). 검사가 없으면, 재대조가 아니거나 보관한 SBOM이 없으면 404 */
+    @Transactional(readOnly = true)
+    public byte[] sbom(String loginId, long checkId) {
+        requireAdmin(loginId);
+        if (!repository.checkExists(checkId)) throw new ApiException(ErrorCode.NOT_FOUND);
+        return rescanSbom(checkId);
+    }
+
+    /** 재대조 입력 SBOM (CI 토큰). 결과를 올릴 수 있는 토큰만 (API-13과 같다) */
+    @Transactional(readOnly = true)
+    public byte[] sbomForCi(ReachCiCaller caller, long checkId) {
+        access.requireOwner(caller, repository.checkOwner(checkId));
+        return rescanSbom(checkId);
+    }
+
+    private byte[] rescanSbom(long checkId) {
+        return repository.rescanSbom(checkId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
     }
 
     /** API-12 결과 조회 (대시보드 세션) */

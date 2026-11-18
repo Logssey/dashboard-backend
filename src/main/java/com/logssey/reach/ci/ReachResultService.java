@@ -1,9 +1,13 @@
 package com.logssey.reach.ci;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -11,6 +15,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.zip.GZIPInputStream;
+import java.util.zip.GZIPOutputStream;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
@@ -102,8 +107,9 @@ public class ReachResultService {
         var scanRecord = scanRecord(bundle);
         var failure = failure(bundle.failure());
         var rows = failure == null ? rows(bundle) : List.<Row>of();
+        var sbom = failure == null ? sbom(bundle.sbom()) : null;
         try {
-            return tx.execute(status -> save(checkId, scanRecord, failure, rows));
+            return tx.execute(status -> save(checkId, scanRecord, failure, rows, sbom));
         } catch (ApiException e) {
             throw e;
         } catch (RuntimeException e) {
@@ -114,7 +120,8 @@ public class ReachResultService {
     }
 
     private ReachResultUploadResponse save(long checkId, ReachResultRepository.ScanRecord scanRecord,
-                                           ReachResultBundle.Failure failure, List<Row> rows) {
+                                           ReachResultBundle.Failure failure, List<Row> rows,
+                                           ReachResultRepository.Sbom sbom) {
         var check = repository.lockCheck(checkId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
         // 같은 검사에 두 번 올리거나 이미 끝난 스캔이면 409 (명세 API-13: 다시 돌리려면 API-12로 새 검사)
         if (check.uploaded() || !List.of("QUEUED", "RUNNING").contains(check.scanStatus())) {
@@ -149,6 +156,7 @@ public class ReachResultService {
         }
         // 묶음의 deployment는 새 Finding을 만들 때만 쓴다. 이미지 대상은 여기서 L1 조회로 다시 계산한다(PRD FR-04)
         l1.recompute(check.targetId());
+        repository.insertSbom(scanId, sbom);   // 재대조(rescanOf)의 입력 (PRD FR-02)
         repository.succeedScan(scanId);
         repository.markUploaded(checkId);
         return new ReachResultUploadResponse(checkId, scanId, "SUCCEEDED");
@@ -240,6 +248,30 @@ public class ReachResultService {
         return new ReachResultRepository.ScanRecord(mapper.writeValueAsString(b.tools()),
                 b.analysis() == null ? null : mapper.writeValueAsString(b.analysis()),
                 mapper.writeValueAsString(stages));
+    }
+
+    /**
+     * 보관할 SBOM (PRD FR-02, V56 reach_sboms). 받은 JSON을 다시 직렬화해 gzip으로 둔다.
+     * 해시는 푼 JSON의 SHA-256이고, 구성요소 수는 최상위 components 개수다
+     */
+    private ReachResultRepository.Sbom sbom(JsonNode sbom) {
+        byte[] json = mapper.writeValueAsBytes(sbom);
+        var out = new ByteArrayOutputStream(json.length / 8 + 64);
+        try (var gzip = new GZIPOutputStream(out)) {
+            gzip.write(json);
+        } catch (IOException e) {
+            throw new IllegalStateException(e);   // 메모리 안 스트림이라 나지 않는다
+        }
+        int components = sbom.path("components").isArray() ? sbom.path("components").size() : 0;
+        return new ReachResultRepository.Sbom(out.toByteArray(), sha256(json), components);
+    }
+
+    private static String sha256(byte[] value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);   // 자바 표준이라 늘 있다
+        }
     }
 
     /** 러너의 실패 사유. code는 E-코드, stage는 단계 이름 (V34 reach_scans 칸 길이) */

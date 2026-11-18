@@ -20,6 +20,9 @@
 # MODE=IMAGE_BUILD: IMAGE_REPOSITORY (e.g. logssey/reused-api), IMAGE_DIGEST (sha256:...), IMAGE_REF
 #   (what `trivy image` pulls, e.g. <registry>/<repo>@<digest>). JAR is the app jar copied out of that image.
 # MODE=MANUAL: CHECK_ID (the dashboard's check), TARGET_TYPE (REPO: SBOM from JAR or FS_DIR | IMAGE: SBOM from IMAGE_REF).
+#   RESCAN_OF (optional, a rescan: API-01 rescanOf or the dashboard's daily rescan): the SBOM the dashboard stored
+#   for that scan is matched again instead of making one. Without a stored SBOM (a scan from before SBOMs were
+#   kept) the SBOM is made as usual. JAR (L2) is still needed.
 # Optional: APP (app code; when empty the dashboard picks it from its logssey.reach.apps), POLICY (REPORT_ONLY | GATE, default REPORT_ONLY), SOURCE (service repo checkout,
 #   gives verdict.py the config files), OUT (./reach-out), WAIT_SECONDS (300), REACH_UI_URL (link in the summary),
 #   REACH_HOME (dashboard-backend checkout; default: this script's repo), ANALYZER (reach-analyzer.jar path).
@@ -57,6 +60,7 @@ case "$MODE" in
     SBOM_FROM=image ;;
   MANUAL)
     [[ "${CHECK_ID:-}" =~ ^[0-9]+$ ]] || { echo "CHECK_ID must be the dashboard check id: ${CHECK_ID:-}" >&2; exit 2; }
+    [[ "${RESCAN_OF:-}" =~ ^[0-9]*$ ]] || { echo "RESCAN_OF must be a scan id: $RESCAN_OF" >&2; exit 2; }
     case "${TARGET_TYPE:-}" in
       REPO) SBOM_FROM=repo ;;
       IMAGE) : "${IMAGE_REF:?IMAGE_REF is required for TARGET_TYPE=IMAGE}"; SBOM_FROM=image ;;
@@ -192,8 +196,26 @@ stage() {
   CURRENT=""
 }
 
+# a rescan: the SBOM the dashboard stored for RESCAN_OF (gzip). Fails (1) when there is none (404)
+stored_sbom() {
+  [ "$MODE" = MANUAL ] && [ -n "${RESCAN_OF:-}" ] || return 1
+  set_auth
+  local code
+  code=$(curl -sS "${AUTH[@]}" -o "$OUT/stored-sbom.json.gz" -w '%{http_code}' \
+    "$REACH_URL/api/v1/reach/ci/checks/$CHECK_ID/sbom") || return 1
+  if [ "$code" != 200 ]; then
+    log "no stored SBOM for scan $RESCAN_OF (HTTP $code); making the SBOM"
+    return 1
+  fi
+  gzip -dc "$OUT/stored-sbom.json.gz" > "$OUT/sbom.cdx.json" || return 1
+  log "rescan of scan $RESCAN_OF: matching its stored SBOM again"
+  TOOLS+=(--tool "sbomSource=stored:scan-$RESCAN_OF")
+}
+
 sbom() {
-  if [ "$SBOM_FROM" = jar ]; then
+  if stored_sbom; then
+    return 0
+  elif [ "$SBOM_FROM" = jar ]; then
     # trivy fs reads only lock files (none in a Gradle repo); rootfs reads the jars
     local dir="$OUT/jar"
     mkdir -p "$dir"

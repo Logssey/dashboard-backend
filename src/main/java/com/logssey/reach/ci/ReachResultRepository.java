@@ -120,6 +120,21 @@ public class ReachResultRepository {
     }
 
     /** 같은 검사에 다시 올리면 409 (명세 API-13) */
+    /** 보관할 SBOM. content는 gzip한 CycloneDX JSON, sha256은 푼 JSON의 해시 */
+    record Sbom(byte[] contentGzip, String sha256, int componentCount) {}
+
+    void insertSbom(long scanId, Sbom sbom) {
+        jdbcClient.sql("""
+                        INSERT INTO reach_sboms (scan_id, content_gzip, content_sha256, component_count)
+                        VALUES (:scanId, :content, :sha256, :components)
+                        """)
+                .param("scanId", scanId)
+                .param("content", sbom.contentGzip())
+                .param("sha256", sbom.sha256())
+                .param("components", sbom.componentCount())
+                .update();
+    }
+
     void markUploaded(long checkId) {
         jdbcClient.sql("UPDATE reach_ci_checks SET results_uploaded_at = now() WHERE check_id = :checkId AND results_uploaded_at IS NULL")
                 .param("checkId", checkId)

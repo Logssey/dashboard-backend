@@ -127,6 +127,56 @@ public class ReachCiCheckRepository {
                 .optional();
     }
 
+    /** 대시보드 예약 작업이 만든 스캔 (하루 1번 재대조, requested_by_kind SYSTEM) */
+    long insertSystemScan(long targetId, String trigger, long rescanOf) {
+        return jdbcClient.sql("""
+                        INSERT INTO reach_scans (target_id, trigger_type, rescan_of_scan_id, requested_by_kind)
+                        VALUES (:targetId, :trigger, :rescanOf, 'SYSTEM')
+                        RETURNING scan_id
+                        """)
+                .param("targetId", targetId)
+                .param("trigger", trigger)
+                .param("rescanOf", rescanOf)
+                .query(Long.class)
+                .single();
+    }
+
+    /** 재대조할 스캔의 대상. 러너를 띄울 레포와 inputs를 정한다 */
+    Optional<ReachTargets.Resolved> rescanTarget(long scanId) {
+        return jdbcClient.sql("""
+                        SELECT t.target_type, t.app, t.repo_name, t.repo_path, t.repo_commit, t.image_repository,
+                               t.image_digest, t.display_name
+                        FROM reach_scans s JOIN reach_targets t ON t.target_id = s.target_id
+                        WHERE s.scan_id = :scanId
+                        """)
+                .param("scanId", scanId)
+                .query((rs, i) -> new ReachTargets.Resolved(rs.getString("target_type"), rs.getString("app"),
+                        rs.getString("repo_name"), rs.getString("repo_path"), rs.getString("repo_commit"),
+                        rs.getString("image_repository"), rs.getString("image_digest"), rs.getString("display_name")))
+                .optional();
+    }
+
+    /** 검사의 스캔이 재대조면 원래 스캔에 보관한 SBOM(gzip). 재대조가 아니거나 보관한 것이 없으면 빈 값 */
+    Optional<byte[]> rescanSbom(long checkId) {
+        return jdbcClient.sql("""
+                        SELECT b.content_gzip
+                        FROM reach_ci_checks c
+                        JOIN reach_scans s ON s.scan_id = c.scan_id
+                        JOIN reach_sboms b ON b.scan_id = s.rescan_of_scan_id
+                        WHERE c.check_id = :checkId
+                        """)
+                .param("checkId", checkId)
+                .query((rs, i) -> rs.getBytes("content_gzip"))
+                .optional();
+    }
+
+    boolean checkExists(long checkId) {
+        return jdbcClient.sql("SELECT count(*) FROM reach_ci_checks WHERE check_id = :checkId")
+                .param("checkId", checkId)
+                .query(Long.class)
+                .single() > 0;
+    }
+
     long insertScan(long targetId, String trigger, Long rescanOf, long userId) {
         return jdbcClient.sql("""
                         INSERT INTO reach_scans (target_id, trigger_type, rescan_of_scan_id,
