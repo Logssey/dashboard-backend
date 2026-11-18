@@ -41,12 +41,14 @@ public class ComplianceService {
     private final ComplianceCheckPolicyCatalog checkPolicies;
     private final ComplianceTargetRepository targets;
     private final ProwlerScopeCatalog scopeCatalog;
+    private final ComplianceServiceUsageEvidenceCatalog serviceUsageEvidence;
     private final String targetKey;
     private final long maxImportBytes;
 
     public ComplianceService(ComplianceRepository repository, ComplianceCatalog catalog,
                              ProwlerOcsfNormalizer normalizer, ComplianceCheckPolicyCatalog checkPolicies,
                              ComplianceTargetRepository targets, ProwlerScopeCatalog scopeCatalog,
+                             ComplianceServiceUsageEvidenceCatalog serviceUsageEvidence,
                              @Value("${logssey.compliance.target-key:default}") String targetKey,
                              @Value("${logssey.compliance.max-import-bytes:8388608}") long maxImportBytes) {
         this.repository = repository;
@@ -55,6 +57,10 @@ public class ComplianceService {
         this.checkPolicies = checkPolicies;
         this.targets = targets;
         this.scopeCatalog = scopeCatalog;
+        this.serviceUsageEvidence = serviceUsageEvidence;
+        if (!serviceUsageEvidence.governedServices().containsAll(checkPolicies.serviceUsageKeys())) {
+            throw new IllegalStateException("조건부 서비스의 사용 증거 정책이 누락되었습니다.");
+        }
         this.targetKey = targetKey;
         this.maxImportBytes = maxImportBytes;
     }
@@ -207,10 +213,17 @@ public class ComplianceService {
         var inferred = new HashSet<String>();
         for (var result : normalized.results().values()) {
             String service = scopeCatalog.serviceForCheck(result.checkId());
+            if (service == null) continue;
+            if (serviceUsageEvidence.governs(service)) {
+                if (serviceUsageEvidence.isUsageEvidence(service, result.checkId(), result.result())) {
+                    inferred.add(service);
+                }
+                continue;
+            }
             String assetType = result.assetType() == null ? "" : result.assetType().toLowerCase(Locale.ROOT);
             boolean concreteResource = !assetType.isBlank() && !assetType.contains("account")
                     && !assetType.equals("unknown") && !assetType.equals("cloudresourcescan");
-            if (service != null && concreteResource) inferred.add(service);
+            if (concreteResource) inferred.add(service);
         }
         return Set.copyOf(inferred);
     }

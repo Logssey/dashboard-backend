@@ -98,6 +98,12 @@ public class ComplianceCheckPolicyCatalog {
     Set<String> checkIds() {
         return policies.values().stream().map(CheckPolicy::checkId).collect(Collectors.toUnmodifiableSet());
     }
+    Set<String> serviceUsageKeys() {
+        return policies.values().stream()
+                .filter(policy -> "SERVICE_USAGE".equals(policy.applicabilityType()))
+                .map(CheckPolicy::applicabilityKey)
+                .collect(Collectors.toUnmodifiableSet());
+    }
 
     private static String key(String provider, String checkId) {
         String normalizedProvider = provider == null || provider.isBlank() ? "aws" : provider;

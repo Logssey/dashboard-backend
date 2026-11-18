@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "policyVersion": "2026-11-18.1",
+  "policyVersion": "2026-11-18.2",
   "prowlerVersion": "5.46.0",
   "policies": [
     {

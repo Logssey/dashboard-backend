@@ -12,9 +12,11 @@ import org.junit.jupiter.api.Test;
 
 class ComplianceAssessmentPolicyTest {
 
+    private final ProwlerScopeCatalog scopeCatalog = new ProwlerScopeCatalog();
     private final ComplianceService service = new ComplianceService(
             null, new ComplianceCatalog(), new ProwlerOcsfNormalizer(),
-            new ComplianceCheckPolicyCatalog(), null, new ProwlerScopeCatalog(), "test", 1024);
+            new ComplianceCheckPolicyCatalog(), null, scopeCatalog,
+            new ComplianceServiceUsageEvidenceCatalog(scopeCatalog), "test", 1024);
 
     @Test
     void optionalServiceAbsenceRequiresReviewInsteadOfFailingControl() {
@@ -46,6 +48,42 @@ class ComplianceAssessmentPolicyTest {
                 importWith("bedrock_guardrails_configured", "FAIL"), staleProfile, Set.of("bedrock"));
 
         assertThat(status(assessments, "isms", "2.10.2")).isEqualTo("TECHNICAL_FAIL");
+    }
+
+    @Test
+    void syntheticAbsenceFindingsDoNotInferConditionalServiceUsage() {
+        assertThat(service.inferServices(importWith("bedrock_guardrails_configured", "FAIL", "AwsBedrockGuardrail")))
+                .doesNotContain("bedrock");
+        assertThat(service.inferServices(importWith("sagemaker_models_monitor_enabled", "FAIL", "AwsSageMakerSchedule")))
+                .doesNotContain("sagemaker");
+        assertThat(service.inferServices(importWith("drs_job_exist", "FAIL", "AwsDrsJob")))
+                .doesNotContain("drs");
+        assertThat(service.inferServices(importWith("ssmincidents_enabled_with_plans", "FAIL", "AwsSsmIncident")))
+                .doesNotContain("ssmincidents");
+        assertThat(service.inferServices(importWith("backup_vaults_exist", "FAIL", "AwsBackupVault")))
+                .doesNotContain("backup");
+        assertThat(service.inferServices(importWith("macie_is_enabled", "FAIL", "AwsMacieSession")))
+                .doesNotContain("macie");
+    }
+
+    @Test
+    void syntheticAbsenceDoesNotOverrideExplicitNotUsedProfile() {
+        var profile = new AssessmentProfile(1, Map.of("bedrock", "NOT_USED"), Map.of());
+        var normalized = importWith("bedrock_guardrails_configured", "FAIL", "AwsBedrockGuardrail");
+
+        assertThat(status(service.assess(normalized, profile, service.inferServices(normalized)),
+                "isms", "2.10.2")).isEqualTo("NOT_ASSESSED");
+    }
+
+    @Test
+    void positivePresenceAndResourceFindingsInferConditionalServiceUsage() {
+        assertThat(service.inferServices(importWith("macie_is_enabled", "PASS", "AwsMacieSession")))
+                .containsExactly("macie");
+        assertThat(service.inferServices(importWith(
+                "sagemaker_notebook_instance_encryption_enabled", "FAIL", "AwsSageMakerNotebookInstance")))
+                .containsExactly("sagemaker");
+        assertThat(service.inferServices(importWith("backup_vaults_encrypted", "FAIL", "AwsBackupVault")))
+                .containsExactly("backup");
     }
 
     @Test
@@ -89,10 +127,15 @@ class ComplianceAssessmentPolicyTest {
     }
 
     private static ProwlerOcsfNormalizer.NormalizedImport importWith(String checkId, String result) {
+        return importWith(checkId, result, "AwsAccount");
+    }
+
+    private static ProwlerOcsfNormalizer.NormalizedImport importWith(
+            String checkId, String result, String assetType) {
         var finding = new ProwlerOcsfNormalizer.NormalizedResult(
                 checkId, checkId, "aws", result, "AWS Account", "observed", "expected",
                 OffsetDateTime.parse("2026-11-18T00:00:00Z"), "global", "Unknown", "fingerprint",
-                "account", "AwsAccount", "prod");
+                "account", assetType, "prod");
         return new ProwlerOcsfNormalizer.NormalizedImport(
                 Map.of("finding", finding), 1, 0, 0, "Prowler", "5.46.0");
     }
