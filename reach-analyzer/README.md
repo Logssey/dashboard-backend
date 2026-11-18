@@ -12,6 +12,7 @@
 | `verdict/verdict.py` | 분석 결과 + 규칙 (+ Trivy 보고서, 레포 설정 파일) → CVE별 판정 |
 | `verdict/bundle.py` | SBOM + 스캐너 결과(Trivy, Grype) + 분석 결과 + 판정 → API-13 결과 묶음(gzip) |
 | `verdict/l3.py` | L3: JaCoCo XML(앱을 띄워 시나리오를 돌린 실행 기록) + 취약 구간(`vuln-functions.json`의 `l3`) + L2 호출 경로 → CVE별로 실제 실행이 어디까지 갔는지(구간·함수), 어느 요청에서인지. L2 판정을 바꾸지 않는 근거 |
+| `verdict/l3_runner.py` | L3 러너 도우미: 서비스 저장소의 시나리오(JSON) 검사·실행, 요청 단계마다 실행 기록 끊기, 리포트용 클래스 파일 준비, 에이전트 기록 범위. `deploy/reach/ci/l3-run.sh`·`reach-scan.sh`가 부른다 |
 | `../src/main/resources/reach/` | 판정 데이터. `vuln-functions.json`(CVE 14개의 취약 함수 46개), `rules.json`(사실·CVE별 규칙). 대시보드 API-09·10도 같은 파일을 쓴다 |
 | `research/` | 취약 함수를 찾은 근거: CVE별 조사 JSON, 노트, BouncyCastle 재현 코드. 버전별 소스·diff 원본(약 14MB)은 넣지 않았다 |
 | `scripts/make_spec.py` | `research/*.json` → `vuln-functions.json` 생성 |
@@ -24,7 +25,7 @@
 ```bash
 ./gradlew :reach-analyzer:jar           # build/libs/reach-analyzer.jar (ASM 포함, java -jar로 실행)
 ./gradlew :reach-analyzer:fixtureTest   # 샘플 앱 5개 판정을 expected.json과 비교
-./gradlew :reach-analyzer:verdictTest   # bundle.py·l3.py 단위 테스트
+./gradlew :reach-analyzer:verdictTest   # bundle.py·l3.py·l3_runner.py 단위 테스트
 ```
 
 `fixtureTest`·`verdictTest`는 bash, `javac`, `jar`, `python3`이 필요해 `check`(`./gradlew build`·`test`)에는 넣지 않았다. 샘플 앱은 실제 bcprov 1.78.1, Jackson 2.16.1, commons-logging 1.3.0 jar를 넣어 만든다(Gradle이 받는다). Spring MVC·Boot·Tomcat은 실제 클래스·메서드 이름을 가진 스텁이다.

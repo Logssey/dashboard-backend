@@ -9,7 +9,7 @@
 # no registration, the same steps and upload.
 #
 # Steps: SBOM (Trivy) -> match (Trivy, Grype if installed) -> L2 (reach-analyzer + verdict.py)
-#        -> bundle.py -> API-13. A failed step after the check is registered uploads a failure bundle,
+#        -> L3 evidence (only with L3_SEGMENTS) -> bundle.py -> API-13. A failed step after the check is registered uploads a failure bundle,
 #        so the scan ends FAILED on the dashboard instead of staying QUEUED.
 #
 # Required: MODE (PR | IMAGE_BUILD | MANUAL), REACH_URL. REPOSITORY and COMMIT for PR and IMAGE_BUILD
@@ -23,6 +23,12 @@
 #   RESCAN_OF (optional, a rescan: API-01 rescanOf or the dashboard's daily rescan): the SBOM the dashboard stored
 #   for that scan is matched again instead of making one. Without a stored SBOM (a scan from before SBOMs were
 #   kept) the SBOM is made as usual. JAR (L2) is still needed.
+# L3 (optional, FR-14): L3_SEGMENTS (the execution data of l3-run.sh, one file per segment) and L3_RUN (its
+#   run.json), with JAR and JACOCO_HOME (jacococli.jar): after L2 the segments become JaCoCo reports of the classes
+#   the L3 data and the L2 call paths name, verdict/l3.py says how far the run got per CVE and in which requests,
+#   and that goes into the bundle as its l3 object. It is evidence next to the L2 verdict and never changes it.
+#   L3_ERROR (a message) when the L3 run failed. A failed L3 step is logged and sent as an L3 error; it never
+#   fails the scan.
 # Optional: APP (app code; when empty the dashboard picks it from its logssey.reach.apps), POLICY (REPORT_ONLY | GATE, default REPORT_ONLY), SOURCE (service repo checkout,
 #   gives verdict.py the config files), OUT (./reach-out), WAIT_SECONDS (300), REACH_UI_URL (link in the summary),
 #   REACH_HOME (dashboard-backend checkout; default: this script's repo), ANALYZER (reach-analyzer.jar path).
@@ -236,6 +242,33 @@ match() {
   fi
 }
 
+# L3 (FR-14): reports of the run's segments, then how far the run got per CVE. Never stops the scan: the caller
+# checks the status
+l3_evidence() {
+  local cli="${JACOCO_HOME:-}/jacococli.jar" release scope seg id reach_args=()
+  [ -n "$JAR" ] && [ -f "$cli" ] && [ -f "${L3_RUN:-}" ] || { log "L3 needs JAR, JACOCO_HOME and L3_RUN"; return 1; }
+  release=$(jq -r '.javaRelease // 21' "$L3_RUN") || return 1
+  scope=$(jq -r '.scope // "*"' "$L3_RUN") || return 1
+  [ -f "$OUT/reach-result.json" ] && reach_args=(--reach "$OUT/reach-result.json")
+  rm -rf "$OUT/l3-classes" "$OUT/l3-xml"
+  mkdir -p "$OUT/l3-xml"
+  python3 "$VERDICT/l3_runner.py" classes --jar "$JAR" --out "$OUT/l3-classes" --java-release "$release" \
+    --spec "$DATA/vuln-functions.json" "${reach_args[@]}" || return 1
+  for seg in "$L3_SEGMENTS"/*.exec; do
+    id=$(basename "$seg" .exec)
+    java -jar "$cli" report "$seg" --classfiles "$OUT/l3-classes" --xml "$OUT/l3-xml/$id.xml" \
+      > "$OUT/l3-report.log" 2>&1 || { log "the JaCoCo report of segment $id failed"; return 1; }
+    # a class file that is not the one that ran has no coverage at all: that would read as "did not run"
+    if grep -q 'does not match' "$OUT/l3-report.log"; then
+      log "the class files of the jar are not the ones that ran (segment $id); no L3 result"
+      return 1
+    fi
+  done
+  python3 "$VERDICT/l3.py" --spec "$DATA/vuln-functions.json" --segments "$OUT/l3-xml" --sbom "$OUT/sbom.cdx.json" \
+    --scope "$scope" "${reach_args[@]}" --out "$OUT/l3-match.json" || return 1
+  jq -s '.[0] + {run: .[1]}' "$OUT/l3-match.json" "$L3_RUN" > "$OUT/l3-result.json" || return 1
+}
+
 l2() {
   java -Xmx3g -jar "$ANALYZER" --app "$JAR" \
     --spec "$DATA/vuln-functions.json" --rules "$DATA/rules.json" --out "$OUT/reach-result.json"
@@ -251,7 +284,7 @@ report() {
   [ -f "$OUT/grype.json" ] && grype_args=(--grype "$OUT/grype.json")
   [ -n "$JAR" ] && l2_args=(--reach "$OUT/reach-result.json" --verdicts "$OUT/verdicts.json" --jar "$JAR")
   python3 "$VERDICT/bundle.py" --sbom "$OUT/sbom.cdx.json" --trivy "$OUT/trivy.json" "${grype_args[@]}" \
-    "${l2_args[@]}" --spec "$DATA/vuln-functions.json" --rules "$DATA/rules.json" \
+    "${l2_args[@]}" "${L3_ARGS[@]}" --spec "$DATA/vuln-functions.json" --rules "$DATA/rules.json" \
     "${TOOLS[@]}" "${STAGES[@]}" --stage "report=succeeded" --out "$OUT/bundle.json.gz"
 }
 
@@ -265,6 +298,20 @@ if [ "$ALREADY" = QUEUED ]; then
     stage l2 l2
   else
     log "no app jar: L2 skipped, findings are NOT_ANALYZED with their reason"
+  fi
+  L3_ARGS=()
+  rm -f "$OUT/l3-match.json" "$OUT/l3-result.json"
+  if [ -n "${L3_SEGMENTS:-}" ]; then
+    if l3_evidence; then
+      L3_ARGS=(--l3 "$OUT/l3-result.json")
+      log "L3: $(jq -c .counts "$OUT/l3-result.json")"
+    else
+      log "L3 evidence failed; the scan goes on without it"
+      rm -f "$OUT/l3-result.json"
+      L3_ARGS=(--l3-error "L3 evidence failed on the runner, see the workflow log")
+    fi
+  elif [ -n "${L3_ERROR:-}" ]; then
+    L3_ARGS=(--l3-error "$L3_ERROR")
   fi
   stage report report
   CURRENT=report
