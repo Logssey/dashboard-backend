@@ -41,7 +41,7 @@ public class IacRunRepository {
     }
 
     long insertRun(long repoId, Integer prNumber, String headSha, String trigger, String status, String verdict,
-                   String highestSeverity, long requestedBy, OffsetDateTime finishedAt) {
+                   String highestSeverity, Long requestedBy, OffsetDateTime finishedAt) {
         return jdbc.queryForObject("""
                 INSERT INTO iac_runs (repo_id, pr_number, head_sha, trigger_type, status, verdict,
                                       highest_severity, requested_by_user_id, finished_at)
@@ -118,7 +118,7 @@ public class IacRunRepository {
     }
 
     /** PR run 은 ① 경로 분석(ANALYZE_RUN), main 점검 run 은 ③ 드리프트 점검(CHECK_DRIFT). */
-    void enqueueAnalysis(long runId, boolean push, long requestedBy) {
+    void enqueueAnalysis(long runId, boolean push, Long requestedBy) {
         jdbc.update("""
                 INSERT INTO iac_jobs (kind, trigger_type, run_id, requested_by_user_id)
                 VALUES (?, ?, ?, ?)
@@ -138,11 +138,19 @@ public class IacRunRepository {
                 rs.getObject("finished_at", OffsetDateTime.class)), runId).stream().findFirst();
     }
 
-    void audit(long actorUserId, String entityType, long entityId, String eventType, String afterSafeJson) {
+    /** 사용자가 없으면(GitHub Actions OIDC) CI 로 남긴다 */
+    void audit(Long actorUserId, String entityType, long entityId, String eventType, String afterSafeJson) {
         jdbc.update("""
                 INSERT INTO iac_audit_events (actor_kind, actor_user_id, entity_type, entity_id, event_type, after_safe)
-                VALUES ('USER', ?, ?, ?, ?, ?::jsonb)
-                """, actorUserId, entityType, entityId, eventType, afterSafeJson);
+                VALUES (?, ?, ?, ?, ?, ?::jsonb)
+                """, actorUserId == null ? "CI" : "USER", actorUserId, entityType, entityId, eventType, afterSafeJson);
+    }
+
+    /** run 이 속한 레포 이름 (CI 토큰의 레포와 맞는지 볼 때) */
+    Optional<String> runRepository(long runId) {
+        return jdbc.query("""
+                SELECT r.full_name FROM iac_runs run JOIN iac_repos r ON r.repo_id = run.repo_id WHERE run.run_id = ?
+                """, (rs, row) -> rs.getString("full_name"), runId).stream().findFirst();
     }
 
     OffsetDateTime databaseNow() {

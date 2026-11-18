@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 import com.logssey.common.error.ApiException;
@@ -20,7 +21,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * CI 가 PR 마다 run 을 등록하고 민감값을 지운 plan 을 올린다 (API 계약 CI API).
- * S3 에서는 로그인한 관리자만 부를 수 있다. GitHub OIDC 검증은 S4 에서 붙인다.
+ * 대시보드 관리자(세션) 또는 infrastructure 의 iac-report 워크플로(GitHub OIDC, IacCiSecurityConfig)가 부른다.
+ * CI 는 토큰의 레포에 속한 run 만 다루고, 기록에는 사용자 없이 CI 로 남는다.
  */
 @Service
 public class IacRunService {
@@ -41,8 +43,20 @@ public class IacRunService {
     }
 
     public IacRunCreatedResponse register(IacRunRequest request, String loginId) {
+        return register(request, () -> requireAdmin(loginId));
+    }
+
+    /** CI: 요청의 레포가 토큰의 레포와 같아야 한다 */
+    public IacRunCreatedResponse registerByCi(IacRunRequest request, String tokenRepository) {
+        if (!request.repo().equals(tokenRepository)) {
+            throw new ApiException(ErrorCode.FORBIDDEN);
+        }
+        return register(request, () -> null);
+    }
+
+    private IacRunCreatedResponse register(IacRunRequest request, Supplier<Long> actorOf) {
         return Objects.requireNonNull(transaction.execute(status -> {
-            long actor = requireAdmin(loginId);
+            Long actor = actorOf.get();
             if (request.isPush() == (request.prNumber() != null)) {
                 // PR 은 번호가 있어야 하고, main 점검은 번호가 없어야 한다
                 throw new ApiException(ErrorCode.INVALID_INPUT);
@@ -75,6 +89,15 @@ public class IacRunService {
     }
 
     public IacPlanAcceptedResponse uploadPlan(long runId, byte[] gzip, String loginId) {
+        return uploadPlan(runId, gzip, () -> requireAdmin(loginId));
+    }
+
+    public IacPlanAcceptedResponse uploadPlanByCi(long runId, byte[] gzip, String tokenRepository) {
+        requireRunOf(runId, tokenRepository);
+        return uploadPlan(runId, gzip, () -> null);
+    }
+
+    private IacPlanAcceptedResponse uploadPlan(long runId, byte[] gzip, Supplier<Long> actorOf) {
         if (gzip.length == 0) {
             throw new ApiException(ErrorCode.INVALID_INPUT);
         }
@@ -84,7 +107,7 @@ public class IacRunService {
         // 압축 해제와 검사는 DB 잠금 밖에서 한다
         inspector.inspect(gzip);
         return Objects.requireNonNull(transaction.execute(status -> {
-            long actor = requireAdmin(loginId);
+            Long actor = actorOf.get();
             var run = repository.lockRun(runId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
             if (!"PLANNING".equals(run.status())) {
                 // SUPERSEDED·GATE_FAILED·이미 분석 중인 run 에는 올릴 수 없다
@@ -101,6 +124,18 @@ public class IacRunService {
     public IacRunStatusResponse status(long runId, String loginId) {
         requireAdmin(loginId);
         return repository.status(runId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+    }
+
+    public IacRunStatusResponse statusByCi(long runId, String tokenRepository) {
+        requireRunOf(runId, tokenRepository);
+        return repository.status(runId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+    }
+
+    /** 다른 레포의 run 은 없는 것처럼 404 */
+    private void requireRunOf(long runId, String tokenRepository) {
+        if (!repository.runRepository(runId).map(tokenRepository::equals).orElse(false)) {
+            throw new ApiException(ErrorCode.NOT_FOUND);
+        }
     }
 
     /** 지문 → 발견 건. 지문은 규칙 + 대상 + 레포 + PR 번호, main 점검은 PR 번호 대신 MAIN (설계 지문 규칙). */
