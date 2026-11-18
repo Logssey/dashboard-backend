@@ -127,6 +127,20 @@ class IacQueryOverviewTest {
     }
 
     @Test
+    void beforeAnyRepoIsRegisteredGatesAndPullRequestsAreEmptyNotMissing() {
+        jdbc.execute("TRUNCATE iac_repos RESTART IDENTITY CASCADE");
+
+        var gates = service.gates(null, "admin");
+        assertThat(gates.mainCheckedAt()).isNull();
+        assertThat(gates.stages()).isNotEmpty().allMatch(s -> s.mainOpen() == 0 && s.prBlocked7d() == 0);
+        assertThat(gates.supplyChain().unpinnedProviders()).isZero();
+        assertThat(service.pullRequests(null, "admin")).isEmpty();
+        // 지정한 레포가 없으면 여전히 404
+        assertThatThrownBy(() -> service.gates("Logssey/unknown", "admin"))
+                .satisfies(e -> assertThat(((ApiException) e).errorCode()).isEqualTo(ErrorCode.NOT_FOUND));
+    }
+
+    @Test
     void jobsShowScheduleLastResultAndBacklog() {
         jdbc.update("INSERT INTO iac_jobs (kind, trigger_type, status, finished_at, last_error_code) VALUES "
                 + "('ENRICH_GRAPH', 'SCHEDULED', 'FAILED', now(), 'GRAPH_UNAVAILABLE'), ('ENRICH_GRAPH', 'MANUAL', 'PENDING', NULL, NULL)");
