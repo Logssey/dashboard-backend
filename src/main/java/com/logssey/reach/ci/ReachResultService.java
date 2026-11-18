@@ -108,8 +108,10 @@ public class ReachResultService {
         var failure = failure(bundle.failure());
         var rows = failure == null ? rows(bundle) : List.<Row>of();
         var sbom = failure == null ? sbom(bundle.sbom()) : null;
+        // L3는 판정 옆의 근거다. 잘못된 l3는 400이 아니라 FAILED 실행으로 남는다 (PRD FR-14)
+        var l3 = failure == null ? ReachL3Input.parse(bundle.l3(), mapper) : null;
         try {
-            return tx.execute(status -> save(checkId, scanRecord, failure, rows, sbom));
+            return tx.execute(status -> save(checkId, scanRecord, failure, rows, sbom, l3));
         } catch (ApiException e) {
             throw e;
         } catch (RuntimeException e) {
@@ -121,7 +123,7 @@ public class ReachResultService {
 
     private ReachResultUploadResponse save(long checkId, ReachResultRepository.ScanRecord scanRecord,
                                            ReachResultBundle.Failure failure, List<Row> rows,
-                                           ReachResultRepository.Sbom sbom) {
+                                           ReachResultRepository.Sbom sbom, ReachL3Input l3) {
         var check = repository.lockCheck(checkId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
         // 같은 검사에 두 번 올리거나 이미 끝난 스캔이면 409 (명세 API-13: 다시 돌리려면 API-12로 새 검사)
         if (check.uploaded() || !List.of("QUEUED", "RUNNING").contains(check.scanStatus())) {
@@ -138,6 +140,10 @@ public class ReachResultService {
         l1.lockRecompute();
         repository.startScan(scanId, scanRecord);
         boolean pr = "PR".equals(check.mode());
+        // PR 검사는 앱을 띄우지 않고, 그 결과는 기준 Finding을 바꾸지 않는다 (ARD SR-09)
+        boolean observed = l3 != null && !pr;
+        if (observed) repository.insertL3Run(scanId, l3.run());
+        boolean l3Results = observed && "SUCCEEDED".equals(l3.run().status());
         for (var row : rows) {
             var shared = pr ? repository.baselineFinding(check.targetId(), row.purl(), row.vulnerabilityId())
                     : Optional.<Long>empty();
@@ -153,7 +159,14 @@ public class ReachResultService {
             long verdictId = repository.insertToolVerdict(row.verdict().withIds(findingId, scanId));
             repository.insertEvidence(verdictId, row.evidence());
             review(check, scanId, row, findingId, upserted.inserted(), verdictId);
+            // 판정·검토와 따로 둔다: L3는 상태·근거 해시·게이트를 바꾸지 않는다 (V55)
+            if (l3Results) {
+                l3.result(row.vulnerabilityId(), row.purl())
+                        .ifPresent(result -> repository.upsertL3Result(findingId, scanId, result));
+            }
         }
+        // 같은 이미지를 다시 띄워 본 결과가 예전 것을 대신한다. 실패한 실행·앱을 띄우지 않은 스캔은 예전 결과를 그대로 둔다
+        if (l3Results) repository.deleteStaleL3Results(check.targetId(), scanId);
         // 묶음의 deployment는 새 Finding을 만들 때만 쓴다. 이미지 대상은 여기서 L1 조회로 다시 계산한다(PRD FR-04)
         l1.recompute(check.targetId());
         repository.insertSbom(scanId, sbom);   // 재대조(rescanOf)의 입력 (PRD FR-02)

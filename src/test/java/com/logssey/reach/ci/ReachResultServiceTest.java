@@ -367,6 +367,107 @@ class ReachResultServiceTest {
     }
 
     @Test
+    void l3IsStoredNextToTheVerdictAndChangesNothingElse() {
+        var evidence = List.of(map("kind", "NOTE", "summary", "no path"));
+        long scan = uploadWithL3(check("a"),
+                l3(l3Cve("CVE-2026-1", "a", "region", true, false), l3Cve("CVE-2026-2", "b", "FUNCTION", true, false),
+                        l3Cve("CVE-2026-9", "not-in-this-scan", "NONE", true, false)),
+                item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence),
+                item("b", "CVE-2026-2", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence),
+                item("c", "CVE-2026-3", "HIGH", "NOT_ANALYZED", null, "NO_VULN_FUNCTION_DATA", List.of()));
+
+        assertThat(jdbc.queryForMap("SELECT run_status, scenario, observation_method, error, counts->>'REGION' AS regions, "
+                + "detail->'build'->>'imageDigest' AS digest, detail->'configKeys'->0->>'name' AS key, "
+                + "jsonb_array_length(detail->'invocations') AS invocations, jsonb_exists(detail, 'secretValue') AS extra "
+                + "FROM reach_l3_runs WHERE scan_id = ?", scan))
+                .containsEntry("run_status", "SUCCEEDED").containsEntry("scenario", "2026-11-18.1")
+                .containsEntry("observation_method", "COVERAGE").containsEntry("error", null)
+                .containsEntry("regions", "1").containsEntry("digest", "sha256:abc").containsEntry("key", "KAKAO_STUB")
+                .containsEntry("invocations", 2).containsEntry("extra", false);   // 모르는 칸은 담지 않는다
+        // 판정은 L2 그대로다. L3는 판정 근거에 섞이지 않는다
+        assertThat(jdbc.queryForList("SELECT f.component_name || ':' || v.status || ':' || x.reached || ':' || x.regions_checked "
+                + "FROM reach_l3_results x JOIN reach_findings f ON f.finding_id = x.finding_id "
+                + "JOIN reach_verdicts v ON v.finding_id = f.finding_id AND v.is_current ORDER BY 1", String.class))
+                .containsExactly("a:UNREACHABLE:REGION:true", "b:UNREACHABLE:FUNCTION:true");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM reach_evidence WHERE kind = 'RUNTIME'", Long.class)).isZero();
+        assertThat(jdbc.queryForMap("SELECT detail->'during'->>0 AS during, detail->'regions'->0->'executedLines'->>0 AS line, "
+                + "jsonb_exists(detail, 'reached') AS dup FROM reach_l3_results WHERE finding_id = ?", finding("a")))
+                .containsEntry("during", "002").containsEntry("line", "626").containsEntry("dup", false);
+    }
+
+    @Test
+    void l3NeverTouchesAReviewAndARescanKeepsTheLastResult() {
+        var evidence = List.of(map("kind", "NOTE", "summary", "no path"));
+        var a = item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence);
+        var b = item("b", "CVE-2026-2", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence);
+        upload(check("a"), a, b);
+        confirm(finding("a"), "UNREACHABLE", 1);
+
+        // L2가 도달 불가라고 한 것을 L3가 실행됐다고 해도 판정·검토는 그대로다. 사람이 나란히 본다
+        long observed = uploadWithL3(check("a"), l3(l3Cve("CVE-2026-1", "a", "REGION", true, false),
+                l3Cve("CVE-2026-2", "b", "FUNCTION", false, true)), a, b);
+        assertThat(review(finding("a"))).isEqualTo("CONFIRMED:2:null");
+        assertThat(jdbc.queryForObject("SELECT status FROM reach_verdicts WHERE finding_id = ? AND is_current",
+                String.class, finding("a"))).isEqualTo("UNREACHABLE");
+
+        // 재대조는 앱을 띄우지 않는다(l3 없음): 검토도, 그 이미지의 마지막 L3 결과도 남는다
+        long rescan = upload(check("a"), a, b);
+        assertThat(review(finding("a"))).isEqualTo("CONFIRMED:2:null");
+        assertThat(l3Results()).containsExactly("a:REGION:" + observed, "b:FUNCTION:" + observed);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM reach_l3_runs WHERE scan_id = ?", Long.class, rescan)).isZero();
+
+        // 같은 이미지를 다시 띄워 보면 새 결과가 대신하고, 이번에 없는 것은 지운다
+        long again = uploadWithL3(check("a"), l3(l3Cve("CVE-2026-1", "a", "NONE", true, false)), a, b);
+        assertThat(l3Results()).containsExactly("a:NONE:" + again);
+        assertThat(review(finding("a"))).isEqualTo("CONFIRMED:2:null");
+    }
+
+    @Test
+    void aFailedOrBrokenL3StillFinishesTheScan() {
+        var a = item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "CALLGRAPH", null, List.of(map("kind", "NOTE", "summary", "x")));
+        long first = uploadWithL3(check("a"), l3(l3Cve("CVE-2026-1", "a", "REGION", true, false)), a);
+
+        // 러너에서 L3가 실패했다: 스캔은 성공, 실행만 FAILED, 그 이미지의 예전 결과는 그대로
+        long failed = uploadWithL3(check("a"), map("error", "L3 run failed on the runner, see the workflow log"), a);
+        assertThat(jdbc.queryForMap("SELECT s.scan_status, r.run_status, r.error FROM reach_scans s "
+                + "JOIN reach_l3_runs r ON r.scan_id = s.scan_id WHERE s.scan_id = ?", failed))
+                .containsEntry("scan_status", "SUCCEEDED").containsEntry("run_status", "FAILED")
+                .containsEntry("error", "L3 run failed on the runner, see the workflow log");
+        assertThat(l3Results()).containsExactly("a:REGION:" + first);
+
+        // 모양이 틀린 l3도 400이 아니다 (L3는 스캔을 실패시키지 않는다)
+        var badLevel = l3(l3Cve("CVE-2026-1", "a", "MAYBE", true, false));
+        var noRun = l3(l3Cve("CVE-2026-1", "a", "REGION", true, false));
+        noRun.remove("run");
+        var twice = l3(l3Cve("CVE-2026-1", "a", "REGION", true, false), l3Cve("CVE-2026-1", "a", "NONE", true, false));
+        for (Object broken : Arrays.asList("not an object", badLevel, noRun, twice, map("cves", List.of()))) {
+            long scan = uploadWithL3(check("a"), broken, a);
+            assertThat(jdbc.queryForMap("SELECT s.scan_status, r.run_status, r.error FROM reach_scans s "
+                    + "JOIN reach_l3_runs r ON r.scan_id = s.scan_id WHERE s.scan_id = ?", scan))
+                    .containsEntry("scan_status", "SUCCEEDED").containsEntry("run_status", "FAILED")
+                    .containsEntry("error", ReachL3Input.INVALID);
+        }
+        assertThat(l3Results()).containsExactly("a:REGION:" + first);
+    }
+
+    @Test
+    void prScansTakeNoL3() {
+        var a = item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "CALLGRAPH", null, List.of(map("kind", "NOTE", "summary", "x")));
+        uploadWithL3(prCheck("a"), l3(l3Cve("CVE-2026-1", "a", "REGION", true, false)), a);
+        assertThat(jdbc.queryForObject("SELECT (SELECT count(*) FROM reach_l3_runs) + (SELECT count(*) FROM reach_l3_results)",
+                Long.class)).isZero();
+    }
+
+    @Test
+    void l3ResultsAreMatchedByPackageCoordinates() {
+        assertThat(ReachL3Input.coordinates("pkg:maven/org.bouncycastle/bcprov-jdk18on@1.81?type=jar")).isEqualTo("org.bouncycastle:bcprov-jdk18on");
+        assertThat(ReachL3Input.coordinates("pkg:maven/tools.jackson.core/jackson-core@3.1.5")).isEqualTo("tools.jackson.core:jackson-core");
+        assertThat(ReachL3Input.coordinates("pkg:npm/%40scope/name@1.0.0")).isEqualTo("@scope:name");
+        assertThat(ReachL3Input.coordinates("pkg:npm/left-pad@1.0.0")).isEqualTo("left-pad");
+        assertThat(ReachL3Input.coordinates("not a purl")).isEmpty();
+    }
+
+    @Test
     void serverErrorRollsBackTheResultsAndLeavesTheScanFailed() {
         var broken = new ReachResultRepository(JdbcClient.create(jdbc)) {
             @Override
@@ -427,6 +528,47 @@ class ReachResultServiceTest {
     @SafeVarargs
     private long upload(long check, Map<String, Object>... items) {
         return service.upload("admin", check, "gzip", gzip(bundle(List.of(items)))).scanId();
+    }
+
+    /** l3를 붙여 올린 뒤 스캔 id */
+    @SafeVarargs
+    private long uploadWithL3(long check, Object l3, Map<String, Object>... items) {
+        var bundle = bundle(List.of(items));
+        bundle.put("l3", l3);
+        return service.upload("admin", check, "gzip", gzip(bundle)).scanId();
+    }
+
+    /** 러너 verdict/l3.py 출력 + run (l3-run.sh). secretValue는 서버가 모르는 칸이다 */
+    @SafeVarargs
+    private static Map<String, Object> l3(Map<String, Object>... cves) {
+        return map("tool", "reach-l3 0.2.0", "scope", "java.util.*:org.*", "segments", List.of("startup", "001", "002"),
+                "counts", map("REGION", 1, "FUNCTION", 1, "NONE", 0, "NOT_RECORDED", 0), "cves", List.of(cves),
+                "run", map("observationMethod", "coverage", "observedAt", "2026-11-18T13:01:58Z", "scenario", "2026-11-18.1",
+                        "build", map("imageDigest", "sha256:abc"),
+                        "configKeys", List.of(map("name", "KAKAO_STUB", "enabled", true)),
+                        "invocations", List.of(map("segment", "001", "name", "categories", "request", "GET /api/v1/categories",
+                                        "count", 1, "ok", 1, "failed", 0, "skipped", 0),
+                                map("segment", "002", "name", "create", "request", "POST /items", "count", 1, "ok", 1,
+                                        "failed", 0, "skipped", 0)),
+                        "requests", map("count", 2, "ok", 2, "failed", 0, "skipped", 0), "scope", "java.util.*:org.*",
+                        "javaRelease", 21, "secretValue", "must not be stored"));
+    }
+
+    /** CVE 하나의 L3 결과. item()의 purl(pkg:maven/test/<component>@1)에 맞춘 좌표 */
+    private static Map<String, Object> l3Cve(String cve, String component, String reached, boolean regionsChecked,
+                                             boolean startupOnly) {
+        return map("cve", cve, "coordinates", "test:" + component, "reached", reached, "during", List.of("002"),
+                "startupOnly", startupOnly, "installedVersions", List.of("1"), "regionVersion", "1",
+                "regionsChecked", regionsChecked,
+                "regions", List.of(map("class", "org.example.Parser", "method", "check", "lines", List.of(List.of(626, 627)),
+                        "executedLines", List.of(626, 627), "executed", true, "during", List.of("002"))),
+                "functions", List.of(map("function", "org.example.Parser#check", "during", List.of("001", "002"))));
+    }
+
+    /** component:reached:scan (Finding의 지금 L3 결과) */
+    private static List<String> l3Results() {
+        return jdbc.queryForList("SELECT f.component_name || ':' || x.reached || ':' || x.scan_id FROM reach_l3_results x "
+                + "JOIN reach_findings f ON f.finding_id = x.finding_id ORDER BY 1", String.class);
     }
 
     /** API-06으로 사람이 확정한다 (base_verdict_id·MANUAL·이력을 실제 API처럼 남긴다) */

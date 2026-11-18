@@ -36,9 +36,10 @@ public class ReachQueryController {
             @RequestParam(required = false) Integer size,
             @RequestParam(required = false) String cursor,
             @RequestParam(required = false) String include,
-            @RequestParam(required = false) String basis)
+            @RequestParam(required = false) String basis,
+            @RequestParam(required = false) List<String> l3)
              {
-        var filter = new ReachFindingFilter(status, severity, reviewState, deployment, cveContains, scanId, target, basis);
+        var filter = new ReachFindingFilter(status, severity, reviewState, deployment, cveContains, scanId, target, basis, l3);
         return service.findings(principal == null ? null : principal.getName(), filter, size, cursor, include);
     }
 

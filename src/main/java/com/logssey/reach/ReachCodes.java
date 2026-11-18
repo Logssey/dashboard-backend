@@ -30,6 +30,9 @@ public final class ReachCodes {
     public static final List<String> NOT_ANALYZED_REASONS =
         List.of("NO_VULN_FUNCTION_DATA", "OS_PACKAGE", "UNANALYZED_COPY", "UNSUPPORTED_ECOSYSTEM");
 
+    /** L3 도달 수준 (V55 reach_l3_results CHECK). 실제 실행이 취약 코드 쪽으로 어디까지 갔나. 판정(status)과 따로다 */
+    public static final List<String> L3_LEVELS = List.of("REGION", "FUNCTION", "NONE", "NOT_RECORDED");
+
     /** null이면 빈 목록, 허용 밖 값이면 400 */
     public static List<String> checked(List<String> values, List<String> allowed) {
         if (values == null) return List.of();

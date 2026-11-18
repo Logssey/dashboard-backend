@@ -135,6 +135,53 @@ public class ReachResultRepository {
                 .update();
     }
 
+    /** L3 실행 한 번 (V55 reach_l3_runs). 스캔마다 하나 */
+    void insertL3Run(long scanId, ReachL3Input.Run run) {
+        jdbcClient.sql("""
+                        INSERT INTO reach_l3_runs (scan_id, run_status, error, scenario, observation_method, observed_at, counts, detail)
+                        VALUES (:scanId, :status, :error, :scenario, :method, :observedAt, CAST(:counts AS jsonb), CAST(:detail AS jsonb))
+                        """)
+                .param("scanId", scanId)
+                .param("status", run.status())
+                .param("error", run.error())
+                .param("scenario", run.scenario())
+                .param("method", run.observationMethod())
+                .param("observedAt", run.observedAt())
+                .param("counts", run.counts())
+                .param("detail", run.detail())
+                .update();
+    }
+
+    /** Finding의 지금 L3 결과. 같은 이미지의 새 실행이 덮어쓴다 */
+    void upsertL3Result(long findingId, long scanId, ReachL3Input.Result result) {
+        jdbcClient.sql("""
+                        INSERT INTO reach_l3_results (finding_id, scan_id, reached, regions_checked, startup_only, detail)
+                        VALUES (:findingId, :scanId, :reached, :regionsChecked, :startupOnly, CAST(:detail AS jsonb))
+                        ON CONFLICT (finding_id) DO UPDATE
+                        SET scan_id = EXCLUDED.scan_id, reached = EXCLUDED.reached, regions_checked = EXCLUDED.regions_checked,
+                            startup_only = EXCLUDED.startup_only, detail = EXCLUDED.detail
+                        """)
+                .param("findingId", findingId)
+                .param("scanId", scanId)
+                .param("reached", result.reached())
+                .param("regionsChecked", result.regionsChecked())
+                .param("startupOnly", result.startupOnly())
+                .param("detail", result.detail())
+                .update();
+    }
+
+    /** 이 대상의 Finding 중 이번 실행에 없는 예전 결과를 지운다 (판정 데이터에서 빠진 CVE 등) */
+    void deleteStaleL3Results(long targetId, long scanId) {
+        jdbcClient.sql("""
+                        DELETE FROM reach_l3_results r
+                        USING reach_findings f
+                        WHERE f.finding_id = r.finding_id AND f.target_id = :targetId AND r.scan_id <> :scanId
+                        """)
+                .param("targetId", targetId)
+                .param("scanId", scanId)
+                .update();
+    }
+
     void markUploaded(long checkId) {
         jdbcClient.sql("UPDATE reach_ci_checks SET results_uploaded_at = now() WHERE check_id = :checkId AND results_uploaded_at IS NULL")
                 .param("checkId", checkId)

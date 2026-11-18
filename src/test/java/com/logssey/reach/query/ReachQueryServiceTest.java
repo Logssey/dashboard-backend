@@ -215,6 +215,61 @@ class ReachQueryServiceTest {
     }
 
     @Test
+    void listShowsHowFarL3GotNextToTheVerdictAndFiltersByIt() {
+        long region = finding(scan, "a", "CVE-2026-1", "HIGH", "UNREACHABLE", "UNREVIEWED");
+        long function = finding(scan, "b", "CVE-2026-2", "HIGH", "UNREACHABLE", "UNREVIEWED");
+        finding(scan, "c", "CVE-2026-3", "HIGH", "REACHABLE", "UNREVIEWED");          // 띄워 본 결과 없음
+        l3Run(scan);
+        l3Result(region, scan, "REGION", true, false);
+        l3Result(function, scan, "FUNCTION", false, true);
+
+        var items = service.findings("admin", ALL, null, null, null).items();
+        var byCve = items.stream().collect(java.util.stream.Collectors.toMap(i -> i.vulnerability().id(), i -> i));
+        // L2 판정은 그대로이고 L3가 옆에 붙는다 (L2 도달 불가 + L3 구간 실행이 사람이 볼 1순위)
+        assertThat(byCve.get("CVE-2026-1").verdict().status()).isEqualTo("UNREACHABLE");
+        assertThat(byCve.get("CVE-2026-1").l3()).isEqualTo(new ReachFindingResponse.L3("REGION", true, false));
+        assertThat(byCve.get("CVE-2026-2").l3()).isEqualTo(new ReachFindingResponse.L3("FUNCTION", false, true));
+        assertThat(byCve.get("CVE-2026-3").l3()).isNull();
+
+        var executed = new ReachFindingFilter(null, null, null, null, null, null, null, null, List.of("REGION", "FUNCTION"));
+        assertThat(cves(service.findings("admin", executed, null, null, null))).containsExactly("CVE-2026-1", "CVE-2026-2");
+        var missed = new ReachFindingFilter(List.of("UNREACHABLE"), null, null, null, null, null, null, null, List.of("REGION"));
+        assertThat(cves(service.findings("admin", missed, null, null, null))).containsExactly("CVE-2026-1");
+        assertError(() -> new ReachFindingFilter(null, null, null, null, null, null, null, null, List.of("EXECUTED")),
+                ErrorCode.INVALID_INPUT);
+        // 요약 숫자는 L3와 무관하다
+        assertThat(service.summary("admin", null, null, null, null).totals().findings()).isEqualTo(3);
+    }
+
+    @Test
+    void detailCarriesTheL3EvidenceAndTheRunItCameFrom() {
+        long id = finding(scan, "a", "CVE-2026-1", "HIGH", "UNREACHABLE", "UNREVIEWED");
+        long none = finding(scan, "b", "CVE-2026-2", "HIGH", "UNREACHABLE", "UNREVIEWED");
+        l3Run(scan);
+        l3Result(id, scan, "REGION", true, false);
+
+        var l3 = service.finding("admin", id, null).l3();
+        assertThat(l3.reached()).isEqualTo("REGION");
+        assertThat(l3.regionsChecked()).isTrue();
+        assertThat(l3.startupOnly()).isFalse();
+        assertThat(l3.during().get(0).asString()).isEqualTo("002");
+        assertThat(l3.functions().get(0).get("function").asString()).isEqualTo("org.example.Parser#check");
+        assertThat(l3.regions().get(0).get("executedLines").get(0).asInt()).isEqualTo(626);
+        assertThat(l3.paths().get(0).get("reachedStep").asInt()).isEqualTo(2);
+        assertThat(l3.note()).isEqualTo("checked by hand");
+        assertThat(l3.run().scanId()).isEqualTo(scan);
+        assertThat(l3.run().scenario()).isEqualTo("2026-11-18.1");
+        assertThat(l3.run().observationMethod()).isEqualTo("COVERAGE");
+        assertThat(l3.run().observedAt()).isNotNull();
+        assertThat(l3.run().build().get("imageDigest").asString()).isEqualTo("sha256:a");
+        assertThat(l3.run().configKeys().get(0).get("name").asString()).isEqualTo("KAKAO_STUB");
+        assertThat(l3.run().invocations().get(1).get("request").asString()).isEqualTo("POST /items");
+        // 검토 이력을 붙여도 남는다
+        assertThat(service.finding("admin", id, List.of("reviewHistory")).l3().reached()).isEqualTo("REGION");
+        assertThat(service.finding("admin", none, null).l3()).isNull();
+    }
+
+    @Test
     void filterValuesAreOrWithinAFieldAndAndAcrossFields() {
         finding(scan, "a", "CVE-2026-1", "HIGH", "REACHABLE", "UNREVIEWED");
         finding(scan, "b", "CVE-2026-2", "LOW", "UNKNOWN", "UNREVIEWED");
@@ -492,6 +547,29 @@ class ReachQueryServiceTest {
                 INSERT INTO reach_scans (target_id, scan_status, trigger_type, requested_by_kind, failure_code, finished_at)
                 VALUES (?, ?, ?, 'SYSTEM', ?, now() - make_interval(hours => ?)) RETURNING scan_id
                 """, Long.class, targetId, status, trigger, status.equals("FAILED") ? "TEST" : null, hoursAgo);
+    }
+
+    /** 그 스캔의 L3 실행 (V55). 근거 항목은 러너 run.json 이름 그대로 */
+    private static void l3Run(long scanId) {
+        jdbc.update("""
+                INSERT INTO reach_l3_runs (scan_id, run_status, scenario, observation_method, observed_at, counts, detail)
+                VALUES (?, 'SUCCEEDED', '2026-11-18.1', 'COVERAGE', now(), '{"REGION": 1}',
+                        '{"build": {"imageDigest": "sha256:a"}, "configKeys": [{"name": "KAKAO_STUB", "enabled": true}],
+                          "invocations": [{"segment": "001", "name": "categories", "request": "GET /api/v1/categories"},
+                                          {"segment": "002", "name": "create", "request": "POST /items"}]}'::jsonb)
+                """, scanId);
+    }
+
+    private static void l3Result(long findingId, long scanId, String reached, boolean regionsChecked, boolean startupOnly) {
+        jdbc.update("""
+                INSERT INTO reach_l3_results (finding_id, scan_id, reached, regions_checked, startup_only, detail)
+                VALUES (?, ?, ?, ?, ?,
+                        '{"during": ["002"], "note": "checked by hand",
+                          "functions": [{"function": "org.example.Parser#check", "during": ["001", "002"]}],
+                          "regions": [{"class": "org.example.Parser", "method": "check", "lines": [[626, 627]],
+                                       "executedLines": [626, 627], "executed": true, "during": ["002"]}],
+                          "paths": [{"target": "org.example.Parser#check", "reachedStep": 2, "of": 2}]}'::jsonb)
+                """, findingId, scanId, reached, regionsChecked, startupOnly);
     }
 
     /** Finding + 현재 판정 + 검토 한 벌. NOT_ANALYZED면 방식 없이 사유 OS_PACKAGE, 검토 상태가 UNREVIEWED가 아니면 admin이 같은 판정으로 검토 */

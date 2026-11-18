@@ -40,6 +40,7 @@ public class ReachQueryRepository {
                    f.vulnerability_id, f.severity, f.fixed_versions, f.deployment, f.first_seen_at,
                    v.status, v.method, v.summary, v.not_analyzed_reason,
                    r.review_state, r.status AS review_status, r.proposal::text AS proposal, r.reset_reason,
+                   x.reached AS l3_reached, x.regions_checked AS l3_regions_checked, x.startup_only AS l3_startup_only,
                    CASE v.status WHEN 'REACHABLE' THEN 0 WHEN 'UNKNOWN' THEN 1 WHEN 'UNREACHABLE' THEN 2 ELSE 3 END AS status_rank,
                    CASE f.severity WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 WHEN 'LOW' THEN 3 ELSE 4 END AS severity_rank,
                    -- CVE가 아닌 ID(GHSA 등)는 맨 뒤로. NULL이면 커서의 행 비교가 깨져서 큰 값으로 채운다
@@ -53,6 +54,7 @@ public class ReachQueryRepository {
                            AND lv.method IS DISTINCT FROM 'MANUAL')
             JOIN reach_verdicts v ON v.finding_id = f.finding_id AND v.is_current
             JOIN reach_reviews r ON r.finding_id = f.finding_id
+            LEFT JOIN reach_l3_results x ON x.finding_id = f.finding_id
     """;
 
     /**
@@ -255,6 +257,9 @@ public class ReachQueryRepository {
                 new ReachFindingResponse.Review(rs.getString("review_state"),
                         reviewStatus != null && !reviewStatus.equals(status),
                         json(rs.getString("proposal")), rs.getString("reset_reason")),
+                // L3 결과가 없으면 null (앱을 띄워 본 적 없는 이미지, 판정 데이터 없는 CVE)
+                rs.getString("l3_reached") == null ? null : new ReachFindingResponse.L3(rs.getString("l3_reached"),
+                        rs.getBoolean("l3_regions_checked"), rs.getBoolean("l3_startup_only")),
                 rs.getObject("first_seen_at", OffsetDateTime.class));
     }
 
@@ -305,6 +310,7 @@ public class ReachQueryRepository {
         in(conditions, params, "severity", filter.severity());
         in(conditions, params, "review_state", filter.reviewState());
         in(conditions, params, "deployment", filter.deployment());
+        in(conditions, params, "l3_reached", filter.l3());
         if (filter.cveContains() != null) {
             // ILIKE 대신 strpos: 입력의 % _ 를 와일드카드로 해석하지 않는다
             conditions.add("strpos(lower(vulnerability_id), lower(:cveContains)) > 0");
@@ -385,6 +391,10 @@ public class ReachQueryRepository {
                r.proposal::text AS proposal, r.reset_reason,
                r.carried_from_finding_id, r.carried_from_scan_id, cr.reviewed_at AS carried_reviewed_at,
                u.user_id AS reviewer_id, u.display_name AS reviewer_name,
+               x.reached AS l3_reached, x.regions_checked AS l3_regions_checked, x.startup_only AS l3_startup_only,
+               x.detail::text AS l3_detail, x.scan_id AS l3_scan_id,
+               lr.scenario AS l3_scenario, lr.observation_method AS l3_method, lr.observed_at AS l3_observed_at,
+               lr.detail::text AS l3_run_detail,
                ARRAY(SELECT o.finding_id FROM reach_findings o
                      WHERE o.last_scan_id = f.last_scan_id AND o.vulnerability_id = f.vulnerability_id
                        AND o.finding_id <> f.finding_id
@@ -394,6 +404,8 @@ public class ReachQueryRepository {
         JOIN reach_reviews r ON r.finding_id = f.finding_id
         LEFT JOIN dashboard_users u ON u.user_id = r.reviewer_user_id
         LEFT JOIN reach_reviews cr ON cr.finding_id = r.carried_from_finding_id
+        LEFT JOIN reach_l3_results x ON x.finding_id = f.finding_id
+        LEFT JOIN reach_l3_runs lr ON lr.scan_id = x.scan_id
         WHERE f.finding_id = :findingId
         """;
 
@@ -432,6 +444,7 @@ public class ReachQueryRepository {
                         reviewStatus != null && !reviewStatus.equals(status),
                         json(rs.getString("proposal")), carriedFrom, rs.getString("reset_reason"),
                         null),   // history는 Service가 include=reviewHistory일 때만 채운다
+                l3(rs),
                 json(rs.getString("upgrade")),
                 // ARRAY(SELECT ...)는 결과가 없어도 NULL이 아니라 빈 배열이다. BIGINT 배열이라 Long[]
                 List.of((Long[]) rs.getArray("same_cve").getArray()),
@@ -458,6 +471,22 @@ public class ReachQueryRepository {
     }
 
     /** 검토 전이거나 서버가 되돌린 기록이면 reviewer_id가 NULL. getLong은 NULL을 0으로 주므로 wasNull()로 확인한다 */
+    /** L3 결과와 그 실행의 근거 항목. 결과가 없으면 null */
+    private ReachFindingDetailResponse.L3 l3(ResultSet rs) throws SQLException {
+        String reached = rs.getString("l3_reached");
+        if (reached == null) return null;
+        JsonNode detail = json(rs.getString("l3_detail"));
+        JsonNode run = json(rs.getString("l3_run_detail"));
+        JsonNode note = detail.get("note");
+        return new ReachFindingDetailResponse.L3(reached, rs.getBoolean("l3_regions_checked"),
+                rs.getBoolean("l3_startup_only"),
+                detail.get("during"), detail.get("functions"), detail.get("regions"), detail.get("paths"),
+                note == null || !note.isString() ? null : note.asString(),
+                new ReachFindingDetailResponse.L3Run(rs.getLong("l3_scan_id"), rs.getString("l3_scenario"),
+                        rs.getString("l3_method"), rs.getObject("l3_observed_at", OffsetDateTime.class),
+                        run.get("build"), run.get("configKeys"), run.get("invocations")));
+    }
+
     private static ReachFindingDetailResponse.Reviewer reviewer(ResultSet rs) throws SQLException {
         long id = rs.getLong("reviewer_id");
         return rs.wasNull() ? null : new ReachFindingDetailResponse.Reviewer(id, rs.getString("reviewer_name"));

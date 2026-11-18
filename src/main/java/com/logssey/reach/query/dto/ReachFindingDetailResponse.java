@@ -13,6 +13,7 @@ public record ReachFindingDetailResponse(
         Component component, Vulnerability vulnerability,
         String deployment, List<String> sources,            // 탐지한 스캐너 (TRIVY, GRYPE)
         Verdict verdict, Review review,
+        L3 l3,                                              // L3 능동 관측. 띄워 본 결과가 없으면 null
         JsonNode upgrade, List<Long> sameCveFindings,       // 같은 스캔에서 CVE가 같은 다른 Finding id
         OffsetDateTime firstSeenAt, OffsetDateTime lastSeenAt) {
 
@@ -36,6 +37,17 @@ public record ReachFindingDetailResponse(
                          String resetReason, List<History> history) {}
 
     public record Reviewer(long id, String name) {}
+    /**
+     * L3 능동 관측 (FR-14): 이 이미지를 실제로 띄워 시나리오를 보냈을 때 취약 코드 쪽으로 어디까지 실행됐나.
+     * 판정 옆의 근거이고 판정·검토를 바꾸지 않는다. reached·regionsChecked·startupOnly는 목록(API-04)과 같다.
+     * during은 그 수준에 닿은 구간 id("startup" 또는 run.invocations의 segment), functions·regions·paths는
+     * 러너 출력 그대로(실행된 취약 함수, 구간과 실행된 줄, L2 호출 경로를 진입점부터 끊기지 않고 탄 단계 수)
+     */
+    public record L3(String reached, boolean regionsChecked, boolean startupOnly,
+                     JsonNode during, JsonNode functions, JsonNode regions, JsonNode paths, String note, L3Run run) {}
+    /** 그 관측의 근거 항목 (FR-14 수용 기준 3). configKeys는 이름과 켜짐 여부뿐이고 값은 없다 */
+    public record L3Run(long scanId, String scenario, String observationMethod, OffsetDateTime observedAt,
+                        JsonNode build, JsonNode configKeys, JsonNode invocations) {}
 
     /** 이 검토를 이어받은 이전 Finding. reviewedAt은 그 Finding의 검토 시각 */
     public record CarriedFrom(long findingId, long scanId, OffsetDateTime reviewedAt) {}
@@ -50,6 +62,6 @@ public record ReachFindingDetailResponse(
         return new ReachFindingDetailResponse(id, scanId, targetId, component, vulnerability, deployment, sources,
                 verdict, new Review(r.reviewState(), r.status(), r.note(), r.reviewer(), r.reviewedAt(), r.version(),
                         r.disagreesWithTool(), r.proposal(), r.carriedFrom(), r.resetReason(), history),
-                upgrade, sameCveFindings, firstSeenAt, lastSeenAt);
+                l3, upgrade, sameCveFindings, firstSeenAt, lastSeenAt);
     }
 }

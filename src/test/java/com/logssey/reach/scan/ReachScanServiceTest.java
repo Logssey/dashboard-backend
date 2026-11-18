@@ -88,6 +88,37 @@ class ReachScanServiceTest {
     }
 
     @Test
+    void scanShowsItsL3RunOnlyWhenTheAppWasRun() {
+        long target = target("sha256:a");
+        long observed = scan(target, "SUCCEEDED");
+        long failedRun = scan(target, "SUCCEEDED");
+        long rescan = scan(target, "SUCCEEDED", "SCHEDULE", 0);
+        jdbc.update("""
+                INSERT INTO reach_l3_runs (scan_id, run_status, scenario, observation_method, observed_at, counts)
+                VALUES (?, 'SUCCEEDED', '2026-11-18.1', 'COVERAGE', now(), '{"REGION": 1, "FUNCTION": 2, "NONE": 11, "NOT_RECORDED": 0}')
+                """, observed);
+        jdbc.update("INSERT INTO reach_l3_runs (scan_id, run_status, error) VALUES (?, 'FAILED', 'L3 run failed on the runner')",
+                failedRun);
+
+        var l3 = service.scan("admin", observed).l3();
+        assertThat(l3.runStatus()).isEqualTo("SUCCEEDED");
+        assertThat(l3.scenario()).isEqualTo("2026-11-18.1");
+        assertThat(l3.observedAt()).isNotNull();
+        assertThat(l3.counts().get("FUNCTION").asInt()).isEqualTo(2);
+        // L3가 실패해도 스캔은 SUCCEEDED다
+        var failed = service.scan("admin", failedRun);
+        assertThat(failed.scanStatus()).isEqualTo("SUCCEEDED");
+        assertThat(failed.l3().runStatus()).isEqualTo("FAILED");
+        assertThat(failed.l3().error()).isEqualTo("L3 run failed on the runner");
+        assertThat(failed.counts()).isNotNull();
+        // 재대조는 앱을 띄우지 않는다
+        assertThat(service.scan("admin", rescan).l3()).isNull();
+        // 목록에서도 같다
+        var listed = service.scans("admin", ALL, null, null, null).items();
+        assertThat(listed.stream().filter(i -> i.l3() != null).map(i -> i.id())).containsExactlyInAnyOrder(observed, failedRun);
+    }
+
+    @Test
     void runningScanHasNoCountsYet() {
         long id = scan(repoTarget("bb4639b"), "RUNNING");
         finding(id, "a", "HIGH", "UNREACHABLE", "UNREVIEWED");
