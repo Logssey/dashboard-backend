@@ -110,6 +110,18 @@ public class IacQueryRepository {
                 rs.getObject("checked_at", OffsetDateTime.class)), repoId, prNumber).stream().findFirst();
     }
 
+    /** run 하나 (PR 번호, 레포 이름과 함께). CI 결과 조회용 */
+    Optional<RunOf> run(long runId) {
+        return jdbc.query("""
+                SELECT r.run_id, r.pr_number, p.full_name, r.head_sha, r.status, r.verdict, r.highest_severity,
+                       coalesce(r.finished_at, r.created_at) AS checked_at
+                FROM iac_runs r JOIN iac_repos p ON p.repo_id = r.repo_id WHERE r.run_id = ?
+                """, (rs, row) -> new RunOf(rs.getObject("pr_number", Integer.class), rs.getString("full_name"),
+                new RunRow(rs.getLong("run_id"), rs.getString("head_sha"), rs.getString("status"),
+                        rs.getString("verdict"), rs.getString("highest_severity"),
+                        rs.getObject("checked_at", OffsetDateTime.class))), runId).stream().findFirst();
+    }
+
     List<IacPullRequestResponse.GateFinding> gateFindings(long runId) {
         return jdbc.query("""
                 SELECT rule_id, enforcement, severity, resource_address FROM iac_findings
@@ -272,5 +284,8 @@ public class IacQueryRepository {
 
     record RunRow(long runId, String headSha, String status, String verdict, String highestSeverity,
                   OffsetDateTime checkedAt) {
+    }
+
+    record RunOf(Integer prNumber, String repo, RunRow run) {
     }
 }
