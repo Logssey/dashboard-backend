@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
@@ -74,8 +75,11 @@ public class IacQueryService {
     /** S-01 D. PR 별 최신 판정 (최근 run 순, 최대 50). */
     public List<IacPullRequestSummaryResponse> pullRequests(String repo, String loginId) {
         requireAdmin(loginId);
-        long repoId = singleRepo(repo);
-        return repository.latestPullRequestRuns(repoId, 50).stream().map(row -> {
+        var repoId = singleRepo(repo);
+        if (repoId.isEmpty()) {
+            return List.of();
+        }
+        return repository.latestPullRequestRuns(repoId.getAsLong(), 50).stream().map(row -> {
             var stats = row.stats();
             var paths = stats == null ? null : stats.path("paths");
             var state = stats == null ? null : stats.path("state");
@@ -147,7 +151,12 @@ public class IacQueryService {
     /** S-01 E. */
     public IacGatesResponse gates(String repo, String loginId) {
         requireAdmin(loginId);
-        long repoId = singleRepo(repo);
+        var registered = singleRepo(repo);
+        if (registered.isEmpty()) {
+            // 레포 등록 전: 검사 기록 없음 (화면은 "main 브랜치 검사 기록이 아직 없어요")
+            return new IacGatesResponse(null, STAGES, new IacGatesResponse.SupplyChain(0, 0, 0, 0));
+        }
+        long repoId = registered.getAsLong();
         var main = repository.mainGateFindings(repoId);
         var blocks = repository.recentPullRequestGateBlocks(repoId);
         var stages = STAGES.stream().map(s -> new IacGatesResponse.Stage(s.stage(), s.name(), s.ruleIds(),
@@ -159,11 +168,11 @@ public class IacQueryService {
                         main.getOrDefault("gate.lock_changed", 0L)));
     }
 
-    /** S-01 H. 주기는 gitops CronJob·CI 워크플로가 정한다. */
+    /** S-01 H. 주기는 대시보드 호스트 타이머·CI 워크플로가 정한다. */
     public List<IacJobStatusResponse> jobs(String loginId) {
         requireAdmin(loginId);
         return List.of(
-                job("COLLECT_GRAPH", "매일 03:00 KST (CronJob)", "AWS·Kubernetes (Cartography, scanner-ro)"),
+                job("COLLECT_GRAPH", "매일 03:00 KST (대시보드 호스트)", "AWS (Cartography, 읽기 전용 수집 역할)"),
                 job("ENRICH_GRAPH", "수집 뒤", "자산 그래프"),
                 job("CHECK_STATE", "수집 뒤", "자산 그래프의 tfstate 읽기 권한"),
                 job("CHECK_DRIFT", "매일 main plan (CI)", "refresh plan 의 resource_drift"),
@@ -176,12 +185,16 @@ public class IacQueryService {
                 row.pending());
     }
 
-    private long singleRepo(String repo) {
+    /** 검사 대상 레포. 레포를 지정하지 않았고 등록된 레포가 없으면 비어 있다 (지정한 레포가 없으면 404). */
+    private OptionalLong singleRepo(String repo) {
         var repos = repository.enabledRepoIds(repo);
+        if (repos.isEmpty() && repo == null) {
+            return OptionalLong.empty();
+        }
         if (repos.size() != 1) {
             throw new ApiException(repos.isEmpty() ? ErrorCode.NOT_FOUND : ErrorCode.INVALID_INPUT);
         }
-        return repos.getFirst();
+        return OptionalLong.of(repos.getFirst());
     }
 
     /** S-01 F 의 State 부분. 버킷 정책·State 속 민감값은 아직 확인하지 않아 null. */
