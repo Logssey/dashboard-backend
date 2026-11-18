@@ -56,7 +56,8 @@ class ComplianceJobIntegrationTest {
                 + "WHERE target_key = 'reused'");
         var compliance = new ComplianceService(complianceRepository, new ComplianceCatalog(),
                 new ProwlerOcsfNormalizer(), new ComplianceCheckPolicyCatalog(),
-                targetRepository, scopeCatalog, "reused", 8 * 1024 * 1024);
+                targetRepository, scopeCatalog, new ComplianceServiceUsageEvidenceCatalog(scopeCatalog),
+                "reused", 8 * 1024 * 1024);
         jobs = new ComplianceJobService(new ComplianceJobRepository(JdbcClient.create(dataSource)),
                 complianceRepository, compliance, targetRepository, scopeCatalog,
                 "reused", 300, 1, true, true);

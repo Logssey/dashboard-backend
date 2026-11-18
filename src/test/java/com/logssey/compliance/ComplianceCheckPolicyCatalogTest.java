@@ -17,7 +17,7 @@ class ComplianceCheckPolicyCatalogTest {
     void conditionalChecksRequireReviewAndExposeSafeGuidance() {
         var scope = new ProwlerScopeCatalog();
         assertThat(catalog.size()).isGreaterThanOrEqualTo(24);
-        assertThat(catalog.version()).isEqualTo("2026-11-18.1");
+        assertThat(catalog.version()).isEqualTo("2026-11-18.2");
         assertThat(catalog.checkIds()).allMatch(scope::supportsCheck);
         assertThat(catalog.applicability("aws", "bedrock_guardrails_configured",
                 AssessmentProfile.empty(), Set.of())).isEqualTo(ComplianceCheckPolicyCatalog.ApplicabilityStatus.UNKNOWN);
@@ -35,6 +35,16 @@ class ComplianceCheckPolicyCatalogTest {
         assertThat(kms.rollback()).isNotBlank();
         assertThat(kms.sourceUrl()).startsWith("https://hub.prowler.com/check/");
         assertThat(kms.sourceVersion()).isEqualTo("5.46.0");
+    }
+
+    @Test
+    void everyConditionalServiceHasAValidatedUsageEvidencePolicy() {
+        var scope = new ProwlerScopeCatalog();
+        var evidence = new ComplianceServiceUsageEvidenceCatalog(scope);
+
+        assertThat(evidence.governedServices()).containsExactlyInAnyOrderElementsOf(catalog.serviceUsageKeys());
+        assertThat(evidence.isUsageEvidence("bedrock", "bedrock_guardrails_configured", "FAIL")).isFalse();
+        assertThat(evidence.isUsageEvidence("bedrock", "bedrock_guardrails_configured", "PASS")).isTrue();
     }
 
     @Test
