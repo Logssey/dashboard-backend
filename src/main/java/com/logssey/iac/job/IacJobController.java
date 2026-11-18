@@ -2,6 +2,8 @@ package com.logssey.iac.job;
 
 import java.net.URI;
 
+import com.logssey.iac.auth.IacCollectorSecurityConfig;
+
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
@@ -29,7 +31,11 @@ public class IacJobController {
     @PostMapping("/collect-graph/runs")
     public ResponseEntity<CollectGraphRunResponse> recordCollectGraph(@Valid @RequestBody CollectGraphRunRequest request,
                                                                       Authentication authentication) {
-        var recorded = service.recordCollectGraph(request, authentication == null ? null : authentication.getName());
+        // 대시보드 호스트의 수집기(IacCollectorSecurityConfig)는 사람이 아니므로 SYSTEM 으로 기록한다
+        boolean collector = authentication != null && authentication.getAuthorities().stream()
+                .anyMatch(a -> IacCollectorSecurityConfig.AUTHORITY.equals(a.getAuthority()));
+        var recorded = collector ? service.recordCollectGraphBySystem(request)
+                : service.recordCollectGraph(request, authentication == null ? null : authentication.getName());
         return ResponseEntity.created(URI.create("/api/v1/iac/jobs/" + recorded.jobId())).body(recorded);
     }
 }
