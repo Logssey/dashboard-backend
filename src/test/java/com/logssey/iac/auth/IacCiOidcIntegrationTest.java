@@ -135,6 +135,12 @@ class IacCiOidcIntegrationTest {
         mvc.perform(get("/api/v1/iac/runs/" + runId)
                         .header(HttpHeaders.AUTHORIZATION, token))
                 .andExpect(status().isOk());
+        mvc.perform(get("/api/v1/iac/runs/" + runId + "/result").header(HttpHeaders.AUTHORIZATION, token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.number").value(58))
+                .andExpect(jsonPath("$.runId").value(runId))
+                .andExpect(jsonPath("$.status").value("ANALYZING"))
+                .andExpect(jsonPath("$.gate.status").value("PASS"));
 
         assertThat(jdbc.queryForObject("SELECT count(*) FROM iac_runs WHERE requested_by_user_id IS NULL", Long.class))
                 .isEqualTo(1L);
@@ -172,6 +178,8 @@ class IacCiOidcIntegrationTest {
         mvc.perform(get("/api/v1/iac/runs/" + other)
                         .header(HttpHeaders.AUTHORIZATION, token))
                 .andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/iac/runs/" + other + "/result").header(HttpHeaders.AUTHORIZATION, token))
+                .andExpect(status().isNotFound());
         mvc.perform(put("/api/v1/iac/runs/" + other + "/plan").header(HttpHeaders.AUTHORIZATION, token)
                         .contentType("application/gzip").content(IacPlanFixtures.gzipResource("plan-scrubbed.json")))
                 .andExpect(status().isNotFound());
@@ -193,9 +201,13 @@ class IacCiOidcIntegrationTest {
         var login = mvc.perform(post("/api/v1/auth/login").with(csrf()).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"loginId\":\"admin\",\"password\":\"admin-pass\"}"))
                 .andExpect(status().isOk()).andReturn();
-        mvc.perform(post("/api/v1/iac/runs").session((MockHttpSession) login.getRequest().getSession(false)).with(csrf())
+        var session = (MockHttpSession) login.getRequest().getSession(false);
+        mvc.perform(post("/api/v1/iac/runs").session(session).with(csrf())
                         .contentType(MediaType.APPLICATION_JSON).content(RUN_BODY.formatted(REPO, "d".repeat(40))))
                 .andExpect(status().isCreated());
+        mvc.perform(get("/api/v1/iac/runs/1/result").session(session))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.number").value(58));
         assertThat(jdbc.queryForList("SELECT DISTINCT actor_kind FROM iac_audit_events", String.class))
                 .containsExactly("USER");
     }

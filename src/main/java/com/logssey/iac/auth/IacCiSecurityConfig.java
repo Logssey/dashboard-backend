@@ -45,7 +45,7 @@ import org.springframework.security.web.util.matcher.RequestMatcher;
  *
  * - Bearer 헤더가 있는 /api/v1/iac/runs/** 만 받는다. 헤더가 없으면 기존 체인(대시보드 관리자 세션)이 받는다
  * - 서명(GitHub JWKS)·발급자·만료·aud(logssey-iac)·sub(설정값과 정확히 같음)·repository 클레임을 본다. 틀리면 401
- * - 허용: 실행 등록, plan 업로드, 실행 상태. 그 밖은 403. 레포 확인은 IacRunService 가 한다
+ * - 허용: 실행 등록, plan 업로드, 실행 상태·결과. 그 밖은 403. 레포 확인은 IacRunService·IacQueryService 가 한다
  * - 토큰 디코더는 이 체인 안에서만 쓴다 (Bean 으로 내놓지 않는다)
  */
 @Configuration
@@ -73,6 +73,7 @@ public class IacCiSecurityConfig {
                         .requestMatchers(paths.matcher(HttpMethod.POST, RUNS)).hasAuthority(AUTHORITY)
                         .requestMatchers(paths.matcher(HttpMethod.PUT, RUNS + "/{runId}/plan")).hasAuthority(AUTHORITY)
                         .requestMatchers(paths.matcher(HttpMethod.GET, RUNS + "/{runId}")).hasAuthority(AUTHORITY)
+                        .requestMatchers(paths.matcher(HttpMethod.GET, RUNS + "/{runId}/result")).hasAuthority(AUTHORITY)
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(server -> server
                         .jwt(jwt -> jwt.decoder(decoder(properties)).jwtAuthenticationConverter(converter))

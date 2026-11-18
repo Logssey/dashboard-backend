@@ -1,5 +1,7 @@
 package com.logssey.iac.query;
 
+import com.logssey.iac.auth.IacCiSecurityConfig;
+
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -35,6 +37,13 @@ public class IacQueryController {
     public java.util.List<IacPullRequestSummaryResponse> pullRequests(@RequestParam(required = false) String repo,
                                                                       Authentication authentication) {
         return service.pullRequests(repo, name(authentication));
+    }
+
+    /** run 하나의 결과. infrastructure 의 iac-report(GitHub OIDC)는 자기 레포의 run 만 본다 */
+    @GetMapping("/runs/{runId}/result")
+    public IacPullRequestResponse runResult(@PathVariable long runId, Authentication authentication) {
+        var ci = IacCiSecurityConfig.ciRepository(authentication);
+        return ci.isPresent() ? service.runResultByCi(runId, ci.get()) : service.runResult(runId, name(authentication));
     }
 
     @GetMapping("/paths/{pathId}")

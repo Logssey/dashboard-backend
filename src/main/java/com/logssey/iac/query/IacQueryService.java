@@ -56,6 +56,24 @@ public class IacQueryService {
             throw new ApiException(repos.isEmpty() ? ErrorCode.NOT_FOUND : ErrorCode.INVALID_INPUT);
         }
         var run = repository.latestRun(repos.getFirst(), number).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+        return result(number, run);
+    }
+
+    /** run 하나의 결과 (PR 상세와 같은 모양). 관리자 세션용 */
+    public IacPullRequestResponse runResult(long runId, String loginId) {
+        requireAdmin(loginId);
+        var run = repository.run(runId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+        return result(run.prNumber() == null ? 0 : run.prNumber(), run.run());
+    }
+
+    /** CI(iac-report): 토큰의 레포에 속한 run 만. 다른 레포의 run 은 없는 것처럼 404 */
+    public IacPullRequestResponse runResultByCi(long runId, String tokenRepository) {
+        var run = repository.run(runId).filter(r -> r.repo().equals(tokenRepository))
+                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+        return result(run.prNumber() == null ? 0 : run.prNumber(), run.run());
+    }
+
+    private IacPullRequestResponse result(int number, IacQueryRepository.RunRow run) {
         var gate = new IacPullRequestResponse.Gate("GATE_FAILED".equals(run.status()) ? "BLOCK" : "PASS",
                 repository.gateFindings(run.runId()));
         return new IacPullRequestResponse(number, null, run.runId(), run.headSha(), run.status(), run.verdict(),
