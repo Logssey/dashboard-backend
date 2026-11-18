@@ -20,7 +20,7 @@ public class IacJobRepository {
                 (rs, row) -> rs.getLong("user_id"), loginId).stream().findFirst();
     }
 
-    long insertCollectGraph(long actor, String status, OffsetDateTime startedAt, OffsetDateTime finishedAt,
+    long insertCollectGraph(Long actor, String status, OffsetDateTime startedAt, OffsetDateTime finishedAt,
                             String statsJson) {
         return jdbc.queryForObject("""
                 INSERT INTO iac_jobs (kind, trigger_type, requested_by_user_id, status, attempt_no,
@@ -31,11 +31,11 @@ public class IacJobRepository {
     }
 
     /** 같은 종류의 대기·진행 중인 작업이 있으면 그것을, 없으면 새로 등록한 작업을 돌려준다. */
-    long enqueueOnce(String kind, long actor) {
+    long enqueueOnce(String kind, Long actor) {
         return enqueueOnce(kind, "SCHEDULED", actor);
     }
 
-    long enqueueOnce(String kind, String trigger, long actor) {
+    long enqueueOnce(String kind, String trigger, Long actor) {
         // 한 번에 하나만 기다리게 해 수집이 몰려도 작업이 쌓이지 않게 한다
         jdbc.query("SELECT pg_advisory_xact_lock(hashtext('iac_' || ?))", rs -> null, kind);
         return jdbc.query("""
@@ -48,10 +48,11 @@ public class IacJobRepository {
                         """, Long.class, kind, trigger, actor));
     }
 
-    void audit(long actor, long jobId, String eventType, String key, String value) {
+    /** actor 가 없으면(수집기) SYSTEM 으로 남긴다 */
+    void audit(Long actor, long jobId, String eventType, String key, String value) {
         jdbc.update("""
                 INSERT INTO iac_audit_events (actor_kind, actor_user_id, entity_type, entity_id, event_type, after_safe)
-                VALUES ('USER', ?, 'JOB', ?, ?, jsonb_build_object(?::text, ?::text))
-                """, actor, jobId, eventType, key, value);
+                VALUES (?, ?, 'JOB', ?, ?, jsonb_build_object(?::text, ?::text))
+                """, actor == null ? "SYSTEM" : "USER", actor, jobId, eventType, key, value);
     }
 }

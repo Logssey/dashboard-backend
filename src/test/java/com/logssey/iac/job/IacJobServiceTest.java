@@ -106,6 +106,17 @@ class IacJobServiceTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM iac_jobs", Long.class)).isZero();
     }
 
+    @Test
+    void collectorRecordsTheRunAsSystemWithoutAUser() {
+        var recorded = service.recordCollectGraphBySystem(request("SUCCEEDED"));
+
+        assertThat(recorded.enrichJobId()).isNotNull();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM iac_jobs WHERE requested_by_user_id IS NOT NULL", Long.class))
+                .isZero();
+        assertThat(jdbc.queryForList("SELECT DISTINCT actor_kind FROM iac_audit_events", String.class))
+                .containsExactly("SYSTEM");
+    }
+
     private static CollectGraphRunRequest request(String status) {
         return new CollectGraphRunRequest(status, START, START.plusMinutes(20), Map.of("nodes", 120L));
     }

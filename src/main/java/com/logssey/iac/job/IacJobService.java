@@ -14,7 +14,7 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * 내부 API (API 계약 POST /jobs/collect-graph/runs).
  * 수집이 끝나면 ENRICH_GRAPH 와 CHECK_STATE 를 등록한다.
- * S3 에서는 로그인한 관리자만 부를 수 있다. CronJob 서비스 계정 토큰(TokenReview) 검증은 S4 에서 붙인다.
+ * 관리자 세션, 또는 대시보드 호스트의 IaC 수집기(수집 토큰, IacCollectorSecurityConfig)가 부른다 (IaC 보안 ADR-13).
  */
 @Service
 public class IacJobService {
@@ -29,12 +29,21 @@ public class IacJobService {
     }
 
     public CollectGraphRunResponse recordCollectGraph(CollectGraphRunRequest request, String loginId) {
+        return record(request, () -> requireAdmin(loginId));
+    }
+
+    /** 수집기(사람이 아님): 요청자는 비우고 감사 기록은 SYSTEM */
+    public CollectGraphRunResponse recordCollectGraphBySystem(CollectGraphRunRequest request) {
+        return record(request, () -> null);
+    }
+
+    private CollectGraphRunResponse record(CollectGraphRunRequest request, java.util.function.Supplier<Long> actorOf) {
         if (request.finishedAt().isBefore(request.startedAt())) {
             throw new ApiException(ErrorCode.INVALID_INPUT);
         }
         String stats = mapper.writeValueAsString(request.stats() == null ? Map.of() : request.stats());
         return Objects.requireNonNull(transaction.execute(status -> {
-            long actor = requireAdmin(loginId);
+            Long actor = actorOf.get();
             long jobId = repository.insertCollectGraph(actor, request.status(), request.startedAt(),
                     request.finishedAt(), stats);
             boolean succeeded = "SUCCEEDED".equals(request.status());
