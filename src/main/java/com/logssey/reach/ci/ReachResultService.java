@@ -251,7 +251,7 @@ public class ReachResultService {
     }
 
     /**
-     * 보관할 SBOM (PRD FR-02, V56 reach_sboms). 받은 JSON을 다시 직렬화해 gzip으로 둔다.
+     * 보관할 SBOM (PRD FR-02, V53 reach_sboms). 받은 JSON을 다시 직렬화해 gzip으로 둔다.
      * 해시는 푼 JSON의 SHA-256이고, 구성요소 수는 최상위 components 개수다
      */
     private ReachResultRepository.Sbom sbom(JsonNode sbom) {

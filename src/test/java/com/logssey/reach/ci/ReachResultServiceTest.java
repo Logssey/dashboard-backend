@@ -145,7 +145,7 @@ class ReachResultServiceTest {
                 .isEqualTo("UNREACHABLE");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM reach_review_history", Long.class)).isZero();
 
-        // SBOM은 재대조 입력으로 스캔마다 gzip으로 보관한다 (V56). 해시는 푼 JSON의 것, 구성요소 수는 components 개수
+        // SBOM은 재대조 입력으로 스캔마다 gzip으로 보관한다 (V53). 해시는 푼 JSON의 것, 구성요소 수는 components 개수
         var sbom = jdbc.queryForMap("SELECT content_gzip, content_sha256, component_count FROM reach_sboms WHERE scan_id = ?", scanId);
         String json;
         try (var in = new java.util.zip.GZIPInputStream(new java.io.ByteArrayInputStream((byte[]) sbom.get("content_gzip")))) {
