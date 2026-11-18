@@ -11,6 +11,10 @@ TRIVY_VERSION="0.75.0"
 TRIVY_SHA256="c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f"
 GRYPE_VERSION="0.121.2"
 GRYPE_SHA256="9c8965ced9df657e5e851c14021bae838802f711edd7a48f9bc3c923a8d28f12"
+# L3 (l3-run.sh): agent and CLI from Maven Central. SHA-1 matches the .sha1 file next to each jar
+JACOCO_VERSION="0.8.13"
+JACOCO_AGENT_SHA256="47e700ccb0fdb9e27c5241353f8161938f4e53c3561dd35e063c5fe88dc3349b"
+JACOCO_CLI_SHA256="8f748683833d4dc4d72cea5d6b43f49344687b831e0582c97bcb9b984e3de0a3"
 
 BIN="${1:-${RUNNER_TEMP:-$PWD}/reach-bin}"
 WORK="$(mktemp -d)"
@@ -30,6 +34,15 @@ fetch "https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/gryp
   "$GRYPE_SHA256" grype.tar.gz
 tar -xzf "$WORK/grype.tar.gz" -C "$BIN" grype
 
+# its own folder: l3-run.sh mounts it read-only into the app container
+maven="https://repo1.maven.org/maven2/org/jacoco"
+mkdir -p "$BIN/jacoco"
+fetch "$maven/org.jacoco.agent/$JACOCO_VERSION/org.jacoco.agent-$JACOCO_VERSION-runtime.jar" "$JACOCO_AGENT_SHA256" jacocoagent.jar
+fetch "$maven/org.jacoco.cli/$JACOCO_VERSION/org.jacoco.cli-$JACOCO_VERSION-nodeps.jar" "$JACOCO_CLI_SHA256" jacococli.jar
+cp "$WORK/jacocoagent.jar" "$WORK/jacococli.jar" "$BIN/jacoco/"
+
 [ -n "${GITHUB_PATH:-}" ] && echo "$BIN" >> "$GITHUB_PATH"
+[ -n "${GITHUB_ENV:-}" ] && echo "JACOCO_HOME=$BIN/jacoco" >> "$GITHUB_ENV"
 "$BIN/trivy" --version | head -1
 "$BIN/grype" version | grep '^Version'
+echo "jacoco $JACOCO_VERSION ($BIN/jacoco)"

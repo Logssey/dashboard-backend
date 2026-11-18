@@ -262,5 +262,19 @@ class BundleTest(unittest.TestCase):
         args = self.no_l2_args(trivy(), out) + ["--reach", self.file("reach.json", reach())]
         self.assertEqual(bundle.main(args), 1)
 
+    def test_l3_result_is_added_as_is_and_is_not_a_stage(self):
+        l3 = {"tool": "reach-l3 0.1.0", "counts": {"EXECUTED": 1}, "cves": [], "run": {"scenario": "1"}}
+        b = self.run_bundle(trivy(trivy_vuln("CVE-2026-1000", LIB)), extra=["--l3", self.file("l3.json", l3)])
+        self.assertEqual(b["l3"], l3)
+        self.assertNotIn("L3", [s["name"] for s in b["stages"]])
+        failed = self.run_bundle(trivy(trivy_vuln("CVE-2026-1000", LIB)), extra=["--l3-error", "L3 run failed"])
+        self.assertEqual(failed["l3"], {"error": "L3 run failed"})
+        self.assertNotIn("l3", self.run_bundle(trivy(trivy_vuln("CVE-2026-1000", LIB))))
+
+    def test_l3_and_l3_error_together_fail(self):
+        out = os.path.join(self.dir.name, "l3.json")
+        args = self.no_l2_args(trivy(), out) + ["--l3", self.file("r.json", {}), "--l3-error", "x"]
+        self.assertEqual(bundle.main(args), 1)
+
 if __name__ == "__main__":
     unittest.main()

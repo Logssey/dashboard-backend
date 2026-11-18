@@ -4,6 +4,7 @@
     python3 bundle.py --sbom sbom.cdx.json --trivy trivy.json [--grype grype.json] \
         --reach reach-result.json --verdicts verdicts.json \
         --spec vuln-functions.json --rules rules.json [--jar app.jar] \
+        [--l3 l3-result.json | --l3-error "..."] \
         [--tool name=value ...] [--stage name=status[:seconds] ...] --out bundle.json.gz
 
     # the runner failed before analysis: only tools, stages and failure are sent
@@ -18,6 +19,8 @@ NOT_ANALYZED too (NO_VULN_FUNCTION_DATA when the CVE has no data, otherwise UNAN
 One bundle item per scanner match (purl x CVE). Matches that verdict.py analysed get its verdict and
 evidence; the rest are NOT_ANALYZED with the reason (OS package, unsupported ecosystem, another copy of
 an analysed CVE, no vuln function data). Field names follow the API spec 3-3, 3-4, 3-5 (API-13 bundle).
+--l3 adds the L3 run (l3.py result plus the run summary of l3-run.sh) as the bundle's "l3" object, as is;
+--l3-error adds {"error": "..."} when the L3 run failed. Either way the scan itself is not affected.
 An output path ending in .gz is gzip-compressed (API-13 needs Content-Encoding: gzip).
 No third-party dependencies (Python 3.8+).
 """
@@ -444,6 +447,8 @@ def build(a):
         raise BundleError("--reach and --verdicts go together (both from the L2 step, or neither)")
     if a.no_l2 and (a.reach or a.jar):
         raise BundleError("--no-l2 means no app jar was found; leave out --reach, --verdicts and --jar")
+    if a.l3 and a.l3_error:
+        raise BundleError("--l3 or --l3-error, not both")
     sbom, trivy = load(a.sbom), load(a.trivy)
     reach = load(a.reach) if a.reach else None
     verdicts = load(a.verdicts) if a.verdicts else None
@@ -471,9 +476,15 @@ def build(a):
     if grype:
         matches_raw["grype"] = grype
     # API-13 needs reachResult as an object even when L2 did not run
-    return {"sbom": sbom, "matches": matches_raw, "reachResult": reach if reach is not None else {},
-            "tools": {k: v for k, v in tools.items() if v is not None},
-            "analysis": {k: v for k, v in summary.items() if v is not None}, "stages": stages, "verdicts": items}
+    bundle = {"sbom": sbom, "matches": matches_raw, "reachResult": reach if reach is not None else {},
+              "tools": {k: v for k, v in tools.items() if v is not None},
+              "analysis": {k: v for k, v in summary.items() if v is not None}, "stages": stages, "verdicts": items}
+    # L3 (FR-14) is not a stage: API-13 accepts the stage names in STAGES only
+    if a.l3:
+        bundle["l3"] = load(a.l3)
+    elif a.l3_error:
+        bundle["l3"] = {"error": cut(a.l3_error, 500)}
+    return bundle
 
 
 def write(bundle, out):
@@ -499,6 +510,8 @@ def main(argv=None):
     ap.add_argument("--jar", help="the analysed bootJar, for analysis.jarSha256")
     ap.add_argument("--no-l2", action="store_true",
                     help="the runner found no app jar; Java packages are NOT_ANALYZED instead of an error")
+    ap.add_argument("--l3", help="L3 result (l3.py output with the run summary)")
+    ap.add_argument("--l3-error", help="the L3 run failed: this message instead of --l3")
     ap.add_argument("--tool", action="append", default=[], help="extra or overriding tools entry, name=value")
     ap.add_argument("--stage", action="append", default=[], help="name=status[:seconds]; default: sbom, match, l2, report succeeded")
     ap.add_argument("--analyzed-at", help="ISO-8601 time for every verdict (default: now)")

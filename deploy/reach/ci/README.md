@@ -12,14 +12,15 @@
 | --- | --- |
 | `reach.yml` | 서비스 저장소 `.github/workflows/reach.yml`로 복사할 워크플로. 작업 세 개(`pr`, `image`, `manual`) |
 | `reach-scan.sh` | 검사 등록부터 게이트까지 한 번에. 워크플로 밖(로컬)에서도 같은 순서로 돈다 |
-| `install-tools.sh` | Trivy·Grype를 버전과 SHA-256으로 고정해 설치(infrastructure `iac-gate`와 같은 방식) |
+| `install-tools.sh` | Trivy·Grype·JaCoCo(에이전트·CLI)를 버전과 SHA-256으로 고정해 설치(infrastructure `iac-gate`와 같은 방식). JaCoCo 폴더는 `JACOCO_HOME` |
+| `l3-run.sh` | L3: 스캔한 이미지를 JaCoCo 에이전트와 띄우고 서비스 저장소의 시나리오를 보내며 실행 기록을 요청 단계마다 끊어 남긴다(아래 "L3"). 대조는 `reach-scan.sh`가 L2 뒤에 한다 |
 
 ## 세 작업
 
 | 작업 | 언제 | 대상(API-12 `mode`) | 무엇을 스캔 |
 | --- | --- | --- | --- |
 | `pr` | PR이 열리거나 커밋이 더해질 때(`src/**`, Gradle 파일) | 레포(`PR`) | PR head에서 빌드한 bootJar(`trivy rootfs`) |
-| `image` | 서비스의 CI/CD 워크플로가 끝난 뒤(`workflow_run`) | 이미지(`IMAGE_BUILD`) | CI/CD가 ECR에 올린 `pr-{sha}` 이미지(`trivy image`) + 그 안의 `/app/app.jar` |
+| `image` | 서비스의 CI/CD 워크플로가 끝난 뒤(`workflow_run`) | 이미지(`IMAGE_BUILD`) | CI/CD가 ECR에 올린 `pr-{sha}` 이미지(`trivy image`) + 그 안의 `/app/app.jar`. 시나리오가 있으면 L3도 |
 | `manual` | 대시보드에서 [스캔 요청](API-01)을 누를 때. 대시보드가 `workflow_dispatch`로 띄운다 | 대시보드가 만든 검사(`MANUAL`) | 레포 대상은 그 커밋에서 빌드한 bootJar, 이미지 대상은 그 digest 이미지 + `/app/app.jar` |
 
 - `manual`은 검사를 등록하지 않고 받은 `check_id`에 올린다(`reach-scan.sh` `MODE=MANUAL`). 대시보드는 그 검사의 레포·기본 브랜치·`workflow_dispatch` 토큰만 받는다.
@@ -29,12 +30,35 @@
 - `workflow_dispatch`도 기본 브랜치에 있는 파일로만 돈다. 대시보드는 기본 브랜치(`logssey.reach.ci.default-branch`)로 띄운다.
 - 이미지 대상은 이미지 태그 `pr-{sha}`가 있으면 그 커밋을 받아 `verdict.py`에 설정 파일을 준다. 없으면 설정 파일 없이 판정한다.
 
-- 서비스의 CI/CD 워크플로는 고치지 않는다. `image` 작업은 이미지를 받아 읽기만 하고 실행하지 않는다. API가 바뀌지 않아 이미지가 없으면 건너뛴다.
+- 서비스의 CI/CD 워크플로는 고치지 않는다. `image` 작업은 이미지를 받아 읽고, 시나리오가 있을 때만 L3로 러너 안에서 실행한다(아래). API가 바뀌지 않아 이미지가 없으면 건너뛴다.
 - 머지할 때도 CI/CD가 돌지만 이미지는 같은 digest라 같은 `Idempotency-Key`가 된다. 이때는 다시 스캔하지 않고 이미 끝난 검사 결과만 보인다.
 - `workflow_run` 워크플로는 기본 브랜치에 있는 파일로만 돈다. `image` 작업은 `reach.yml`이 기본 브랜치에 머지된 뒤부터 동작한다.
 - `POLICY`(저장소 변수 `REACH_POLICY`)가 `REPORT_ONLY`(기본)면 대시보드가 내려가 있어도 PR을 막지 않는다(`continue-on-error`). `GATE`면 게이트 `FAIL`(종료 코드 1)이 PR 검사 실패가 된다.
 - 결과는 실행 요약(Step Summary)에 게이트·새 Finding 개수·대시보드 링크(`/vulnerabilities/scans?tab=ci&check=<id>`)로 남고, `verdicts.md`·`check.json`은 아티팩트로 7일 남는다.
 - 채팅 서버(Node)는 L2를 지원하지 않아 넣지 않았다(`UNSUPPORTED_ECOSYSTEM`).
+
+## L3 (실제 실행, FR-14)
+
+`image` 작업은 서비스 저장소에 `.reach/l3-scenario.json`이 있으면 스캔 전에 `l3-run.sh`로 앱을 띄워 실행 기록을 남기고, `reach-scan.sh`가 L2 뒤에 그 기록을 대조해 결과 묶음의 `l3`에 넣는다. L3는 L2 판정 옆에 놓는 근거다: CVE마다 실제 실행이 취약 코드 쪽으로 어디까지 갔는지(취약 구간 / 취약 함수 / 없음), 어느 요청에서였는지, L2가 찾은 호출 경로를 어디까지 탔는지. 판정(status)·게이트는 바꾸지 않는다. 결과 형식은 `reach-analyzer/README.md` "L3 실행 확인".
+
+기록(`l3-run.sh`)
+1. 시나리오의 서비스(DB·캐시)를 띄우고, 같은 이미지를 JaCoCo 에이전트(`JAVA_TOOL_OPTIONS`, `output=tcpserver`)와 띄운다. 기록 범위는 `java.util.*` + 앱과 라이브러리의 최상위 패키지 전부(`java`·`javax`·`jdk`·`sun`은 뺌, JDK 전체를 넣으면 JVM이 안 뜬다)
+2. 앱이 준비되면 에이전트의 기록을 읽고 비운다(구간 `startup`). 시나리오 단계를 하나 보낼 때마다 다시 읽고 비운다(구간 `001`, `002`, …, 반복 단계는 한 구간). 구간마다 `segments/<id>.exec`
+3. `run.json`에 그 실행의 근거를 남긴다: 이미지 digest, 시나리오 버전, 설정 키 이름과 켜짐 여부(값은 안 남김), 보낸 요청 목록, 관측 시각, 기록 범위
+
+대조(`reach-scan.sh`, L2 다음)
+1. 그 이미지에서 꺼낸 `/app/app.jar`로 클래스 파일을 준비한다(`verdict/l3_runner.py classes`). Spring Boot jar의 class path 순서대로, multi-release jar는 이미지의 Java 버전에 맞는 클래스로. 판정 데이터(`vuln-functions.json`)가 가리키는 소스 파일과 L2 호출 경로 위의 클래스만(Re:Used api 전체면 XML 250MB, 이렇게 하면 구간마다 1MB 안쪽)
+2. 구간마다 `jacococli report`로 XML을 만들고 `verdict/l3.py`가 대조한다. 클래스 파일이 실행된 것과 다르면(`does not match`) 결과를 만들지 않는다
+
+- **시나리오는 데이터다.** 요청 목록·서비스 이미지·환경 변수만 적고, 러너는 그 안의 어떤 것도 셸에서 실행하지 않는다(PR head의 파일을 읽으므로). 형식은 `reach-analyzer/verdict/l3_runner.py` 맨 위 설명. JVM 옵션(`JAVA_TOOL_OPTIONS` 등)은 러너만 정한다
+- 컨테이너에는 시나리오의 환경 변수와 러너가 만든 임시 비밀값(`generate`, 예: `JWT_SECRET`)만 들어가고 러너의 비밀값·토큰은 들어가지 않는다. 컨테이너는 실행마다 만든 Docker 네트워크에 있고 앱 포트와 에이전트 포트만 `127.0.0.1`에 연다
+- 이미지와 시나리오는 PR이 만든 것이라 믿지 않는다: 시나리오 문자열에 제어 문자를 받지 않고, 로그에 찍는 글자는 GitHub 워크플로 명령(`::`, `##[`)이 되지 않게 바꾼다. 컨테이너가 디스크에 쓴 것은 읽지 않는다(실행 기록은 `jacococli`가 에이전트 포트로 읽어 직접 쓰고, 크기와 형식을 확인한다). 요청은 리다이렉트를 따라가지 않는다
+- 로그에는 단계 이름·메서드·치환 전 경로·상태만 찍는다(요청·응답 본문, 헤더, 저장한 값은 안 찍음). 서비스 저장소가 공개라 로그도 공개다. 앱이 뜨지 않을 때만 앱 기동 로그 마지막 40줄을 보인다
+- **L3가 실패해도 스캔은 계속된다**(`continue-on-error`). 묶음의 `l3`는 `{"error": "..."}`가 된다. 대조가 실패해도 같다. 실패한 실행은 `segments`·`run.json`을 남기지 않는다
+- 아티팩트에 `segments/`(실행 기록)·`steps.json`·`run.json`·`l3-result.json`이 7일 남는다
+- 대시보드는 아직 `l3`를 저장하지 않는다(API-13이 모르는 칸은 무시). 저장·화면, 실행 기록 보관·재대조는 다음 단계. `manual` 작업과 재대조는 앱을 띄우지 않는다
+- 한계: 기동 구간에는 준비 확인 요청이 들어 있다. 요청 뒤에 앱이 백그라운드로 하는 일은 다음 구간에 잡힐 수 있다. 러너의 설정(프로필, stub)이 운영과 다르면 결과가 다를 수 있어 설정 키를 근거에 남긴다
+- 걸리는 시간(로컬, Re:Used api): 앱 기동 11~13초(에이전트 없이 9초), 요청 36개·구간 16개 기록까지 24초, 대조(리포트 16개) 약 5초. 메모리 약 540MB(에이전트 없이 470MB). 실행 기록 합계 2.4MB
 
 ## 돌리기 전에 필요한 것
 
@@ -67,4 +91,5 @@ bash deploy/reach/ci/reach-scan.sh
 - 같은 값으로 다시 돌리면 같은 검사를 다시 보고만 한다. 값 하나라도 다르면(예: `BASE_REF`를 뺌) 같은 키에 다른 본문이라 409다.
 - 단계가 실패하면 실패 묶음(`failure.code = ANALYSIS_FAILED`, 실패한 단계)을 올려 스캔이 `FAILED`로 끝난다. 검사 등록 전(빌드 실패, 대시보드 연결 실패)은 대시보드에 남지 않고 워크플로만 실패한다.
 - 이미지 모드는 `MODE=IMAGE_BUILD IMAGE_REPOSITORY=logssey/reused-api IMAGE_DIGEST=sha256:… IMAGE_REF=<trivy가 받을 이미지>`와, 그 이미지에서 꺼낸 jar를 `JAR`로 준다.
+- L3: `IMAGE_REF=<이미지> JAR=<그 이미지의 app.jar> SCENARIO=<서비스 저장소>/.reach/l3-scenario.json JACOCO_HOME=/tmp/reach-bin/jacoco OUT=reach-out/l3 bash deploy/reach/ci/l3-run.sh` 뒤 `reach-scan.sh`에 `JACOCO_HOME=/tmp/reach-bin/jacoco L3_SEGMENTS=reach-out/l3/segments L3_RUN=reach-out/l3/run.json`을 더한다. `JACOCO_HOME`과 `TMPDIR`은 Docker가 마운트할 수 있는 곳이어야 한다
 - 대시보드에서 요청한 스캔은 `MODE=MANUAL CHECK_ID=<검사 ID> TARGET_TYPE=REPO`(또는 `IMAGE`와 `IMAGE_REF`)로 같은 jar를 준다. 확인용 백엔드에 띄우는 설정이 없으면 스캔 요청이 `QUEUED`로 남아 이렇게 손으로 올려 볼 수 있다.
