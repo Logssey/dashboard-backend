@@ -127,7 +127,7 @@ def verify(base: str) -> None:
     status, detail = request(f"/api/v1/compliance/runs/{run_id}?targetKey=synthetic-service")
     assert status == 200
     context = detail["assessmentContext"]
-    assert context["policyVersion"] == "2026-11-18.1"
+    assert context["policyVersion"] == "2026-11-18.2"
     assert context["profile"]["serviceUsage"] == {"securityhub": "USED"}
     assert context["profile"]["requirements"] == {"MULTI_REGION": "NOT_REQUIRED"}
     assert context["inferredServices"] == []
@@ -139,7 +139,7 @@ def verify(base: str) -> None:
     assert status == 200
     assert "ISMS-P" in report and "ISO/IEC 27001" in report and "CSAP" in report
     assert "인증 적합 판정이 아닙니다" in report
-    assert "판정 정책" in report and "정책 2026-11-18.1" in report
+    assert "판정 정책" in report and "정책 2026-11-18.2" in report
     assert "적용성 프로필" in report and "서비스 사용 1" in report and "비요구 1" in report
     print("SYNTHETIC_COMPLIANCE_E2E_PASSED")
 
