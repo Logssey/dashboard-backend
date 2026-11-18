@@ -8,6 +8,7 @@ import static com.logssey.compliance.ComplianceDtos.OverviewResponse;
 import static com.logssey.compliance.ComplianceDtos.ResultCounts;
 import static com.logssey.compliance.ComplianceDtos.RunDetailResponse;
 import static com.logssey.compliance.ComplianceDtos.RunListResponse;
+import static com.logssey.compliance.ComplianceTargetDtos.AssessmentProfile;
 
 import java.io.IOException;
 import java.security.MessageDigest;
@@ -37,16 +38,23 @@ public class ComplianceService {
     private final ComplianceRepository repository;
     private final ComplianceCatalog catalog;
     private final ProwlerOcsfNormalizer normalizer;
+    private final ComplianceCheckPolicyCatalog checkPolicies;
+    private final ComplianceTargetRepository targets;
+    private final ProwlerScopeCatalog scopeCatalog;
     private final String targetKey;
     private final long maxImportBytes;
 
     public ComplianceService(ComplianceRepository repository, ComplianceCatalog catalog,
-                             ProwlerOcsfNormalizer normalizer,
+                             ProwlerOcsfNormalizer normalizer, ComplianceCheckPolicyCatalog checkPolicies,
+                             ComplianceTargetRepository targets, ProwlerScopeCatalog scopeCatalog,
                              @Value("${logssey.compliance.target-key:default}") String targetKey,
                              @Value("${logssey.compliance.max-import-bytes:8388608}") long maxImportBytes) {
         this.repository = repository;
         this.catalog = catalog;
         this.normalizer = normalizer;
+        this.checkPolicies = checkPolicies;
+        this.targets = targets;
+        this.scopeCatalog = scopeCatalog;
         this.targetKey = targetKey;
         this.maxImportBytes = maxImportBytes;
     }
@@ -70,10 +78,14 @@ public class ComplianceService {
     public RunDetailResponse run(String requestedTarget, long runId) {
         var run = repository.run(target(requestedTarget), runId)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
-        var results = repository.results(runId, DETAIL_RESULTS + 1);
+        var results = repository.results(runId, DETAIL_RESULTS + 1).stream()
+                .map(result -> result.withGuide(checkPolicies.guide(
+                        result.provider(), result.checkId(), result.expectedValue())))
+                .toList();
         boolean truncated = results.size() > DETAIL_RESULTS;
         if (truncated) results = results.subList(0, DETAIL_RESULTS);
-        return new RunDetailResponse(run, frameworkSummaries(runId), results, truncated);
+        return new RunDetailResponse(run, frameworkSummaries(runId), results, truncated,
+                repository.assessmentContext(runId));
     }
 
     public CatalogResponse catalog() {
@@ -113,17 +125,28 @@ public class ComplianceService {
         }
         var normalized = normalizer.normalize(bytes, selectedEnvironment);
         var counts = counts(normalized);
-        var assessments = assess(normalized);
+        AssessmentProfile assessmentProfile = targets.find(selectedTarget)
+                .map(ComplianceTargetDtos.TargetSummary::assessmentProfile)
+                .orElseGet(AssessmentProfile::empty);
+        Set<String> inferredServices = inferServices(normalized);
+        var assessments = assess(normalized, assessmentProfile, inferredServices);
         String status = normalized.warningCount() > 0 ? "COMPLETED_WITH_WARNINGS" : "COMPLETED";
         long runId = repository.insertRun(selectedTarget, selectedEnvironment, status, normalized.product(),
-                normalized.version(), sha256(bytes), normalized, counts, actor);
+                normalized.version(), sha256(bytes), normalized, counts, assessmentProfile,
+                checkPolicies.version(), inferredServices, actor);
         repository.insertResults(runId, new ArrayList<>(normalized.results().values()));
         repository.insertAssessments(runId, assessments);
         return new ImportResponse(runId, status, normalized.results().size(), normalized.duplicateCount(),
                 normalized.warningCount(), frameworkSummaries(runId));
     }
 
-    private List<ComplianceRepository.AssessmentInput> assess(ProwlerOcsfNormalizer.NormalizedImport normalized) {
+    List<ComplianceRepository.AssessmentInput> assess(ProwlerOcsfNormalizer.NormalizedImport normalized) {
+        return assess(normalized, AssessmentProfile.empty(), inferServices(normalized));
+    }
+
+    List<ComplianceRepository.AssessmentInput> assess(ProwlerOcsfNormalizer.NormalizedImport normalized,
+                                                       AssessmentProfile assessmentProfile,
+                                                       Set<String> inferredServices) {
         var observedByCheck = new HashMap<String, Set<String>>();
         for (var result : normalized.results().values()) {
             observedByCheck.computeIfAbsent(result.checkKey(), ignored -> new HashSet<>()).add(result.result());
@@ -132,37 +155,64 @@ public class ComplianceService {
         var assessments = new ArrayList<ComplianceRepository.AssessmentInput>();
         for (var framework : catalog.frameworks()) {
             for (var control : framework.controls()) {
-                var mapped = new HashSet<String>();
                 boolean allMappingsAreTechnical = true;
-                for (var mapping : control.mappings()) {
-                    mapped.add(mapping.key());
-                    allMappingsAreTechnical &= "TECHNICAL".equals(mapping.coverage());
-                }
+                int expectedMappings = 0;
                 int observed = 0;
                 int failed = 0;
-                for (String check : mapped) {
-                    var statuses = observedByCheck.get(check);
+                int reviewSignals = 0;
+                for (var mapping : control.mappings()) {
+                    var applicability = checkPolicies.applicability(
+                            mapping.provider(), mapping.checkId(), assessmentProfile, inferredServices);
+                    if (applicability == ComplianceCheckPolicyCatalog.ApplicabilityStatus.NOT_APPLICABLE) continue;
+                    expectedMappings++;
+                    allMappingsAreTechnical &= "TECHNICAL".equals(mapping.coverage());
+                    var statuses = observedByCheck.get(mapping.key());
                     if (statuses == null) continue;
                     observed++;
-                    if (statuses.contains("FAIL") || statuses.contains("ERROR")) failed++;
+                    if (applicability == ComplianceCheckPolicyCatalog.ApplicabilityStatus.UNKNOWN) {
+                        reviewSignals++;
+                        continue;
+                    }
+                    if (statuses.stream().anyMatch(status -> !"PASS".equals(status) && !"FAIL".equals(status))) {
+                        reviewSignals++;
+                    }
+                    if (statuses.contains("FAIL")) {
+                        boolean controlFailure = "CONTROL_FAIL".equals(mapping.failureEffect());
+                        if (controlFailure) failed++;
+                        else reviewSignals++;
+                    }
                 }
 
                 String status;
                 if (failed > 0) {
                     status = "TECHNICAL_FAIL";
-                } else if (mapped.isEmpty() || observed == 0) {
+                } else if (reviewSignals > 0) {
+                    status = "NEEDS_REVIEW";
+                } else if (expectedMappings == 0 || observed == 0) {
                     status = "NOT_ASSESSED";
-                } else if (observed == mapped.size() && allMappingsAreTechnical
+                } else if (observed == expectedMappings && allMappingsAreTechnical
                         && !control.manualEvidenceRequired()) {
                     status = "TECHNICALLY_SATISFIED";
                 } else {
                     status = "NEEDS_REVIEW";
                 }
                 assessments.add(new ComplianceRepository.AssessmentInput(framework.id(), control.id(), status,
-                        mapped.size(), observed, failed));
+                        expectedMappings, observed, failed));
             }
         }
         return assessments;
+    }
+
+    Set<String> inferServices(ProwlerOcsfNormalizer.NormalizedImport normalized) {
+        var inferred = new HashSet<String>();
+        for (var result : normalized.results().values()) {
+            String service = scopeCatalog.serviceForCheck(result.checkId());
+            String assetType = result.assetType() == null ? "" : result.assetType().toLowerCase(Locale.ROOT);
+            boolean concreteResource = !assetType.isBlank() && !assetType.contains("account")
+                    && !assetType.equals("unknown") && !assetType.equals("cloudresourcescan");
+            if (service != null && concreteResource) inferred.add(service);
+        }
+        return Set.copyOf(inferred);
     }
 
     private List<FrameworkSummary> frameworkSummaries(long runId) {

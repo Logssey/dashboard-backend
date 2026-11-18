@@ -1,8 +1,10 @@
 package com.logssey.compliance;
 
+import static com.logssey.compliance.ComplianceDtos.AssessmentContext;
 import static com.logssey.compliance.ComplianceDtos.ResultCounts;
 import static com.logssey.compliance.ComplianceDtos.ResultItem;
 import static com.logssey.compliance.ComplianceDtos.RunSummary;
+import static com.logssey.compliance.ComplianceTargetDtos.AssessmentProfile;
 
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -10,10 +12,14 @@ import java.sql.SQLException;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
+
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.json.JsonMapper;
 
 @Repository
 public class ComplianceRepository {
@@ -26,6 +32,7 @@ public class ComplianceRepository {
 
     private final JdbcClient jdbc;
     private final JdbcTemplate batch;
+    private final JsonMapper json = JsonMapper.builder().build();
 
     public ComplianceRepository(JdbcClient jdbc, JdbcTemplate batch) {
         this.jdbc = jdbc;
@@ -46,15 +53,19 @@ public class ComplianceRepository {
 
     long insertRun(String targetKey, String environment, String status, String product, String scannerVersion,
                    String sha256, ProwlerOcsfNormalizer.NormalizedImport normalized, ResultCounts counts,
-                   String loginId) {
+                   AssessmentProfile assessmentProfile, String assessmentPolicyVersion,
+                   Set<String> inferredServices, String loginId) {
         return jdbc.sql("""
                         INSERT INTO compliance_runs (
                             target_key, environment, status, source, product, scanner_version, artifact_sha256,
                             input_count, result_count, duplicate_count, warning_count,
-                            pass_count, fail_count, error_count, needs_review_count, created_by_login)
+                            pass_count, fail_count, error_count, needs_review_count,
+                            assessment_profile, assessment_policy_version, inferred_services, created_by_login)
                         VALUES (:targetKey, :environment, :status, 'PROWLER_OCSF', :product, :scannerVersion, :sha256,
                             :inputCount, :resultCount, :duplicateCount, :warningCount,
-                            :passCount, :failCount, :errorCount, :needsReviewCount, :loginId)
+                            :passCount, :failCount, :errorCount, :needsReviewCount,
+                            CAST(:assessmentProfile AS jsonb), :assessmentPolicyVersion,
+                            CAST(:inferredServices AS jsonb), :loginId)
                         RETURNING run_id
                         """)
                 .param("targetKey", targetKey)
@@ -71,6 +82,9 @@ public class ComplianceRepository {
                 .param("failCount", counts.fail())
                 .param("errorCount", counts.error())
                 .param("needsReviewCount", counts.needsReview())
+                .param("assessmentProfile", writeJson(assessmentProfile, "판정 프로필"))
+                .param("assessmentPolicyVersion", assessmentPolicyVersion)
+                .param("inferredServices", writeJson(inferredServices.stream().sorted().toList(), "추론 서비스"))
                 .param("loginId", loginId)
                 .query(Long.class)
                 .single();
@@ -146,6 +160,22 @@ public class ComplianceRepository {
                 .param("runId", runId)
                 .query(this::runRow)
                 .optional();
+    }
+
+    AssessmentContext assessmentContext(long runId) {
+        return jdbc.sql("""
+                        SELECT assessment_profile::text AS assessment_profile_json,
+                               assessment_policy_version,
+                               inferred_services::text AS inferred_services_json
+                        FROM compliance_runs
+                        WHERE run_id = :runId
+                        """)
+                .param("runId", runId)
+                .query((rs, row) -> new AssessmentContext(
+                        readProfile(rs.getString("assessment_profile_json")),
+                        rs.getString("assessment_policy_version"),
+                        readStringList(rs.getString("inferred_services_json"))))
+                .single();
     }
 
     List<AssessmentCount> assessmentCounts(long runId) {
@@ -230,6 +260,30 @@ public class ComplianceRepository {
                         rs.getLong("needs_review_count")),
                 rs.getInt("duplicate_count"), rs.getInt("warning_count"),
                 rs.getString("created_by_login"), rs.getObject("finished_at", OffsetDateTime.class));
+    }
+
+    private String writeJson(Object value, String label) {
+        try {
+            return json.writeValueAsString(value);
+        } catch (JacksonException e) {
+            throw new IllegalArgumentException(label + "을 직렬화할 수 없습니다.", e);
+        }
+    }
+
+    private AssessmentProfile readProfile(String value) {
+        try {
+            return json.readValue(value, AssessmentProfile.class);
+        } catch (JacksonException e) {
+            throw new IllegalStateException("저장된 Run 판정 프로필을 읽을 수 없습니다.", e);
+        }
+    }
+
+    private List<String> readStringList(String value) {
+        try {
+            return json.readValue(value, json.getTypeFactory().constructCollectionType(List.class, String.class));
+        } catch (JacksonException e) {
+            throw new IllegalStateException("저장된 추론 서비스를 읽을 수 없습니다.", e);
+        }
     }
 
     public record AssessmentInput(String frameworkId, String controlId, String status, int mappedCheckCount,
