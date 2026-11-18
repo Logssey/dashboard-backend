@@ -14,6 +14,7 @@ import com.logssey.compliance.ComplianceJobDtos.LeaseRequest;
 import com.logssey.compliance.ComplianceJobDtos.ScanScope;
 import com.logssey.compliance.ComplianceTargetDtos.CreateTargetRequest;
 import com.logssey.compliance.ComplianceTargetDtos.UpdateTargetRequest;
+import com.logssey.compliance.ComplianceTargetDtos.AssessmentProfile;
 
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterAll;
@@ -46,22 +47,25 @@ class ComplianceJobIntegrationTest {
                 """);
         var complianceRepository = new ComplianceRepository(JdbcClient.create(dataSource), jdbc);
         var targetRepository = new ComplianceTargetRepository(JdbcClient.create(dataSource));
+        var scopeCatalog = new ProwlerScopeCatalog();
         targetRepository.insert("reused", "Re:Used", "123456789012",
                 "arn:aws:iam::123456789012:role/LogsseyProwlerScan",
                 "logssey-11111111-1111-1111-1111-111111111111",
-                java.util.List.of("ap-northeast-2"), "admin");
+                java.util.List.of("ap-northeast-2"), AssessmentProfile.empty(), "admin");
         jdbc.update("UPDATE compliance_targets SET enabled = true, connection_status = 'VERIFIED' "
                 + "WHERE target_key = 'reused'");
         var compliance = new ComplianceService(complianceRepository, new ComplianceCatalog(),
-                new ProwlerOcsfNormalizer(), "reused", 8 * 1024 * 1024);
+                new ProwlerOcsfNormalizer(), new ComplianceCheckPolicyCatalog(),
+                targetRepository, scopeCatalog, "reused", 8 * 1024 * 1024);
         jobs = new ComplianceJobService(new ComplianceJobRepository(JdbcClient.create(dataSource)),
-                complianceRepository, compliance, targetRepository, new ProwlerScopeCatalog(),
+                complianceRepository, compliance, targetRepository, scopeCatalog,
                 "reused", 300, 1, true, true);
         disabledJobs = new ComplianceJobService(new ComplianceJobRepository(JdbcClient.create(dataSource)),
-                complianceRepository, compliance, targetRepository, new ProwlerScopeCatalog(),
+                complianceRepository, compliance, targetRepository, scopeCatalog,
                 "reused", 300, 1, false, false);
         targetService = new ComplianceTargetService(targetRepository,
-                new ComplianceJobRepository(JdbcClient.create(dataSource)), complianceRepository, true);
+                new ComplianceJobRepository(JdbcClient.create(dataSource)), complianceRepository,
+                scopeCatalog, true);
     }
 
     @AfterAll
@@ -83,11 +87,11 @@ class ComplianceJobIntegrationTest {
 
         String payload = """
                 [{
-                  "metadata":{"event_code":"s3_bucket_public_access_block","product":{"name":"Prowler","version":"5.46.0"}},
+                  "metadata":{"event_code":"s3_bucket_acl_prohibited","product":{"name":"Prowler","version":"5.46.0"}},
                   "status_code":"PASS",
                   "finding_info":{"uid":"aws:s3:example","title":"S3 public access block"},
                   "cloud":{"provider":"aws"},
-                  "resources":[{"uid":"arn:aws:s3:::example","name":"example","region":"ap-northeast-2"}],
+                  "resources":[{"uid":"arn:aws:s3:::example","name":"example","region":"ap-northeast-2","type":"AwsS3Bucket"}],
                   "severity":"Informational",
                   "time_dt":"2026-11-16T01:00:00Z"
                 }]
@@ -99,6 +103,8 @@ class ComplianceJobIntegrationTest {
         assertThat(completed.status()).isEqualTo("SUCCEEDED");
         assertThat(jobs.job("reused", claimed.jobId()).runId()).isEqualTo(completed.runId());
         assertThat(jdbc.queryForObject("SELECT count(*) FROM compliance_runs", Long.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT inferred_services @> '[\"s3\"]'::jsonb FROM compliance_runs", Boolean.class))
+                .isTrue();
         assertThatThrownBy(() -> jobs.heartbeat(claimed.jobId(),
                 new LeaseRequest(claimed.leaseToken(), claimed.leaseGeneration())))
                 .isInstanceOf(ApiException.class);
@@ -177,11 +183,14 @@ class ComplianceJobIntegrationTest {
         var created = targetService.create("admin", new CreateTargetRequest(
                 "sample-service", "Sample Service", "210987654321",
                 "arn:aws:iam::210987654321:role/LogsseyProwlerScan",
-                java.util.List.of("ap-northeast-2")));
+                java.util.List.of("ap-northeast-2"), new AssessmentProfile(1,
+                        java.util.Map.of("bedrock", "NOT_USED"),
+                        java.util.Map.of("S3_CUSTOMER_MANAGED_KMS", "REQUIRED"))));
 
         assertThat(created.enabled()).isFalse();
         assertThat(created.connectionStatus()).isEqualTo("NOT_TESTED");
         assertThat(created.externalId()).startsWith("logssey-");
+        assertThat(created.assessmentProfile().serviceUsage()).containsEntry("bedrock", "NOT_USED");
 
         var requested = targetService.verify("admin", created.targetKey());
         var claimed = jobs.claim("worker-connection");
@@ -197,8 +206,28 @@ class ComplianceJobIntegrationTest {
 
         var enabled = targetService.update("admin", created.targetKey(), new UpdateTargetRequest(
                 verified.version(), verified.displayName(), verified.awsAccountId(), verified.roleArn(),
-                verified.defaultRegions(), true));
+                verified.defaultRegions(), true, verified.assessmentProfile()));
         assertThat(enabled.enabled()).isTrue();
+
+        var profileUpdated = targetService.update("admin", created.targetKey(), new UpdateTargetRequest(
+                enabled.version(), enabled.displayName(), enabled.awsAccountId(), enabled.roleArn(),
+                enabled.defaultRegions(), true, new AssessmentProfile(1,
+                        java.util.Map.of("bedrock", "USED"),
+                        java.util.Map.of("S3_CUSTOMER_MANAGED_KMS", "NOT_REQUIRED"))));
+        assertThat(profileUpdated.connectionStatus()).isEqualTo("VERIFIED");
+        assertThat(profileUpdated.assessmentProfile().requirements())
+                .containsEntry("S3_CUSTOMER_MANAGED_KMS", "NOT_REQUIRED");
+    }
+
+    @Test
+    void rejectsUnknownAssessmentProfileKeys() {
+        assertThatThrownBy(() -> targetService.create("admin", new CreateTargetRequest(
+                "invalid-profile", "Invalid Profile", "410987654321",
+                "arn:aws:iam::410987654321:role/LogsseyProwlerScan",
+                java.util.List.of("ap-northeast-2"),
+                new AssessmentProfile(1, java.util.Map.of("not-a-service", "USED"), java.util.Map.of()))))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("서비스 사용 상태");
     }
 
     @Test
@@ -206,7 +235,7 @@ class ComplianceJobIntegrationTest {
         var created = targetService.create("admin", new CreateTargetRequest(
                 "pending-service", "Pending Service", "310987654321",
                 "arn:aws:iam::310987654321:role/LogsseyProwlerScan",
-                java.util.List.of("ap-northeast-2")));
+                java.util.List.of("ap-northeast-2"), null));
 
         var requested = targetService.verify("admin", created.targetKey());
         assertThatThrownBy(() -> targetService.verify("admin", created.targetKey()))

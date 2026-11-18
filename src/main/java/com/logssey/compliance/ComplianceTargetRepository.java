@@ -1,5 +1,6 @@
 package com.logssey.compliance;
 
+import static com.logssey.compliance.ComplianceTargetDtos.AssessmentProfile;
 import static com.logssey.compliance.ComplianceTargetDtos.TargetExecutionSnapshot;
 import static com.logssey.compliance.ComplianceTargetDtos.TargetSummary;
 
@@ -20,7 +21,8 @@ public class ComplianceTargetRepository {
 
     private static final String COLUMNS = """
             target_key, display_name, provider, aws_account_id, role_arn, external_id,
-            default_regions::text AS default_regions_json, enabled, connection_status,
+            default_regions::text AS default_regions_json, enabled,
+            assessment_profile::text AS assessment_profile_json, connection_status,
             connection_error_code, connection_checked_at, version, created_at, updated_at
             """;
 
@@ -45,7 +47,8 @@ public class ComplianceTargetRepository {
         return jdbc.sql("""
                         SELECT target_key, aws_account_id, role_arn, external_id,
                                default_regions::text AS default_regions_json, version,
-                               enabled, connection_status
+                               enabled, connection_status,
+                               assessment_profile::text AS assessment_profile_json
                         FROM compliance_targets WHERE target_key = :targetKey
                         """)
                 .param("targetKey", targetKey)
@@ -53,33 +56,37 @@ public class ComplianceTargetRepository {
                         rs.getString("target_key"), rs.getString("aws_account_id"),
                         rs.getString("role_arn"), rs.getString("external_id"),
                         readRegions(rs.getString("default_regions_json")), rs.getLong("version"),
-                        rs.getBoolean("enabled"), rs.getString("connection_status")))
+                        rs.getBoolean("enabled"), rs.getString("connection_status"),
+                        readProfile(rs.getString("assessment_profile_json"))))
                 .optional();
     }
 
     TargetSummary insert(String targetKey, String displayName, String accountId, String roleArn,
-                         String externalId, List<String> defaultRegions, String loginId) {
+                         String externalId, List<String> defaultRegions, AssessmentProfile assessmentProfile,
+                         String loginId) {
         return jdbc.sql("""
                         INSERT INTO compliance_targets (
                             target_key, display_name, provider, aws_account_id, role_arn, external_id,
-                            default_regions, created_by_login, updated_by_login)
+                            default_regions, assessment_profile, created_by_login, updated_by_login)
                         VALUES (:targetKey, :displayName, 'aws', :accountId, :roleArn, :externalId,
-                            CAST(:regions AS jsonb), :loginId, :loginId)
+                            CAST(:regions AS jsonb), CAST(:assessmentProfile AS jsonb), :loginId, :loginId)
                         RETURNING %s
                         """.formatted(COLUMNS))
                 .param("targetKey", targetKey).param("displayName", displayName)
                 .param("accountId", accountId).param("roleArn", roleArn).param("externalId", externalId)
-                .param("regions", writeRegions(defaultRegions)).param("loginId", loginId)
+                .param("regions", writeRegions(defaultRegions)).param("assessmentProfile", writeProfile(assessmentProfile))
+                .param("loginId", loginId)
                 .query(this::summary).single();
     }
 
     Optional<TargetSummary> update(String targetKey, long expectedVersion, String displayName,
                                    String accountId, String roleArn, List<String> defaultRegions,
-                                   boolean enabled, String loginId) {
+                                   boolean enabled, AssessmentProfile assessmentProfile, String loginId) {
         return jdbc.sql("""
                         UPDATE compliance_targets
                         SET display_name = :displayName, aws_account_id = :accountId, role_arn = :roleArn,
                             default_regions = CAST(:regions AS jsonb), enabled = :enabled,
+                            assessment_profile = CAST(:assessmentProfile AS jsonb),
                             connection_status = CASE
                                 WHEN aws_account_id <> :accountId OR role_arn <> :roleArn
                                 THEN 'NOT_TESTED' ELSE connection_status END,
@@ -97,6 +104,7 @@ public class ComplianceTargetRepository {
                 .param("targetKey", targetKey).param("expectedVersion", expectedVersion)
                 .param("displayName", displayName).param("accountId", accountId).param("roleArn", roleArn)
                 .param("regions", writeRegions(defaultRegions)).param("enabled", enabled)
+                .param("assessmentProfile", writeProfile(assessmentProfile))
                 .param("loginId", loginId).query(this::summary).optional();
     }
 
@@ -149,6 +157,7 @@ public class ComplianceTargetRepository {
                 rs.getString("target_key"), rs.getString("display_name"), rs.getString("provider"),
                 rs.getString("aws_account_id"), rs.getString("role_arn"), rs.getString("external_id"),
                 readRegions(rs.getString("default_regions_json")), rs.getBoolean("enabled"),
+                readProfile(rs.getString("assessment_profile_json")),
                 rs.getString("connection_status"), rs.getString("connection_error_code"),
                 rs.getObject("connection_checked_at", OffsetDateTime.class), rs.getLong("version"),
                 rs.getObject("created_at", OffsetDateTime.class), rs.getObject("updated_at", OffsetDateTime.class));
@@ -167,6 +176,22 @@ public class ComplianceTargetRepository {
             return json.readValue(value, json.getTypeFactory().constructCollectionType(List.class, String.class));
         } catch (JacksonException e) {
             throw new IllegalStateException("저장된 기본 리전을 읽을 수 없습니다.", e);
+        }
+    }
+
+    private String writeProfile(AssessmentProfile profile) {
+        try {
+            return json.writeValueAsString(profile);
+        } catch (JacksonException e) {
+            throw new IllegalArgumentException("판정 프로필을 직렬화할 수 없습니다.", e);
+        }
+    }
+
+    private AssessmentProfile readProfile(String value) {
+        try {
+            return json.readValue(value, AssessmentProfile.class);
+        } catch (JacksonException e) {
+            throw new IllegalStateException("저장된 판정 프로필을 읽을 수 없습니다.", e);
         }
     }
 }

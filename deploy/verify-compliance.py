@@ -61,9 +61,15 @@ def verify(base: str) -> None:
         "awsAccountId": "000000000000",
         "roleArn": "arn:aws:iam::000000000000:role/LogsseyProwlerScan",
         "defaultRegions": ["ap-northeast-2"],
+        "assessmentProfile": {
+            "schemaVersion": 1,
+            "serviceUsage": {"securityhub": "USED"},
+            "requirements": {"MULTI_REGION": "NOT_REQUIRED"},
+        },
     })
     assert status == 200 and target["connectionStatus"] == "NOT_TESTED"
     assert target["externalId"].startswith("logssey-")
+    assert target["assessmentProfile"]["serviceUsage"] == {"securityhub": "USED"}
 
     status, connection = request("/api/v1/compliance/targets/synthetic-service/connection-tests", {})
     assert status == 200 and connection["status"] == "QUEUED"
@@ -90,6 +96,7 @@ def verify(base: str) -> None:
         "enabled": True,
     }, method="PATCH")
     assert status == 200 and target["enabled"] is True
+    assert target["assessmentProfile"]["requirements"] == {"MULTI_REGION": "NOT_REQUIRED"}
 
     status, created = request("/api/v1/compliance/jobs", {
         "targetKey": "synthetic-service",
@@ -117,6 +124,14 @@ def verify(base: str) -> None:
     assert {item["id"] for item in overview["frameworks"]} == {"isms", "iso", "csap"}
     assert overview["latestRun"]["counts"]["fail"] == 1
 
+    status, detail = request(f"/api/v1/compliance/runs/{run_id}?targetKey=synthetic-service")
+    assert status == 200
+    context = detail["assessmentContext"]
+    assert context["policyVersion"] == "2026-11-18.1"
+    assert context["profile"]["serviceUsage"] == {"securityhub": "USED"}
+    assert context["profile"]["requirements"] == {"MULTI_REGION": "NOT_REQUIRED"}
+    assert context["inferredServices"] == []
+
     status, report = request(
         f"/api/v1/compliance/runs/{run_id}/report?targetKey=synthetic-service&framework=all",
         expect_json=False,
@@ -124,6 +139,8 @@ def verify(base: str) -> None:
     assert status == 200
     assert "ISMS-P" in report and "ISO/IEC 27001" in report and "CSAP" in report
     assert "인증 적합 판정이 아닙니다" in report
+    assert "판정 정책" in report and "정책 2026-11-18.1" in report
+    assert "적용성 프로필" in report and "서비스 사용 1" in report and "비요구 1" in report
     print("SYNTHETIC_COMPLIANCE_E2E_PASSED")
 
 
