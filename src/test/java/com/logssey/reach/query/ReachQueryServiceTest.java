@@ -393,6 +393,8 @@ class ReachQueryServiceTest {
             assertThat(w.imageRepository()).isEqualTo("logssey/reused-chat");
             assertThat(w.imageDigest()).isEqualTo(chat);
         });
+        // 하루 1번 재대조 대상: 실행 중인 이미지의 스캔만 (레포·배포 안 된 빌드는 아니다)
+        assertThat(service.runningImageScanIds()).containsExactly(runningScan);
 
         // LATEST: 지금까지처럼 앱·대상 종류마다 최신 스캔
         var latest = new ReachFindingFilter(null, null, null, null, null, null, null, "LATEST");
@@ -422,6 +424,7 @@ class ReachQueryServiceTest {
         assertThat(summary.basis().requested()).isEqualTo("RUNNING");
         assertThat(summary.basis().applied()).isEqualTo("LATEST");
         assertThat(summary.basis().unscannedRunning()).isEmpty();
+        assertThat(service.runningImageScanIds()).isEmpty();   // 실행 중인 이미지를 모르면 재대조하지 않는다
 
         // L1이 꺼진 설치도 LATEST와 같다
         var noL1 = new ReachQueryService(new ReachQueryRepository(JdbcClient.create(jdbc)),

@@ -22,6 +22,9 @@ import org.springframework.stereotype.Component;
 @Component
 public class ReachCiAccess {
 
+    /** 대시보드 예약 작업이 만든 검사의 주체 (V37 idempotency_scope) */
+    public static final String SYSTEM_SCOPE = "SYSTEM";
+
     private final ReachProperties apps;
     private final ReachCiProperties ci;
 
@@ -69,9 +72,12 @@ public class ReachCiAccess {
         requireAllowedRepository(caller);
         var owner = check.orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
         if (owner.scope().equalsIgnoreCase(caller.scope())) return;
-        // 사람이 대시보드에서 요청한 스캔: 서버가 그 레포의 기본 브랜치 워크플로를 workflow_dispatch로 띄운다.
+        // 사람이 대시보드에서 요청한 스캔(MANUAL)과 대시보드 예약 작업의 하루 1번 재대조(SCHEDULE):
+        // 서버가 그 레포의 기본 브랜치 워크플로를 workflow_dispatch로 띄운다.
         // 기본 브랜치라 리뷰를 거친 워크플로만 올리고, 다른 레포의 토큰은 그 검사를 보지 못한다
-        boolean dispatched = "MANUAL".equals(owner.mode()) && owner.scope().startsWith("USER:")
+        boolean serverCheck = ("MANUAL".equals(owner.mode()) && owner.scope().startsWith("USER:"))
+                || ("SCHEDULE".equals(owner.mode()) && SYSTEM_SCOPE.equals(owner.scope()));
+        boolean dispatched = serverCheck
                 && "workflow_dispatch".equals(caller.eventName()) && defaultBranch(caller)
                 && sameRepository(caller, owner.repository());
         if (!dispatched) throw forbidden();

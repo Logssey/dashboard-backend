@@ -9,7 +9,7 @@ import tools.jackson.databind.JsonNode;
  * API-13 결과 묶음 (gzip을 푼 JSON). 값 검사와 대문자 맞추기는 ReachResultService가 한다.
  * 명세는 "결과 묶음 형식은 run-reach.sh를 러너용으로 바꿀 때 확정한다"고만 해서, 아래 모양은 구현하며 정했다:
  * verdicts의 한 항목은 Finding 하나이고 모양은 API 명세 3-3 Finding, 3-4 Verdict, 3-5 Evidence를 따른다(API-05 상세와 같은 이름).
- * sbom, matches, reachResult는 받기만 하고 아직 저장하지 않는다(보관 방식 ARD Q-06 미정).
+ * sbom은 스캔마다 보관한다(V53 reach_sboms, 재대조 입력). matches, reachResult는 받기만 하고 저장하지 않는다.
  * failure가 있으면 러너에서 실패한 것이라 stages, tools만 보고 스캔을 FAILED로 끝낸다
  */
 public record ReachResultBundle(

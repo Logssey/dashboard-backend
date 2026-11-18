@@ -104,6 +104,17 @@ class ReachCiAccessTest {
                 owner("USER:1", "MANUAL", "dashboard-backend")));                                        // 감시 대상이 아닌 레포
     }
 
+    @Test
+    void dailyRescanOfTheDashboardIsUploadedByTheDispatchedRunOfItsRepository() {
+        var dispatched = caller("Logssey/service-backend", "workflow_dispatch", "refs/heads/main");
+        allowed(() -> ACCESS.requireOwner(dispatched, owner("SYSTEM", "SCHEDULE", "service-backend")));
+
+        forbidden(() -> ACCESS.requireOwner(dispatched, owner("SYSTEM", "SCHEDULE", "service-frontend")));   // 다른 레포
+        forbidden(() -> ACCESS.requireOwner(dispatched, owner("SYSTEM", "MANUAL", "service-backend")));      // 예약 작업은 SCHEDULE만
+        forbidden(() -> ACCESS.requireOwner(dispatched, owner("USER:1", "SCHEDULE", "service-backend")));    // 사람이 만든 SCHEDULE 검사
+        forbidden(() -> ACCESS.requireOwner(MAIN, owner("SYSTEM", "SCHEDULE", "service-backend")));          // dispatch가 아님
+    }
+
     private static Optional<ReachCiAccess.CheckOwner> owner(String scope, String mode, String repository) {
         return Optional.of(new ReachCiAccess.CheckOwner(scope, mode, repository));
     }

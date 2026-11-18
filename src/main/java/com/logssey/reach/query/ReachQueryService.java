@@ -45,6 +45,19 @@ public class ReachQueryService {
         return new ReachQueryRepository.Basis(true, l1.cluster(), l1.namespaces(), ReachL1Service.FRESH);
     }
 
+    /**
+     * 하루 1번 재대조(PRD FR-11)의 대상: 운영에서 실행 중인 이미지마다 기본 범위(basis=RUNNING)가 쓰는 스캔.
+     * L1이 꺼졌거나 신선한 조회가 없으면 실행 중인 이미지를 모르니 빈 목록이다. 예약 작업이 부르고 사람 권한은 보지 않는다
+     */
+    public List<Long> runningImageScanIds() {
+        var running = basis("RUNNING");
+        if (!running.running() || !repository.hasFreshObservation(running)) return List.of();
+        return repository.scopeScanList(running).stream()
+                .filter(s -> s.running() && "IMAGE".equals(s.targetType()))
+                .map(ReachQueryRepository.ScopeScan::scanId)
+                .toList();
+    }
+
     public ReachFindingPageResponse findings(String loginId, ReachFindingFilter filter,
                                              Integer size, String cursor, String include) {
         requireAdmin(loginId);
