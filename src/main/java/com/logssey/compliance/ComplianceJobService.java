@@ -217,12 +217,12 @@ public class ComplianceJobService {
         }
         for (String service : services) {
             if (!scopeCatalog.supportsService(service)) {
-                throw new ApiException(ErrorCode.INVALID_INPUT, "Prowler 5.46.0에 없는 서비스입니다: " + service);
+                throw new ApiException(ErrorCode.INVALID_INPUT, "지원하지 않는 AWS 서비스입니다: " + service);
             }
         }
         for (String check : checks) {
             if (!scopeCatalog.supportsCheck(check)) {
-                throw new ApiException(ErrorCode.INVALID_INPUT, "Prowler 5.46.0에 없는 Check입니다: " + check);
+                throw new ApiException(ErrorCode.INVALID_INPUT, "지원하지 않는 Check입니다: " + check);
             }
         }
         return new ScanScope(regions, services, checks);
