@@ -34,7 +34,7 @@ public class IacRunController {
     public ResponseEntity<IacRunCreatedResponse> register(@Valid @RequestBody IacRunRequest request,
                                                           Authentication authentication) {
         // infrastructure 의 iac-report 워크플로(GitHub OIDC)면 토큰의 레포로, 아니면 관리자 세션으로
-        var ci = IacCiSecurityConfig.ciRepository(authentication);
+        var ci = IacCiSecurityConfig.ciCaller(authentication);
         var created = ci.isPresent() ? service.registerByCi(request, ci.get())
                 : service.register(request, name(authentication));
         return ResponseEntity.created(URI.create("/api/v1/iac/runs/" + created.runId())).body(created);
@@ -51,14 +51,14 @@ public class IacRunController {
         try (InputStream in = request.getInputStream()) {
             body = in.readNBytes(IacPlanInspector.MAX_COMPRESSED_BYTES + 1);
         }
-        var ci = IacCiSecurityConfig.ciRepository(authentication);
+        var ci = IacCiSecurityConfig.ciCaller(authentication);
         return ResponseEntity.accepted().body(ci.isPresent() ? service.uploadPlanByCi(runId, body, ci.get())
                 : service.uploadPlan(runId, body, name(authentication)));
     }
 
     @GetMapping("/{runId}")
     public IacRunStatusResponse status(@PathVariable long runId, Authentication authentication) {
-        var ci = IacCiSecurityConfig.ciRepository(authentication);
+        var ci = IacCiSecurityConfig.ciCaller(authentication);
         return ci.isPresent() ? service.statusByCi(runId, ci.get()) : service.status(runId, name(authentication));
     }
 

@@ -5,6 +5,8 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
+import com.logssey.iac.auth.IacCiCaller;
+
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
@@ -146,11 +148,13 @@ public class IacRunRepository {
                 """, actorUserId == null ? "CI" : "USER", actorUserId, entityType, entityId, eventType, afterSafeJson);
     }
 
-    /** run 이 속한 레포 이름 (CI 토큰의 레포와 맞는지 볼 때) */
-    Optional<String> runRepository(long runId) {
+    /** run 이 속한 레포 이름과 실행 종류 (CI 토큰이 다룰 수 있는 run 인지 볼 때) */
+    Optional<IacCiCaller> runOwner(long runId) {
         return jdbc.query("""
-                SELECT r.full_name FROM iac_runs run JOIN iac_repos r ON r.repo_id = run.repo_id WHERE run.run_id = ?
-                """, (rs, row) -> rs.getString("full_name"), runId).stream().findFirst();
+                SELECT r.full_name, run.trigger_type FROM iac_runs run JOIN iac_repos r ON r.repo_id = run.repo_id
+                WHERE run.run_id = ?
+                """, (rs, row) -> new IacCiCaller(rs.getString("full_name"), rs.getString("trigger_type")), runId)
+                .stream().findFirst();
     }
 
     OffsetDateTime databaseNow() {

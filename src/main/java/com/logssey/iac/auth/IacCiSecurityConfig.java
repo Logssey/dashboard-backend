@@ -40,11 +40,13 @@ import org.springframework.security.web.util.matcher.AndRequestMatcher;
 import org.springframework.security.web.util.matcher.RequestMatcher;
 
 /**
- * infrastructure 의 iac-report 워크플로가 PR 실행을 등록하고 plan 을 올릴 때의 인증 (GitHub Actions OIDC, IaC 보안 ADR-13).
+ * infrastructure 의 iac-report(PR)·iac-drift(main 매일 점검) 워크플로가 실행을 등록하고 plan 을 올릴 때의 인증
+ * (GitHub Actions OIDC, IaC 보안 ADR-13).
  * 기존 SecurityConfig·Reach 체인은 그대로 둔다 (같은 방식의 별도 체인).
  *
  * - Bearer 헤더가 있는 /api/v1/iac/runs/** 만 받는다. 헤더가 없으면 기존 체인(대시보드 관리자 세션)이 받는다
- * - 서명(GitHub JWKS)·발급자·만료·aud(logssey-iac)·sub(설정값과 정확히 같음)·repository 클레임을 본다. 틀리면 401
+ * - 서명(GitHub JWKS)·발급자·만료·aud(logssey-iac)·sub(IacCiProperties 의 둘 중 하나와 정확히 같음)·repository 클레임을
+ *   본다. 틀리면 401. sub 마다 다룰 수 있는 실행 종류(PR·PUSH)가 정해져 있다 (IacCiCaller)
  * - 허용: 실행 등록, plan 업로드, 실행 상태·결과. 그 밖은 403. 레포 확인은 IacRunService·IacQueryService 가 한다
  * - 토큰 디코더는 이 체인 안에서만 쓴다 (Bean 으로 내놓지 않는다)
  */
@@ -53,6 +55,7 @@ import org.springframework.security.web.util.matcher.RequestMatcher;
 public class IacCiSecurityConfig {
 
     public static final String AUTHORITY = "IAC_CI";
+    private static final String TRIGGER_PREFIX = "IAC_CI_TRIGGER_";
     private static final String RUNS = "/api/v1/iac/runs";
     /** iac_repos.full_name 길이 */
     private static final int REPOSITORY_MAX = 200;
@@ -66,7 +69,8 @@ public class IacCiSecurityConfig {
             return header != null && header.regionMatches(true, 0, "Bearer ", 0, 7);
         };
         JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
-        converter.setJwtGrantedAuthoritiesConverter(jwt -> List.of(new SimpleGrantedAuthority(AUTHORITY)));
+        converter.setJwtGrantedAuthoritiesConverter(jwt -> List.of(new SimpleGrantedAuthority(AUTHORITY),
+                new SimpleGrantedAuthority(TRIGGER_PREFIX + properties.triggerOf(jwt.getSubject()))));
 
         http.securityMatcher(new AndRequestMatcher(paths.matcher(RUNS + "/**"), bearer))
                 .authorizeHttpRequests(auth -> auth
@@ -91,13 +95,16 @@ public class IacCiSecurityConfig {
         return http.build();
     }
 
-    /** CI 로 인증된 요청이면 토큰의 레포 (예: Logssey/infrastructure) */
-    public static Optional<String> ciRepository(Authentication authentication) {
+    /** CI 로 인증된 요청이면 토큰의 레포(예: Logssey/infrastructure)와 다룰 수 있는 실행 종류 */
+    public static Optional<IacCiCaller> ciCaller(Authentication authentication) {
         if (authentication == null || !(authentication.getPrincipal() instanceof Jwt jwt)
                 || authentication.getAuthorities().stream().noneMatch(a -> AUTHORITY.equals(a.getAuthority()))) {
             return Optional.empty();
         }
-        return Optional.of(jwt.getClaimAsString("repository"));
+        String trigger = authentication.getAuthorities().stream().map(a -> a.getAuthority())
+                .filter(a -> a.startsWith(TRIGGER_PREFIX)).map(a -> a.substring(TRIGGER_PREFIX.length()))
+                .findFirst().orElseThrow();
+        return Optional.of(new IacCiCaller(jwt.getClaimAsString("repository"), trigger));
     }
 
     static JwtDecoder decoder(IacCiProperties properties) {
@@ -116,10 +123,10 @@ public class IacCiSecurityConfig {
         return expected.equals(aud);
     }
 
-    /** sub 는 설정값과 정확히 같아야 하고(설정이 없으면 모두 거부), 레포 확인에 쓸 repository 가 있어야 한다 */
+    /** sub 는 정해진 워크플로 둘 중 하나와 정확히 같아야 하고, 레포 확인에 쓸 repository 가 있어야 한다 */
     private static OAuth2TokenValidatorResult claims(Jwt jwt, IacCiProperties properties) {
         String repository = jwt.getClaimAsString("repository");
-        boolean ok = properties.open() && properties.subject().equals(jwt.getSubject())
+        boolean ok = properties.triggerOf(jwt.getSubject()) != null
                 && repository != null && repository.indexOf('/') > 0 && repository.length() <= REPOSITORY_MAX;
         return ok ? OAuth2TokenValidatorResult.success()
                 : OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", "Not the IaC report workflow", null));

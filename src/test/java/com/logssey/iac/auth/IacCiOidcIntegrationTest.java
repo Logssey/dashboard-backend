@@ -65,7 +65,12 @@ class IacCiOidcIntegrationTest {
 
     private static final String ISSUER = "https://token.actions.githubusercontent.com";
     private static final String REPO = "Logssey/infrastructure";
-    private static final String SUBJECT = "repo:Logssey/infrastructure:environment:iac-app";
+    /** 실제 토큰의 sub (2026-07-15 뒤에 만든 레포라 조직·레포 ID 가 붙는다) */
+    private static final String SUBJECT = "repo:Logssey@329835088/infrastructure@1372604168:environment:iac-app";
+    private static final String DRIFT_SUBJECT = "repo:Logssey@329835088/infrastructure@1372604168:environment:iac-drift";
+    private static final String PUSH_BODY = """
+            {"repo":"%s","headSha":"%s","trigger":"PUSH","gate":{"status":"PASSED","findings":[]}}
+            """;
     private static final String RUN_BODY = """
             {"repo":"%s","prNumber":58,"headSha":"%s","gate":{"status":"PASSED","findings":[]}}
             """;
@@ -156,6 +161,9 @@ class IacCiOidcIntegrationTest {
         expectUnauthenticated(token(c -> c.audience("logssey-reach")));                           // 다른 솔루션의 aud
         expectUnauthenticated(token(c -> c.subject("repo:Logssey/infrastructure:pull_request"))); // PR 코드(iac-gate)
         expectUnauthenticated(token(c -> c.subject("repo:Logssey/infrastructure:ref:refs/heads/main")));
+        // 이름 형식 sub: 이 레포의 실제 토큰은 ID 형식이라 이름 형식은 받지 않는다
+        expectUnauthenticated(token(c -> c.subject("repo:Logssey/infrastructure:environment:iac-app")));
+        expectUnauthenticated(token(c -> c.subject(SUBJECT.replace("1372604168", "1"))));      // 다른 레포 ID
         expectUnauthenticated(token(c -> c.issuer("https://example.com")));
         expectUnauthenticated(token(c -> c.expirationTime(Date.from(Instant.now().minusSeconds(120)))));
         expectUnauthenticated(token(c -> c.claim("repository", null)));
@@ -191,6 +199,39 @@ class IacCiOidcIntegrationTest {
                 .andExpect(status().is4xxClientError());
         assertThat(jdbc.queryForObject("SELECT count(*) FROM iac_runs WHERE repo_id = 1", Long.class)).isZero();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM iac_jobs", Long.class)).isZero();
+    }
+
+    @Test
+    void theDriftWorkflowRegistersOnlyMainBranchChecksAndTheReportWorkflowOnlyPullRequests() throws Exception {
+        String drift = token(c -> c.subject(DRIFT_SUBJECT));
+        String report = bearer(sign(githubKey, claims()));
+        var created = mvc.perform(post("/api/v1/iac/runs").header(HttpHeaders.AUTHORIZATION, drift)
+                        .contentType(MediaType.APPLICATION_JSON).content(PUSH_BODY.formatted(REPO, "f".repeat(40))))
+                .andExpect(status().isCreated())
+                .andReturn();
+        long push = Long.parseLong(created.getResponse().getHeader(HttpHeaders.LOCATION).replaceAll(".*/", ""));
+        mvc.perform(put("/api/v1/iac/runs/" + push + "/plan").header(HttpHeaders.AUTHORIZATION, drift)
+                        .contentType("application/gzip").content(IacPlanFixtures.gzipResource("plan-scrubbed.json")))
+                .andExpect(status().isAccepted());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM iac_jobs WHERE kind = 'CHECK_DRIFT'", Long.class)).isEqualTo(1L);
+        mvc.perform(get("/api/v1/iac/runs/" + push + "/result").header(HttpHeaders.AUTHORIZATION, drift))
+                .andExpect(status().isOk());
+
+        // 서로의 실행 종류는 등록할 수 없다
+        mvc.perform(post("/api/v1/iac/runs").header(HttpHeaders.AUTHORIZATION, drift)
+                        .contentType(MediaType.APPLICATION_JSON).content(RUN_BODY.formatted(REPO, "1".repeat(40))))
+                .andExpect(status().isForbidden());
+        mvc.perform(post("/api/v1/iac/runs").header(HttpHeaders.AUTHORIZATION, report)
+                        .contentType(MediaType.APPLICATION_JSON).content(PUSH_BODY.formatted(REPO, "2".repeat(40))))
+                .andExpect(status().isForbidden());
+        // 서로의 실행은 없는 것처럼
+        mvc.perform(get("/api/v1/iac/runs/" + push).header(HttpHeaders.AUTHORIZATION, report))
+                .andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/iac/runs/" + push + "/result").header(HttpHeaders.AUTHORIZATION, report))
+                .andExpect(status().isNotFound());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM iac_runs", Long.class)).isEqualTo(1L);
+        assertThat(jdbc.queryForList("SELECT DISTINCT actor_kind FROM iac_audit_events", String.class))
+                .containsExactly("CI");
     }
 
     @Test

@@ -8,6 +8,7 @@ import java.util.OptionalLong;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
+import com.logssey.iac.auth.IacCiCaller;
 
 import org.springframework.stereotype.Service;
 
@@ -66,9 +67,10 @@ public class IacQueryService {
         return result(run.prNumber() == null ? 0 : run.prNumber(), run.run());
     }
 
-    /** CI(iac-report): 토큰의 레포에 속한 run 만. 다른 레포의 run 은 없는 것처럼 404 */
-    public IacPullRequestResponse runResultByCi(long runId, String tokenRepository) {
-        var run = repository.run(runId).filter(r -> r.repo().equals(tokenRepository))
+    /** CI: 토큰의 레포·실행 종류에 맞는 run 만. 아니면 없는 것처럼 404 */
+    public IacPullRequestResponse runResultByCi(long runId, IacCiCaller caller) {
+        var run = repository.run(runId).filter(r -> r.repo().equals(caller.repository())
+                        && (r.prNumber() == null ? "PUSH" : "PR").equals(caller.trigger()))
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
         return result(run.prNumber() == null ? 0 : run.prNumber(), run.run());
     }
