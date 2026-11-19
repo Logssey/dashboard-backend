@@ -271,6 +271,20 @@ class BundleTest(unittest.TestCase):
         self.assertEqual(failed["l3"], {"error": "L3 run failed"})
         self.assertNotIn("l3", self.run_bundle(trivy(trivy_vuln("CVE-2026-1000", LIB))))
 
+    def test_l3_record_goes_along_with_the_l3_result_only(self):
+        import base64
+        record = os.path.join(self.dir.name, "record.tar.xz")
+        with open(record, "wb") as f:
+            f.write(b"\xfd7zXZ\x00record")
+        l3 = self.file("l3.json", {"counts": {}, "cves": [], "run": {"scenario": "1"}})
+        b = self.run_bundle(trivy(trivy_vuln("CVE-2026-1000", LIB)), extra=["--l3", l3, "--l3-record", record])
+        self.assertEqual(b["l3Record"]["format"], "TAR_XZ")
+        self.assertEqual(base64.b64decode(b["l3Record"]["content"]), b"\xfd7zXZ\x00record")
+        self.assertNotIn("l3Record", self.run_bundle(trivy(trivy_vuln("CVE-2026-1000", LIB)), extra=["--l3", l3]))
+        out = os.path.join(self.dir.name, "r.json")
+        self.assertEqual(bundle.main(self.no_l2_args(trivy(), out) + ["--l3-record", record]), 1)
+        self.assertEqual(bundle.main(self.no_l2_args(trivy(), out) + ["--l3-error", "x", "--l3-record", record]), 1)
+
     def test_l3_and_l3_error_together_fail(self):
         out = os.path.join(self.dir.name, "l3.json")
         args = self.no_l2_args(trivy(), out) + ["--l3", self.file("r.json", {}), "--l3-error", "x"]

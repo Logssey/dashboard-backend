@@ -4,6 +4,7 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -33,11 +34,17 @@ final class ReachL3Input {
     /** reach_l3_results 한 행. detail은 JSON 문자열 */
     record Result(String reached, boolean regionsChecked, boolean startupOnly, String detail) {}
 
+    /** reach_l3_records 한 행: 실행 기록 묶음(tar.xz) 그대로 */
+    record Record(byte[] content) {}
+
     static final String INVALID = "invalid L3 result in the bundle";
     private static final List<String> METHODS = List.of("COVERAGE", "MAPS", "UPROBE");
     /** run에서 detail로 옮기는 칸 (FR-14 수용 기준 3의 근거 항목과 실행 정보) */
     private static final List<String> RUN_DETAIL = List.of("build", "configKeys", "invocations", "requests", "scope",
-            "javaRelease", "jacoco", "appStartSeconds", "durationSeconds");
+            "javaRelease", "jacoco", "appStartSeconds", "durationSeconds", "rematch");
+    /** 실행 기록 묶음 한도. Re:Used api가 약 0.3MB다 */
+    static final int RECORD_MAX = 16 * 1024 * 1024;
+    private static final byte[] XZ_MAGIC = {(byte) 0xFD, '7', 'z', 'X', 'Z', 0};
     /** CVE 결과에서 detail로 옮기는 칸 */
     private static final List<String> RESULT_DETAIL = List.of("during", "functions", "regions", "paths", "note",
             "installedVersions", "regionVersion", "functionsUnchecked");
@@ -47,24 +54,57 @@ final class ReachL3Input {
 
     private final Run run;
     private final Map<String, Result> results;
+    private final boolean rematch;
+    private Record record;
 
-    private ReachL3Input(Run run, Map<String, Result> results) {
+    private ReachL3Input(Run run, Map<String, Result> results, boolean rematch) {
         this.run = run;
         this.results = results;
+        this.rematch = rematch;
     }
 
-    /** l3가 없으면 null (앱을 띄우지 않은 스캔: PR, 재대조, 시나리오 없는 레포) */
-    static ReachL3Input parse(JsonNode l3, JsonMapper mapper) {
+    /**
+     * l3가 없으면 null (앱을 띄우지 않았고 보관한 기록도 없는 스캔: PR, 시나리오 없는 레포).
+     * l3Record는 방금 앱을 띄운 성공한 관측일 때만 받는다. 보관한 기록으로 다시 대조한 결과(run.rematch)는 기록을 다시 올리지 않는다
+     */
+    static ReachL3Input parse(JsonNode l3, JsonNode l3Record, JsonMapper mapper) {
         if (l3 == null || l3.isNull() || l3.isMissingNode()) return null;
+        ReachL3Input input;
         try {
-            return read(l3, mapper);
+            input = read(l3, mapper);
         } catch (IllegalArgumentException e) {
             return failed(INVALID);
         }
+        if ("SUCCEEDED".equals(input.run.status()) && !input.rematch) input.record = record(l3Record);
+        return input;
     }
 
     Run run() {
         return run;
+    }
+
+    /** 보관할 실행 기록. 없거나 모양이 틀리면 빈 값(결과는 그대로 저장한다) */
+    Optional<Record> record() {
+        return Optional.ofNullable(record);
+    }
+
+    /** 틀린 기록은 버린다: L3는 스캔을 실패시키지 않는다 */
+    private static Record record(JsonNode node) {
+        if (node == null || !node.isObject()) return null;
+        String format = text(node.get("format"));
+        String content = text(node.get("content"));
+        if (!"TAR_XZ".equals(format) || content == null || content.length() > RECORD_MAX / 3 * 4 + 4) return null;
+        byte[] bytes;
+        try {
+            bytes = Base64.getDecoder().decode(content);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+        if (bytes.length < XZ_MAGIC.length || bytes.length > RECORD_MAX) return null;
+        for (int i = 0; i < XZ_MAGIC.length; i++) {
+            if (bytes[i] != XZ_MAGIC[i]) return null;
+        }
+        return new Record(bytes);
     }
 
     /** 이 Finding의 L3 결과. CVE와 패키지 좌표(group:artifact)로 잇는다. 같은 좌표의 여러 버전은 같은 결과를 받는다 */
@@ -73,7 +113,7 @@ final class ReachL3Input {
     }
 
     private static ReachL3Input failed(String error) {
-        return new ReachL3Input(new Run("FAILED", cut(error, 500), null, null, null, "{}", "{}"), Map.of());
+        return new ReachL3Input(new Run("FAILED", cut(error, 500), null, null, null, "{}", "{}"), Map.of(), false);
     }
 
     private static ReachL3Input read(JsonNode l3, JsonMapper mapper) {
@@ -132,7 +172,7 @@ final class ReachL3Input {
         }
         var run = new Run("SUCCEEDED", null, scenario, method, observedAt,
                 counts == null ? "{}" : mapper.writeValueAsString(counts), detailJson);
-        return new ReachL3Input(run, results);
+        return new ReachL3Input(run, results, bool(runNode.get("rematch")));
     }
 
     /** 아는 칸만. 배열·객체·값은 그대로 둔다(안쪽 이름은 러너 출력과 같다) */

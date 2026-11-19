@@ -170,6 +170,26 @@ public class ReachCiCheckRepository {
                 .optional();
     }
 
+    /**
+     * 검사의 스캔이 재대조면 그 대상(이미지)에 보관한 가장 새 L3 실행 기록(tar.xz).
+     * 재대조가 아니거나 보관한 것이 없으면(앱을 띄워 본 적 없는 이미지, 정리된 기록) 빈 값
+     */
+    Optional<byte[]> rescanL3Record(long checkId) {
+        return jdbcClient.sql("""
+                        SELECT r.content
+                        FROM reach_ci_checks c
+                        JOIN reach_scans s ON s.scan_id = c.scan_id AND s.rescan_of_scan_id IS NOT NULL
+                        JOIN reach_scans o ON o.target_id = s.target_id
+                        JOIN reach_l3_records r ON r.scan_id = o.scan_id
+                        WHERE c.check_id = :checkId
+                        ORDER BY r.scan_id DESC
+                        LIMIT 1
+                        """)
+                .param("checkId", checkId)
+                .query((rs, i) -> rs.getBytes("content"))
+                .optional();
+    }
+
     boolean checkExists(long checkId) {
         return jdbcClient.sql("SELECT count(*) FROM reach_ci_checks WHERE check_id = :checkId")
                 .param("checkId", checkId)

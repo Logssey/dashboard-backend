@@ -249,6 +249,91 @@ class SegmentTest(unittest.TestCase):
         self.assertEqual(l3_runner.check_segment(target), 43)
 
 
+class RecordTest(unittest.TestCase):
+    """the record of a run: what the dashboard keeps and a rescan matches again"""
+
+    EXEC = b"\x01\xc0\xc0\x10\x07"
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.segments = os.path.join(self.dir.name, "segments")
+        os.mkdir(self.segments)
+        for name in ("startup", "001", "002"):
+            with open(os.path.join(self.segments, name + ".exec"), "wb") as f:
+                f.write(self.EXEC + name.encode())
+        with open(os.path.join(self.segments, "notes.txt"), "w", encoding="utf-8") as f:
+            f.write("not part of the record")
+        self.run = os.path.join(self.dir.name, "run.json")
+        with open(self.run, "w", encoding="utf-8") as f:
+            json.dump({"scenario": "1", "scope": "java.util.*:org.*", "javaRelease": 21}, f)
+        self.record = os.path.join(self.dir.name, "record.tar.xz")
+
+    def test_pack_and_unpack_give_the_same_run(self):
+        self.assertEqual(l3_runner.pack_record(self.segments, self.run, self.record)[0], 3)
+        with open(self.record, "rb") as f:
+            self.assertEqual(f.read(6), b"\xfd7zXZ\x00")
+        out = os.path.join(self.dir.name, "stored")
+        self.assertEqual(l3_runner.unpack_record(self.record, out), 3)
+        self.assertEqual(sorted(os.listdir(os.path.join(out, "segments"))), ["001.exec", "002.exec", "startup.exec"])
+        with open(os.path.join(out, "segments", "002.exec"), "rb") as f:
+            self.assertEqual(f.read(), self.EXEC + b"002")
+        with open(os.path.join(out, "run.json"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["javaRelease"], 21)
+        # the same input packs to the same bytes (no time or owner of the runner inside)
+        again = os.path.join(self.dir.name, "again.tar.xz")
+        l3_runner.pack_record(self.segments, self.run, again)
+        with open(self.record, "rb") as a, open(again, "rb") as b:
+            self.assertEqual(a.read(), b.read())
+
+    def make(self, members):
+        import io as _io
+        import lzma
+        import tarfile
+        buffer = _io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w") as tar:
+            for name, data, kind in members:
+                info = tarfile.TarInfo(name)
+                if kind == "link":
+                    info.type, info.linkname = tarfile.SYMTYPE, data
+                    tar.addfile(info)
+                else:
+                    info.size = len(data)
+                    tar.addfile(info, _io.BytesIO(data))
+        path = os.path.join(self.dir.name, "made.tar.xz")
+        with open(path, "wb") as f:
+            f.write(lzma.compress(buffer.getvalue()))
+        return path
+
+    def test_only_the_run_and_its_segments_are_taken_out(self):
+        run = json.dumps({"scenario": "1"}).encode()
+        record = self.make([("run.json", run, "file"), ("segments/001.exec", self.EXEC, "file"),
+                            ("segments/../../escaped.exec", self.EXEC, "file"), ("../evil.sh", b"#!/bin/sh", "file"),
+                            ("segments/002.exec", "/etc/passwd", "link"), ("segments/abc.exec", self.EXEC, "file")])
+        out = os.path.join(self.dir.name, "deep", "stored")
+        self.assertEqual(l3_runner.unpack_record(record, out), 1)
+        self.assertEqual(os.listdir(os.path.join(out, "segments")), ["001.exec"])
+        self.assertEqual(sorted(os.listdir(os.path.join(self.dir.name, "deep"))), ["stored"])
+        self.assertFalse(os.path.exists(os.path.join(self.dir.name, "escaped.exec")))
+
+    def test_broken_records_are_refused(self):
+        out = os.path.join(self.dir.name, "x")
+        run = json.dumps({"scenario": "1"}).encode()
+        for members in ([("segments/001.exec", self.EXEC, "file")],                      # no run.json
+                        [("run.json", run, "file")],                                     # no segment
+                        [("run.json", run, "file"), ("segments/001.exec", b"not jacoco", "file")],
+                        [("run.json", b"[1]", "file"), ("segments/001.exec", self.EXEC, "file")]):
+            with self.assertRaises(l3_runner.ScenarioError):
+                l3_runner.unpack_record(self.make(members), out)
+        plain = os.path.join(self.dir.name, "plain")
+        with open(plain, "wb") as f:
+            f.write(b"not xz")
+        self.assertEqual(l3_runner.main(["unpack", "--record", plain, "--out", out]), 1)
+        os.mkdir(os.path.join(self.dir.name, "none"))
+        self.assertEqual(l3_runner.main(["pack", "--segments", os.path.join(self.dir.name, "none"), "--run", self.run,
+                                         "--out", self.record]), 1)
+
+
 def jar_bytes(entries, manifest=None):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
