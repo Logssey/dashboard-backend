@@ -1,0 +1,10 @@
+# Approved usage guides for the help chatbot. One file name per line, in a fixed order.
+# Only files listed here are sent to the model. Never add API docs, runbooks or Notion exports.
+01-start.md
+02-overview.md
+03-secrets.md
+04-secret-response.md
+05-secret-setup.md
+06-infrastructure.md
+07-vulnerabilities.md
+08-faq.md
