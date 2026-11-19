@@ -14,6 +14,7 @@ import java.util.regex.Pattern;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
+import com.logssey.iac.auth.IacCiCaller;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -46,9 +47,9 @@ public class IacRunService {
         return register(request, () -> requireAdmin(loginId));
     }
 
-    /** CI: 요청의 레포가 토큰의 레포와 같아야 한다 */
-    public IacRunCreatedResponse registerByCi(IacRunRequest request, String tokenRepository) {
-        if (!request.repo().equals(tokenRepository)) {
+    /** CI: 요청의 레포가 토큰의 레포와 같고, 실행 종류가 그 워크플로의 것이어야 한다 (iac-report → PR, iac-drift → PUSH) */
+    public IacRunCreatedResponse registerByCi(IacRunRequest request, IacCiCaller caller) {
+        if (!request.repo().equals(caller.repository()) || !(request.isPush() ? "PUSH" : "PR").equals(caller.trigger())) {
             throw new ApiException(ErrorCode.FORBIDDEN);
         }
         return register(request, () -> null);
@@ -92,8 +93,8 @@ public class IacRunService {
         return uploadPlan(runId, gzip, () -> requireAdmin(loginId));
     }
 
-    public IacPlanAcceptedResponse uploadPlanByCi(long runId, byte[] gzip, String tokenRepository) {
-        requireRunOf(runId, tokenRepository);
+    public IacPlanAcceptedResponse uploadPlanByCi(long runId, byte[] gzip, IacCiCaller caller) {
+        requireRunOf(runId, caller);
         return uploadPlan(runId, gzip, () -> null);
     }
 
@@ -126,14 +127,14 @@ public class IacRunService {
         return repository.status(runId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
     }
 
-    public IacRunStatusResponse statusByCi(long runId, String tokenRepository) {
-        requireRunOf(runId, tokenRepository);
+    public IacRunStatusResponse statusByCi(long runId, IacCiCaller caller) {
+        requireRunOf(runId, caller);
         return repository.status(runId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
     }
 
-    /** 다른 레포의 run 은 없는 것처럼 404 */
-    private void requireRunOf(long runId, String tokenRepository) {
-        if (!repository.runRepository(runId).map(tokenRepository::equals).orElse(false)) {
+    /** 다른 레포·다른 종류의 run 은 없는 것처럼 404 */
+    private void requireRunOf(long runId, IacCiCaller caller) {
+        if (!repository.runOwner(runId).map(caller::equals).orElse(false)) {
             throw new ApiException(ErrorCode.NOT_FOUND);
         }
     }
