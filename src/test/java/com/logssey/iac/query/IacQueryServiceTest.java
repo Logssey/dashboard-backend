@@ -87,6 +87,16 @@ class IacQueryServiceTest {
                 .containsEntry("MEDIUM", 1L).containsEntry("LOW", 0L);
         assertThat(summary.lastFullCheckAt()).isNotNull();
         assertThat(summary.graphStale()).isTrue();
+        assertThat(summary.metrics().gateViolations()).as("main 점검 기록이 없으면 —").isNull();
+
+        // main 매일 점검(PUSH) 이 돌면 그 점검의 열린 plan 전 검사 발견 건 수 (PR 발견 건은 세지 않음)
+        long main = jdbc.queryForObject("""
+                INSERT INTO iac_runs (repo_id, head_sha, trigger_type, status, verdict)
+                VALUES (1, repeat('b', 40), 'PUSH', 'DONE', 'PASS') RETURNING run_id
+                """, Long.class);
+        assertThat(service.summary("admin").metrics().gateViolations()).as("위반 없는 main 점검은 0").isZero();
+        finding("fp-main", "HIGH", main, null);
+        assertThat(service.summary("admin").metrics().gateViolations()).isEqualTo(1L);
     }
 
     @Test

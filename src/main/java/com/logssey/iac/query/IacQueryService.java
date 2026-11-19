@@ -31,8 +31,17 @@ public class IacQueryService {
         boolean stale = graphAsOf == null || graphAsOf.isBefore(OffsetDateTime.now().minus(GRAPH_STALE_AFTER));
         return new IacSummaryResponse(
                 new IacSummaryResponse.Metrics(repository.openPaths(1), repository.openPaths(null),
-                        repository.openDrifts(), null, null),
+                        repository.openDrifts(), null, mainGateViolations()),
                 repository.severityCounts(), repository.lastSucceeded("ENRICH_GRAPH").orElse(null), graphAsOf, stale);
+    }
+
+    /** main 매일 점검(iac-drift)의 열린 plan 전 검사 발견 건 수. 레포가 하나가 아니거나 main 점검 기록이 없으면 null(—) */
+    private Long mainGateViolations() {
+        var repos = repository.enabledRepoIds(null);
+        if (repos.size() != 1 || repository.latestMainRunAt(repos.getFirst()).isEmpty()) {
+            return null;
+        }
+        return repository.mainGateFindings(repos.getFirst()).values().stream().mapToLong(Long::longValue).sum();
     }
 
     public IacPathListResponse paths(String status, Integer tier, Long cursor, int limit, String loginId) {
