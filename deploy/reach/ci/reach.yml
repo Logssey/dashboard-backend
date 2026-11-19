@@ -25,7 +25,8 @@
 # next to the scenario's services and sends the scenario's requests (data, no script) (deploy/reach/ci/l3-run.sh).
 # The result gets, per CVE, how far that run got towards the vulnerable code and in which requests. It is evidence
 # next to the L2 verdict and never changes it. The containers get no runner secret; a failed L3 run never fails
-# the scan. The manual job and rescans do not run the app.
+# the scan. The manual job and rescans do not run the app; a rescan matches the execution record the dashboard kept
+# for that image again (reach-scan.sh), so a new CVE gets L3 evidence without a new run.
 # No job changes CI/CD.
 # The scan itself is deploy/reach/ci/reach-scan.sh in dashboard-backend at REACH_REF.
 name: Reach

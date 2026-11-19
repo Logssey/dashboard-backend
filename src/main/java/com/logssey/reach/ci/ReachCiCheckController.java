@@ -78,6 +78,18 @@ public class ReachCiCheckController {
         return ResponseEntity.ok().contentType(MediaType.parseMediaType("application/gzip")).body(gzip);
     }
 
+    /**
+     * 재대조 입력 L3 실행 기록 (API-12 보조, PRD FR-14). 검사가 재대조면 그 이미지에 보관한 실행 기록을 tar.xz 그대로 준다.
+     * 러너는 앱을 다시 띄우지 않고 이 기록을 오늘의 판정 데이터와 다시 대조한다. 없으면 404이고 러너는 L3 없이 올린다
+     */
+    @GetMapping("/{checkId}/l3-record")
+    public ResponseEntity<byte[]> l3Record(Principal principal, @PathVariable long checkId) {
+        var ci = ReachCiCaller.from(principal);
+        byte[] record = ci.isPresent() ? service.l3RecordForCi(ci.get(), checkId)
+                : service.l3Record(principal == null ? null : principal.getName(), checkId);
+        return ResponseEntity.ok().contentType(MediaType.parseMediaType("application/x-xz")).body(record);
+    }
+
     /** API-12 결과 조회 */
     @GetMapping("/{checkId}")
     public ReachCiCheckResponse check(Principal principal, @PathVariable long checkId) {

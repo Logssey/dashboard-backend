@@ -11,7 +11,8 @@ import tools.jackson.databind.JsonNode;
  * verdicts의 한 항목은 Finding 하나이고 모양은 API 명세 3-3 Finding, 3-4 Verdict, 3-5 Evidence를 따른다(API-05 상세와 같은 이름).
  * sbom은 스캔마다 보관한다(V53 reach_sboms, 재대조 입력). matches, reachResult는 받기만 하고 저장하지 않는다.
  * failure가 있으면 러너에서 실패한 것이라 stages, tools만 보고 스캔을 FAILED로 끝낸다.
- * l3은 L3 능동 관측 결과(러너 verdict/l3.py 출력 + run, 또는 {"error": …})다. 없을 수 있고, 잘못돼도 스캔은 실패하지 않는다
+ * l3은 L3 능동 관측 결과(러너 verdict/l3.py 출력 + run, 또는 {"error": …})다. 없을 수 있고, 잘못돼도 스캔은 실패하지 않는다.
+ * l3Record는 그 관측의 실행 기록({format: "TAR_XZ", content: base64})이다. 재대조가 다시 대조할 수 있게 보관한다(V57)
  */
 public record ReachResultBundle(
         JsonNode sbom,
@@ -22,7 +23,8 @@ public record ReachResultBundle(
         JsonNode analysis,
         List<JsonNode> stages,
         Failure failure,
-        JsonNode l3) {
+        JsonNode l3,
+        JsonNode l3Record) {
 
     /**
      * Finding 하나. deployment는 새 Finding을 만들 때만 쓰고 없으면 UNKNOWN이다. 이미지 대상은 업로드 끝에서 L1 조회로 다시 계산한다.

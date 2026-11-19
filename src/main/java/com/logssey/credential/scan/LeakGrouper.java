@@ -9,6 +9,7 @@ import java.util.List;
  * - AWS: Access Key ID와 Secret Access Key를 나온 순서대로 짝짓는다. 짝이 있으면 구성요소가 완전한 키(CONFIRMED),
  *   ID만 있거나 Secret만 있으면 불완전한 후보(CANDIDATE)
  * - Notion 토큰: 하나씩 비밀값이 보인 키 (CONFIRMED)
+ * - 사용자 등록 형식(CUSTOM): 하나씩. 비밀값이면 지문만, 식별자면 식별자(external_id)만 저장한다
  * 등급은 매기지 않는다. 문자열만 찾은 단계라 미평가로 둔다 (Secret 심각도 정책 R99)
  */
 public final class LeakGrouper {
@@ -38,10 +39,20 @@ public final class LeakGrouper {
                     "Notion 토큰 " + token.masked(), token.masked(),
                     fingerprinter.fingerprint(token.value()), location));
         }
+        for (SecretMatch match : matches) {
+            if (match.pattern() instanceof CustomKeyRule rule) {
+                String displayName = rule.name() + " " + match.masked();
+                result.add(rule.isSecret()
+                        ? new LeakedCredential(CustomKeyRule.ISSUER, CustomKeyRule.CREDENTIAL_TYPE, null,
+                                displayName, match.masked(), fingerprinter.fingerprint(match.value()), location)
+                        : new LeakedCredential(CustomKeyRule.ISSUER, CustomKeyRule.CREDENTIAL_TYPE, match.value(),
+                                displayName, match.masked(), null, location));
+            }
+        }
         return result;
     }
 
-    private static List<SecretMatch> byPattern(List<SecretMatch> matches, SecretPattern pattern) {
+    private static List<SecretMatch> byPattern(List<SecretMatch> matches, KeyRule pattern) {
         return matches.stream().filter(match -> match.pattern() == pattern).toList();
     }
 }

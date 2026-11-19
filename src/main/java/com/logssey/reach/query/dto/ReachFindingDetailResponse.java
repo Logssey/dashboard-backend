@@ -45,9 +45,12 @@ public record ReachFindingDetailResponse(
      */
     public record L3(String reached, boolean regionsChecked, boolean startupOnly,
                      JsonNode during, JsonNode functions, JsonNode regions, JsonNode paths, String note, L3Run run) {}
-    /** 그 관측의 근거 항목 (FR-14 수용 기준 3). configKeys는 이름과 켜짐 여부뿐이고 값은 없다 */
+    /**
+     * 그 관측의 근거 항목 (FR-14 수용 기준 3). configKeys는 이름과 켜짐 여부뿐이고 값은 없다.
+     * rematch가 true면 앱을 다시 띄운 것이 아니라 보관한 실행 기록을 scanId 스캔에서 다시 대조한 결과다(observedAt은 처음 관측한 때)
+     */
     public record L3Run(long scanId, String scenario, String observationMethod, OffsetDateTime observedAt,
-                        JsonNode build, JsonNode configKeys, JsonNode invocations) {}
+                        JsonNode build, JsonNode configKeys, JsonNode invocations, boolean rematch) {}
 
     /** 이 검토를 이어받은 이전 Finding. reviewedAt은 그 Finding의 검토 시각 */
     public record CarriedFrom(long findingId, long scanId, OffsetDateTime reviewedAt) {}

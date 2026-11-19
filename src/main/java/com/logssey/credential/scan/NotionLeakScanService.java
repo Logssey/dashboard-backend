@@ -38,16 +38,19 @@ public class NotionLeakScanService {
     private final String baseUrl;
     private final String fingerprintSecret;
     private final LeakCredentialRepository leakRepository;
+    private final CustomKeyPatternRepository customPatterns;
     private final Clock clock = Clock.systemUTC();
 
     public NotionLeakScanService(@Value("${logssey.notion.collector.token:}") String token,
                                  @Value("${logssey.notion.collector.base-url:" + NotionPageReader.REAL_BASE_URL + "}") String baseUrl,
                                  @Value("${logssey.credential.fingerprint-secret:}") String fingerprintSecret,
-                                 LeakCredentialRepository leakRepository) {
+                                 LeakCredentialRepository leakRepository,
+                                 CustomKeyPatternRepository customPatterns) {
         this.token = token;
         this.baseUrl = baseUrl;
         this.fingerprintSecret = fingerprintSecret;
         this.leakRepository = leakRepository;
+        this.customPatterns = customPatterns;
     }
 
     public boolean isConfigured() {
@@ -66,6 +69,8 @@ public class NotionLeakScanService {
 
         NotionPageReader reader = new NotionPageReader(baseUrl, token, Sleeper.real());
         Fingerprinter fingerprinter = new Fingerprinter(fingerprintSecret);
+        // 스캔 시작 시점의 사용자 등록 규칙을 한 번 읽는다 (스캔 도중 등록·삭제해도 이번 스캔은 같은 규칙으로 끝낸다)
+        List<CustomKeyRule> customRules = customPatterns.findAllRules();
         try {
             List<NotionPage> pages = reader.listSharedPages();
             List<LeakedCredential> leaks = new ArrayList<>();
@@ -84,7 +89,7 @@ public class NotionLeakScanService {
                     throw e;
                 }
                 scannedPages++;
-                leaks.addAll(LeakGrouper.group(SecretScanner.scan(markdown), location(page), fingerprinter));
+                leaks.addAll(LeakGrouper.group(SecretScanner.scan(markdown, customRules), location(page), fingerprinter));
             }
 
             int newKeys = 0;

@@ -152,6 +152,48 @@ public class ReachResultRepository {
                 .update();
     }
 
+    /** L3 실행 기록 묶음(tar.xz) 그대로 (V57 reach_l3_records) */
+    void insertL3Record(long scanId, byte[] content, String sha256) {
+        jdbcClient.sql("""
+                        INSERT INTO reach_l3_records (scan_id, content, content_sha256, byte_size)
+                        VALUES (:scanId, :content, :sha256, :size)
+                        """)
+                .param("scanId", scanId)
+                .param("content", content)
+                .param("sha256", sha256)
+                .param("size", content.length)
+                .update();
+    }
+
+    /**
+     * 이 앱의 실행 기록을 정리한다. 이미지(대상)마다 가장 새 기록 하나만 보고,
+     * 그중 최근 keep개와 지금 실행 중인 이미지(L1 reach_workloads에 있는 digest)의 것만 남긴다
+     */
+    void pruneL3Records(String app, int keep) {
+        jdbcClient.sql("""
+                        WITH latest AS (
+                            SELECT DISTINCT ON (s.target_id) r.scan_id, t.image_digest
+                            FROM reach_l3_records r
+                            JOIN reach_scans s ON s.scan_id = r.scan_id
+                            JOIN reach_targets t ON t.target_id = s.target_id
+                            WHERE t.app = :app
+                            ORDER BY s.target_id, r.scan_id DESC
+                        ), kept AS (
+                            SELECT x.scan_id
+                            FROM (SELECT scan_id, image_digest, row_number() OVER (ORDER BY scan_id DESC) AS n FROM latest) x
+                            WHERE x.n <= :keep
+                               OR EXISTS (SELECT 1 FROM reach_workloads w WHERE w.image_digest = x.image_digest)
+                        )
+                        DELETE FROM reach_l3_records r
+                        USING reach_scans s, reach_targets t
+                        WHERE s.scan_id = r.scan_id AND t.target_id = s.target_id AND t.app = :app
+                          AND r.scan_id NOT IN (SELECT scan_id FROM kept)
+                        """)
+                .param("app", app)
+                .param("keep", keep)
+                .update();
+    }
+
     /** Finding의 지금 L3 결과. 같은 이미지의 새 실행이 덮어쓴다 */
     void upsertL3Result(long findingId, long scanId, ReachL3Input.Result result) {
         jdbcClient.sql("""

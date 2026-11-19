@@ -453,6 +453,38 @@ class ReachCiCheckServiceTest {
         assertThat(service.sbom("admin", rescan.id())).isEqualTo(gzip);
     }
 
+    @Test
+    void rescanL3RecordIsTheNewestStoredRecordOfTheSameImage() {
+        long target = imageTarget();
+        long first = scan(target, "SUCCEEDED");
+        long second = scan(target, "SUCCEEDED");
+        var plain = service.create("admin", "p", image("MANUAL", "logssey/reused-api", DIGEST)).check();
+        var rescan = service.create("admin", "r", request("SCHEDULE", null, second, null)).check();
+
+        // 그 이미지를 띄워 본 적이 없으면(또는 기록이 정리됐으면) 404, 재대조가 아닌 검사도 404, 없는 검사도 404
+        assertError(() -> service.l3Record("admin", rescan.id()), ErrorCode.NOT_FOUND);
+        assertError(() -> service.l3Record("admin", plain.id()), ErrorCode.NOT_FOUND);
+        assertError(() -> service.l3Record("admin", 999), ErrorCode.NOT_FOUND);
+        assertError(() -> service.l3Record(null, rescan.id()), ErrorCode.UNAUTHENTICATED);
+
+        // 재대조하는 스캔이 아니라 같은 이미지의 다른 스캔에 보관돼 있어도 준다. 여러 개면 가장 새것
+        byte[] old = {(byte) 0xFD, '7', 'z', 'X', 'Z', 0, 1};
+        byte[] newest = {(byte) 0xFD, '7', 'z', 'X', 'Z', 0, 2};
+        for (var entry : Map.of(first, old, second, newest).entrySet()) {
+            jdbc.update("INSERT INTO reach_l3_runs (scan_id, run_status, scenario, observation_method, observed_at) "
+                    + "VALUES (?, 'SUCCEEDED', 's', 'COVERAGE', now())", entry.getKey());
+            jdbc.update("INSERT INTO reach_l3_records (scan_id, content, content_sha256, byte_size) VALUES (?, ?, ?, 7)",
+                    entry.getKey(), entry.getValue(), "0".repeat(64));
+        }
+        assertThat(service.l3Record("admin", rescan.id())).isEqualTo(newest);
+        // 다른 이미지의 기록은 주지 않는다
+        long other = jdbc.queryForObject("INSERT INTO reach_targets (target_type, app, image_repository, image_digest, display_name) "
+                + "VALUES ('IMAGE', 'API', 'logssey/reused-api', 'sha256:other', 'api') RETURNING target_id", Long.class);
+        long otherScan = scan(other, "SUCCEEDED");
+        var otherRescan = service.create("admin", "o", request("SCHEDULE", null, otherScan, null)).check();
+        assertError(() -> service.l3Record("admin", otherRescan.id()), ErrorCode.NOT_FOUND);
+    }
+
     private static long imageCheckScan(long checkId) {
         return jdbc.queryForObject("SELECT scan_id FROM reach_ci_checks WHERE check_id = ?", Long.class, checkId);
     }

@@ -221,6 +221,10 @@ DELETE FROM reach_l3_results
 WHERE finding_id IN (SELECT f.finding_id FROM reach_findings f
                      JOIN reach_targets t ON t.target_id = f.target_id
                      WHERE t.image_digest = 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a');
+DELETE FROM reach_l3_records
+WHERE scan_id IN (SELECT s.scan_id FROM reach_scans s
+                  JOIN reach_targets t ON t.target_id = s.target_id
+                  WHERE t.image_digest = 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a');
 DELETE FROM reach_l3_runs
 WHERE scan_id IN (SELECT s.scan_id FROM reach_scans s
                   JOIN reach_targets t ON t.target_id = s.target_id
