@@ -156,6 +156,17 @@ class IacCiOidcIntegrationTest {
     }
 
     @Test
+    void aTitleLongerThan256CharactersIsRejected() throws Exception {
+        String body = """
+                {"repo":"%s","prNumber":58,"headSha":"%s","prTitle":"%s","gate":{"status":"PASSED","findings":[]}}
+                """.formatted(REPO, "9".repeat(40), "x".repeat(257));
+        mvc.perform(post("/api/v1/iac/runs").header(HttpHeaders.AUTHORIZATION, bearer(sign(githubKey, claims())))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM iac_runs", Long.class)).isZero();
+    }
+
+    @Test
     void tokensFromAnythingButTheReportWorkflowAreUnauthenticated() throws Exception {
         expectUnauthenticated(bearer(sign(otherKey, claims())));                                 // 서명 키가 다름
         expectUnauthenticated(token(c -> c.audience("logssey-reach")));                           // 다른 솔루션의 aud

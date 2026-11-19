@@ -88,6 +88,7 @@ class IacQueryOverviewTest {
     void listsTheLatestRunOfEachPullRequest() {
         long old = run(58, "PR", "SUPERSEDED", null, null);
         long latest = run(58, "PR", "DONE", "BLOCK", "CRITICAL");
+        jdbc.update("UPDATE iac_runs SET pr_title = '중복된 정책 정리' WHERE run_id = ?", latest);
         run(60, "PR", "DONE", "INFO", null);
         long imds = run(62, "PR", "DONE", "WARN", "MEDIUM");
         jdbc.update("INSERT INTO iac_findings (rule_id, source, enforcement, severity, environment, resource_address, params, "
@@ -95,7 +96,7 @@ class IacQueryOverviewTest {
                 + "'MEDIUM', 'PROD', 'aws_instance.b', '{\"action\":\"CREATE\"}', 'fp-imds', ?, now(), now())", imds);
         jdbc.update("INSERT INTO iac_jobs (kind, trigger_type, run_id, status, finished_at, stats) VALUES ('ANALYZE_RUN', 'PR', ?, "
                 + "'SUCCEEDED', now(), '{\"paths\":{\"added\":6,\"removed\":0,\"removedRoutes\":0},"
-                + "\"state\":{\"ruleId\":\"state.reader_increase\"}}')", latest);
+                + "\"state\":{\"ruleId\":\"state.reader_increase\"},\"resources\":{\"add\":0,\"change\":0,\"delete\":1}}')", latest);
         jdbc.update("INSERT INTO iac_run_path_changes (run_id, change, rule_id, path_fingerprint, tier, severity, hops) "
                 + "VALUES (?, 'ADDED', 'path.tier1.added', 'f', 1, 'CRITICAL', '[]')", latest);
 
@@ -108,6 +109,9 @@ class IacQueryOverviewTest {
         assertThat(pr58.pathsAdded()).isEqualTo(6);
         assertThat(pr58.stateReaderIncrease()).isTrue();
         assertThat(pr58.reason()).isEqualTo("path.tier1.added");
+        assertThat(pr58.title()).isEqualTo("중복된 정책 정리");
+        assertThat(service.pullRequest(58, null, "admin").title()).isEqualTo("중복된 정책 정리");
+        assertThat(prs.stream().filter(p -> p.number() == 60).findFirst().orElseThrow().title()).isNull();
         assertThat(prs).noneMatch(p -> p.number() == 0);
     }
 
