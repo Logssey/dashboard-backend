@@ -58,6 +58,8 @@ public class ReachResultService {
     private static final List<String> EVIDENCE_ENUMS = List.of("matchedCondition", "pathTarget", "observationMethod");
     /** MANUAL 판정의 summary 길이. API-06과 같이 메모 앞 500자 (V34 VARCHAR(500)) */
     private static final int SUMMARY_MAX = 500;
+    /** 앱마다 남기는 L3 실행 기록 수(이미지 기준). 실행 중인 이미지의 기록은 이 수와 상관없이 남긴다 */
+    static final int L3_RECORDS_KEPT = 5;
 
     private final ReachResultRepository repository;
     private final ReachL1Service l1;
@@ -109,7 +111,7 @@ public class ReachResultService {
         var rows = failure == null ? rows(bundle) : List.<Row>of();
         var sbom = failure == null ? sbom(bundle.sbom()) : null;
         // L3는 판정 옆의 근거다. 잘못된 l3는 400이 아니라 FAILED 실행으로 남는다 (PRD FR-14)
-        var l3 = failure == null ? ReachL3Input.parse(bundle.l3(), mapper) : null;
+        var l3 = failure == null ? ReachL3Input.parse(bundle.l3(), bundle.l3Record(), mapper) : null;
         try {
             return tx.execute(status -> save(checkId, scanRecord, failure, rows, sbom, l3));
         } catch (ApiException e) {
@@ -144,6 +146,11 @@ public class ReachResultService {
         boolean observed = l3 != null && !pr;
         if (observed) repository.insertL3Run(scanId, l3.run());
         boolean l3Results = observed && "SUCCEEDED".equals(l3.run().status());
+        // 재대조가 앱을 다시 띄우지 않고 다시 대조할 실행 기록 (V57). 앱마다 최근 이미지와 실행 중인 이미지의 것만 남긴다
+        if (l3Results && l3.record().isPresent()) {
+            repository.insertL3Record(scanId, l3.record().get().content(), sha256(l3.record().get().content()));
+            repository.pruneL3Records(check.app(), L3_RECORDS_KEPT);
+        }
         for (var row : rows) {
             var shared = pr ? repository.baselineFinding(check.targetId(), row.purl(), row.vulnerabilityId())
                     : Optional.<Long>empty();

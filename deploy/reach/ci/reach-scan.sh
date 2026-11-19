@@ -27,6 +27,9 @@
 #   run.json), with JAR and JACOCO_HOME (jacococli.jar): after L2 the segments become JaCoCo reports of the classes
 #   the L3 data and the L2 call paths name, verdict/l3.py says how far the run got per CVE and in which requests,
 #   and that goes into the bundle as its l3 object. It is evidence next to the L2 verdict and never changes it.
+#   The segments of a fresh run are also sent as the bundle's l3Record: the dashboard keeps them, and a rescan
+#   (MANUAL with RESCAN_OF) gets them back (GET …/l3-record) and matches them again with today's data instead of
+#   running the app. Without a kept record a rescan has no L3.
 #   L3_ERROR (a message) when the L3 run failed. A failed L3 step is logged and sent as an L3 error; it never
 #   fails the scan.
 # Optional: APP (app code; when empty the dashboard picks it from its logssey.reach.apps), POLICY (REPORT_ONLY | GATE, default REPORT_ONLY), SOURCE (service repo checkout,
@@ -266,7 +269,28 @@ l3_evidence() {
   done
   python3 "$VERDICT/l3.py" --spec "$DATA/vuln-functions.json" --segments "$OUT/l3-xml" --sbom "$OUT/sbom.cdx.json" \
     --scope "$scope" "${reach_args[@]}" --out "$OUT/l3-match.json" || return 1
-  jq -s '.[0] + {run: .[1]}' "$OUT/l3-match.json" "$L3_RUN" > "$OUT/l3-result.json" || return 1
+  # rematch: not a new observation; the kept record of an earlier run matched again in this scan
+  jq -s --argjson rematch "${L3_REMATCH:-false}" '.[0] + {run: (.[1] + (if $rematch then {rematch: true} else {} end))}' \
+    "$OUT/l3-match.json" "$L3_RUN" > "$OUT/l3-result.json" || return 1
+}
+
+# a rescan: the execution record the dashboard kept for this image (tar.xz). Fails (1) when there is none (404)
+stored_l3() {
+  [ "$MODE" = MANUAL ] && [ -n "${RESCAN_OF:-}" ] && [ -n "$JAR" ] || return 1
+  set_auth
+  local code
+  code=$(curl -sS "${AUTH[@]}" -o "$OUT/stored-l3-record.tar.xz" -w '%{http_code}' \
+    "$REACH_URL/api/v1/reach/ci/checks/$CHECK_ID/l3-record") || return 1
+  if [ "$code" != 200 ]; then
+    log "no kept L3 record for this image (HTTP $code); the rescan has no L3"
+    return 1
+  fi
+  rm -rf "$OUT/l3-stored"
+  python3 "$VERDICT/l3_runner.py" unpack --record "$OUT/stored-l3-record.tar.xz" --out "$OUT/l3-stored" || return 1
+  log "rescan: matching the kept L3 record of this image again (the app is not run)"
+  L3_SEGMENTS="$OUT/l3-stored/segments"
+  L3_RUN="$OUT/l3-stored/run.json"
+  L3_REMATCH=true
 }
 
 l2() {
@@ -301,10 +325,21 @@ if [ "$ALREADY" = QUEUED ]; then
   fi
   L3_ARGS=()
   rm -f "$OUT/l3-match.json" "$OUT/l3-result.json"
+  if [ -z "${L3_SEGMENTS:-}" ] && [ -z "${L3_ERROR:-}" ]; then
+    stored_l3 || true
+  fi
   if [ -n "${L3_SEGMENTS:-}" ]; then
     if l3_evidence; then
       L3_ARGS=(--l3 "$OUT/l3-result.json")
       log "L3: $(jq -c .counts "$OUT/l3-result.json")"
+      # a fresh run: the dashboard keeps its record for rescans. A failed pack only loses that
+      if [ "${L3_REMATCH:-false}" != true ]; then
+        if python3 "$VERDICT/l3_runner.py" pack --segments "$L3_SEGMENTS" --run "$L3_RUN" --out "$OUT/l3-record.tar.xz"; then
+          L3_ARGS+=(--l3-record "$OUT/l3-record.tar.xz")
+        else
+          log "the L3 record was not packed; rescans of this image will have no L3"
+        fi
+      fi
     else
       log "L3 evidence failed; the scan goes on without it"
       rm -f "$OUT/l3-result.json"

@@ -8,6 +8,8 @@
         [--dump-to segments/ --jacoco-cli jacococli.jar --agent 127.0.0.1:PORT]
     python3 l3_runner.py classes --jar app.jar --out classes/ [--java-release 21] \
         [--spec vuln-functions.json] [--reach reach-result.json]
+    python3 l3_runner.py pack --segments segments/ --run run.json --out l3-record.tar.xz
+    python3 l3_runner.py unpack --record l3-record.tar.xz --out stored/      # stored/segments/, stored/run.json
 
 The scenario lives in the service repo (.reach/l3-scenario.json) and is DATA: requests to send to the app,
 never commands for the runner. Services (database, cache) and the app get only the environment written in it
@@ -45,17 +47,23 @@ app does in the background after a request can land in the next segment. The app
 must be a regular file of at most 64 MB that starts like JaCoCo execution data.
 
 `classes` writes the class files for the reports. `scope` prints the agent includes of a jar.
+
+`pack` puts the segments and run.json of a run into one tar.xz (the record the dashboard keeps), `unpack`
+takes one apart again. A rescan matches a kept record with today's data instead of running the app. Only
+run.json and segments/<id>.exec are packed or taken out, and every segment is checked like a fresh one.
 No third-party dependencies (Python 3.8+).
 """
 import argparse
 import io
 import json
+import lzma
 import os
 import re
 import secrets
 import stat
 import subprocess
 import sys
+import tarfile
 import time
 import urllib.error
 import urllib.parse
@@ -80,6 +88,10 @@ MAX_RESPONSE = 1 << 20          # bytes of a response read for save
 MAX_EXEC = 64 << 20
 EXEC_MAGIC = b"\x01\xc0\xc0"    # JaCoCo execution data: header block, magic number
 STARTUP = "startup"
+SEGMENT_RE = re.compile(r"segments/(startup|\d{3})\.exec")
+MAX_RECORD = 16 << 20           # the packed record (the dashboard's limit)
+MAX_SEGMENTS = MAX_STEPS + 1
+MAX_RUN_JSON = 1 << 20
 AGENT_PORT = 36300              # the agent's tcpserver in the app container (l3-run.sh)
 OFF = ("", "0", "false", "off", "no")
 
@@ -397,6 +409,68 @@ def dumper(cli, address, directory, java="java"):
     return cut
 
 
+# ---------------------------------------------------------------- the record of a run (kept for rescans)
+
+def pack_record(segments_dir, run_json, out):
+    """segments/<id>.exec and run.json of one run -> a tar.xz. Returns (segments, bytes)."""
+    names = sorted(n for n in os.listdir(segments_dir) if SEGMENT_RE.fullmatch("segments/" + n))
+    if not names:
+        raise ScenarioError("no segments to pack")
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        for name, path in [("run.json", run_json)] + [("segments/" + n, os.path.join(segments_dir, n)) for n in names]:
+            if name != "run.json":
+                check_segment(path)
+            info = tarfile.TarInfo(name)
+            info.size = os.path.getsize(path)
+            info.mode = 0o644
+            with open(path, "rb") as f:        # no owner, time or link of the runner goes into the record
+                tar.addfile(info, f)
+    data = lzma.compress(buffer.getvalue(), preset=6)
+    if len(data) > MAX_RECORD:
+        raise ScenarioError(f"the record has {len(data)} bytes")
+    with open(out, "wb") as f:
+        f.write(data)
+    return len(names), len(data)
+
+
+def unpack_record(record, out_dir):
+    """Takes run.json and the segments out of a kept record. Returns the number of segments."""
+    with open(record, "rb") as f:
+        packed = f.read(MAX_RECORD + 1)
+    if len(packed) > MAX_RECORD:
+        raise ScenarioError("the record is too large")
+    try:
+        # bounded: a small file must not unpack into gigabytes
+        raw = lzma.LZMADecompressor().decompress(packed, max_length=MAX_EXEC * 4)
+        tar = tarfile.open(fileobj=io.BytesIO(raw), mode="r:")
+    except (lzma.LZMAError, tarfile.TarError, EOFError):
+        raise ScenarioError("the record is not a tar.xz of a run")
+    os.makedirs(os.path.join(out_dir, "segments"), exist_ok=True)
+    segments, has_run = 0, False
+    with tar:
+        for member in tar:
+            if not member.isfile():
+                continue                       # links and folders are never taken out
+            if member.name == "run.json" and member.size <= MAX_RUN_JSON:
+                target, has_run = os.path.join(out_dir, "run.json"), True
+            elif SEGMENT_RE.fullmatch(member.name) and member.size <= MAX_EXEC and segments < MAX_SEGMENTS:
+                target = os.path.join(out_dir, "segments", member.name.split("/", 1)[1])
+                segments += 1
+            else:
+                continue
+            with open(target, "wb") as f:
+                f.write(tar.extractfile(member).read())
+            if target.endswith(".exec"):
+                check_segment(target)
+    if not has_run or not segments:
+        raise ScenarioError("the record has no run.json or no segment")
+    with open(os.path.join(out_dir, "run.json"), encoding="utf-8") as f:
+        if not isinstance(json.load(f), dict):
+            raise ScenarioError("run.json of the record is not an object")
+    return segments
+
+
 # ---------------------------------------------------------------- class files and scope
 
 def _classpath(fat, names):
@@ -533,6 +607,13 @@ def main(argv=None):
     r.add_argument("--dump-to", help="folder for the execution data, one file per segment")
     r.add_argument("--jacoco-cli", help="jacococli.jar (with --dump-to)")
     r.add_argument("--agent", help="host:port of the agent's tcpserver (with --dump-to)")
+    k = sub.add_parser("pack")
+    k.add_argument("--segments", required=True)
+    k.add_argument("--run", required=True)
+    k.add_argument("--out", required=True)
+    u = sub.add_parser("unpack")
+    u.add_argument("--record", required=True)
+    u.add_argument("--out", required=True)
     a = ap.parse_args(argv)
 
     try:
@@ -545,6 +626,13 @@ def main(argv=None):
             return 0
         if a.cmd == "scope":
             print(scope_of(write_classes(a.jar, None)[0]))
+            return 0
+        if a.cmd == "pack":
+            count, size = pack_record(a.segments, a.run, a.out)
+            print(f"l3_runner: record of {count} segments, {size} bytes", file=sys.stderr)
+            return 0
+        if a.cmd == "unpack":
+            print(f"l3_runner: {unpack_record(a.record, a.out)} segments from the kept record", file=sys.stderr)
             return 0
         sc = load(a.scenario)
         problems = validate(sc)

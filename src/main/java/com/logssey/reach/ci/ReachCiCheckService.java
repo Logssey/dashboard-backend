@@ -257,6 +257,21 @@ public class ReachCiCheckService {
         return rescanSbom(checkId);
     }
 
+    /** 재대조 입력 L3 실행 기록 (대시보드 세션). 검사가 없으면, 재대조가 아니거나 보관한 기록이 없으면 404 */
+    @Transactional(readOnly = true)
+    public byte[] l3Record(String loginId, long checkId) {
+        requireAdmin(loginId);
+        if (!repository.checkExists(checkId)) throw new ApiException(ErrorCode.NOT_FOUND);
+        return repository.rescanL3Record(checkId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+    }
+
+    /** 재대조 입력 L3 실행 기록 (CI 토큰). 결과를 올릴 수 있는 토큰만 (API-13과 같다) */
+    @Transactional(readOnly = true)
+    public byte[] l3RecordForCi(ReachCiCaller caller, long checkId) {
+        access.requireOwner(caller, repository.checkOwner(checkId));
+        return repository.rescanL3Record(checkId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+    }
+
     private byte[] rescanSbom(long checkId) {
         return repository.rescanSbom(checkId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
     }

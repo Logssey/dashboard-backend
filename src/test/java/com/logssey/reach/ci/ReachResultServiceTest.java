@@ -451,6 +451,55 @@ class ReachResultServiceTest {
     }
 
     @Test
+    void theExecutionRecordOfAFreshRunIsKeptForRescans() {
+        var a = item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "CALLGRAPH", null, List.of(map("kind", "NOTE", "summary", "x")));
+        byte[] record = xz("segments");
+        long scan = uploadWithRecord(check("a"), l3(l3Cve("CVE-2026-1", "a", "REGION", true, false)), recordOf(record), a);
+        assertThat(jdbc.queryForMap("SELECT format, byte_size, content_sha256, content FROM reach_l3_records WHERE scan_id = ?", scan))
+                .containsEntry("format", "TAR_XZ").containsEntry("byte_size", record.length)
+                .containsEntry("content", record)
+                .containsEntry("content_sha256", java.util.HexFormat.of().formatHex(sha256(record)));
+
+        // 보관한 기록으로 다시 대조한 결과(run.rematch)는 결과만 바꾸고 기록은 다시 받지 않는다
+        var rematch = l3(l3Cve("CVE-2026-1", "a", "FUNCTION", true, false));
+        ((Map<String, Object>) rematch.get("run")).put("rematch", true);
+        long rescan = uploadWithRecord(check("a"), rematch, recordOf(xz("other")), a);
+        assertThat(l3Results()).containsExactly("a:FUNCTION:" + rescan);
+        assertThat(jdbc.queryForObject("SELECT (detail->>'rematch')::boolean FROM reach_l3_runs WHERE scan_id = ?", Boolean.class, rescan)).isTrue();
+        assertThat(recordScans()).containsExactly(scan);
+
+        // 틀린 기록은 버리고 결과는 그대로 저장한다. 실패한 L3·PR 검사에는 기록이 없다
+        var plain = l3(l3Cve("CVE-2026-1", "a", "REGION", true, false));
+        for (Object broken : Arrays.asList(map("format", "ZIP", "content", java.util.Base64.getEncoder().encodeToString(record)),
+                map("format", "TAR_XZ", "content", "not base64 !!"),
+                map("format", "TAR_XZ", "content", java.util.Base64.getEncoder().encodeToString("plain text".getBytes())), "text")) {
+            long bad = uploadWithRecord(check("b"), plain, broken, a);
+            assertThat(jdbc.queryForObject("SELECT run_status FROM reach_l3_runs WHERE scan_id = ?", String.class, bad)).isEqualTo("SUCCEEDED");
+        }
+        uploadWithRecord(check("b"), map("error", "L3 run failed"), recordOf(record), a);
+        uploadWithRecord(prCheck("c"), plain, recordOf(record), a);
+        assertThat(recordScans()).containsExactly(scan);
+    }
+
+    @Test
+    void recordsAreKeptForRecentImagesAndTheRunningOne() {
+        var a = item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "CALLGRAPH", null, List.of(map("kind", "NOTE", "summary", "x")));
+        var result = l3(l3Cve("CVE-2026-1", "a", "NONE", true, false));
+        observe("1");   // 이미지 1이 운영에서 실행 중
+        var scans = new java.util.ArrayList<Long>();
+        for (String image : List.of("1", "2", "3", "4", "5", "6", "7")) {
+            scans.add(uploadWithRecord(check(image), result, recordOf(xz(image)), a));
+        }
+        // 최근 5개(3~7)와 실행 중인 1이 남고 2는 정리된다
+        assertThat(recordScans()).containsExactly(scans.get(0), scans.get(2), scans.get(3), scans.get(4), scans.get(5), scans.get(6));
+        // 같은 이미지를 다시 띄워 보면 그 이미지의 새 기록만 남는다
+        long again = uploadWithRecord(check("7"), result, recordOf(xz("7b")), a);
+        assertThat(recordScans()).containsExactly(scans.get(0), scans.get(2), scans.get(3), scans.get(4), scans.get(5), again);
+        // 결과는 기록이 정리돼도 남는다
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM reach_l3_results", Long.class)).isEqualTo(7);
+    }
+
+    @Test
     void prScansTakeNoL3() {
         var a = item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "CALLGRAPH", null, List.of(map("kind", "NOTE", "summary", "x")));
         uploadWithL3(prCheck("a"), l3(l3Cve("CVE-2026-1", "a", "REGION", true, false)), a);
@@ -536,6 +585,40 @@ class ReachResultServiceTest {
         var bundle = bundle(List.of(items));
         bundle.put("l3", l3);
         return service.upload("admin", check, "gzip", gzip(bundle)).scanId();
+    }
+
+    /** l3와 실행 기록(l3Record)을 붙여 올린 뒤 스캔 id */
+    @SafeVarargs
+    private long uploadWithRecord(long check, Object l3, Object record, Map<String, Object>... items) {
+        var bundle = bundle(List.of(items));
+        bundle.put("l3", l3);
+        bundle.put("l3Record", record);
+        return service.upload("admin", check, "gzip", gzip(bundle)).scanId();
+    }
+
+    private static Map<String, Object> recordOf(byte[] content) {
+        return map("format", "TAR_XZ", "content", java.util.Base64.getEncoder().encodeToString(content));
+    }
+
+    /** xz 머리 바이트로 시작하는 임의 내용. 서버는 묶음을 풀지 않고 그대로 보관한다 */
+    private static byte[] xz(String tag) {
+        byte[] body = ("record-" + tag).getBytes();
+        byte[] out = new byte[6 + body.length];
+        System.arraycopy(new byte[] {(byte) 0xFD, '7', 'z', 'X', 'Z', 0}, 0, out, 0, 6);
+        System.arraycopy(body, 0, out, 6, body.length);
+        return out;
+    }
+
+    private static byte[] sha256(byte[] value) {
+        try {
+            return java.security.MessageDigest.getInstance("SHA-256").digest(value);
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private static List<Long> recordScans() {
+        return jdbc.queryForList("SELECT scan_id FROM reach_l3_records ORDER BY scan_id", Long.class);
     }
 
     /** 러너 verdict/l3.py 출력 + run (l3-run.sh). secretValue는 서버가 모르는 칸이다 */

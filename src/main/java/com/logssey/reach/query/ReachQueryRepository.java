@@ -484,7 +484,8 @@ public class ReachQueryRepository {
                 note == null || !note.isString() ? null : note.asString(),
                 new ReachFindingDetailResponse.L3Run(rs.getLong("l3_scan_id"), rs.getString("l3_scenario"),
                         rs.getString("l3_method"), rs.getObject("l3_observed_at", OffsetDateTime.class),
-                        run.get("build"), run.get("configKeys"), run.get("invocations")));
+                        run.get("build"), run.get("configKeys"), run.get("invocations"),
+                        run.get("rematch") != null && run.get("rematch").asBoolean()));
     }
 
     private static ReachFindingDetailResponse.Reviewer reviewer(ResultSet rs) throws SQLException {
