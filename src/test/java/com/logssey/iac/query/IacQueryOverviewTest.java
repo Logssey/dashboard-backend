@@ -131,6 +131,16 @@ class IacQueryOverviewTest {
     }
 
     @Test
+    void pullRequestDetailToleratesAnalysisStatsWithoutResourcesOrState() {
+        long run = run(70, "PR", "DONE", "PASS", null);
+        jdbc.update("INSERT INTO iac_jobs (kind, trigger_type, run_id, status, finished_at, stats) VALUES ('ANALYZE_RUN', 'PR', ?, "
+                + "'SUCCEEDED', now(), '{\"paths\":{\"added\":0}}')", run);
+        var detail = service.pullRequest(70, null, "admin");
+        assertThat(detail.resources()).isNull();
+        assertThat(detail.state()).isNull();
+    }
+
+    @Test
     void beforeAnyRepoIsRegisteredGatesAndPullRequestsAreEmptyNotMissing() {
         jdbc.execute("TRUNCATE iac_repos RESTART IDENTITY CASCADE");
 
