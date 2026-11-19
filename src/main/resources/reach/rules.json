@@ -193,6 +193,35 @@
       ]
     },
     {
+      "id": "tomcat.http2ProtocolNew",
+      "type": "new",
+      "classes": [
+        "org/apache/coyote/http2/Http2Protocol"
+      ]
+    },
+    {
+      "id": "tomcat.addUpgradeProtocol",
+      "type": "call",
+      "owners": [
+        "org/apache/catalina/connector/Connector"
+      ],
+      "names": [
+        "addUpgradeProtocol"
+      ]
+    },
+    {
+      "id": "spring.http2SetEnabled",
+      "type": "call",
+      "owners": [
+        "org/springframework/boot/web/server/Http2",
+        "org/springframework/boot/web/server/ConfigurableWebServerFactory"
+      ],
+      "names": [
+        "setEnabled",
+        "setHttp2"
+      ]
+    },
+    {
       "id": "bc.g3413ctrNew",
       "type": "new",
       "classes": [
@@ -203,6 +232,18 @@
       "id": "bc.gost3412ctrString",
       "type": "ldc",
       "regex": "(?i)^GOST3412-2015/CTR"
+    },
+    {
+      "id": "bc.frodoString",
+      "type": "ldc",
+      "regex": "(?i)^frodo"
+    },
+    {
+      "id": "bc.frodoJceSpec",
+      "type": "type-ref",
+      "types": [
+        "org/bouncycastle/pqc/jcajce/spec/FrodoParameterSpec"
+      ]
     },
     {
       "id": "bc.insertProviderAt",
@@ -520,6 +561,38 @@
         "*.properties"
       ],
       "regex": "security\\.provider\\.1\\s*=\\s*org\\.bouncycastle"
+    },
+    {
+      "id": "repo.spring.http2Enabled",
+      "files": [
+        "*.properties",
+        "*.yml",
+        "*.yaml",
+        "*.env",
+        ".env",
+        "Dockerfile*"
+      ],
+      "regex": "(?i)server[._-]http2[._-]enabled[\"']?\\s*[:=]\\s*[\"']?true"
+    },
+    {
+      "id": "repo.spring.http2Yaml",
+      "files": [
+        "application*.yml",
+        "application*.yaml"
+      ],
+      "regex": "^\\s*http2\\s*:\\s*$"
+    },
+    {
+      "id": "repo.spring.serverSsl",
+      "files": [
+        "*.properties",
+        "*.yml",
+        "*.yaml",
+        "*.env",
+        ".env",
+        "Dockerfile*"
+      ],
+      "regex": "(?i)server[._-]ssl[._-](key[._-]?store|certificate|bundle|enabled[\"']?\\s*[:=]\\s*[\"']?true)"
     }
   ],
   "verdicts": {
@@ -1006,6 +1079,75 @@
         "reachable": "@JsonTypeInfo를 쓰고, 외부 입력 타입에 Comparable 타입 필드가 있다. 기본 검증기가 Comparable을 막지 않아 거의 모든 클래스를 만들 수 있다.",
         "unreachable": "@JsonTypeInfo를 쓰지 않는다. 이 결함은 @JsonTypeInfo의 기본 검증기에만 있고, 전역 default typing은 명시적 검증기가 필요해서 해당하지 않는다.",
         "unknown": "@JsonTypeInfo를 쓰지만 기반 타입이 Comparable인지, 커스텀 검증기가 있는지 정적으로 확정하지 못했다. 사람이 확인해야 한다."
+      }
+    },
+    "CVE-2026-65637": {
+      "method": "rule",
+      "reachable_if": [
+        [
+          "repo.spring.http2Enabled",
+          "repo.spring.serverSsl"
+        ]
+      ],
+      "unknown_if": [
+        [
+          "repo.spring.http2Enabled"
+        ],
+        [
+          "repo.spring.http2Yaml"
+        ],
+        [
+          "tomcat.http2ProtocolNew"
+        ],
+        [
+          "tomcat.addUpgradeProtocol"
+        ],
+        [
+          "spring.http2SetEnabled"
+        ],
+        [
+          "sink"
+        ],
+        [
+          "sink_weak"
+        ],
+        [
+          "!jar.springBoot4"
+        ]
+      ],
+      "otherwise": "unreachable",
+      "why_ko": {
+        "reachable": "설정에서 HTTP/2를 켰고(server.http2.enabled=true) 내장 Tomcat이 TLS를 직접 받는다(server.ssl.*). HTTP/2 요청의 필수 헤더 검사가 호스트 이름 없는 요청을 거르지 않아, 호스트 이름과 SNI를 맞춰 보는 검사(strictSni, 기본 켜짐)를 건너뛴다.",
+        "unreachable": "HTTP/2를 켜는 설정이나 코드가 없다. Spring Boot 내장 Tomcat은 server.http2.enabled가 true일 때만 HTTP/2(Http2Protocol)를 등록하고 기본값은 false다(Spring Boot 4.1.1의 TomcatWebServerFactory와 Http2 바이트코드 확인). HTTP/2 요청을 받지 않으므로 취약한 필수 헤더 검사(Stream.receivedEndOfHeaders)가 실행되지 않는다. 배포할 때 환경 변수(SERVER_HTTP2_ENABLED)로 켜는 경우는 그 값이 레포에 있을 때만 보인다.",
+        "unknown": "HTTP/2를 켜는 설정이나 코드가 있다. 취약하려면 Tomcat이 TLS를 직접 끝내야 하고(앞단 프록시·로드밸런서가 TLS를 끝내면 해당 없음) strictSni를 끄지 않았어야 한다. 커넥터의 TLS 설정을 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 HTTP/2를 기본으로 켜지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로, 다른 버전(Spring Boot 2·3, Spring Boot 없이 Tomcat을 쓰는 앱)은 도달 불가로 두지 않는다."
+      }
+    },
+    "CVE-2026-5598": {
+      "method": "callgraph",
+      "reachable_if": [
+        [
+          "sink"
+        ]
+      ],
+      "unknown_if": [
+        [
+          "bc.frodoString"
+        ],
+        [
+          "bc.frodoJceSpec"
+        ],
+        [
+          "sinks_missing"
+        ],
+        [
+          "sink_weak"
+        ]
+      ],
+      "otherwise": "unreachable",
+      "why_ko": {
+        "reachable": "FrodoKEM의 오차 표본 추출 코드(FrodoEngine.sample)까지 호출 경로가 있다. 이 코드는 비밀 값에 따라 실행 시간이 달라진다. 권고문은 복호화(decapsulation)를 하는 쪽만 영향을 받는다고 하지만, 같은 코드가 키 생성·캡슐화에서도 실행되므로 어느 연산인지는 경로로 확인한다.",
+        "unreachable": "앱 코드와 라이브러리 어디에서도 FrodoKEM(FrodoEngine)에 도달하지 않고, JCE 이름(\"Frodo\")으로 고르는 코드도 없다. bcprov는 다른 경로로만 쓰인다.",
+        "unknown": "앱이 JCE 이름(\"Frodo\")이나 FrodoParameterSpec을 쓴다. JCE는 provider가 등록한 이름으로 구현을 고르므로(리플렉션) 호출 그래프로 확정할 수 없다. FrodoKEM으로 복호화하는지 사람이 확인해야 한다. 또는 분석한 jar에서 취약 메서드를 찾지 못했다."
       }
     }
   }

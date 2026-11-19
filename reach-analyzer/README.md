@@ -13,7 +13,7 @@
 | `verdict/bundle.py` | SBOM + 스캐너 결과(Trivy, Grype) + 분석 결과 + 판정 → API-13 결과 묶음(gzip) |
 | `verdict/l3.py` | L3: JaCoCo XML(앱을 띄워 시나리오를 돌린 실행 기록) + 취약 구간(`vuln-functions.json`의 `l3`) + L2 호출 경로 → CVE별로 실제 실행이 어디까지 갔는지(구간·함수), 어느 요청에서인지. L2 판정을 바꾸지 않는 근거 |
 | `verdict/l3_runner.py` | L3 러너 도우미: 서비스 저장소의 시나리오(JSON) 검사·실행, 요청 단계마다 실행 기록 끊기, 리포트용 클래스 파일 준비, 에이전트 기록 범위. `deploy/reach/ci/l3-run.sh`·`reach-scan.sh`가 부른다 |
-| `../src/main/resources/reach/` | 판정 데이터. `vuln-functions.json`(CVE 14개의 취약 함수 46개), `rules.json`(사실·CVE별 규칙). 대시보드 API-09·10도 같은 파일을 쓴다 |
+| `../src/main/resources/reach/` | 판정 데이터. `vuln-functions.json`(CVE 16개의 취약 함수 49개), `rules.json`(사실·CVE별 규칙). 대시보드 API-09·10도 같은 파일을 쓴다 |
 | `vulndata/` | 새 CVE의 판정 데이터 만들기: `vulndata.py`(자료 모으기·초안 검사·반영), `PROMPT.md`(AI에게 주는 지시문). 아래 "판정 데이터 만들기" |
 | `src/main/java/…/MethodDiff.java` | 라이브러리 두 버전의 jar에서 코드가 바뀐 메서드와 줄 번호. `vulndata.py`가 쓴다 |
 | `research/` | 취약 함수를 찾은 근거: CVE별 조사 JSON, 노트, BouncyCastle 재현 코드. 버전별 소스·diff 원본(약 14MB)은 넣지 않았다. `research/vulndata/`는 `vulndata.py`로 넣은 CVE의 기록(누가 확인했는지, 비교한 jar, AI가 남긴 확인 사항) |

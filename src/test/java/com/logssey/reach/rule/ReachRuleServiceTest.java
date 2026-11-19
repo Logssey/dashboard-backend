@@ -58,7 +58,7 @@ class ReachRuleServiceTest {
     @Test
     void loadsTheShippedRules() {
         assertThat(DATA.version()).isEqualTo("v0");
-        assertThat(DATA.rules()).hasSize(14);
+        assertThat(DATA.rules()).hasSize(16);
 
         var tomcat = DATA.rule("RULE-CVE-2026-65182").orElseThrow();
         assertThat(tomcat.cve()).isEqualTo("CVE-2026-65182");
@@ -80,7 +80,14 @@ class ReachRuleServiceTest {
         assertThat(jackson.facts()).contains("F-dto.floating.tokens")   // Finding 근거 factId와 같은 표기
                 .noneMatch(id -> ReachRuleData.CALLGRAPH_FACTS.contains(id.substring(2)));
         assertThat(DATA.rules()).extracting(ReachRuleResponse::method).contains("RULE", "CALLGRAPH");
-        // 모든 규칙에 취약 함수와 패키지가 있다 (두 데이터 파일이 같은 CVE 14개)
+        // HTTP/2 SNI 검증 우회: 레포 설정 사실과 코드 사실을 함께 본다
+        var http2 = DATA.rule("RULE-CVE-2026-65637").orElseThrow();
+        assertThat(http2.method()).isEqualTo("RULE");
+        assertThat(http2.facts()).containsExactly("F-repo.spring.http2Enabled", "F-repo.spring.serverSsl",
+                "F-repo.spring.http2Yaml", "F-tomcat.http2ProtocolNew", "F-tomcat.addUpgradeProtocol",
+                "F-spring.http2SetEnabled", "F-jar.springBoot4");
+        assertThat(http2.reasons()).containsOnlyKeys("REACHABLE", "UNREACHABLE", "UNKNOWN");
+        // 모든 규칙에 취약 함수와 패키지가 있다 (두 데이터 파일이 같은 CVE 16개)
         assertThat(DATA.rules()).allSatisfy(rule -> {
             assertThat(rule.packages()).isNotEmpty();
             assertThat(rule.vulnFunctionIds()).isNotEmpty();
@@ -127,8 +134,8 @@ class ReachRuleServiceTest {
     @Test
     void listsRulesInCveOrderWithoutDefinitionUnlessAsked() {
         var page = service.rules("admin", ALL, null, null, List.of("total"));
-        assertThat(page.totalCount()).isEqualTo(14);
-        assertThat(page.items()).hasSize(14);
+        assertThat(page.totalCount()).isEqualTo(16);
+        assertThat(page.items()).hasSize(16);
         assertThat(page.version()).isEqualTo("v0");
         assertThat(page.items()).extracting(ReachRuleResponse::cve).isSortedAccordingTo(ReachVulnFunctionData::compareCve);
         assertThat(page.items()).allSatisfy(rule -> assertThat(rule.definition()).isNull());
@@ -167,15 +174,16 @@ class ReachRuleServiceTest {
 
     @Test
     void pagesWithACursorTiedToTheFilter() {
-        var first = service.rules("admin", ALL, 5, null, null);
-        var second = service.rules("admin", ALL, 5, first.nextCursor(), null);
-        var third = service.rules("admin", ALL, 5, second.nextCursor(), null);
+        // 규칙 16개를 6개씩: 6, 6, 4
+        var first = service.rules("admin", ALL, 6, null, null);
+        var second = service.rules("admin", ALL, 6, first.nextCursor(), null);
+        var third = service.rules("admin", ALL, 6, second.nextCursor(), null);
         assertThat(first.hasNext()).isTrue();
         assertThat(third.hasNext()).isFalse();
         assertThat(third.nextCursor()).isNull();
         var all = new ArrayList<String>();
         for (var page : List.of(first, second, third)) page.items().forEach(rule -> all.add(rule.id()));
-        assertThat(all).hasSize(14).doesNotHaveDuplicates();
+        assertThat(all).hasSize(16).doesNotHaveDuplicates();
         assertError(() -> service.rules("admin", new ReachRuleFilter(null, null, "F-tomcat.addConstraint", null), 5, first.nextCursor(), null),
                 ErrorCode.INVALID_INPUT);
     }
