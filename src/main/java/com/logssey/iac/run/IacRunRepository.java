@@ -42,15 +42,15 @@ public class IacRunRepository {
         jdbc.query("SELECT pg_advisory_xact_lock(?, ?)", rs -> null, (int) repoId, prNumber == null ? 0 : prNumber);
     }
 
-    long insertRun(long repoId, Integer prNumber, String headSha, String trigger, String status, String verdict,
-                   String highestSeverity, Long requestedBy, OffsetDateTime finishedAt) {
+    long insertRun(long repoId, Integer prNumber, String prTitle, String headSha, String trigger, String status,
+                   String verdict, String highestSeverity, Long requestedBy, OffsetDateTime finishedAt) {
         return jdbc.queryForObject("""
-                INSERT INTO iac_runs (repo_id, pr_number, head_sha, trigger_type, status, verdict,
+                INSERT INTO iac_runs (repo_id, pr_number, pr_title, head_sha, trigger_type, status, verdict,
                                       highest_severity, requested_by_user_id, finished_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING run_id
-                """, Long.class, repoId, prNumber, headSha, trigger, status, verdict, highestSeverity, requestedBy,
-                finishedAt);
+                """, Long.class, repoId, prNumber, prTitle, headSha, trigger, status, verdict, highestSeverity,
+                requestedBy, finishedAt);
     }
 
     /** 같은 PR(또는 main 점검)의 이전 run 을 SUPERSEDED 로 바꾸고, 그 run 의 대기 작업과 남은 plan 을 정리한다. */

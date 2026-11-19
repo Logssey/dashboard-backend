@@ -102,10 +102,11 @@ public class IacQueryRepository {
 
     Optional<RunRow> latestRun(long repoId, int prNumber) {
         return jdbc.query("""
-                SELECT run_id, head_sha, status, verdict, highest_severity, coalesce(finished_at, created_at) AS checked_at
+                SELECT run_id, pr_title, head_sha, status, verdict, highest_severity,
+                       coalesce(finished_at, created_at) AS checked_at
                 FROM iac_runs WHERE repo_id = ? AND pr_number = ?
                 ORDER BY run_id DESC LIMIT 1
-                """, (rs, row) -> new RunRow(rs.getLong("run_id"), rs.getString("head_sha"), rs.getString("status"),
+                """, (rs, row) -> new RunRow(rs.getLong("run_id"), rs.getString("pr_title"), rs.getString("head_sha"), rs.getString("status"),
                 rs.getString("verdict"), rs.getString("highest_severity"),
                 rs.getObject("checked_at", OffsetDateTime.class)), repoId, prNumber).stream().findFirst();
     }
@@ -113,11 +114,11 @@ public class IacQueryRepository {
     /** run 하나 (PR 번호, 레포 이름과 함께). CI 결과 조회용 */
     Optional<RunOf> run(long runId) {
         return jdbc.query("""
-                SELECT r.run_id, r.pr_number, p.full_name, r.head_sha, r.status, r.verdict, r.highest_severity,
+                SELECT r.run_id, r.pr_number, r.pr_title, p.full_name, r.head_sha, r.status, r.verdict, r.highest_severity,
                        coalesce(r.finished_at, r.created_at) AS checked_at
                 FROM iac_runs r JOIN iac_repos p ON p.repo_id = r.repo_id WHERE r.run_id = ?
                 """, (rs, row) -> new RunOf(rs.getObject("pr_number", Integer.class), rs.getString("full_name"),
-                new RunRow(rs.getLong("run_id"), rs.getString("head_sha"), rs.getString("status"),
+                new RunRow(rs.getLong("run_id"), rs.getString("pr_title"), rs.getString("head_sha"), rs.getString("status"),
                         rs.getString("verdict"), rs.getString("highest_severity"),
                         rs.getObject("checked_at", OffsetDateTime.class))), runId).stream().findFirst();
     }
@@ -198,14 +199,15 @@ public class IacQueryRepository {
     List<PrRow> latestPullRequestRuns(long repoId, int limit) {
         return jdbc.query("""
                 SELECT * FROM (
-                    SELECT DISTINCT ON (r.pr_number) r.pr_number, r.run_id, r.head_sha, r.status, r.verdict,
+                    SELECT DISTINCT ON (r.pr_number) r.pr_number, r.pr_title, r.run_id, r.head_sha, r.status, r.verdict,
                            r.highest_severity, coalesce(r.finished_at, r.created_at) AS checked_at,
                            (SELECT stats::text FROM iac_jobs j WHERE j.run_id = r.run_id AND j.kind = 'ANALYZE_RUN'
                               AND j.status = 'SUCCEEDED' ORDER BY j.job_id DESC LIMIT 1) AS stats
                     FROM iac_runs r WHERE r.repo_id = ? AND r.trigger_type = 'PR'
                     ORDER BY r.pr_number, r.run_id DESC
                 ) latest ORDER BY checked_at DESC LIMIT ?
-                """, (rs, row) -> new PrRow(rs.getInt("pr_number"), rs.getLong("run_id"), rs.getString("head_sha"),
+                """, (rs, row) -> new PrRow(rs.getInt("pr_number"), rs.getString("pr_title"), rs.getLong("run_id"),
+                rs.getString("head_sha"),
                 rs.getString("status"), rs.getString("verdict"), rs.getString("highest_severity"),
                 rs.getObject("checked_at", OffsetDateTime.class), json(rs.getString("stats"))), repoId, limit);
     }
@@ -229,7 +231,7 @@ public class IacQueryRepository {
                 """, String.class, runId, runId, runId).stream().findFirst();
     }
 
-    record PrRow(int number, long runId, String headSha, String status, String verdict, String highestSeverity,
+    record PrRow(int number, String title, long runId, String headSha, String status, String verdict, String highestSeverity,
                  OffsetDateTime checkedAt, JsonNode stats) {
     }
 
@@ -282,7 +284,7 @@ public class IacQueryRepository {
         return value == null ? null : mapper.readTree(value);
     }
 
-    record RunRow(long runId, String headSha, String status, String verdict, String highestSeverity,
+    record RunRow(long runId, String title, String headSha, String status, String verdict, String highestSeverity,
                   OffsetDateTime checkedAt) {
     }
 

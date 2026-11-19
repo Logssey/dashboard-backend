@@ -7,7 +7,7 @@ import tools.jackson.databind.JsonNode;
 
 /**
  * S-02 PR 상세 (API 계약 GET /prs/{number}). 가장 최근 run 기준.
- * title 은 GitHub 정보라 저장하지 않는다. resources·state 는 분석이 끝난 run 만 (plan 전 검사에서 막히면 null).
+ * title 은 iac-report 가 실행을 등록할 때 보낸 PR 제목 (없으면 null). resources·state 는 분석이 끝난 run 만 (plan 전 검사에서 막히면 null).
  * resourceFindings 는 경로 없이 리소스 하나에 걸리는 경로 분석 발견 건 (path.imds_v1_added).
  */
 public record IacPullRequestResponse(int number, String title, long runId, String headSha, String status,

@@ -78,7 +78,7 @@ public class IacQueryService {
     private IacPullRequestResponse result(int number, IacQueryRepository.RunRow run) {
         var gate = new IacPullRequestResponse.Gate("GATE_FAILED".equals(run.status()) ? "BLOCK" : "PASS",
                 repository.gateFindings(run.runId()));
-        return new IacPullRequestResponse(number, null, run.runId(), run.headSha(), run.status(), run.verdict(),
+        return new IacPullRequestResponse(number, run.title(), run.runId(), run.headSha(), run.status(), run.verdict(),
                 run.highestSeverity(), run.checkedAt(), gate, repository.pathChanges(run.runId()),
                 repository.resourceFindings(run.runId()),
                 repository.analysisStats(run.runId(), "resources"), repository.analysisStats(run.runId(), "state"));
@@ -103,7 +103,7 @@ public class IacQueryService {
             var stats = row.stats();
             var paths = stats == null ? null : stats.path("paths");
             var state = stats == null ? null : stats.path("state");
-            return new IacPullRequestSummaryResponse(row.number(), row.runId(), row.headSha(), row.status(),
+            return new IacPullRequestSummaryResponse(row.number(), row.title(), row.runId(), row.headSha(), row.status(),
                     row.verdict(), row.highestSeverity(), row.checkedAt(),
                     paths == null ? 0 : paths.path("added").asInt(0), paths == null ? 0 : paths.path("removed").asInt(0),
                     paths == null ? 0 : paths.path("removedRoutes").asInt(0),

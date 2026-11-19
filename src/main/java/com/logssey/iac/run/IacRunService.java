@@ -72,7 +72,8 @@ public class IacRunService {
             repository.lockPullRequest(repo.repoId(), request.prNumber());
             OffsetDateTime now = repository.databaseNow();
             String runStatus = blocked ? "GATE_FAILED" : "PLANNING";
-            long runId = repository.insertRun(repo.repoId(), request.prNumber(), request.headSha(),
+            long runId = repository.insertRun(repo.repoId(), request.prNumber(),
+                    request.isPush() ? null : prTitle(request.prTitle()), request.headSha(),
                     request.isPush() ? "PUSH" : "PR", runStatus, blocked ? "BLOCK" : null, blocked ? highest : null,
                     actor, blocked ? now : null);
             repository.supersede(repo.repoId(), request.prNumber(), runId);
@@ -157,6 +158,13 @@ public class IacRunService {
             findings.putIfAbsent(fingerprint, new GateFinding(rule, address));
         }
         return findings;
+    }
+
+    /** PR 제목: 제어 문자(줄바꿈 포함)는 공백으로, 앞뒤 공백은 지우고, 비면 저장하지 않는다 */
+    static String prTitle(String title) {
+        if (title == null) return null;
+        String clean = title.replaceAll("\\p{Cntrl}", " ").strip();
+        return clean.isEmpty() ? null : clean;
     }
 
     private long requireAdmin(String loginId) {
