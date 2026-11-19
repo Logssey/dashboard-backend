@@ -97,8 +97,9 @@ class ComplianceImportIntegrationTest {
         String iso = new String(reports.report("reused", imported.runId(), "iso").content(), StandardCharsets.UTF_8);
         assertThat(integrated).contains("통합 컴플라이언스", "Security Hub is disabled", "인증 적합 판정이 아닙니다",
                         "판정 정책", "정책 2026-11-18.2", "자동 식별 서비스", "적용성 프로필",
+                        "점검 방식", "AWS 읽기 전용 자동 점검", "AWS 기술 점검 결과",
                         "개선 가이드", "적용 조건", "검증", "롤백", "&lt;script&gt;")
-                .doesNotContain("123456789012", "<script>");
+                .doesNotContain("123456789012", "<script>", "점검 엔진", "Prowler", "PROWLER_OCSF");
         assertThat(iso).contains("ISO/IEC 27001:2022").doesNotContain("ISMS-P 2023", "CSAP SaaS 표준등급");
     }
 }

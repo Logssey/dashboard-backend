@@ -63,7 +63,7 @@ class ComplianceCheckPolicyCatalogTest {
                 """);
 
         assertThat(guide.expectedState())
-                .isEqualTo("Apply least privilege: Restrict iam:PassRole · See Prowler guide")
+                .isEqualTo("Apply least privilege: Restrict iam:PassRole · See 점검 기준 원문")
                 .doesNotContain("**", "`", "[", "](");
     }
 }

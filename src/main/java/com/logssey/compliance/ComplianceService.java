@@ -116,11 +116,11 @@ public class ComplianceService {
                                        String environment, MultipartFile file) {
         String selectedEnvironment = environment(environment, false);
         if (file == null || file.isEmpty()) {
-            throw new ApiException(ErrorCode.INVALID_INPUT, "Prowler JSON 파일을 선택해 주세요.");
+            throw new ApiException(ErrorCode.INVALID_INPUT, "점검 결과 JSON 파일을 선택해 주세요.");
         }
         if (file.getSize() > maxImportBytes) {
             throw new ApiException(ErrorCode.PAYLOAD_TOO_LARGE,
-                    "Prowler JSON 파일은 최대 " + (maxImportBytes / 1024 / 1024) + "MB까지 가져올 수 있습니다.");
+                    "점검 결과 JSON 파일은 최대 " + (maxImportBytes / 1024 / 1024) + "MB까지 가져올 수 있습니다.");
         }
 
         final byte[] bytes;

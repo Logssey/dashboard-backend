@@ -81,7 +81,7 @@ public class ComplianceCheckPolicyCatalog {
     ImprovementGuide guide(String provider, String checkId, String fallbackRecommendation) {
         var policy = policy(provider, checkId);
         String fallbackExpectedState = valueOr(plainGuideText(fallbackRecommendation),
-                "Prowler Check 원문에서 요구하는 목표 상태를 확인한 뒤 현재 설정과 비교합니다.");
+                "점검 기준 원문에서 요구하는 목표 상태를 확인한 뒤 현재 설정과 비교합니다.");
         return new ImprovementGuide(
                 valueOr(policy.disposition(), "DIRECT_ACTION"),
                 valueOr(policy.expectedState(), fallbackExpectedState),
@@ -135,6 +135,8 @@ public class ComplianceCheckPolicyCatalog {
         if (value == null || value.isBlank()) return value;
         return value
                 .replaceAll("\\[([^\\]]+)]\\([^)]+\\)", "$1")
+                .replaceAll("(?i)prowler\\s+guide", "점검 기준 원문")
+                .replaceAll("(?i)prowler", "점검 기준")
                 .replace("**", "")
                 .replace("__", "")
                 .replace("`", "")

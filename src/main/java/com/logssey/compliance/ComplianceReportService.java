@@ -116,7 +116,7 @@ public class ComplianceReportService {
                 .append("<dl class=\"cover-meta\">")
                 .append(meta("대상 서비스", selectedTargetName))
                 .append(meta("대상 환경", environmentLabel(run.environment())))
-                .append(meta("점검 엔진", run.product() + " " + run.scannerVersion()))
+                .append(meta("점검 방식", "AWS 읽기 전용 자동 점검"))
                 .append(meta("판정 정책", policyVersionLabel(assessmentContext.policyVersion())))
                 .append(meta("점검 완료", REPORT_TIME.format(run.finishedAt())))
                 .append(meta("보고서 생성", REPORT_TIME.format(OffsetDateTime.now())))
@@ -133,7 +133,7 @@ public class ComplianceReportService {
                 .append(metric("검토 필요", totals.getOrDefault("NEEDS_REVIEW", 0), "개", "warning"))
                 .append("</div><div class=\"run-panel\"><dl>")
                 .append(meta("Run", "#" + run.runId()))
-                .append(meta("점검 원본", run.source()))
+                .append(meta("점검 원본", sourceLabel(run.source())))
                 .append(meta("정규화 결과", run.counts().total() + "건"))
                 .append(meta("실패 기술 결과", run.counts().fail() + "건"))
                 .append(meta("수집 오류", run.counts().error() + "건"))
@@ -242,6 +242,10 @@ public class ComplianceReportService {
 
     private static String environmentLabel(String environment) {
         return "prod".equals(environment) ? "운영" : "개발";
+    }
+
+    private static String sourceLabel(String source) {
+        return "PROWLER_OCSF".equals(source) ? "AWS 기술 점검 결과" : "외부 점검 결과";
     }
 
     private static String inferredServices(List<String> services) {
