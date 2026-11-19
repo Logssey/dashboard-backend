@@ -881,6 +881,97 @@
         "regions": [],
         "note": "The fix changes deny-list data only, so execution alone cannot tell; the sink methods are reported as method evidence."
       }
+    },
+    {
+      "cve": "CVE-2026-65637",
+      "ghsa": "GHSA-f525-44xv-f2qj",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.25",
+          "10.1.59",
+          "9.0.121"
+        ]
+      },
+      "severity": "CRITICAL",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "Tomcat이 HTTP/2 요청의 헤더를 다 받은 뒤 필수 헤더를 확인할 때 호스트 이름(:authority 또는 host 헤더)이 없는 요청을 거르지 않는다. 호스트 이름과 TLS SNI를 맞춰 보는 검사(strictSni)는 호스트 이름을 읽을 때만 돌기 때문에, TLS 커넥터에서 HTTP/2를 켠 서버에 호스트 이름 없는 요청을 보내면 이 검사를 건너뛰고 요청이 처리된다.",
+      "summary_en": "org.apache.coyote.http2.Stream.receivedEndOfHeaders() accepts an HTTP/2 request (any method except CONNECT) that has :scheme and :path but neither :authority nor a host header. The strict SNI check (checkSni) runs only inside Stream.parseAuthority(), which is called when one of those headers arrives, so such a request skips the SNI/host-name comparison and is processed. The fix makes receivedEndOfHeaders() reject the request when the server name is not set.",
+      "sinks": [
+        {
+          "class": "org.apache.coyote.http2.Stream",
+          "method": "receivedEndOfHeaders",
+          "desc": "()Z",
+          "confidence": "high",
+          "note": "The only method the three fix commits change. It runs for every HTTP/2 request once its headers are complete, so it is reachable whenever HTTP/2 is enabled; nothing narrower exists."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-f525-44xv-f2qj",
+        "https://github.com/apache/tomcat/commit/40012414df828a56126f76a7339669c7c919aae7",
+        "https://github.com/apache/tomcat/commit/8639b20f045c88f356b887204f52e897399f0de7",
+        "https://github.com/apache/tomcat/commit/b823e88da077f5fa973e34d72359bded9f621e3c"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [],
+        "note": "No region: the fix adds one term (serverName().isNull()) to the required-header condition at Stream.java line 604, which every non-CONNECT HTTP/2 request evaluates. Executing that line does not show that a request without a host name was accepted, so the sink method is reported as method evidence only."
+      }
+    },
+    {
+      "cve": "CVE-2026-5598",
+      "ghsa": "GHSA-p93r-85wp-75v3",
+      "package": {
+        "coordinates": "org.bouncycastle:bcprov-jdk18on",
+        "artifact": "bcprov-jdk18on",
+        "installed": "1.81",
+        "fixed": [
+          "1.81.1",
+          "1.84",
+          "1.80.2"
+        ]
+      },
+      "severity": "HIGH",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+      "invocation_kind": "app_calls_library",
+      "summary_ko": "FrodoKEM의 오차 표본 추출 코드(FrodoEngine.sample)가 비밀 값에 따라 분기해서 실행 시간이 달라진다. 공격자가 조작한 캡슐화 값을 여러 번 복호화(decapsulation)시키고 응답 시간을 재면 비밀 정보를 알아낼 수 있다. FrodoKEM을 쓰는 경우에만 해당한다.",
+      "summary_en": "FrodoEngine.sample(short), called for every matrix entry by FrodoEngine.sample_matrix, branches on the pseudo-random value it samples from (CDF table comparison and sign flip), so its running time depends on secret data. During FrodoKEM decapsulation (FrodoEngine.kem_dec) the sampled values derive from the decrypted message, which gives an attacker who submits encapsulations and measures timing a covert timing channel. Only FrodoKEM users are affected.",
+      "sinks": [
+        {
+          "class": "org.bouncycastle.pqc.crypto.frodo.FrodoEngine",
+          "method": "sample",
+          "desc": "(S)S",
+          "confidence": "high",
+          "note": "Private non-constant-time sampler removed by fix commit 94abbd5 (replaced by Noise.sample); this is the vulnerable code itself."
+        },
+        {
+          "class": "org.bouncycastle.pqc.crypto.frodo.FrodoEngine",
+          "method": "sample_matrix",
+          "desc": "([SIII)[S",
+          "confidence": "high",
+          "note": "Only caller of sample; rewritten by fix commit 94abbd5. Called from kem_keypair, kem_enc and kem_dec, not only decapsulation."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-p93r-85wp-75v3",
+        "https://github.com/bcgit/bc-java/commit/8692e6b2b191fc4aafa32545c7a78bdb9bf110c5",
+        "https://github.com/bcgit/bc-java/commit/94abbd56413dfdac651fd878bc60253871ef5e87"
+      ],
+      "l3": {
+        "version": "1.81",
+        "regions": [
+          {
+            "class": "org.bouncycastle.pqc.crypto.frodo.FrodoEngine",
+            "method": "sample",
+            "desc": "(S)S",
+            "source": "org/bouncycastle/pqc/crypto/frodo/FrodoEngine.java"
+          }
+        ],
+        "note": "The 1.81 jar has no line numbers (every row of methods-installed.tsv has lines \"-\"), so the region is the whole method FrodoEngine.sample(short) (source lines 103-120, the secret-dependent branches are at 111-112 and 116-117). sample_matrix is left out because it only loops over sample. The region cannot tell decapsulation from key generation or encapsulation: sample also executes under kem_keypair and kem_enc, while the advisory limits the issue to decapsulation."
+      }
     }
   ]
 }

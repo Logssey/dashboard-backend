@@ -57,10 +57,10 @@ class ReachVulnFunctionServiceTest {
     void loadsTheShippedDataFile() {
         assertThat(DATA.version()).isEqualTo("v0");
         assertThat(DATA.generated()).isEqualTo("2026-10-10");
-        assertThat(DATA.items()).hasSize(46);
-        assertThat(DATA.items().stream().map(ReachVulnFunctionResponse::cve).distinct()).hasSize(14);
+        assertThat(DATA.items()).hasSize(49);
+        assertThat(DATA.items().stream().map(ReachVulnFunctionResponse::cve).distinct()).hasSize(16);
         assertThat(DATA.items()).extracting(ReachVulnFunctionResponse::id)
-                .containsExactlyElementsOf(java.util.stream.IntStream.rangeClosed(1, 46).boxed().toList());
+                .containsExactlyElementsOf(java.util.stream.IntStream.rangeClosed(1, 49).boxed().toList());
 
         var lazy = DATA.items().stream()
                 .filter(item -> item.cve().equals("CVE-2026-13506") && item.method().equals("force")).findFirst().orElseThrow();
@@ -115,8 +115,8 @@ class ReachVulnFunctionServiceTest {
     void listsByCveClassMethodWithTotalAndDataVersion() {
         var page = service.vulnFunctions("admin", ALL, 100, null, List.of("total"));
 
-        assertThat(page.totalCount()).isEqualTo(46);
-        assertThat(page.items()).hasSize(46);
+        assertThat(page.totalCount()).isEqualTo(49);
+        assertThat(page.items()).hasSize(49);
         assertThat(page.hasNext()).isFalse();
         assertThat(page.version()).isEqualTo("v0");
         assertThat(page.generated()).isEqualTo("2026-10-10");
@@ -134,7 +134,7 @@ class ReachVulnFunctionServiceTest {
 
         var tomcat = service.vulnFunctions("admin", new ReachVulnFunctionFilter(null, "pkg:maven/org.apache.tomcat", null), 100, null, List.of("total"));
         assertThat(tomcat.items()).isNotEmpty().allSatisfy(item -> assertThat(item.packageUrl()).startsWith("pkg:maven/org.apache.tomcat"));
-        assertThat(tomcat.items()).extracting(ReachVulnFunctionResponse::cve).containsOnly("CVE-2026-65182", "CVE-2026-65905", "CVE-2026-68525");
+        assertThat(tomcat.items()).extracting(ReachVulnFunctionResponse::cve).containsOnly("CVE-2026-65182", "CVE-2026-65905", "CVE-2026-68525", "CVE-2026-65637");
 
         var two = service.vulnFunctions("admin", new ReachVulnFunctionFilter(List.of("CVE-2026-13506", "CVE-2026-8763"), null, null), 100, null, null);
         assertThat(two.items()).extracting(ReachVulnFunctionResponse::cve).containsOnly("CVE-2026-13506", "CVE-2026-8763");
@@ -164,7 +164,7 @@ class ReachVulnFunctionServiceTest {
             pages++;
         } while (cursor != null);
         assertThat(pages).isEqualTo(3);
-        assertThat(seen).hasSize(46).doesNotHaveDuplicates();
+        assertThat(seen).hasSize(49).doesNotHaveDuplicates();
 
         String first = service.vulnFunctions("admin", ALL, 20, null, null).nextCursor();
         assertError(() -> service.vulnFunctions("admin", new ReachVulnFunctionFilter(null, null, "method"), 20, first, null),
@@ -181,7 +181,7 @@ class ReachVulnFunctionServiceTest {
         assertError(() -> service.vulnFunctions("admin", ALL, null, "zz", null), ErrorCode.INVALID_INPUT);
         assertError(() -> service.vulnFunctions("admin", ALL, null, ReachDataCursorTestSupport.encoded(0, 1), null), ErrorCode.INVALID_INPUT);
         // excluded는 받되 지금 데이터에는 뺀 메서드 기록이 없어 결과가 같다
-        assertThat(service.vulnFunctions("admin", ALL, 100, null, List.of("excluded")).items()).hasSize(46);
+        assertThat(service.vulnFunctions("admin", ALL, 100, null, List.of("excluded")).items()).hasSize(49);
     }
 
     private static void assertError(org.assertj.core.api.ThrowableAssert.ThrowingCallable call, ErrorCode code) {

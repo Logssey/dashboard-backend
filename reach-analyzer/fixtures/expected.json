@@ -14,7 +14,9 @@
     "CVE-2026-13506": "unreachable",
     "CVE-2026-0636": "unreachable",
     "CVE-2026-19032": "unreachable",
-    "CVE-2026-83557": "unreachable"
+    "CVE-2026-83557": "unreachable",
+    "CVE-2026-65637": "unreachable",
+    "CVE-2026-5598": "unreachable"
   },
   "app-positive": {
     "CVE-2026-65182": "unknown",
@@ -30,7 +32,9 @@
     "CVE-2026-13506": "reachable",
     "CVE-2026-0636": "reachable",
     "CVE-2026-19032": "reachable",
-    "CVE-2026-83557": "reachable"
+    "CVE-2026-83557": "reachable",
+    "CVE-2026-65637": "unknown",
+    "CVE-2026-5598": "reachable"
   },
   "app-tokens": {
     "CVE-2026-89407": "unknown"
@@ -47,7 +51,9 @@
     "CVE-2026-91776": "reachable",
     "CVE-2026-91777": "reachable",
     "CVE-2026-0636": "unknown",
-    "CVE-2026-83557": "unknown"
+    "CVE-2026-83557": "unknown",
+    "CVE-2026-65637": "reachable",
+    "CVE-2026-5598": "unknown"
   },
   "app-blindspots": {
     "CVE-2025-14813": "unreachable",
@@ -57,14 +63,18 @@
   "why": {
     "app-like": {
       "CVE-2026-89407": "BigDecimal exists only in a response DTO (ProductResponse) that is built with new and returned; nothing names it to Jackson (no root, class literal, TypeReference, Jackson annotation value or @Cacheable) -> unreachable",
-      "CVE-2025-14813/CVE-2026-8763": "bcprov is reachable through Spring Security Argon2, but not the GOST CTR / name-constraint code"
+      "CVE-2025-14813/CVE-2026-8763": "bcprov is reachable through Spring Security Argon2, but not the GOST CTR / name-constraint code",
+      "CVE-2026-65637": "no HTTP/2 setting or code; Spring Boot 4 registers Http2Protocol only when server.http2.enabled is true",
+      "CVE-2026-5598": "no FrodoKEM use and no JCE name \"Frodo\""
     },
     "app-positive": {
       "CVE-2026-65182": "app adds container constraints; whether the misordered pattern shape matters needs a human -> unknown by design",
       "CVE-2026-13506": "Asn1Lazy parses with ASN1InputStream(der, true) and walks ASN1Sequence.getObjects() -> LazyEncodedSequence.getObjects/force",
       "CVE-2026-0636": "LdapCertLookup creates LDAPStoreHelper and searches by subject",
       "CVE-2026-19032": "ExtraController.export binds ExportRequest with a java.nio.file.Path field",
-      "CVE-2026-83557": "ExtraController.sort binds SortRequest with @JsonTypeInfo on a Comparable field"
+      "CVE-2026-83557": "ExtraController.sort binds SortRequest with @JsonTypeInfo on a Comparable field",
+      "CVE-2026-65637": "Http2Customizer adds Http2Protocol to the connector; whether Tomcat terminates TLS needs a human -> unknown by design",
+      "CVE-2026-5598": "FrodoKeys.generate -> FrodoKeyPairGenerator.generateKeyPair -> FrodoEngine.kem_keypair -> sample_matrix -> sample"
     },
     "app-tokens": {
       "CVE-2026-89407": "PriceQuote (BigDecimal) is deserialised through a generic helper; no root sees it, but the class literal in QuoteConsumer names it -> unknown, a human must check where the JSON comes from"
@@ -73,7 +83,9 @@
       "all": "same conditions as app-positive reached a different way: DigestAuthenticator/FormAuthenticator subclasses, HttpMethodConstraintElement, @ServletSecurity, JCE name GOST3412-2015/CTR, addProvider(BC) + CertPathBuilder 'BC', BigDecimal in List<Line>, Duration in a nested record, @JsonTypeInfo(defaultImpl) on a field, ObjectReader.readValue(DataInput)",
       "CVE-2026-91777": "the @RequestBody root itself is Map<String, Account> with @JsonIdentityInfo on Account (container root, no wrapper DTO)",
       "CVE-2026-0636": "CertStore.getInstance(\"LDAP\", JDK LDAPCertStoreParameters, \"BC\"): the provider table picks the vulnerable store by reflection and no BC LDAP class is referenced, so unknown (not unreachable)",
-      "CVE-2026-83557": "@JsonTypeInfo is used (PetRequest.pet) but on a non-Comparable base type: a human must check base types and validators -> unknown"
+      "CVE-2026-83557": "@JsonTypeInfo is used (PetRequest.pet) but on a non-Comparable base type: a human must check base types and validators -> unknown",
+      "CVE-2026-65637": "resources/application.properties sets server.http2.enabled=true and server.ssl.key-store: HTTP/2 on a TLS connector, by configuration only",
+      "CVE-2026-5598": "FrodoByJceName uses KeyPairGenerator.getInstance(\"Frodo\", \"BCPQC\"): chosen by name, so unknown (not unreachable)"
     },
     "app-blindspots": {
       "CVE-2025-14813": "KNOWN MISS: G3413CTRBlockCipher created by Class.forName; reflection is not modelled. If this starts failing, the limitation was lifted: update README",
@@ -84,6 +96,8 @@
   "app-boot2": {
     "CVE-2026-65182": "unknown",
     "CVE-2026-65905": "unknown",
-    "CVE-2026-68525": "unknown"
+    "CVE-2026-68525": "unknown",
+    "CVE-2026-65637": "unknown",
+    "CVE-2026-5598": "unreachable"
   }
 }
