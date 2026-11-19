@@ -131,7 +131,7 @@ public class IacQueryRepository {
                 rs.getString("enforcement"), rs.getString("severity"), rs.getString("resource_address")), runId);
     }
 
-    /** 경로 없는 ① 발견 건. 경로 발견 건은 params 에 pathFingerprint 가 있어 빠진다. */
+    /** 경로 없는 경로 분석 발견 건. 경로 발견 건은 params 에 pathFingerprint 가 있어 빠진다. */
     List<IacPullRequestResponse.ResourceFinding> resourceFindings(long runId) {
         return jdbc.query("""
                 SELECT rule_id, enforcement, severity, resource_address, params ->> 'action' AS action FROM iac_findings
@@ -155,7 +155,7 @@ public class IacQueryRepository {
                 json(rs.getString("evidence"))), runId);
     }
 
-    /** 분석 작업이 남긴 결과의 한 부분 (resources: plan 리소스 수, state: ③ State 영향). */
+    /** 분석 작업이 남긴 결과의 한 부분 (resources: plan 리소스 수, state: State 영향). */
     JsonNode analysisStats(long runId, String key) {
         return json(jdbc.query("""
                 SELECT (stats -> ?)::text FROM iac_jobs
@@ -221,7 +221,7 @@ public class IacQueryRepository {
                            CASE severity WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 ELSE 2 END
                     FROM iac_run_path_changes WHERE run_id = ?
                     UNION ALL
-                    -- 경로 없는 ① 발견 건 (path.imds_v1_added): 새 경로 다음
+                    -- 경로 없는 경로 분석 발견 건 (path.imds_v1_added): 새 경로 다음
                     SELECT rule_id, 2, CASE severity WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 ELSE 2 END
                     FROM iac_findings WHERE last_run_id = ? AND source = 'PATH' AND status = 'OPEN'
                       AND params ->> 'pathFingerprint' IS NULL
@@ -239,7 +239,7 @@ public class IacQueryRepository {
                 """, OffsetDateTime.class, repoId));
     }
 
-    /** 가장 최근 main 점검의 열린 ② 발견 건 수 (규칙별). */
+    /** 가장 최근 main 점검의 열린 plan 전 검사 발견 건 수 (규칙별). */
     Map<String, Long> mainGateFindings(long repoId) {
         Map<String, Long> counts = new LinkedHashMap<>();
         jdbc.query("""
@@ -251,7 +251,7 @@ public class IacQueryRepository {
         return counts;
     }
 
-    /** 최근 7일 PR run 중 ② 에서 차단된 run 수 (규칙별). */
+    /** 최근 7일 PR run 중 plan 전 검사에서 차단된 run 수 (규칙별). */
     Map<String, Long> recentPullRequestGateBlocks(long repoId) {
         Map<String, Long> counts = new LinkedHashMap<>();
         jdbc.query("""

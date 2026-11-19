@@ -78,7 +78,7 @@ public class AnalyzeRunRepository {
     }
 
     /**
-     * 경로 없이 리소스에 걸리는 ① 발견 건 (path.imds_v1_added). 지문은 규칙 + 리소스 주소 + 레포 + PR 번호.
+     * 경로 없이 리소스에 걸리는 경로 분석 발견 건 (path.imds_v1_added). 지문은 규칙 + 리소스 주소 + 레포 + PR 번호.
      * 경로 발견 건과 같이 fixMissingPathFindings 가 닫는다.
      */
     String upsertResourceFinding(long runId, AnalysisEngine.Finding finding) {

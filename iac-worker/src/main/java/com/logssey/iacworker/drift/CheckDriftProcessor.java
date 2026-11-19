@@ -27,7 +27,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * CHECK_DRIFT (③, FR-S1): main 의 매일 refresh plan 에서 코드 밖 변경을 찾아 DRIFT 발견 건으로 남긴다.
+ * CHECK_DRIFT (드리프트, FR-S1): main 의 매일 refresh plan 에서 코드 밖 변경을 찾아 DRIFT 발견 건으로 남긴다.
  * 이번에 다시 나오지 않은 열린 드리프트는 고쳐진 것으로 본다 (코드 반영 또는 되돌리기).
  */
 public class CheckDriftProcessor implements IacJobProcessor {

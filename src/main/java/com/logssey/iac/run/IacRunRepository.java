@@ -119,7 +119,7 @@ public class IacRunRepository {
         jdbc.update("UPDATE iac_runs SET status = 'ANALYZING' WHERE run_id = ?", runId);
     }
 
-    /** PR run 은 ① 경로 분석(ANALYZE_RUN), main 점검 run 은 ③ 드리프트 점검(CHECK_DRIFT). */
+    /** PR run 은 경로 분석(ANALYZE_RUN), main 점검 run 은 드리프트 점검(CHECK_DRIFT). */
     void enqueueAnalysis(long runId, boolean push, Long requestedBy) {
         jdbc.update("""
                 INSERT INTO iac_jobs (kind, trigger_type, run_id, requested_by_user_id)
