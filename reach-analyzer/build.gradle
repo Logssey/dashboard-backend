@@ -81,3 +81,14 @@ tasks.register('verdictTest', Exec) {
     workingDir file('verdict')
     commandLine 'python3', '-B', '-m', 'unittest', 'discover', '-s', '.', '-v'
 }
+
+// vulndata/vulndata.py (making verdict data for a new CVE) unit tests, with MethodDiff run on two small jars
+// compiled by the test. Needs python3, javac and jar, so it is not part of `check` either.
+tasks.register('vulndataTest', Exec) {
+    group = 'verification'
+    description = 'Runs the Python unit tests in vulndata/ (vulndata.py, MethodDiff).'
+    dependsOn tasks.named('jar')
+    workingDir file('vulndata')
+    environment 'REACH_JAR', layout.buildDirectory.file('libs/reach-analyzer.jar').get().asFile.path
+    commandLine 'python3', '-B', '-m', 'unittest', 'discover', '-s', '.', '-v'
+}

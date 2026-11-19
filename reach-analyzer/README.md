@@ -14,8 +14,10 @@
 | `verdict/l3.py` | L3: JaCoCo XML(앱을 띄워 시나리오를 돌린 실행 기록) + 취약 구간(`vuln-functions.json`의 `l3`) + L2 호출 경로 → CVE별로 실제 실행이 어디까지 갔는지(구간·함수), 어느 요청에서인지. L2 판정을 바꾸지 않는 근거 |
 | `verdict/l3_runner.py` | L3 러너 도우미: 서비스 저장소의 시나리오(JSON) 검사·실행, 요청 단계마다 실행 기록 끊기, 리포트용 클래스 파일 준비, 에이전트 기록 범위. `deploy/reach/ci/l3-run.sh`·`reach-scan.sh`가 부른다 |
 | `../src/main/resources/reach/` | 판정 데이터. `vuln-functions.json`(CVE 14개의 취약 함수 46개), `rules.json`(사실·CVE별 규칙). 대시보드 API-09·10도 같은 파일을 쓴다 |
-| `research/` | 취약 함수를 찾은 근거: CVE별 조사 JSON, 노트, BouncyCastle 재현 코드. 버전별 소스·diff 원본(약 14MB)은 넣지 않았다 |
-| `scripts/make_spec.py` | `research/*.json` → `vuln-functions.json` 생성 |
+| `vulndata/` | 새 CVE의 판정 데이터 만들기: `vulndata.py`(자료 모으기·초안 검사·반영), `PROMPT.md`(AI에게 주는 지시문). 아래 "판정 데이터 만들기" |
+| `src/main/java/…/MethodDiff.java` | 라이브러리 두 버전의 jar에서 코드가 바뀐 메서드와 줄 번호. `vulndata.py`가 쓴다 |
+| `research/` | 취약 함수를 찾은 근거: CVE별 조사 JSON, 노트, BouncyCastle 재현 코드. 버전별 소스·diff 원본(약 14MB)은 넣지 않았다. `research/vulndata/`는 `vulndata.py`로 넣은 CVE의 기록(누가 확인했는지, 비교한 jar, AI가 남긴 확인 사항) |
+| `scripts/make_spec.py` | 처음 14개 CVE를 만든 방법: `research/*.json` → `vuln-functions.json`. 다시 돌려도 `l3`와 `vulndata.py`로 넣은 CVE는 그대로 둔다 |
 | `scripts/run-reach.sh` | 서비스 레포에 한 번에 돌리기 |
 | `fixtures/` | 샘플 앱 5개(소스)와 사람이 정한 기대값 `expected.json` |
 | `docs/` | PoC 작업 기록(`WORKLOG.md`), 실제 서비스에 대한 사람의 판정(`answer-key.md`) |
@@ -26,9 +28,10 @@
 ./gradlew :reach-analyzer:jar           # build/libs/reach-analyzer.jar (ASM 포함, java -jar로 실행)
 ./gradlew :reach-analyzer:fixtureTest   # 샘플 앱 5개 판정을 expected.json과 비교
 ./gradlew :reach-analyzer:verdictTest   # bundle.py·l3.py·l3_runner.py 단위 테스트
+./gradlew :reach-analyzer:vulndataTest  # vulndata.py 단위 테스트 + MethodDiff(작은 jar 두 개를 만들어 비교)
 ```
 
-`fixtureTest`·`verdictTest`는 bash, `javac`, `jar`, `python3`이 필요해 `check`(`./gradlew build`·`test`)에는 넣지 않았다. 샘플 앱은 실제 bcprov 1.78.1, Jackson 2.16.1, commons-logging 1.3.0 jar를 넣어 만든다(Gradle이 받는다). Spring MVC·Boot·Tomcat은 실제 클래스·메서드 이름을 가진 스텁이다.
+`fixtureTest`·`verdictTest`·`vulndataTest`는 bash, `javac`, `jar`, `python3`이 필요해 `check`(`./gradlew build`·`test`)에는 넣지 않았다. 샘플 앱은 실제 bcprov 1.78.1, Jackson 2.16.1, commons-logging 1.3.0 jar를 넣어 만든다(Gradle이 받는다). Spring MVC·Boot·Tomcat은 실제 클래스·메서드 이름을 가진 스텁이다.
 
 ## 실행
 
@@ -105,6 +108,51 @@ python3 reach-analyzer/verdict/l3.py --spec src/main/resources/reach/vuln-functi
   - 에이전트가 뜨기 전에 로드된 JDK 클래스(`HashMap`, `regex.Pattern` 등)는 기록되지 않는다. 클래스 파일을 주지 않은 클래스는 `NOT_RECORDED`가 된다
   - 요청 뒤에 앱이 백그라운드로 하는 일은 다음 구간에 잡힐 수 있다
 - 에이전트 범위: `includes=*`에 `inclbootstrapclasses=true`를 같이 주면 JVM이 뜨지 않는다. JDK는 `java.util.*`처럼 패키지를 골라 넣는다.
+
+## 판정 데이터 만들기
+
+판정 데이터가 없는 CVE는 `NO_VULN_FUNCTION_DATA`로 남는다. 새 CVE의 데이터는 세 단계로 만든다. AI는 후보까지만 만들고, 사람이 확인한 것만 데이터가 된다(PRD NFR-04).
+
+| 단계 | 누가 | 하는 일 |
+|---|---|---|
+| `prepare` | 도구 | 권고문(GitHub Advisory Database) → 설치 버전과 수정 버전의 jar·소스(Maven Central) → 코드가 바뀐 메서드(`MethodDiff`) → 권고문의 수정 커밋으로 후보를 좁힘 → 메서드마다 수정이 건드린 줄(L3 취약 구간 후보) |
+| 초안 | AI | 묶음 폴더의 `PROMPT.md`대로 `draft.json`을 쓴다: 취약 함수, 호출 방식, 요약, 취약 구간, 사람이 확인할 것 |
+| `check` → `apply` | 도구, 사람 | 초안이 가리키는 메서드·줄이 설치 버전 jar에 실제로 있는지 검사하고 검토 문서 `REVIEW.md`를 만든다. 사람이 확인한 뒤 `vuln-functions.json`에 넣는다 |
+
+```bash
+./gradlew :reach-analyzer:jar
+cd reach-analyzer/vulndata
+
+# 1. 자료 모으기. --installed는 서비스가 쓰는 버전(SBOM), --coordinates는 권고문에 패키지가 여럿일 때만
+python3 vulndata.py prepare --cve CVE-2026-65637 --coordinates org.apache.tomcat.embed:tomcat-embed-core \
+    --installed 11.0.24 --out ~/.vulndata/CVE-2026-65637
+
+# 2. 초안: AI에게 그 폴더의 PROMPT.md를 따라 draft.json을 쓰게 한다 (예: Claude Code에서
+#    "~/.vulndata/CVE-2026-65637/PROMPT.md를 따라 draft.json을 써 줘")
+
+# 3. 검사. 오류가 있으면 종료 코드 1. REVIEW.md를 사람이 읽는다
+python3 vulndata.py check ~/.vulndata/CVE-2026-65637
+
+# 4. 확인이 끝나면 반영. 확인한 사람 이름이 research/vulndata/<CVE>.json에 남는다
+python3 vulndata.py apply ~/.vulndata/CVE-2026-65637 --reviewed-by <이름>
+```
+
+묶음 폴더는 저장소 밖에 둔다(jar와 소스가 들어 있어 수십 MB다). Python 표준 라이브러리만 쓰고, 네트워크는 `api.github.com`·`github.com`·`repo1.maven.org`에만 나간다. GitHub 요청 한도에 걸리면 `GITHUB_TOKEN`을 준다(`api.github.com`에만 보낸다).
+
+`check`가 오류로 막는 것(사람 판단과 상관없이 틀린 것): jar에 없는 클래스·메서드·descriptor, 실행 코드가 없는 줄만 잡은 구간, 줄 번호가 없는 jar에 줄을 적은 구간, 권고문에서 온 값(패키지·버전·심각도)을 바꾼 것, 한국어 요약 없음. 확인으로 남기는 것(`REVIEW.md`에 표시): 수정에서 바뀌지 않은 메서드를 취약 함수로 잡은 것, 수정이 건드린 줄과 겹치지 않는 구간, 프레임워크가 실행하는 코드인데 `rules.json`에 규칙이 없는 것.
+
+반영한 뒤 할 일:
+
+- 호출 방식이 `app_calls_library`가 아니면 `rules.json`에 그 CVE의 규칙을 쓴다(사람이 쓴다). 규칙이 없으면 호출 그래프만으로 판정해 "도달 불가"가 잘못 나올 수 있다. 사실(fact)을 더하면 `ReachRuleServiceTest`의 기대값도 고친다.
+- `fixtureTest`·`verdictTest`와 `./gradlew :test --tests 'com.logssey.reach.rule.*'`를 돌리고, 서비스 jar에 분석기를 돌려 판정을 읽는다.
+- 데이터·규칙은 PR 하나로 올린다. 화면(API-09·10)과 분석이 같은 파일을 쓴다.
+
+한계:
+
+- Maven Central에 있는 Java 라이브러리만 된다. JDK 자체의 취약점은 비교할 jar가 없다.
+- 후보는 "수정 커밋이 건드린 클래스 근처에서 코드가 바뀐 메서드"다. 데이터만 고친 수정(차단 목록 등)이나 권고문에 수정 커밋이 없는 CVE는 바뀐 메서드 전체가 후보가 되고, AI가 `method-diff.tsv`와 소스에서 찾는다. 사람 데이터가 있는 14개 CVE로 돌리면 13개에서 사람이 고른 취약 함수가 후보에 들어 있다(없는 하나는 차단 목록만 고친 CVE-2026-83557).
+- 초안의 취약 함수는 그 패키지의 설치 버전 jar에 있는 메서드만 된다. 다른 라이브러리에서 부르는 쪽이나 다른 버전에서 바뀐 이름은 도구가 확인할 수 없어 `check`가 막는다. 필요하면 반영한 뒤 사람이 직접 더한다(분석기는 라이브러리 안의 호출을 따라가므로 부르는 쪽은 대개 필요 없다).
+- 취약 구간의 줄 번호는 설치 버전 하나의 것이다. 서비스가 라이브러리 버전을 올리면 L3는 그 CVE를 "함수까지"로만 보인다.
 
 ## 판정 방식
 
