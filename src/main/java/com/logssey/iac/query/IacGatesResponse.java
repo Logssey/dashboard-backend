@@ -4,7 +4,7 @@ import java.time.OffsetDateTime;
 import java.util.List;
 
 /**
- * S-01 E ② plan 전 검사. 관문별로 main 기준 열린 위반과 최근 7일 PR 차단 수.
+ * S-01 E plan 전 검사. 관문별로 main 기준 열린 위반과 최근 7일 PR 차단 수.
  * supplyChain 은 버전 미고정·모듈 내용 변경 같은 공급망 경고의 열린 건수.
  */
 public record IacGatesResponse(OffsetDateTime mainCheckedAt, List<Stage> stages, SupplyChain supplyChain) {

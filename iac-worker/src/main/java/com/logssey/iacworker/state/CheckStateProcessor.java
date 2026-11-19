@@ -16,7 +16,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * CHECK_STATE (③): 매일 tfstate 를 읽을 수 있는 주체를 기록한다. 결과는 작업 stats 에 남겨 /state/summary 가 읽는다.
+ * CHECK_STATE (State): 매일 tfstate 를 읽을 수 있는 주체를 기록한다. 결과는 작업 stats 에 남겨 /state/summary 가 읽는다.
  * State 파일 안의 민감값 확인은 아직 하지 않는다.
  */
 public class CheckStateProcessor implements IacJobProcessor {

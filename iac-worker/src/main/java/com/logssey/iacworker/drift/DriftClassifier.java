@@ -9,7 +9,7 @@ import java.util.TreeSet;
 import tools.jackson.databind.JsonNode;
 
 /**
- * ③ 드리프트 분류 (FR-S1, rule-spec drift.*). 코드 밖에서 바뀐 속성 이름만 보고 값은 다루지 않는다 (SR-4).
+ * 드리프트 분류 (FR-S1, rule-spec drift.*). 코드 밖에서 바뀐 속성 이름만 보고 값은 다루지 않는다 (SR-4).
  *
  * 노이즈로 빼는 것 (지금 prod plan 에서 확인한 것):
  *   - 시간이 지나면 저절로 바뀌는 값 (RDS latest_restorable_time)

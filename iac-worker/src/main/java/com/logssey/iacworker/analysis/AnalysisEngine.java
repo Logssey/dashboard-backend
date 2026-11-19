@@ -18,7 +18,7 @@ import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * ① 경로 분석 (FR-P2·P3). plan 의 변경을 그래프 사본에 반영해 머지 전·후 경로를 비교한다.
+ * 경로 분석 (FR-P2·P3). plan 의 변경을 그래프 사본에 반영해 머지 전·후 경로를 비교한다.
  *
  * 반영하는 변경 (MVP): 역할 인라인 정책(aws_iam_role_policy), 관리형 정책 연결(aws_iam_role_policy_attachment),
  * 인스턴스 IMDS(aws_instance.metadata_options.http_tokens). 보안 그룹은 백로그.
@@ -43,11 +43,11 @@ public class AnalysisEngine {
                          String roleId) {
     }
 
-    /** ③ State 영향. 읽기 주체가 늘면 state.reader_increase (경고·HIGH, rule-spec). */
+    /** State 영향. 읽기 주체가 늘면 state.reader_increase (경고·HIGH, rule-spec). */
     public record State(String ruleId, String severity, int readersBefore, int readersAfter, int secretsAdded) {
     }
 
-    /** 경로 없이 리소스 하나에 걸리는 ① 규칙 (path.imds_v1_added: 경고·MEDIUM, rule-spec). */
+    /** 경로 없이 리소스 하나에 걸리는 경로 분석 규칙 (path.imds_v1_added: 경고·MEDIUM, rule-spec). */
     public record Finding(String ruleId, String enforcement, String severity, Cause cause) {
     }
 

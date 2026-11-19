@@ -15,7 +15,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** S-01 C·D·E·G·H 조회: PR 목록, 경로 상세의 끊을 지점, 제안 조치, ② 관문, 검사 주기. */
+/** S-01 C·D·E·G·H 조회: PR 목록, 경로 상세의 끊을 지점, 제안 조치, plan 전 검사 관문, 검사 주기. */
 class IacQueryOverviewTest {
 
     private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:18.6");
@@ -81,7 +81,7 @@ class IacQueryOverviewTest {
 
         var remediations = service.remediations("admin");
         assertThat(remediations).extracting(r -> r.action() + "|" + r.source() + "|" + r.pathsCut() + "|" + r.tier1PathsCut())
-                .containsExactly("IMDSV2_REQUIRED|①|3|2", "SECRETS_READ_SCOPE|①|2|2", "TFSTATE_BUCKET_POLICY|③|0|0");
+                .containsExactly("IMDSV2_REQUIRED|PATH|3|2", "SECRETS_READ_SCOPE|PATH|2|2", "TFSTATE_BUCKET_POLICY|STATE|0|0");
     }
 
     @Test
@@ -102,7 +102,7 @@ class IacQueryOverviewTest {
         var prs = service.pullRequests(null, "admin");
         assertThat(prs).extracting(IacPullRequestSummaryResponse::number).containsExactlyInAnyOrder(58, 60, 62);
         assertThat(prs.stream().filter(p -> p.number() == 62).findFirst().orElseThrow().reason())
-                .as("경로 없는 ① 발견 건도 대표 규칙이 된다").isEqualTo("path.imds_v1_added");
+                .as("경로 없는 경로 분석 발견 건도 대표 규칙이 된다").isEqualTo("path.imds_v1_added");
         var pr58 = prs.stream().filter(p -> p.number() == 58).findFirst().orElseThrow();
         assertThat(pr58.runId()).isEqualTo(latest).isNotEqualTo(old);
         assertThat(pr58.pathsAdded()).isEqualTo(6);

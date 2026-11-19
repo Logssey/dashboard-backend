@@ -136,7 +136,7 @@ public class IacQueryService {
         return cuts;
     }
 
-    /** S-01 G. 열린 경로를 끊는 조치(①)와 State 읽기 주체를 줄이는 조치(③). */
+    /** S-01 G. 열린 경로를 끊는 조치(PATH)와 State 읽기 주체를 줄이는 조치(STATE). */
     public List<IacRemediationResponse> remediations(String loginId) {
         requireAdmin(loginId);
         Map<String, long[]> byAction = new java.util.LinkedHashMap<>();
@@ -149,11 +149,11 @@ public class IacQueryService {
         }
         List<IacRemediationResponse> result = new java.util.ArrayList<>();
         byAction.forEach((action, counts) -> result.add(
-                new IacRemediationResponse(action, "①", counts[0], counts[1], action.toLowerCase())));
+                new IacRemediationResponse(action, "PATH", counts[0], counts[1], action.toLowerCase())));
         boolean tfstateReaders = repository.latestJob("CHECK_STATE")
                 .map(job -> job.stats().path("readerCount").asLong(0) > 0).orElse(false);
         if (tfstateReaders && !byAction.containsKey("TFSTATE_BUCKET_POLICY")) {
-            result.add(new IacRemediationResponse("TFSTATE_BUCKET_POLICY", "③", 0, 0, "tfstate_bucket_policy"));
+            result.add(new IacRemediationResponse("TFSTATE_BUCKET_POLICY", "STATE", 0, 0, "tfstate_bucket_policy"));
         }
         result.sort((a, b) -> Long.compare(b.tier1PathsCut() * 1000 + b.pathsCut(), a.tier1PathsCut() * 1000 + a.pathsCut()));
         return result;
