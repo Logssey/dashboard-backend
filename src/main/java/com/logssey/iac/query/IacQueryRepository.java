@@ -156,13 +156,15 @@ public class IacQueryRepository {
                 json(rs.getString("evidence"))), runId);
     }
 
-    /** 분석 작업이 남긴 결과의 한 부분 (resources: plan 리소스 수, state: State 영향). */
+    /** 분석 작업이 남긴 결과의 한 부분 (resources: plan 리소스 수, state: State 영향). 그 키가 없으면 null. */
     JsonNode analysisStats(long runId, String key) {
-        return json(jdbc.query("""
+        // 키가 없으면 행의 값이 SQL NULL 이라 Optional 로 감싸지 않고 목록에서 꺼낸다 (findFirst 는 null 을 못 받는다)
+        List<String> values = jdbc.query("""
                 SELECT (stats -> ?)::text FROM iac_jobs
                 WHERE run_id = ? AND kind = 'ANALYZE_RUN' AND status = 'SUCCEEDED'
                 ORDER BY job_id DESC LIMIT 1
-                """, (rs, row) -> rs.getString(1), key, runId).stream().findFirst().orElse(null));
+                """, (rs, row) -> rs.getString(1), key, runId);
+        return values.isEmpty() ? null : json(values.getFirst());
     }
 
     /** 가장 최근 CHECK_STATE 결과와 시각. */
