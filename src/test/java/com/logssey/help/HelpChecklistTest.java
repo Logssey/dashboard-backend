@@ -35,7 +35,7 @@ class HelpChecklistTest {
     static List<Map<String, Object>> validCards() {
         return new ArrayList<>(List.of(
                 card("VULN_FINDINGS", "CVE 검색 칸에 44228을 넣어 Log4j가 나오는지 봅니다.", 1),
-                card("VULN_SUMMARY", "집계 기준을 운영 중 이미지 기준으로 바꿉니다.", 2),
+                card("VULN_SUMMARY", "상태 × 심각도 표에서 영향 받는 Finding을 봅니다.", 2),
                 card("VULN_WORKLOADS", "스캔 없음 · 불일치 카드가 있으면 스캔 요청을 누릅니다.", 3),
                 card("IAC", "지금 열린 공격 경로로 바깥에서 닿는지 봅니다.", 4),
                 card("RUNTIME", "탐지 결과에서 사고 이후 이상 탐지를 봅니다.", 5),
