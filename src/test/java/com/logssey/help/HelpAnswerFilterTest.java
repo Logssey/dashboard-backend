@@ -79,6 +79,16 @@ class HelpAnswerFilterTest {
     }
 
     @Test
+    void removesMarkdownMarksButKeepsWordsAndNumbers() {
+        int start = DOCS.get(1).text().indexOf("버튼");
+        String raw = "## 순서\\n1. **무엇이 터졌나**: __CVE 검색__ 칸을 봅니다.\\n2. **Logssey 밖**: 접근 로그를 봅니다.";
+        var result = parse(message("end_turn", "[" + citedText(raw, 1, start) + "]"));
+
+        assertThat(result.ok()).isTrue();
+        assertThat(result.answer()).isEqualTo("순서\n1. 무엇이 터졌나: CVE 검색 칸을 봅니다.\n2. Logssey 밖: 접근 로그를 봅니다.");
+    }
+
+    @Test
     void keepsDifferentParagraphs() {
         String answer = "대응 건은 위치 확인 화면에서 결정을 저장하면 만들어집니다.\n\n"
                 + "로그인은 아이디와 비밀번호를 넣고 로그인 버튼을 누르면 됩니다.";

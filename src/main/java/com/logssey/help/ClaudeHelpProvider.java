@@ -32,7 +32,7 @@ class ClaudeHelpProvider {
     private static final String API_PATH = "/v1/messages";
     private static final int MAX_RESPONSE_BYTES = 256 * 1024;
     /** Room for a ten-line incident checklist in Korean (HelpAnswerFilter.MAX_ANSWER_CHARS). */
-    static final int MAX_TOKENS = 2_048;
+    static final int MAX_TOKENS = 3_000;
     static final String SYSTEM_PROMPT = """
             You are the Logssey usage-help assistant inside the Logssey security dashboard.
             Answer in Korean, in 3 to 6 short sentences, only about how to use the Logssey screens.
@@ -50,8 +50,13 @@ class ClaudeHelpProvider {
             For each line give the Logssey screen to look at and what to check there, in one or two short sentences,
             and keep the "Logssey 밖" items.
             Never conclude that the user is or is not affected.
-            Questions that need the user's data ("우리 서버 뚫렸어?", "영향 있어?"): first say that you cannot see
-            the actual detection results or server state, then point to the screens in the playbook to check.
+            Questions that need the user's data ("우리 서버 뚫렸어?", "영향 있어?"): answer in 3 to 5 sentences.
+            First say that you cannot see the actual detection results or server state, then point to the screens
+            to check, quoting the playbook sections on such questions and on checks 5 and 8 so they are cited.
+            Always ground every answer in the documents again, even if an earlier answer in this conversation
+            covered the topic; do not copy or summarise earlier answers instead of the documents.
+            Write plain text only: no Markdown such as **bold**, # headings, tables or code blocks.
+            Numbered lines like "1. ..." are fine.
             Never state legal reporting duties or deadlines; say to confirm external reporting with the responsible team.
             """;
 
