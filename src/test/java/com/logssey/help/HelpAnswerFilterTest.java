@@ -65,6 +65,27 @@ class HelpAnswerFilterTest {
     }
 
     @Test
+    void dropsAParagraphThatRepeatsAnEarlierOne() {
+        String first = "대응 관리 목록에는 만들기 버튼이 없고, 위치 확인 화면에서 결정을 저장하면 만들어집니다. "
+                + "가능한 결정 선택에서 노출 확인 및 조치 요청을 고르고 결정 저장을 누르면 대응 건이 새로 만들어집니다.";
+        String reworded = "대응 관리 목록에는 만들기 버튼이 없습니다. 위치 확인 화면으로 가서 가능한 결정 선택에서 "
+                + "노출 확인 및 조치 요청을 고릅니다. 결정 저장을 누르면 대응 건이 새로 만들어집니다.";
+        String other = "권한이 없으면 보안 담당자의 확인이 필요하다는 안내가 보입니다.";
+        int start = DOCS.get(1).text().indexOf("버튼");
+        var result = parse(message("end_turn", "[" + citedText(first + "\\n\\n" + other + "\\n\\n" + reworded, 1, start) + "]"));
+
+        assertThat(result.ok()).isTrue();
+        assertThat(result.answer()).isEqualTo(first + "\n\n" + other);
+    }
+
+    @Test
+    void keepsDifferentParagraphs() {
+        String answer = "대응 건은 위치 확인 화면에서 결정을 저장하면 만들어집니다.\n\n"
+                + "로그인은 아이디와 비밀번호를 넣고 로그인 버튼을 누르면 됩니다.";
+        assertThat(HelpAnswerFilter.withoutRepeatedParagraphs(answer)).isEqualTo(answer);
+    }
+
+    @Test
     void ignoresCitationsToUnknownDocuments() {
         var result = parse(message("end_turn", "[" + citedText("답", 9, 0) + "]"));
         assertThat(result.reasonCode()).isEqualTo("NO_GROUNDED_ANSWER");
