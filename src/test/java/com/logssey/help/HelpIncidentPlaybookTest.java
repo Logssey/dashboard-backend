@@ -54,7 +54,7 @@ class HelpIncidentPlaybookTest {
     void tenLineChecklistSurvivesTheRepeatFilter() {
         var lines = new ArrayList<>(List.of(
                 "1번: 취약점 관리 > Finding 목록의 CVE 검색 칸에 44228을 넣어 Log4j 패키지가 나오는지 봅니다.",
-                "2번: 요약 화면의 집계 기준을 운영 중 이미지 기준으로 바꿔 운영 중 이미지에 있는지 봅니다. 결과가 없어도 안전하다는 뜻은 아닙니다.",
+                "2번: Finding 목록의 배포 상태 필터에서 실행 중을 골라 실행 중인 곳에 있는지 봅니다. 결과가 없어도 안전하다는 뜻은 아닙니다.",
                 "3번: 워크로드의 스캔 없음 · 불일치 카드가 있으면 그 줄의 스캔 요청으로 먼저 스캔합니다.",
                 "4번: Finding 상세 근거에서 판정이 도달 가능인지, IaC 보안의 지금 열린 공격 경로로 바깥에서 닿는지 봅니다.",
                 "5번: 런타임 보안 탐지 결과에서 사고 이후 이상 탐지를 봅니다. 센서가 없으면 Logssey 밖에서 접근 로그를 봅니다.",
