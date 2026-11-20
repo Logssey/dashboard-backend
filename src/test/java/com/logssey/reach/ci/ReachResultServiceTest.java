@@ -239,6 +239,24 @@ class ReachResultServiceTest {
     }
 
     @Test
+    void anUploadThatStartedEarlierThanTheOneAlreadyStoredDoesNotMoveLastSeenBack() {
+        var evidence = List.of(map("kind", "NOTE", "summary", "no path"));
+        upload(check("a"), item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence));
+        long a = finding("a");
+        // 겹친 두 업로드 가운데 나중에 시작한 쪽이 먼저 반영된 상태: 저장된 시각이 다음 업로드의 now()보다 늦다
+        jdbc.update("UPDATE reach_findings SET first_seen_at = now() + interval '1 hour', "
+                + "last_seen_at = now() + interval '1 hour' WHERE finding_id = ?", a);
+        var seen = jdbc.queryForMap("SELECT first_seen_at, last_seen_at FROM reach_findings WHERE finding_id = ?", a);
+
+        long second = upload(check("a"), item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence));
+
+        assertThat(jdbc.queryForMap("SELECT last_scan_id, first_seen_at, last_seen_at FROM reach_findings WHERE finding_id = ?", a))
+                .containsEntry("last_scan_id", second)
+                .containsEntry("first_seen_at", seen.get("first_seen_at"))
+                .containsEntry("last_seen_at", seen.get("last_seen_at"));
+    }
+
+    @Test
     void newImageOfTheSameAppCarriesTheReviewAndResetsItWhenTheVerdictChanged() {
         var evidence = List.of(map("kind", "NOTE", "summary", "no path"));
         upload(check("a"), item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence),
