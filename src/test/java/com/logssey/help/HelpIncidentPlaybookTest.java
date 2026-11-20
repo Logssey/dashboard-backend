@@ -43,9 +43,10 @@ class HelpIncidentPlaybookTest {
         JsonNode body = JsonMapper.builder().build().readTree(
                 provider.requestBody(List.of(playbook()), "Finding 목록", List.of(), "Log4Shell 터졌어 뭐부터 봐?"));
 
-        assertThat(body.path("max_tokens").asInt()).isEqualTo(ClaudeHelpProvider.MAX_TOKENS).isEqualTo(2_048);
+        assertThat(body.path("max_tokens").asInt()).isEqualTo(ClaudeHelpProvider.MAX_TOKENS).isEqualTo(3_000);
         String system = body.path("system").get(0).path("text").asText();
-        assertThat(system).contains("never drop one", "cannot see", "Never conclude", "responsible team");
+        assertThat(system).contains("never drop one", "cannot see", "Never conclude", "responsible team",
+                "3 to 5 sentences", "ground every answer in the documents again", "plain text only");
         assertThat(body.has("tools")).isFalse();
     }
 

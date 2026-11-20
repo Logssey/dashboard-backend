@@ -22,6 +22,9 @@ final class HelpAnswerFilter {
             "(?i)https?://|www\\.|<\\s*/?\\s*(script|iframe|img|a|svg)\\b|javascript:|-----BEGIN");
     private static final JsonMapper JSON = new JsonMapper();
     private static final Pattern PARAGRAPH_BREAK = Pattern.compile("\\n\\s*\\n");
+    private static final Pattern BOLD_MARKS = Pattern.compile("\\*\\*|__");
+    private static final Pattern HEADING_MARKS = Pattern.compile("(?m)^[ \\t]*#{1,6}[ \\t]+");
+    private static final Pattern CODE_FENCE = Pattern.compile("(?m)^[ \\t]*```[^\\n]*\\n?");
     private static final double REPEAT_OVERLAP = 0.6;
     private static final int MIN_PAIRS_FOR_REPEAT = 15;
 
@@ -62,7 +65,7 @@ final class HelpAnswerFilter {
                             doc.sectionAt(citation.path("start_char_index").asInt(0))));
                 }
             }
-            String answer = withoutRepeatedParagraphs(text.toString().strip());
+            String answer = withoutRepeatedParagraphs(withoutMarkdownMarks(text.toString()).strip());
             if (answer.isEmpty()) return Result.failed("PROVIDER_INVALID_RESPONSE", usage);
             if (citations == 0) return Result.ungrounded(usage);
             if (!safe(answer)) return Result.failed("ANSWER_BLOCKED", usage);
@@ -70,6 +73,16 @@ final class HelpAnswerFilter {
         } catch (RuntimeException invalid) {
             return Result.failed("PROVIDER_INVALID_RESPONSE", usage);
         }
+    }
+
+    /**
+     * The answer is shown as plain text, so Markdown marks the model still writes would show up as
+     * stray symbols. Removes bold/italic markers, heading marks and code fences; keeps the words.
+     */
+    static String withoutMarkdownMarks(String answer) {
+        String text = BOLD_MARKS.matcher(answer).replaceAll("");
+        text = HEADING_MARKS.matcher(text).replaceAll("");
+        return CODE_FENCE.matcher(text).replaceAll("");
     }
 
     /**
