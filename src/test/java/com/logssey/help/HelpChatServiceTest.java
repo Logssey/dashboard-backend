@@ -184,6 +184,54 @@ class HelpChatServiceTest {
     }
 
     @Test
+    void checklistButtonReturnsCardsFromAPlaybookOnlyJsonRequest() {
+        NEXT_RESPONSE.set(HelpChecklistTest.modelReply(HelpChecklistTest.answer(HelpChecklistTest.validCards())));
+        var response = service().chat("admin", new ChatRequest("Log4Shell 터졌어 뭐부터 봐?", "Finding 목록",
+                List.of(new HelpTurn("user", "앞 질문"), new HelpTurn("assistant", "앞 답")), "checklist"));
+
+        assertThat(response.cards()).hasSize(9);
+        assertThat(response.cards().get(0).screen()).isEqualTo("VULN_FINDINGS");
+        assertThat(response.answer()).contains("1. 무엇이 터졌나");
+        assertThat(response.grounded()).isTrue();
+
+        assertThat(REQUESTS).hasSize(1);
+        String body = REQUESTS.get(0).body();
+        assertThat(body).contains("\"json_schema\"", "\"VULN_FINDINGS\"", "침해사고 대응");
+        // Only the playbook goes out, without citations, history or tools.
+        assertThat(body).doesNotContain("\"citations\"", "\"tools\"", "앞 질문", "통합 현황 사용법", FAKE_KEY);
+    }
+
+    @Test
+    void invalidChecklistJsonFallsBackToPlaybookTextWithoutASecondCall() {
+        NEXT_RESPONSE.set(HelpChecklistTest.modelReply("{\"cards\": \"broken\""));
+        var response = service().chat("admin", new ChatRequest("CVE-2021-44228 터졌어", "", List.of()));
+
+        assertThat(response.cards()).isNull();
+        assertThat(response.answer()).startsWith(HelpChecklist.FALLBACK_INTRO).contains("10. 기록·보고");
+        assertThat(response.sources()).hasSize(10);
+        assertThat(REQUESTS).hasSize(1);
+    }
+
+    @Test
+    void plainIncidentQuestionWithoutButtonOrCveStaysText() {
+        NEXT_RESPONSE.set(grounded("1. Finding 목록에서 CVE 검색을 합니다."));
+        var response = service().chat("admin", new ChatRequest("Log4Shell 터졌어 뭐부터 봐?", "", List.of()));
+
+        assertThat(response.cards()).isNull();
+        assertThat(REQUESTS.get(0).body()).contains("\"citations\"").doesNotContain("\"json_schema\"");
+    }
+
+    @Test
+    void checklistRequestJsonCarriesTheModeField() {
+        var request = tools.jackson.databind.json.JsonMapper.builder().build().readValue(
+                "{\"question\":\"q\",\"page\":\"p\",\"history\":[],\"mode\":\"checklist\"}", ChatRequest.class);
+        assertThat(request.mode()).isEqualTo("checklist");
+        var withoutMode = tools.jackson.databind.json.JsonMapper.builder().build().readValue(
+                "{\"question\":\"q\",\"page\":\"p\",\"history\":[]}", ChatRequest.class);
+        assertThat(withoutMode.mode()).isNull();
+    }
+
+    @Test
     void missingKeyReportsNotConfiguredWithoutCalling() {
         var chat = new HelpChatService(new HelpDocumentLibrary(), provider(false),
                 new HelpCallBudget(new HelpCallBudget.Limits(5, 40, 20, 300), java.time.Clock.systemUTC()));

@@ -134,7 +134,7 @@ final class HelpAnswerFilter {
         return !HelpQuestionGuard.containsSecretLikeValue(answer);
     }
 
-    private static Usage usage(JsonNode node) {
+    static Usage usage(JsonNode node) {
         if (!node.isObject()) return Usage.EMPTY;
         return new Usage(node.path("input_tokens").asInt(0),
                 node.path("cache_read_input_tokens").asInt(0),

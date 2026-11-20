@@ -11,6 +11,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import com.logssey.help.HelpChatDtos.CardView;
 import com.logssey.help.HelpChatDtos.ChatRequest;
 import com.logssey.help.HelpChatDtos.ChatResponse;
 import com.logssey.help.HelpChatDtos.SourceView;
@@ -68,7 +69,11 @@ class HelpChatService {
         String reason = readiness();
         if (!"READY".equals(reason)) throw new HelpChatException("NOT_CONFIGURED");
 
-        String cacheKey = history.isEmpty() ? page + "\n" + question.replaceAll("\\s+", " ") : null;
+        HelpDocument playbook = HelpChecklist.wanted(request.mode(), question) ? playbook() : null;
+        String normalized = question.replaceAll("\\s+", " ");
+        // Checklist answers ignore history, so they can always be cached.
+        String cacheKey = playbook != null ? "checklist\n" + page + "\n" + normalized
+                : history.isEmpty() ? page + "\n" + normalized : null;
         if (cacheKey != null) {
             var hit = cachedAnswer(cacheKey);
             if (hit != null) return hit;
@@ -77,6 +82,12 @@ class HelpChatService {
         var permit = budget.acquire(principal);
         if (!permit.allowed()) {
             throw new HelpChatException(permit.reasonCode(), permit.retryAfterSeconds());
+        }
+
+        if (playbook != null) {
+            ChatResponse response = checklist(playbook, page, question, permit);
+            remember(cacheKey, response);
+            return response;
         }
 
         HelpAnswerFilter.Result result;
@@ -107,6 +118,38 @@ class HelpChatService {
         }
         if (cacheKey != null) remember(cacheKey, response);
         return response;
+    }
+
+    /** Cards when the model JSON passes every check; otherwise the playbook text, without a second call. */
+    private ChatResponse checklist(HelpDocument playbook, String page, String question, HelpCallBudget.Permit permit) {
+        HelpChecklist.Result result;
+        try {
+            var reply = provider.send(provider.checklistRequestBody(playbook, page, question));
+            if (reply.reasonCode() != null) {
+                log.info("Help chat result={} mode=checklist", reply.reasonCode());
+                throw new HelpChatException("PROVIDER_UNAVAILABLE");
+            }
+            result = HelpChecklist.parse(reply.body(), playbook);
+        } catch (HelpChatException failed) {
+            throw failed;
+        } catch (RuntimeException unexpected) {
+            log.info("Help chat result=PROVIDER_UNAVAILABLE mode=checklist");
+            throw new HelpChatException("PROVIDER_UNAVAILABLE");
+        } finally {
+            permit.complete();
+        }
+        log.info("Help chat result={} mode=checklist input={} cacheRead={} cacheWrite={} output={}",
+                result.fallback() ? "CHECKLIST_FALLBACK:" + result.reasonCode() : "CHECKLIST",
+                result.usage().input(), result.usage().cacheRead(), result.usage().cacheWrite(), result.usage().output());
+        var sources = result.sources().stream().map(s -> new SourceView(s.doc(), s.title(), s.section())).toList();
+        var cards = result.fallback() ? null : result.cards().stream()
+                .map(c -> new CardView(c.checks(), c.titles(), c.screen(), c.focus())).toList();
+        return new ChatResponse(result.text(), true, sources, permit.remainingToday(), false, cards);
+    }
+
+    private HelpDocument playbook() {
+        return library.documents().stream()
+                .filter(doc -> HelpChecklist.PLAYBOOK_FILE.equals(doc.file())).findFirst().orElse(null);
     }
 
     private String readiness() {
@@ -148,7 +191,8 @@ class HelpChatService {
         var entry = cache.get(key);
         if (entry == null) return null;
         var value = entry.response();
-        return new ChatResponse(value.answer(), value.grounded(), value.sources(), value.remainingToday(), true);
+        return new ChatResponse(value.answer(), value.grounded(), value.sources(), value.remainingToday(), true,
+                value.cards());
     }
 
     private synchronized void remember(String key, ChatResponse response) {
