@@ -33,6 +33,8 @@ class ClaudeHelpProvider {
     private static final int MAX_RESPONSE_BYTES = 256 * 1024;
     /** Room for a ten-line incident checklist in Korean (HelpAnswerFilter.MAX_ANSWER_CHARS). */
     static final int MAX_TOKENS = 3_000;
+    /** Ten short cards in JSON fit well under this. */
+    static final int CHECKLIST_MAX_TOKENS = 2_000;
     static final String SYSTEM_PROMPT = """
             You are the Logssey usage-help assistant inside the Logssey security dashboard.
             Answer in Korean, in 3 to 6 short sentences, only about how to use the Logssey screens.
@@ -146,6 +148,30 @@ class ClaudeHelpProvider {
         body.put("thinking", Map.of("type", "between_tools"));
         body.put("output_config", Map.of("effort", "low"));
         body.put("messages", messages);
+        return json.writeValueAsString(body);
+    }
+
+    /**
+     * Checklist-card request (design doc 12): only the incident playbook, no history, citations off
+     * (they cannot be combined with a JSON output format) and the reply forced into HelpChecklist.schema().
+     */
+    String checklistRequestBody(HelpDocument playbook, String page, String question) {
+        var document = new LinkedHashMap<String, Object>();
+        document.put("type", "document");
+        document.put("source", Map.of("type", "text", "media_type", "text/plain", "data", playbook.text()));
+        document.put("title", playbook.title());
+        document.put("cache_control", Map.of("type", "ephemeral"));
+        String pageLine = page == null || page.isBlank() ? "" : "현재 화면: " + page + "\n\n";
+        var content = List.of(document, Map.of("type", "text", "text", pageLine + "질문: " + question));
+
+        var body = new LinkedHashMap<String, Object>();
+        body.put("model", MODEL);
+        body.put("max_tokens", CHECKLIST_MAX_TOKENS);
+        body.put("system", List.of(Map.of("type", "text", "text", HelpChecklist.SYSTEM_PROMPT)));
+        body.put("thinking", Map.of("type", "between_tools"));
+        body.put("output_config", Map.of("effort", "low",
+                "format", Map.of("type", "json_schema", "schema", HelpChecklist.schema())));
+        body.put("messages", List.of(Map.of("role", "user", "content", content)));
         return json.writeValueAsString(body);
     }
 
