@@ -60,6 +60,14 @@
     "CVE-2026-89407": "unreachable",
     "CVE-2026-91777": "unknown"
   },
+  "app-generic": {
+    "CVE-2026-89407": "reachable",
+    "CVE-2026-19032": "reachable",
+    "CVE-2026-68497": "reachable",
+    "CVE-2026-91776": "unreachable",
+    "CVE-2026-91777": "unreachable",
+    "CVE-2026-83557": "unreachable"
+  },
   "why": {
     "app-like": {
       "CVE-2026-89407": "BigDecimal exists only in a response DTO (ProductResponse) that is built with new and returned; nothing names it to Jackson (no root, class literal, TypeReference, Jackson annotation value or @Cacheable) -> unreachable",
@@ -91,6 +99,14 @@
       "CVE-2025-14813": "KNOWN MISS: G3413CTRBlockCipher created by Class.forName; reflection is not modelled. If this starts failing, the limitation was lifted: update README",
       "CVE-2026-89407": "KNOWN MISS: readValue(json, Class.forName(name)); the BigDecimal type is never named in bytecode",
       "CVE-2026-91777": "@JsonIdentityInfo only on a mix-in, single Node read (no collection/map) -> unknown via jsonIdentityInfo.any; was over-reported as reachable before the fix because the mix-in class literal became a root and a type-level annotation counted without a container"
+    },
+    "app-generic": {
+      "CVE-2026-89407": "CrudController<T>.create(@RequestBody T): ItemController extends CrudController<ItemRequest>, ItemRequest has a BigDecimal field -> reachable",
+      "CVE-2026-19032": "FileController extends AuditedController<FileRequest> extends CrudController<U>: T is FileRequest two levels up, FileRequest has a java.nio.file.Path field -> reachable",
+      "CVE-2026-68497": "ScheduleController implements ImportApi<ScheduleRequest> (default method with @RequestBody D), ScheduleRequest has a javax.xml.datatype.Duration field -> reachable",
+      "CVE-2026-91776": "no @JsonTypeInfo, default typing or problem handler anywhere -> unreachable (the bound types must not add facts they do not have)",
+      "CVE-2026-91777": "no @JsonIdentityInfo -> unreachable",
+      "CVE-2026-83557": "no @JsonTypeInfo -> unreachable"
     }
   },
   "app-boot2": {

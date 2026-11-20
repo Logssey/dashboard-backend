@@ -26,7 +26,7 @@
 
 ```bash
 ./gradlew :reach-analyzer:jar           # build/libs/reach-analyzer.jar (ASM 포함, java -jar로 실행)
-./gradlew :reach-analyzer:fixtureTest   # 샘플 앱 5개 판정을 expected.json과 비교
+./gradlew :reach-analyzer:fixtureTest   # 샘플 앱 7개 판정을 expected.json과 비교
 ./gradlew :reach-analyzer:verdictTest   # bundle.py·l3.py·l3_runner.py 단위 테스트
 ./gradlew :reach-analyzer:vulndataTest  # vulndata.py 단위 테스트 + MethodDiff(작은 jar 두 개를 만들어 비교)
 ```
@@ -163,6 +163,7 @@ python3 vulndata.py apply ~/.vulndata/CVE-2026-65637 --reviewed-by <이름>
 ## 한계
 
 - 리플렉션, 동적 프록시, JNI는 모델링하지 않는다(`fixtures/fixture-src/app-blindspots`에 알려진 누락으로 고정).
+- 요청 본문을 타입 변수로 받는 공통 컨트롤러(`CrudController<T>`의 `create(@RequestBody T)`)는 하위 타입이 준 타입 인자를 DTO로 본다(`app-generic`). 그 메서드가 앱 밖(라이브러리 jar)의 클래스에 선언돼 있으면 아직 보지 못한다.
 - JDK 내부 코드는 분석하지 않는다. JDK가 다시 불러줄 수 있는 메서드는 "약한 경로"로 표시한다.
 - 런타임 설정(JRE의 `java.security` 등)은 이미지에서 따로 확인해야 한다. 레포 안의 설정 파일만 `--repo`로 본다.
 

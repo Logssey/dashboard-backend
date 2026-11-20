@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Builds five Spring-Boot-layout test jars (BOOT-INF/classes + BOOT-INF/lib) into $FIXTURE_BUILD:
+# Builds the Spring-Boot-layout test jars (BOOT-INF/classes + BOOT-INF/lib) into $FIXTURE_BUILD:
 #   app-like.jar       mirrors service-backend (Argon2 via Spring Security, @RequestBody DTOs, no container auth)
 #   app-positive.jar   positive controls: every CVE condition deliberately present
 #   app-tokens.jar     CVE-2026-89407 control: a BigDecimal type named only by a class literal passed to a generic helper
 #   app-indirect.jar   the app-positive conditions one step removed (nesting, subclasses, JCE names, ObjectReader)
 #   app-blindspots.jar reflection / runtime type names (known misses, pinned) and a mix-in (must not be over-reported)
+#   app-generic.jar    request bodies typed by a type variable (CrudController<T>): the type each subtype gives is the DTO
 #   app-boot2.jar      app-like on Spring Boot 2: the Tomcat rules were checked on Spring Boot 4 only, so they must not say unreachable
 # Real bytecode: bcprov 1.78.1, jackson 2.16.1, commons-logging 1.3.0 (Gradle puts them in $FIXTURE_LIBS),
 # spring-security-crypto 7.1.1 (compiled from the official sources). Spring MVC/Boot and Tomcat are stubs
@@ -46,7 +47,8 @@ jc app-positive "$LIBS" fixture-src/app-positive
 jc app-tokens "$LIBS" fixture-src/app-tokens
 jc app-indirect "$LIBS" fixture-src/app-indirect
 jc app-blindspots "$LIBS" fixture-src/app-blindspots
-for app in app-like app-positive app-tokens app-indirect app-blindspots; do
+jc app-generic "$LIBS" fixture-src/app-generic
+for app in app-like app-positive app-tokens app-indirect app-blindspots app-generic; do
   F="$B/fat/$app"; mkdir -p "$F/BOOT-INF/classes" "$F/BOOT-INF/lib"
   cp -r "$B/c/$app/." "$F/BOOT-INF/classes/"
   cp "$B"/lib/*.jar "$F/BOOT-INF/lib/"
