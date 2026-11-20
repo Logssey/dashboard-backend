@@ -1,8 +1,10 @@
 package com.logssey.help;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 import tools.jackson.databind.JsonNode;
@@ -18,6 +20,9 @@ final class HelpAnswerFilter {
     private static final Pattern FORBIDDEN = Pattern.compile(
             "(?i)https?://|www\\.|<\\s*/?\\s*(script|iframe|img|a|svg)\\b|javascript:|-----BEGIN");
     private static final JsonMapper JSON = new JsonMapper();
+    private static final Pattern PARAGRAPH_BREAK = Pattern.compile("\\n\\s*\\n");
+    private static final double REPEAT_OVERLAP = 0.6;
+    private static final int MIN_PAIRS_FOR_REPEAT = 15;
 
     private HelpAnswerFilter() {
     }
@@ -56,7 +61,7 @@ final class HelpAnswerFilter {
                             doc.sectionAt(citation.path("start_char_index").asInt(0))));
                 }
             }
-            String answer = text.toString().strip();
+            String answer = withoutRepeatedParagraphs(text.toString().strip());
             if (answer.isEmpty()) return Result.failed("PROVIDER_INVALID_RESPONSE", usage);
             if (citations == 0) return Result.ungrounded(usage);
             if (!safe(answer)) return Result.failed("ANSWER_BLOCKED", usage);
@@ -64,6 +69,42 @@ final class HelpAnswerFilter {
         } catch (RuntimeException invalid) {
             return Result.failed("PROVIDER_INVALID_RESPONSE", usage);
         }
+    }
+
+    /**
+     * Drops a paragraph that repeats an earlier one, even when reworded slightly
+     * (character-pair overlap of 60% or more). Short paragraphs are always kept.
+     */
+    static String withoutRepeatedParagraphs(String answer) {
+        String[] paragraphs = PARAGRAPH_BREAK.split(answer);
+        if (paragraphs.length < 2) return answer;
+        var kept = new ArrayList<String>();
+        var keptPairs = new ArrayList<Set<String>>();
+        for (String paragraph : paragraphs) {
+            String trimmed = paragraph.strip();
+            if (trimmed.isEmpty()) continue;
+            Set<String> pairs = characterPairs(trimmed);
+            boolean repeated = pairs.size() >= MIN_PAIRS_FOR_REPEAT
+                    && keptPairs.stream().anyMatch(earlier -> overlap(earlier, pairs) >= REPEAT_OVERLAP);
+            if (repeated) continue;
+            kept.add(trimmed);
+            keptPairs.add(pairs);
+        }
+        return String.join("\n\n", kept);
+    }
+
+    private static Set<String> characterPairs(String paragraph) {
+        String letters = paragraph.replaceAll("[\\s\\p{Punct}“”‘’·…]", "");
+        var pairs = new HashSet<String>();
+        for (int i = 0; i + 1 < letters.length(); i++) pairs.add(letters.substring(i, i + 2));
+        return pairs;
+    }
+
+    private static double overlap(Set<String> a, Set<String> b) {
+        if (a.isEmpty() || b.isEmpty()) return 0;
+        int common = 0;
+        for (String pair : b) if (a.contains(pair)) common++;
+        return (double) common / Math.min(a.size(), b.size());
     }
 
     static boolean safe(String answer) {
