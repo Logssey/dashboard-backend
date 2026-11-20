@@ -16,7 +16,8 @@ import tools.jackson.databind.json.JsonMapper;
  */
 final class HelpAnswerFilter {
 
-    static final int MAX_ANSWER_CHARS = 1_500;
+    /** Incident checklists list ten checks, so this is larger than a plain usage answer needs. */
+    static final int MAX_ANSWER_CHARS = 2_500;
     private static final Pattern FORBIDDEN = Pattern.compile(
             "(?i)https?://|www\\.|<\\s*/?\\s*(script|iframe|img|a|svg)\\b|javascript:|-----BEGIN");
     private static final JsonMapper JSON = new JsonMapper();
@@ -73,7 +74,7 @@ final class HelpAnswerFilter {
 
     /**
      * Drops a paragraph that repeats an earlier one, even when reworded slightly
-     * (character-pair overlap of 60% or more). Short paragraphs are always kept.
+     * (character-pair overlap of 60% or more between paragraphs of similar length). Short paragraphs are always kept.
      */
     static String withoutRepeatedParagraphs(String answer) {
         String[] paragraphs = PARAGRAPH_BREAK.split(answer);
@@ -85,7 +86,8 @@ final class HelpAnswerFilter {
             if (trimmed.isEmpty()) continue;
             Set<String> pairs = characterPairs(trimmed);
             boolean repeated = pairs.size() >= MIN_PAIRS_FOR_REPEAT
-                    && keptPairs.stream().anyMatch(earlier -> overlap(earlier, pairs) >= REPEAT_OVERLAP);
+                    && keptPairs.stream().anyMatch(earlier -> similarSize(earlier, pairs)
+                            && overlap(earlier, pairs) >= REPEAT_OVERLAP);
             if (repeated) continue;
             kept.add(trimmed);
             keptPairs.add(pairs);
@@ -98,6 +100,11 @@ final class HelpAnswerFilter {
         var pairs = new HashSet<String>();
         for (int i = 0; i + 1 < letters.length(); i++) pairs.add(letters.substring(i, i + 2));
         return pairs;
+    }
+
+    /** A short checklist line is not a repeat of a long paragraph just because it shares words with it. */
+    private static boolean similarSize(Set<String> a, Set<String> b) {
+        return Math.min(a.size(), b.size()) >= 0.6 * Math.max(a.size(), b.size());
     }
 
     private static double overlap(Set<String> a, Set<String> b) {
