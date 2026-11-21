@@ -73,17 +73,23 @@
 | dashboard-backend 읽기 | GitHub App 토큰. 비밀값 `REACH_APP_ID`, `REACH_APP_PRIVATE_KEY`(서비스 CI/CD의 gitops 토큰과 같은 방식) | 앱 미정. 나중에 분석기 이미지(GHCR)로 바꾸면 필요 없다 |
 | ECR 읽기 역할 | 비밀값 `REACH_ECR_READ_ROLE_ARN`. `ecr:DescribeImages`, `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`, `ecr:GetAuthorizationToken`만. 신뢰 정책은 이 저장소의 기본 브랜치 실행(`sub = repo:<조직>/<레포>:ref:refs/heads/<기본 브랜치>`, `image`의 `workflow_run`과 `manual`의 `workflow_dispatch`)으로 제한. 이 레포가 스캔할 이미지 저장소마다 읽기 권한 | Logssey 설치: infrastructure `logssey-dashboard/reach-ci.tf`(`logssey-dashboard-role-reach-ci-ecr-read`). 없거나 그 저장소 권한이 없으면 이미지 대상 `manual`은 `IMAGE_PULL_FAILED` |
 | 대시보드가 워크플로를 띄우는 앱 | 대시보드 설정 `logssey.reach.dispatch.app-id`·`private-key`(운영은 `/run/secrets` 파일). 권한은 `Actions: write` 하나, 감시 대상 서비스 저장소에만 설치. 위 dashboard-backend 읽기 앱과 따로 둔다(그 앱 키는 서비스 CI가 쓴다). 설정이 없으면 대시보드 스캔 요청은 `QUEUED`로 남는다 | 미정 |
-| `REACH_REF` | 서비스 저장소 변수(Settings → Secrets and variables → Actions → Variables). 이 폴더가 들어간 dashboard-backend `develop`의 커밋(40자) | 규칙·분석기·스크립트가 바뀌면 값을 그 커밋으로 바꾼다(아래 "판정 데이터·분석기를 바꾼 뒤"). 모든 작업이 시작할 때 값이 40자 커밋이고 `develop`에 들어 있는지 확인하며, 비어 있거나 다른 브랜치의 커밋이면 아무것도 받지 않고 멈춘다. `manual` 작업은 `reach-scan.sh`의 `MODE=MANUAL`이 들어간 커밋(#113) 이후, jar 없는 대상은 `--no-l2`가 들어간 커밋 이후, 재대조(`rescan_of`)는 `RESCAN_OF`가 들어간 커밋 이후여야 한다 |
+| `REACH_REF` | 서비스 저장소 변수(Settings → Secrets and variables → Actions → Variables). 이 폴더가 들어간 dashboard-backend `develop`의 커밋(40자) | 규칙·분석기·스크립트가 바뀌어 머지되면 대시보드 배포가 값을 그 커밋으로 옮긴다(아래 "판정 데이터·분석기를 바꾼 뒤"). 모든 작업이 시작할 때 값이 40자 커밋이고 `develop`에 들어 있는지 확인하며, 비어 있거나 다른 브랜치의 커밋이면 아무것도 받지 않고 멈춘다. `manual` 작업은 `reach-scan.sh`의 `MODE=MANUAL`이 들어간 커밋(#113) 이후, jar 없는 대상은 `--no-l2`가 들어간 커밋 이후, 재대조(`rescan_of`)는 `RESCAN_OF`가 들어간 커밋 이후여야 한다 |
 
 ## 판정 데이터·분석기를 바꾼 뒤
 
-서비스 저장소의 스캔은 변수 `REACH_REF`가 가리키는 커밋의 판정 데이터·분석기·스크립트를 쓴다. 이 저장소에 머지한 것만으로는 스캔에 반영되지 않는다.
+서비스 저장소의 스캔은 변수 `REACH_REF`가 가리키는 커밋의 판정 데이터·분석기·스크립트를 쓴다. 이 저장소에 머지한 것만으로는 스캔에 반영되지 않고, 변수가 그 커밋으로 옮겨져야 한다.
 
-1. 이 저장소 `develop`에 머지하고, 대시보드 배포(Dashboard deploy)가 끝나기를 기다린다. 새 스크립트가 올리는 결과를 옛 API가 받지 못할 수 있어 배포가 먼저다
-2. 서비스 저장소의 변수 `REACH_REF`를 그 머지 커밋(40자)으로 바꾼다. 서비스 저장소에 PR을 올리지 않으므로 서비스 이미지가 새로 만들어지거나 배포되지 않는다
-3. 그 뒤에 시작하는 스캔부터 새 값을 쓴다: 다음 PR·이미지 검사, 대시보드의 [새 스캔]·[다시 대조], 매일 재대조. 어느 커밋으로 돌았는지는 각 실행의 요약(Summary)에 `Reach code: …@<커밋>`으로 남는다
+**자동**: 이 저장소 `develop`에 머지하면 Dashboard deploy가 API를 배포한 뒤 `reach-ref` 작업(`.github/scripts/reach-ref-set.sh`)이 변수를 그 커밋으로 옮긴다. 배포가 실패하면 옮기지 않는다(새 스크립트가 올리는 결과를 옛 API가 받지 못할 수 있어 배포가 먼저다). 값은 앞으로만 간다: 옛 실행을 다시 돌려도 더 새 값은 그대로 둔다.
 
-값이 바뀐 기록은 남지 않는다(변수에는 이력이 없다). 되돌릴 때는 이전 커밋으로 값을 다시 바꾼다. `reach.yml` 자체(단계, 입력)가 바뀐 경우에만 서비스 저장소의 사본을 다시 복사해 PR로 올린다.
+| 설정 (이 저장소) | 값 |
+| --- | --- |
+| 변수 `REACH_REF_REPOSITORIES` | 변수를 옮길 서비스 저장소 이름(쉼표로 구분, 예: `service-backend`). 비어 있으면 작업을 건너뛴다 |
+| 비밀값 `REACH_REF_APP_ID`, `REACH_REF_APP_PRIVATE_KEY` | 위 서비스 저장소에 설치되고 저장소 권한 `Variables: Read and write`가 있는 GitHub App. Logssey 설치는 대시보드가 워크플로를 띄우는 앱(`logssey.reach.dispatch.*`)에 이 권한을 더해 같이 쓴다(키는 따로 하나 더 받아 넣는다) |
+
+- 변수 `REACH_REF` 자체는 서비스 저장소마다 한 번 손으로 만들어 둔다(작업은 있는 값을 바꾸기만 한다)
+- 그 뒤에 시작하는 스캔부터 새 값을 쓴다: 다음 PR·이미지 검사, 대시보드의 [새 스캔]·[다시 대조], 매일 재대조. 어느 커밋으로 돌았는지는 각 스캔 실행의 요약(Summary)에 `Reach code: …@<커밋>`으로, 변수를 언제 무엇으로 옮겼는지는 Dashboard deploy 실행의 요약에 남는다
+- **손으로**: 설정이 없거나 되돌려야 할 때는 서비스 저장소의 변수 값을 직접 바꾼다. 되돌린 값은 다음 배포가 다시 앞으로 옮긴다(되돌린 커밋이 새 커밋에 들어 있으므로). 막으려면 `REACH_REF_REPOSITORIES`를 비운다
+- `reach.yml` 자체(단계, 입력)가 바뀐 경우에만 서비스 저장소의 사본을 다시 복사해 PR로 올린다
 
 ## 로컬에서 돌려 보기
 
