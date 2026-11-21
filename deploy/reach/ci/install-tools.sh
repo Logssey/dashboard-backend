@@ -22,8 +22,15 @@ trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$BIN"
 
 fetch() {   # url sha256 file
-  curl -sSfLo "$WORK/$3" "$1"
-  echo "$2  $WORK/$3" | sha256sum -c --quiet -
+  # a release host sometimes answers 404 or 5xx for a moment: try again before giving up, and say which URL it was
+  if ! curl -sSfL --retry 4 --retry-delay 5 --retry-all-errors -o "$WORK/$3" "$1"; then
+    echo "install-tools: could not download $1" >&2
+    return 1
+  fi
+  if ! echo "$2  $WORK/$3" | sha256sum -c --quiet -; then
+    echo "install-tools: checksum mismatch for $1" >&2
+    return 1
+  fi
 }
 
 fetch "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
