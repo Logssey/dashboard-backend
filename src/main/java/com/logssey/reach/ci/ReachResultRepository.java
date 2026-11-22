@@ -216,6 +216,18 @@ public class ReachResultRepository {
                 .update();
     }
 
+    /** Finding의 지금 L3 결과. 앱을 띄우지 않은 스캔(재대조, L3 실패)이 판정을 올릴 때 쓴다 */
+    Optional<ReachL3Input.Result> l3Result(long findingId) {
+        return jdbcClient.sql("""
+                        SELECT reached, regions_checked, startup_only, detail::text AS detail
+                        FROM reach_l3_results WHERE finding_id = :findingId
+                        """)
+                .param("findingId", findingId)
+                .query((rs, i) -> new ReachL3Input.Result(rs.getString("reached"), rs.getBoolean("regions_checked"),
+                        rs.getBoolean("startup_only"), rs.getString("detail")))
+                .optional();
+    }
+
     /** 이 대상의 Finding 중 이번 실행에 없는 예전 결과를 지운다 (판정 데이터에서 빠진 CVE 등) */
     void deleteStaleL3Results(long targetId, long scanId) {
         jdbcClient.sql("""

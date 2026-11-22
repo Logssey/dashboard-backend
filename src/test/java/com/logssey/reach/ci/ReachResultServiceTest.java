@@ -385,14 +385,19 @@ class ReachResultServiceTest {
     }
 
     @Test
-    void l3IsStoredNextToTheVerdictAndChangesNothingElse() {
+    void l3IsStoredAndRaisesTheVerdictOnlyWhenItSawTheVulnerableCodeRun() {
         var evidence = List.of(map("kind", "NOTE", "summary", "no path"));
         long scan = uploadWithL3(check("a"),
                 l3(l3Cve("CVE-2026-1", "a", "region", true, false), l3Cve("CVE-2026-2", "b", "FUNCTION", true, false),
+                        l3Cve("CVE-2026-4", "d", "FUNCTION", false, false), l3Cve("CVE-2026-5", "e", "REGION", true, true),
+                        l3Cve("CVE-2026-6", "g", "NONE", true, false),
                         l3Cve("CVE-2026-9", "not-in-this-scan", "NONE", true, false)),
                 item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence),
                 item("b", "CVE-2026-2", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence),
-                item("c", "CVE-2026-3", "HIGH", "NOT_ANALYZED", null, "NO_VULN_FUNCTION_DATA", List.of()));
+                item("c", "CVE-2026-3", "HIGH", "NOT_ANALYZED", null, "NO_VULN_FUNCTION_DATA", List.of()),
+                item("d", "CVE-2026-4", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence),
+                item("e", "CVE-2026-5", "HIGH", "UNKNOWN", "RULE", null, evidence),
+                item("g", "CVE-2026-6", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence));
 
         assertThat(jdbc.queryForMap("SELECT run_status, scenario, observation_method, error, counts->>'REGION' AS regions, "
                 + "detail->'build'->>'imageDigest' AS digest, detail->'configKeys'->0->>'name' AS key, "
@@ -402,42 +407,84 @@ class ReachResultServiceTest {
                 .containsEntry("observation_method", "COVERAGE").containsEntry("error", null)
                 .containsEntry("regions", "1").containsEntry("digest", "sha256:abc").containsEntry("key", "KAKAO_STUB")
                 .containsEntry("invocations", 2).containsEntry("extra", false);   // 모르는 칸은 담지 않는다
-        // 판정은 L2 그대로다. L3는 판정 근거에 섞이지 않는다
-        assertThat(jdbc.queryForList("SELECT f.component_name || ':' || v.status || ':' || x.reached || ':' || x.regions_checked "
+        // 취약 구간이 실행됐으면 도달 가능(L2가 도달 불가든 확인 못 함이든, 앱이 뜨는 동안만이어도).
+        // 함수까지 실행됐는데 구간을 확인 못 했으면 도달 불가 → 확인 못 함. 구간을 봤고 실행 안 됨·실행 없음은 L2 그대로
+        assertThat(jdbc.queryForList("SELECT f.component_name || ':' || v.status || ':' || v.method || ':' || x.reached "
                 + "FROM reach_l3_results x JOIN reach_findings f ON f.finding_id = x.finding_id "
                 + "JOIN reach_verdicts v ON v.finding_id = f.finding_id AND v.is_current ORDER BY 1", String.class))
-                .containsExactly("a:UNREACHABLE:REGION:true", "b:UNREACHABLE:FUNCTION:true");
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM reach_evidence WHERE kind = 'RUNTIME'", Long.class)).isZero();
+                .containsExactly("a:REACHABLE:CALLGRAPH:REGION", "b:UNREACHABLE:CALLGRAPH:FUNCTION",
+                        "d:UNKNOWN:CALLGRAPH:FUNCTION", "e:REACHABLE:RULE:REGION", "g:UNREACHABLE:CALLGRAPH:NONE");
+        // 올린 판정은 L2 근거 뒤에 RUNTIME 한 줄. 스캔 번호·관측 시각은 넣지 않는다(근거 해시가 재대조마다 같게)
+        assertThat(jdbc.queryForList("SELECT f.component_name || ':' || e.ord || ':' || (e.detail->>'l2Status') || ':' "
+                + "|| (e.detail->>'executed') || ':' || (e.detail->>'startupOnly') || ':' || jsonb_exists(e.detail, 'scanId') "
+                + "FROM reach_evidence e JOIN reach_verdicts v ON v.verdict_id = e.verdict_id "
+                + "JOIN reach_findings f ON f.finding_id = v.finding_id WHERE e.kind = 'RUNTIME' ORDER BY 1", String.class))
+                .containsExactly("a:2:UNREACHABLE:true:false:false", "d:2:UNREACHABLE:false:false:false",
+                        "e:2:UNKNOWN:true:true:false");
+        assertThat(jdbc.queryForObject("SELECT summary FROM reach_verdicts WHERE finding_id = ? AND is_current",
+                String.class, finding("a"))).startsWith("L3: ").endsWith("L2 판정은 도달 불가였다: test");
+        // 근거 해시도 L2 근거만의 해시와 다르다
+        assertThat(jdbc.queryForObject("SELECT count(DISTINCT evidence_hash) FROM reach_verdicts v "
+                + "JOIN reach_findings f ON f.finding_id = v.finding_id WHERE f.component_name IN ('a', 'b')", Long.class))
+                .isEqualTo(2);
         assertThat(jdbc.queryForMap("SELECT detail->'during'->>0 AS during, detail->'regions'->0->'executedLines'->>0 AS line, "
                 + "jsonb_exists(detail, 'reached') AS dup FROM reach_l3_results WHERE finding_id = ?", finding("a")))
                 .containsEntry("during", "002").containsEntry("line", "626").containsEntry("dup", false);
     }
 
     @Test
-    void l3NeverTouchesAReviewAndARescanKeepsTheLastResult() {
+    void anL3RaiseResetsAReviewOnceAndARescanWithoutTheAppKeepsIt() {
         var evidence = List.of(map("kind", "NOTE", "summary", "no path"));
         var a = item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence);
         var b = item("b", "CVE-2026-2", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence);
         upload(check("a"), a, b);
         confirm(finding("a"), "UNREACHABLE", 1);
+        confirm(finding("b"), "UNREACHABLE", 1);
 
-        // L2가 도달 불가라고 한 것을 L3가 실행됐다고 해도 판정·검토는 그대로다. 사람이 나란히 본다
+        // 사람이 도달 불가로 확정했어도 L3가 취약 구간 실행을 봤으면 판정이 바뀌어 검토가 되돌아간다.
+        // 구간을 확인 못 한 함수 실행(b)은 도달 불가 → 확인 못 함이라 역시 되돌아간다
         long observed = uploadWithL3(check("a"), l3(l3Cve("CVE-2026-1", "a", "REGION", true, false),
                 l3Cve("CVE-2026-2", "b", "FUNCTION", false, true)), a, b);
-        assertThat(review(finding("a"))).isEqualTo("CONFIRMED:2:null");
-        assertThat(jdbc.queryForObject("SELECT status FROM reach_verdicts WHERE finding_id = ? AND is_current",
-                String.class, finding("a"))).isEqualTo("UNREACHABLE");
+        assertThat(review(finding("a"))).isEqualTo("UNREVIEWED:3:VERDICT_CHANGED");
+        assertThat(review(finding("b"))).isEqualTo("UNREVIEWED:3:VERDICT_CHANGED");
+        assertThat(currentStatus(finding("a"))).isEqualTo("REACHABLE");
+        assertThat(currentStatus(finding("b"))).isEqualTo("UNKNOWN");
+        confirm(finding("a"), "REACHABLE", 3);
 
-        // 재대조는 앱을 띄우지 않는다(l3 없음): 검토도, 그 이미지의 마지막 L3 결과도 남는다
+        // 재대조는 앱을 띄우지 않는다(l3 없음): 남아 있는 L3 결과로 같은 판정·같은 근거 해시가 되어 검토가 남는다
         long rescan = upload(check("a"), a, b);
-        assertThat(review(finding("a"))).isEqualTo("CONFIRMED:2:null");
+        assertThat(review(finding("a"))).isEqualTo("CONFIRMED:4:null");
+        assertThat(currentStatus(finding("b"))).isEqualTo("UNKNOWN");
         assertThat(l3Results()).containsExactly("a:REGION:" + observed, "b:FUNCTION:" + observed);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM reach_l3_runs WHERE scan_id = ?", Long.class, rescan)).isZero();
+        // 보관한 기록을 다시 대조해 같은 결과가 나와도(스캔 번호만 다름) 그대로다
+        uploadWithL3(check("a"), l3(l3Cve("CVE-2026-1", "a", "REGION", true, false),
+                l3Cve("CVE-2026-2", "b", "FUNCTION", false, true)), a, b);
+        assertThat(review(finding("a"))).isEqualTo("CONFIRMED:4:null");
 
-        // 같은 이미지를 다시 띄워 보면 새 결과가 대신하고, 이번에 없는 것은 지운다
+        // 같은 이미지를 다시 띄워 실행되지 않았으면 L2 판정으로 돌아가고(판정이 바뀌어 검토도 되돌아간다), 이번에 없는 결과는 지운다
         long again = uploadWithL3(check("a"), l3(l3Cve("CVE-2026-1", "a", "NONE", true, false)), a, b);
         assertThat(l3Results()).containsExactly("a:NONE:" + again);
-        assertThat(review(finding("a"))).isEqualTo("CONFIRMED:2:null");
+        assertThat(currentStatus(finding("a"))).isEqualTo("UNREACHABLE");
+        assertThat(review(finding("a"))).isEqualTo("UNREVIEWED:5:VERDICT_CHANGED");
+        assertThat(currentStatus(finding("b"))).isEqualTo("UNREACHABLE");
+    }
+
+    @Test
+    void aPrCheckIsNeverRaisedByL3() {
+        var a = item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "CALLGRAPH", null, List.of(map("kind", "NOTE", "summary", "x")));
+        uploadWithL3(check("a"), l3(l3Cve("CVE-2026-1", "a", "REGION", true, false)), a);
+        assertThat(currentStatus(finding("a"))).isEqualTo("REACHABLE");
+
+        // PR 검사는 앱을 띄우지 않는다. 그 스캔의 판정은 L2 그대로다(게이트는 이 값과 기준 스캔을 비교한다)
+        long pr = uploadWithL3(prCheck("a"), l3(l3Cve("CVE-2026-1", "a", "REGION", true, false)), a);
+        assertThat(jdbc.queryForList("SELECT v.status FROM reach_verdicts v WHERE v.scan_id = ?", String.class, pr))
+                .containsExactly("UNREACHABLE");
+        assertThat(currentStatus(finding("a"))).isEqualTo("REACHABLE");
+    }
+
+    private static String currentStatus(long findingId) {
+        return jdbc.queryForObject("SELECT status FROM reach_verdicts WHERE finding_id = ? AND is_current", String.class, findingId);
     }
 
     @Test
