@@ -93,7 +93,7 @@ public class ReachQueryService {
         String nextCursor = null;
         if (hasNext) {
             var last = page.get(page.size() - 1);
-            nextCursor = new ReachFindingCursor(last.statusRank(), last.severityRank(), last.cveYear(),
+            nextCursor = new ReachFindingCursor(last.deploymentRank(), last.statusRank(), last.severityRank(), last.cveYear(),
                     last.cveNumber(), last.item().id(), filter.fingerprint()).encode();
         }
         Long totalCount = "total".equals(include) ? repository.countFindings(filter, basis) : null;

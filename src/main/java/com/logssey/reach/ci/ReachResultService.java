@@ -163,13 +163,16 @@ public class ReachResultService {
             }
             var upserted = repository.upsertFinding(row.finding().withIds(check.targetId(), scanId));
             long findingId = upserted.id();
-            long verdictId = repository.insertToolVerdict(row.verdict().withIds(findingId, scanId));
-            repository.insertEvidence(verdictId, row.evidence());
-            review(check, scanId, row, findingId, upserted.inserted(), verdictId);
-            // 판정·검토와 따로 둔다: L3는 상태·근거 해시·게이트를 바꾸지 않는다 (V55)
+            // 이번 실행의 L3 결과, 이번에 앱을 띄우지 않았으면(재대조, L3 실패) 그 이미지에 남은 마지막 결과.
+            // 그래서 앱을 띄우지 않는 재대조도 같은 판정이 된다. PR 검사는 L3가 없다
+            var observedL3 = pr ? Optional.<ReachL3Input.Result>empty()
+                    : l3Results ? l3.result(row.vulnerabilityId(), row.purl()) : repository.l3Result(findingId);
+            var judged = withL3(row, observedL3.orElse(null));
+            long verdictId = repository.insertToolVerdict(judged.verdict().withIds(findingId, scanId));
+            repository.insertEvidence(verdictId, judged.evidence());
+            review(check, scanId, judged, findingId, upserted.inserted(), verdictId);
             if (l3Results) {
-                l3.result(row.vulnerabilityId(), row.purl())
-                        .ifPresent(result -> repository.upsertL3Result(findingId, scanId, result));
+                observedL3.ifPresent(result -> repository.upsertL3Result(findingId, scanId, result));
             }
         }
         // 같은 이미지를 다시 띄워 본 결과가 예전 것을 대신한다. 실패한 실행·앱을 띄우지 않은 스캔은 예전 결과를 그대로 둔다
@@ -225,6 +228,45 @@ public class ReachResultService {
             return;   // 이미 MANUAL이 현재 판정이면 그대로 둔다
         }
         repository.makeCurrent(findingId, verdictId);
+    }
+
+    /**
+     * L3가 실제 실행을 확인했으면 L2 판정을 올린다 (PRD FR-14).
+     * 취약 구간이 실행됐으면(REGION) 도달 불가·확인 못 함 → 도달 가능. 취약 함수는 실행됐는데 구간을 확인하지 못했으면
+     * (FUNCTION, regionsChecked=false) 도달 불가 → 확인 못 함. 실행되지 않았다는 것(NONE)으로는 내리지 않는다.
+     * 근거 끝에 RUNTIME 한 줄을 더하고 근거 해시를 다시 만든다. 그 줄에는 스캔 번호·관측 시각처럼 다시 대조할 때마다 바뀌는
+     * 값을 넣지 않는다. 같은 L3 결과면 같은 해시라 재대조마다 사람 검토가 되돌아가지 않는다(관측 근거 항목은 Finding의 l3.run)
+     */
+    private Row withL3(Row row, ReachL3Input.Result l3) {
+        if (l3 == null) return row;
+        boolean region = "REGION".equals(l3.reached());
+        String raised = region && List.of("UNREACHABLE", "UNKNOWN").contains(row.status()) ? "REACHABLE"
+                : "FUNCTION".equals(l3.reached()) && !l3.regionsChecked() && "UNREACHABLE".equals(row.status()) ? "UNKNOWN"
+                : null;
+        if (raised == null) return row;
+
+        String said = region
+                ? (l3.startupOnly() ? "L3: 이미지를 띄웠을 때 앱이 뜨는 동안 취약 구간이 실제로 실행돼 도달 가능으로 올렸다(요청으로 실행된 것은 아니다)."
+                        : "L3: 이미지를 띄워 보낸 요청에서 취약 구간이 실제로 실행돼 도달 가능으로 올렸다.")
+                : "L3: 취약 함수가 실제로 실행됐지만 취약 구간은 확인하지 못해, 도달 불가를 확인 못 함으로 올렸다.";
+        var detail = mapper.createObjectNode()
+                .put("executed", region)
+                .put("reached", l3.reached())
+                .put("regionsChecked", l3.regionsChecked())
+                .put("startupOnly", l3.startupOnly())
+                .put("l2Status", row.status());
+        var evidence = new ArrayList<>(row.evidence());
+        evidence.add(new ReachResultRepository.EvidenceInput(evidence.size() + 1, "RUNTIME", said, null, null, false,
+                mapper.writeValueAsString(detail)));
+
+        var v = row.verdict();
+        String l2 = "UNREACHABLE".equals(row.status()) ? "도달 불가" : "확인 못 함";
+        String summary = said + " L2 판정은 " + l2 + "였다: " + v.summary();
+        var verdict = new ReachResultRepository.VerdictInput(0, 0, raised, v.method(), null,
+                summary.length() > SUMMARY_MAX ? summary.substring(0, SUMMARY_MAX) : summary, v.ruleId(),
+                v.vulnFunctionIds(), v.callgraph(), v.engine(),
+                evidenceHash(v.callgraph() == null ? null : mapper.readTree(v.callgraph()), evidence), v.analyzedAt());
+        return new Row(row.purl(), row.vulnerabilityId(), raised, row.finding(), verdict, evidence, row.proposal());
     }
 
     /** Content-Encoding: gzip이 필수다(명세 API-13). 한도를 넘으면 413, gzip·JSON이 깨졌으면 400 */
