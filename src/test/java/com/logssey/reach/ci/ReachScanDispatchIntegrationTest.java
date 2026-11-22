@@ -319,7 +319,8 @@ class ReachScanDispatchIntegrationTest {
                 .claim("repository", "Logssey/service-backend")
                 .claim("repository_owner", "Logssey")
                 .claim("event_name", "workflow_dispatch")
-                .claim("ref", "refs/heads/main");
+                .claim("ref", "refs/heads/main")
+                .claim("job_workflow_ref", "Logssey/service-backend/.github/workflows/reach.yml@refs/heads/main");
     }
 
     private static String bearer(Consumer<JWTClaimsSet.Builder> change) throws JOSEException {
