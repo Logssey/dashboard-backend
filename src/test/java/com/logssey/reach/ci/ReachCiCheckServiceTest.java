@@ -11,6 +11,7 @@ import com.logssey.reach.ReachTestProperties;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterAll;
@@ -231,6 +232,50 @@ class ReachCiCheckServiceTest {
                 entry("UNREACHABLE", 1L), entry("NOT_ANALYZED", 2L));
         assertThat(result.findingsUrl()).isEqualTo("/api/v1/reach/findings?scanId=" + scanId);
         assertThat(result.finishedAt()).isNotNull();
+    }
+
+    @Test
+    void pullRequestUsesTheRunningImageAsBaselineAndIgnoresPurlQualifiers() {
+        // 운영에서 실행 중인 API 이미지의 스캔 (Trivy는 한정자 없이 적는다)
+        long running = scan(imageTarget(), "SUCCEEDED");
+        finding(running, "pkg:maven/test/a@1", "a", "CRITICAL", "REACHABLE");
+        service = new ReachCiCheckService(new ReachCiCheckRepository(JdbcClient.create(jdbc)), ReachTestProperties.REUSED,
+                app -> "API".equals(app) ? Optional.of(running) : Optional.empty());
+
+        var check = service.create("admin", "pr", pr("GATE")).check();
+        assertThat(service.check("admin", check.id()).baselineScanId()).isEqualTo(running);
+
+        // 레포 SBOM(cdxgen)은 같은 패키지를 ?type=jar를 붙여 적는다
+        finding(check.scanId(), "pkg:maven/test/a@1?type=jar", "a", "CRITICAL", "REACHABLE");   // 운영에 있다 → 새 것 아님
+        finding(check.scanId(), "pkg:maven/test/b@1?type=jar", "b", "HIGH", "REACHABLE");       // 이 PR로 생겼다
+        finish(check.scanId(), "SUCCEEDED");
+
+        var gate = service.check("admin", check.id()).gate();
+        assertThat(gate.newFindings().total()).isEqualTo(1);
+        assertThat(gate.result()).isEqualTo("FAIL");
+        assertThat(gate.reasons()).singleElement()
+                .satisfies(r -> assertThat(r.summary()).isEqualTo("새 Finding 중 REACHABLE인 CRITICAL·HIGH 1건"));
+    }
+
+    @Test
+    void onlyPullRequestsLookUpTheRunningImageAndAGivenBaselineWins() {
+        long image = imageTarget();
+        long running = scan(image, "SUCCEEDED");
+        long given = scan(image, "SUCCEEDED");
+        service = new ReachCiCheckService(new ReachCiCheckRepository(JdbcClient.create(jdbc)), ReachTestProperties.REUSED,
+                app -> Optional.of(running));
+
+        // 사람이 요청한 스캔·이미지 빌드는 기준을 찾지 않는다
+        long manual = service.create("admin", "m", request("MANUAL", repo(COMMIT), null, null, "GATE")).check().id();
+        assertThat(service.check("admin", manual).baselineScanId()).isNull();
+        long build = service.create("admin", "i", image("IMAGE_BUILD", "logssey/reused-api", DIGEST)).check().id();
+        assertThat(service.check("admin", build).baselineScanId()).isNull();
+
+        // 요청에 기준이 있으면 그것을 쓴다
+        var withBaseline = new ReachCiCheckRequest("PR", "service-backend", COMMIT,
+                new ReachCiCheckRequest.PullRequest(124, "main", "develop"), repo(COMMIT), null, "GATE", given);
+        assertThat(service.check("admin", service.create("admin", "p", withBaseline).check().id()).baselineScanId())
+                .isEqualTo(given);
     }
 
     @Test
@@ -629,13 +674,17 @@ class ReachCiCheckServiceTest {
 
     /** 스캔 대상의 Finding + 그 스캔의 도구 판정 + 검토 전 검토 한 벌. purl은 component로 정한다 */
     private static void finding(long scanId, String component, String severity, String status) {
+        finding(scanId, "pkg:maven/test/" + component + "@1", component, severity, status);
+    }
+
+    private static void finding(long scanId, String purl, String component, String severity, String status) {
         long id = jdbc.queryForObject("""
                 INSERT INTO reach_findings (target_id, purl, component_name, component_version, ecosystem,
                                             vulnerability_id, severity, sources, last_scan_id, first_seen_at, last_seen_at)
-                SELECT target_id, 'pkg:maven/test/' || ? || '@1', ?, '1', 'maven', 'CVE-2026-1', ?, ARRAY['TRIVY'],
+                SELECT target_id, ?, ?, '1', 'maven', 'CVE-2026-1', ?, ARRAY['TRIVY'],
                        scan_id, now(), now()
                 FROM reach_scans WHERE scan_id = ? RETURNING finding_id
-                """, Long.class, component, component, severity, scanId);
+                """, Long.class, purl, component, severity, scanId);
         boolean notAnalyzed = status.equals("NOT_ANALYZED");
         jdbc.update("""
                 INSERT INTO reach_verdicts (finding_id, scan_id, status, method, not_analyzed_reason, summary,
