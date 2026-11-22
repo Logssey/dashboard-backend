@@ -19,7 +19,7 @@
 
 | 작업 | 언제 | 대상(API-12 `mode`) | 무엇을 스캔 |
 | --- | --- | --- | --- |
-| `pr` | PR이 열리거나 커밋이 더해질 때(`src/**`, Gradle 파일) | 레포(`PR`) | PR head에서 빌드한 bootJar(`trivy rootfs`) |
+| `pr` | PR이 열리거나 커밋이 더해질 때(모든 PR). `src/`·Gradle 파일·`reach.yml`이 바뀐 PR만 스캔하고 나머지는 스캔 없이 통과 | 레포(`PR`) | PR head에서 빌드한 bootJar(`trivy rootfs`) |
 | `image` | 서비스의 CI/CD 워크플로가 끝난 뒤(`workflow_run`) | 이미지(`IMAGE_BUILD`) | CI/CD가 ECR에 올린 `pr-{sha}` 이미지(`trivy image`) + 그 안의 `/app/app.jar`. 시나리오가 있으면 L3도 |
 | `manual` | 대시보드에서 [스캔 요청](API-01)을 누를 때. 대시보드가 `workflow_dispatch`로 띄운다 | 대시보드가 만든 검사(`MANUAL`) | 레포 대상은 그 커밋에서 빌드한 bootJar, 이미지 대상은 그 digest 이미지 + `/app/app.jar` |
 
@@ -34,6 +34,7 @@
 - 머지할 때도 CI/CD가 돌지만 이미지는 같은 digest라 같은 `Idempotency-Key`가 된다. 이때는 다시 스캔하지 않고 이미 끝난 검사 결과만 보인다.
 - `workflow_run` 워크플로는 기본 브랜치에 있는 파일로만 돈다. `image` 작업은 `reach.yml`이 기본 브랜치에 머지된 뒤부터 동작한다.
 - `POLICY`(저장소 변수 `REACH_POLICY`)가 `REPORT_ONLY`(기본)면 대시보드가 내려가 있어도 PR을 막지 않는다(`continue-on-error`). `GATE`면 게이트 `FAIL`(종료 코드 1)이 PR 검사 실패가 된다.
+- `pr` 작업을 브랜치 보호의 필수 검사(`Reach / pr`)로 둘 수 있게, 경로 필터를 `on.pull_request.paths`가 아니라 작업 안 "Changed files" 단계에 둔다(워크플로가 시작하지 않으면 필수 검사가 "대기 중"에 묶인다). 비교는 PR 머지 커밋과 그 첫 부모(기본 브랜치) 사이다. 포크에서 연 PR은 비밀값·OIDC 토큰을 받지 못해 스캔할 수 없다: `REPORT_ONLY`면 알림만 남기고 통과, `GATE`면 실패한다(레포에 브랜치를 올려 PR을 연다).
 - 결과는 실행 요약(Step Summary)에 게이트·새 Finding 개수·대시보드 링크(`/vulnerabilities/scans?tab=ci&check=<id>`)로 남고, `verdicts.md`·`check.json`은 아티팩트로 7일 남는다.
 - 채팅 서버(Node)는 L2를 지원하지 않아 넣지 않았다(`UNSUPPORTED_ECOSYSTEM`).
 
