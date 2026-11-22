@@ -120,10 +120,12 @@ public class ReachCiCheckRepository {
     /** 검사를 만든 주체 (USER:<id>, CI:<repository>). 검사가 없으면 빈 값 */
     /** 검사를 만든 주체와 레포. CI 토큰이 이 검사를 보고 올릴 수 있는지(ReachCiAccess) 정한다 */
     Optional<ReachCiAccess.CheckOwner> checkOwner(long checkId) {
-        return jdbcClient.sql("SELECT idempotency_scope, mode, repository FROM reach_ci_checks WHERE check_id = :checkId")
+        return jdbcClient.sql("""
+                        SELECT idempotency_scope, mode, repository, pr_number FROM reach_ci_checks WHERE check_id = :checkId
+                        """)
                 .param("checkId", checkId)
                 .query((rs, n) -> new ReachCiAccess.CheckOwner(rs.getString("idempotency_scope"), rs.getString("mode"),
-                        rs.getString("repository")))
+                        rs.getString("repository"), rs.getObject("pr_number", Integer.class)))
                 .optional();
     }
 
@@ -312,7 +314,9 @@ public class ReachCiCheckRepository {
 
     /**
      * 이 스캔의 도구 판정 중 기준 스캔에 없던 purl × CVE를 상태·심각도별로 센다 (명세 6-2 "새 Finding").
-     * 기준 스캔은 다른 대상(예: main 커밋)일 수 있어 Finding id가 아니라 purl과 CVE로 비교한다.
+     * 기준 스캔은 다른 대상(예: 운영 이미지)일 수 있어 Finding id가 아니라 purl과 CVE로 비교한다.
+     * purl은 한정자(?…)와 하위 경로(#…)를 떼고 비교한다. 레포 SBOM(cdxgen)은 pkg:maven/g/a@v?type=jar,
+     * 이미지 스캔(Trivy)은 pkg:maven/g/a@v로 같은 패키지를 다르게 적어서다.
      * 기준 스캔이 없으면(NULL) 아래 NOT EXISTS가 늘 참이라 모두 새 것이다. MANUAL(사람 판정)은 스캔 결과가 아니라 뺀다
      */
     List<NewFindingRow> newFindingCounts(long scanId, Long baselineScanId) {
@@ -325,7 +329,9 @@ public class ReachCiCheckRepository {
                               SELECT 1 FROM reach_verdicts bv
                               JOIN reach_findings bf ON bf.finding_id = bv.finding_id
                               WHERE bv.scan_id = :baselineScanId AND bv.method IS DISTINCT FROM 'MANUAL'
-                                AND bf.purl = f.purl AND bf.vulnerability_id = f.vulnerability_id)
+                                AND split_part(split_part(bf.purl, '#', 1), '?', 1)
+                                    = split_part(split_part(f.purl, '#', 1), '?', 1)
+                                AND bf.vulnerability_id = f.vulnerability_id)
                         GROUP BY v.status, f.severity
                         """)
                 .param("scanId", scanId)

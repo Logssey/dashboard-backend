@@ -13,6 +13,7 @@ import java.time.OffsetDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -56,6 +57,21 @@ public class ReachQueryService {
                 .filter(s -> s.running() && "IMAGE".equals(s.targetType()))
                 .map(ReachQueryRepository.ScopeScan::scanId)
                 .toList();
+    }
+
+    /**
+     * PR 검사의 기준 스캔(API-12 baselineScanId를 주지 않았을 때): 그 앱이 운영에서 실행 중인 이미지의 스캔.
+     * 운영 이미지는 머지된 코드라 "운영에 없던 것"이 그 PR로 새로 생긴 Finding이다.
+     * 이미지 빌드 검사의 스캔은 머지 전 PR 이미지일 수 있어 쓰지 않는다. 실행 중 이미지가 둘 이상(배포 중)이면 가장 최근 스캔이다.
+     * 실행 중인 이미지를 모르면 없다(기준 없이 모든 Finding을 새 것으로 본다)
+     */
+    public Optional<Long> runningImageScan(String app) {
+        var running = basis("RUNNING");
+        if (app == null || !running.running() || !repository.hasFreshObservation(running)) return Optional.empty();
+        return repository.scopeScanList(running).stream()
+                .filter(s -> s.running() && "IMAGE".equals(s.targetType()) && app.equals(s.app()))
+                .map(ReachQueryRepository.ScopeScan::scanId)
+                .max(Long::compare);
     }
 
     public ReachFindingPageResponse findings(String loginId, ReachFindingFilter filter,

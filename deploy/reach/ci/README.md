@@ -10,7 +10,7 @@
 
 | 파일 | 내용 |
 | --- | --- |
-| `reach.yml` | 서비스 저장소 `.github/workflows/reach.yml`로 복사할 워크플로. 작업 세 개(`pr`, `image`, `manual`) |
+| `reach.yml` | 서비스 저장소 `.github/workflows/reach.yml`로 복사할 워크플로. 작업 세 개(`pr`, `image`, `manual`). 대시보드는 이 경로의 워크플로가 받은 토큰만 받으니(`job_workflow_ref`) 파일 이름·위치를 바꾸지 않는다 |
 | `reach-scan.sh` | 검사 등록부터 게이트까지 한 번에. 워크플로 밖(로컬)에서도 같은 순서로 돈다 |
 | `install-tools.sh` | Trivy·Grype·JaCoCo(에이전트·CLI)를 버전과 SHA-256으로 고정해 설치(infrastructure `iac-gate`와 같은 방식). JaCoCo 폴더는 `JACOCO_HOME` |
 | `l3-run.sh` | L3: 스캔한 이미지를 JaCoCo 에이전트와 띄우고 서비스 저장소의 시나리오를 보내며 실행 기록을 요청 단계마다 끊어 남긴다(아래 "L3"). 대조는 `reach-scan.sh`가 L2 뒤에 한다 |
@@ -33,7 +33,7 @@
 - 서비스의 CI/CD 워크플로는 고치지 않는다. `image` 작업은 이미지를 받아 읽고, 시나리오가 있을 때만 L3로 러너 안에서 실행한다(아래). API가 바뀌지 않아 이미지가 없으면 건너뛴다.
 - 머지할 때도 CI/CD가 돌지만 이미지는 같은 digest라 같은 `Idempotency-Key`가 된다. 이때는 다시 스캔하지 않고 이미 끝난 검사 결과만 보인다.
 - `workflow_run` 워크플로는 기본 브랜치에 있는 파일로만 돈다. `image` 작업은 `reach.yml`이 기본 브랜치에 머지된 뒤부터 동작한다.
-- `POLICY`(저장소 변수 `REACH_POLICY`)가 `REPORT_ONLY`(기본)면 대시보드가 내려가 있어도 PR을 막지 않는다(`continue-on-error`). `GATE`면 게이트 `FAIL`(종료 코드 1)이 PR 검사 실패가 된다.
+- `POLICY`(저장소 변수 `REACH_POLICY`)가 `REPORT_ONLY`(기본)면 대시보드가 내려가 있어도 PR을 막지 않는다(`continue-on-error`). `GATE`면 게이트 `FAIL`(종료 코드 1)이 PR 검사 실패가 된다. 게이트는 PR 검사에만 건다. 이미지 빌드 검사는 `GATE`여도 리포트 전용으로 등록한다(기준 스캔이 없어 운영에 이미 있는 Finding으로 실패하기 때문). PR 검사는 그 앱이 운영에서 실행 중인 이미지의 스캔과 비교해, 운영에 없던 Finding만 새 것으로 센다(실행 중 이미지를 모르면 모두 새 것). 비교한 스캔은 실행 요약에 나온다.
 - `pr` 작업을 브랜치 보호의 필수 검사(`Reach / pr`)로 둘 수 있게, 경로 필터를 `on.pull_request.paths`가 아니라 작업 안 "Changed files" 단계에 둔다(워크플로가 시작하지 않으면 필수 검사가 "대기 중"에 묶인다). 비교는 PR 머지 커밋과 그 첫 부모(기본 브랜치) 사이다. 포크에서 연 PR은 비밀값·OIDC 토큰을 받지 못해 스캔할 수 없다: `REPORT_ONLY`면 알림만 남기고 통과, `GATE`면 실패한다(레포에 브랜치를 올려 PR을 연다).
 - 결과는 실행 요약(Step Summary)에 게이트·새 Finding 개수·대시보드 링크(`/vulnerabilities/scans?tab=ci&check=<id>`)로 남고, `verdicts.md`·`check.json`은 아티팩트로 7일 남는다.
 - 채팅 서버(Node)는 L2를 지원하지 않아 넣지 않았다(`UNSUPPORTED_ECOSYSTEM`).
@@ -70,7 +70,7 @@
 | 대시보드 주소 | 서비스 저장소 변수 `REACH_URL`(API), `REACH_UI_URL`(화면, 선택) | Logssey 설치는 `https://logssey.re-used.store` (둘 다) |
 | 감시 대상 등록 | 대시보드 설정 `logssey.reach.apps`에 이 레포(`repo`, 하위 경로면 `path`)와 이미지 저장소(`image`)를 앱 코드로 등록한다(PRD FR-15). 스크립트는 app을 보내지 않고(`APP`을 주면 그 값) 대시보드가 이 설정으로 정한다. 등록 안 된 레포·이미지는 422 | 설치마다 |
 | 이미지 저장소 | 서비스 저장소 변수 `REACH_ECR_REPOSITORY`(예: `logssey/reused-api`). 없으면 이미지 작업을 건너뛴다 | 설치마다 |
-| CI 인증 | 대시보드가 `/api/v1/reach/ci/**`에서 GitHub OIDC 토큰(`aud = logssey-reach`)을 받는다. 스크립트는 호출마다 새 토큰을 받아 `Authorization: Bearer`로 보낸다. 대시보드 설정 `logssey.reach.ci.repository-owner`(조직 이름)가 있어야 받고, PR 검사는 `pull_request` 이벤트, 이미지 검사는 기본 브랜치(`logssey.reach.ci.default-branch`, 기본 `main`)에서만 받는다. 조건은 API 명세 2-2 | 구현됨. 설치마다 조직 설정 |
+| CI 인증 | 대시보드가 `/api/v1/reach/ci/**`에서 GitHub OIDC 토큰(`aud = logssey-reach`)을 받는다. 스크립트는 호출마다 새 토큰을 받아 `Authorization: Bearer`로 보낸다. 대시보드 설정 `logssey.reach.ci.repository-owner`(조직 이름)가 있어야 받고, 토큰은 그 레포의 `.github/workflows/reach.yml`이 받은 것이어야 한다. PR 검사는 그 PR의 `pull_request` 이벤트, 이미지 검사는 기본 브랜치(`logssey.reach.ci.default-branch`, 기본 `main`)의 PR이 아닌 이벤트에서만 만들고, 결과도 같은 조건의 토큰만 올린다(PR 토큰은 이미지 검사에 못 올림). 조건은 API 명세 2-2 | 구현됨. 설치마다 조직 설정 |
 | dashboard-backend 읽기 | GitHub App 토큰. 비밀값 `REACH_APP_ID`, `REACH_APP_PRIVATE_KEY`(서비스 CI/CD의 gitops 토큰과 같은 방식) | 앱 미정. 나중에 분석기 이미지(GHCR)로 바꾸면 필요 없다 |
 | ECR 읽기 역할 | 비밀값 `REACH_ECR_READ_ROLE_ARN`. `ecr:DescribeImages`, `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`, `ecr:GetAuthorizationToken`만. 신뢰 정책은 이 저장소의 기본 브랜치 실행(`sub = repo:<조직>/<레포>:ref:refs/heads/<기본 브랜치>`, `image`의 `workflow_run`과 `manual`의 `workflow_dispatch`)으로 제한. 이 레포가 스캔할 이미지 저장소마다 읽기 권한 | Logssey 설치: infrastructure `logssey-dashboard/reach-ci.tf`(`logssey-dashboard-role-reach-ci-ecr-read`). 없거나 그 저장소 권한이 없으면 이미지 대상 `manual`은 `IMAGE_PULL_FAILED` |
 | 대시보드가 워크플로를 띄우는 앱 | 대시보드 설정 `logssey.reach.dispatch.app-id`·`private-key`(운영은 `/run/secrets` 파일). 권한은 `Actions: write` 하나, 감시 대상 서비스 저장소에만 설치. 위 dashboard-backend 읽기 앱과 따로 둔다(그 앱 키는 서비스 CI가 쓴다). 설정이 없으면 대시보드 스캔 요청은 `QUEUED`로 남는다 | 미정 |

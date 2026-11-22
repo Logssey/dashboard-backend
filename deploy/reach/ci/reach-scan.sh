@@ -32,7 +32,7 @@
 #   running the app. Without a kept record a rescan has no L3.
 #   L3_ERROR (a message) when the L3 run failed. A failed L3 step is logged and sent as an L3 error; it never
 #   fails the scan.
-# Optional: APP (app code; when empty the dashboard picks it from its logssey.reach.apps), POLICY (REPORT_ONLY | GATE, default REPORT_ONLY), SOURCE (service repo checkout,
+# Optional: APP (app code; when empty the dashboard picks it from its logssey.reach.apps), POLICY (REPORT_ONLY | GATE, default REPORT_ONLY; only PR checks are gated, an image build is always REPORT_ONLY), SOURCE (service repo checkout,
 #   gives verdict.py the config files), OUT (./reach-out), WAIT_SECONDS (300), REACH_UI_URL (link in the summary),
 #   REACH_HOME (dashboard-backend checkout; default: this script's repo), ANALYZER (reach-analyzer.jar path).
 # Auth: in GitHub Actions a fresh OIDC token (aud logssey-reach) is fetched for every call
@@ -139,7 +139,8 @@ elif [ "$MODE" = PR ]; then
      policy: $policy}')
 else
   KEY="$REPOSITORY-image-${IMAGE_DIGEST#sha256:}"
-  REQUEST=$(jq -n --arg repo "$REPOSITORY" --arg commit "$COMMIT" --arg app "$APP" --arg policy "$POLICY" \
+  # the gate is for PRs (API spec 6-2): an image build has no baseline, so GATE would fail it on findings already in production
+  REQUEST=$(jq -n --arg repo "$REPOSITORY" --arg commit "$COMMIT" --arg app "$APP" --arg policy REPORT_ONLY \
     --arg image "$IMAGE_REPOSITORY" --arg digest "$IMAGE_DIGEST" '
     {mode: "IMAGE_BUILD", repository: $repo, headCommit: $commit,
      target: ({type: "IMAGE", image: {repository: $image, digest: $digest}} + (if $app != "" then {app: $app} else {} end)),
@@ -372,12 +373,14 @@ done
 echo "$BODY" | jq . > "$OUT/check.json"
 
 link="${REACH_UI_URL:+${REACH_UI_URL%/}/vulnerabilities/scans?tab=ci&check=$CHECK_ID}"
-summary "### Reach ($MODE, $POLICY)"
+summary "### Reach ($MODE, $(jq -r '.policy // "REPORT_ONLY"' <<< "$BODY"))"
 if [ "$status" = FAILED ]; then
   summary "Scan failed on the dashboard. Check $CHECK_ID${link:+ ($link)}."
   exit 1
 fi
 summary "$(jq -r '"Gate **\(.gate.result)** · new findings \(.gate.newFindings.total) (REACHABLE \(.gate.newFindings.byStatus.REACHABLE // 0), UNKNOWN \(.gate.newFindings.byStatus.UNKNOWN // 0), UNREACHABLE \(.gate.newFindings.byStatus.UNREACHABLE // 0), NOT_ANALYZED \(.gate.newFindings.byStatus.NOT_ANALYZED // 0))"' <<< "$BODY")"
+summary "$(jq -r 'if .baselineScanId then "Compared with scan \(.baselineScanId) (for a PR: the image running in production); findings already there are not new"
+                  else "No baseline scan: every finding counts as new" end' <<< "$BODY")"
 summary "$(jq -r '.gate.reasons[]? | "- \(.condition) \(.count): \(.summary)"' <<< "$BODY")"
 [ -n "$link" ] && summary "Dashboard: $link"
 exit "$(jq -r '.gate.exitCode // 0' <<< "$BODY")"

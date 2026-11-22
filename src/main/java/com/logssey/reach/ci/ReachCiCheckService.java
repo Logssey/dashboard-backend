@@ -20,6 +20,7 @@ import com.logssey.reach.ci.auth.ReachCiCaller;
 import com.logssey.reach.ci.dto.ReachCiCheckCreatedResponse;
 import com.logssey.reach.ci.dto.ReachCiCheckPageResponse;
 import com.logssey.reach.ci.dto.ReachCiCheckResponse;
+import com.logssey.reach.query.ReachQueryService;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -51,25 +52,46 @@ public class ReachCiCheckService {
     private final ReachCiAccess access;
     /** API-01이 러너(서비스 레포의 Reach 워크플로)를 띄운다. 설정이 없으면 스캔은 QUEUED로 남는다 */
     private final ReachScanDispatcher dispatcher;
+    /** PR 검사의 기준 스캔: 그 앱이 운영에서 실행 중인 이미지의 스캔 (ReachQueryService.runningImageScan) */
+    private final RunningScans runningScans;
     private final JsonMapper mapper = JsonMapper.builder().build();
+
+    /** 앱 코드 → 실행 중인 이미지의 스캔. 모르면 없다 */
+    @FunctionalInterface
+    interface RunningScans {
+        RunningScans NONE = app -> Optional.empty();
+
+        Optional<Long> of(String app);
+    }
 
     @Autowired
     ReachCiCheckService(ReachCiCheckRepository repository, ReachProperties properties, ReachCiAccess access,
-                        ReachScanDispatcher dispatcher) {
+                        ReachScanDispatcher dispatcher, ReachQueryService query) {
+        this(repository, properties, access, dispatcher, query::runningImageScan);
+    }
+
+    ReachCiCheckService(ReachCiCheckRepository repository, ReachProperties properties, ReachCiAccess access,
+                        ReachScanDispatcher dispatcher, RunningScans runningScans) {
         this.repository = repository;
         this.properties = properties;
         this.access = access;
         this.dispatcher = dispatcher;
+        this.runningScans = runningScans;
     }
 
-    /** CI 설정 없이(CI 토큰은 모두 거부, 러너를 띄우지 않음) */
+    /** CI 설정 없이(CI 토큰은 모두 거부, 러너를 띄우지 않음, 실행 중 이미지를 모름) */
     ReachCiCheckService(ReachCiCheckRepository repository, ReachProperties properties) {
-        this(repository, properties, ReachCiAccess.closed(), ReachScanDispatcher.NONE);
+        this(repository, properties, ReachCiAccess.closed(), ReachScanDispatcher.NONE, RunningScans.NONE);
     }
 
     /** 러너를 띄우는 것만 바꾼다(테스트) */
     ReachCiCheckService(ReachCiCheckRepository repository, ReachProperties properties, ReachScanDispatcher dispatcher) {
-        this(repository, properties, ReachCiAccess.closed(), dispatcher);
+        this(repository, properties, ReachCiAccess.closed(), dispatcher, RunningScans.NONE);
+    }
+
+    /** 실행 중 이미지만 바꾼다(테스트) */
+    ReachCiCheckService(ReachCiCheckRepository repository, ReachProperties properties, RunningScans runningScans) {
+        this(repository, properties, ReachCiAccess.closed(), ReachScanDispatcher.NONE, runningScans);
     }
 
     /** 실행 결과. replayed면 같은 멱등 키로 이미 만든 검사를 다시 준 것이다 */
@@ -230,7 +252,9 @@ public class ReachCiCheckService {
             return new Created(created(existing.get().checkId()), true);
         }
 
-        long targetId = rescanOf != null ? rescanTarget(rescanOf) : target(target);
+        var targetRow = rescanOf != null ? null : target(target);
+        long targetId = targetRow != null ? targetRow.id() : rescanTarget(rescanOf);
+        Long baseline = baseline(plan, targetRow);
         long scanId = requester.userId() != null
                 ? repository.insertScan(targetId, plan.mode(), rescanOf, requester.userId())
                 : requester.repository() != null
@@ -238,8 +262,19 @@ public class ReachCiCheckService {
                 : repository.insertSystemScan(targetId, plan.mode(), rescanOf);
         long checkId = repository.insertCheck(new ReachCiCheckRepository.NewCheck(scanId, plan.mode(),
                 plan.repository(), plan.headCommit(), plan.prNumber(), plan.prBaseRef(), plan.prHeadRef(),
-                plan.policy(), plan.baselineScanId(), plan.options(), scope, key, hash));
+                plan.policy(), baseline, plan.options(), scope, key, hash));
         return new Created(created(checkId), false);
+    }
+
+    /**
+     * 비교 기준 스캔 (명세 API-12 baselineScanId, 6-2). 요청에 있으면 그것을 쓴다.
+     * PR 검사에 없으면 그 앱이 운영에서 실행 중인 이미지의 스캔이다(이미 운영에 있는 Finding으로 PR을 막지 않는다).
+     * 그 밖의 검사나 실행 중 이미지를 모를 때는 없다(모든 Finding을 새 것으로 본다)
+     */
+    private Long baseline(Plan plan, ReachCiCheckRepository.TargetRow target) {
+        if (plan.baselineScanId() != null) return plan.baselineScanId();
+        if (!"PR".equals(plan.mode()) || target == null) return null;
+        return runningScans.of(target.app()).orElse(null);
     }
 
     /** 재대조 입력 SBOM (대시보드 세션). 검사가 없으면, 재대조가 아니거나 보관한 SBOM이 없으면 404 */
@@ -377,11 +412,11 @@ public class ReachCiCheckService {
     }
 
     /** 대상을 찾거나 만든다. 이미 있는 대상의 app과 요청한 app이 다르면 어느 서비스인지 모르니 422 */
-    private long target(ReachTargetRequest request) {
+    private ReachCiCheckRepository.TargetRow target(ReachTargetRequest request) {
         var resolved = ReachTargets.resolve(request, properties);
         var target = repository.findOrCreateTarget(resolved);
         if (!target.app().equals(resolved.app())) throw new ApiException(ErrorCode.UNPROCESSABLE);
-        return target.id();
+        return target;
     }
 
     /** 저장된 SBOM을 다시 쓰는 재대조라 원래 스캔이 성공했어야 한다. 없거나 안 끝났으면 대상을 정하지 못한 것으로 422 */
