@@ -171,6 +171,23 @@ ALREADY=$(jq -r .scanStatus <<< "$BODY")
 STAGES=()
 TOOLS=()
 CURRENT=""
+
+# tools.reachRef: the dashboard-backend commit whose analyzer, judgement data (vuln-functions.json, rules.json) and
+# scripts made this result (NFR-04: the same input with the same commit gives the same verdicts). In CI it is the
+# REACH_REF checkout; a local run with changes in those paths gets "-dirty"
+reach_ref() {
+  local ref
+  if ref=$(git -C "$REACH_HOME" rev-parse --verify -q HEAD 2>/dev/null); then
+    [ -z "$(git -C "$REACH_HOME" status --porcelain -- src/main/resources/reach reach-analyzer deploy/reach 2>/dev/null)" ] \
+      || ref="$ref-dirty"
+  else
+    ref="${REACH_REF:-}"
+  fi
+  [[ "$ref" =~ ^[0-9a-f]{40}(-dirty)?$ ]] && echo "$ref"
+  return 0
+}
+REACH_COMMIT=$(reach_ref)
+[ -n "$REACH_COMMIT" ] && TOOLS+=(--tool "reachRef=$REACH_COMMIT")
 UPLOADED=""
 
 upload() {

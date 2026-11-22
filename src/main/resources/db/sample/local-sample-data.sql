@@ -258,7 +258,7 @@ VALUES ('IMAGE', 'API', 'logssey/reused-api', 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a
 
 INSERT INTO reach_scans
     (target_id, scan_status, trigger_type, requested_by_kind, tools, created_at, started_at, finished_at)
-SELECT target_id, 'SUCCEEDED', 'MANUAL', 'SYSTEM', '{"reach": "v0", "scanner": "trivy"}',
+SELECT target_id, 'SUCCEEDED', 'MANUAL', 'SYSTEM', '{"reach": "v0", "scanner": "trivy", "reachRef": "4c912326c7c1f7fd9aa5e96dd993e9caca91a6bf"}',
        now() - interval '1 hour', now() - interval '1 hour', now() - interval '55 minutes'
 FROM reach_targets WHERE image_digest = 'sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a';
 
