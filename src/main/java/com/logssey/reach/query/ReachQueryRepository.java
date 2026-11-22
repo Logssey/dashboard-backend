@@ -41,6 +41,8 @@ public class ReachQueryRepository {
                    v.status, v.method, v.summary, v.not_analyzed_reason,
                    r.review_state, r.status AS review_status, r.proposal::text AS proposal, r.reset_reason,
                    x.reached AS l3_reached, x.regions_checked AS l3_regions_checked, x.startup_only AS l3_startup_only,
+                   -- 실행 중 이미지 먼저(PRD FR-04). 확인 못 함은 돌고 있을 수 있어 실행 안 함보다 앞이다. 레포 대상은 확인 못 함
+                   CASE f.deployment WHEN 'RUNNING' THEN 0 WHEN 'NOT_RUNNING' THEN 2 ELSE 1 END AS deployment_rank,
                    CASE v.status WHEN 'REACHABLE' THEN 0 WHEN 'UNKNOWN' THEN 1 WHEN 'UNREACHABLE' THEN 2 ELSE 3 END AS status_rank,
                    CASE f.severity WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 WHEN 'LOW' THEN 3 ELSE 4 END AS severity_rank,
                    -- CVE가 아닌 ID(GHSA 등)는 맨 뒤로. NULL이면 커서의 행 비교가 깨져서 큰 값으로 채운다
@@ -192,9 +194,12 @@ public class ReachQueryRepository {
                 .list();
     }
 
-    /** 기본 정렬: 상태 -> 심각도 -> CVE(연도·번호를 숫자로) -> id (Reach API 명세 2-5). */
-    private static final String DEFAULT_ORDER = 
-    " ORDER BY status_rank, severity_rank, cve_year, cve_number, finding_id";
+    /**
+     * 기본 정렬: 배포(실행 중 -> 확인 못 함 -> 실행 안 함) -> 상태 -> 심각도 -> CVE(연도·번호를 숫자로) -> id (Reach API 명세 2-5).
+     * 스캔 하나(scanId·target)는 대상이 하나라 배포가 모두 같아 상태부터 보는 것과 같다
+     */
+    private static final String DEFAULT_ORDER =
+    " ORDER BY deployment_rank, status_rank, severity_rank, cve_year, cve_number, finding_id";
 
     private final JdbcClient jdbcClient;
     private final JsonMapper mapper = JsonMapper.builder().build();
@@ -279,7 +284,7 @@ public class ReachQueryRepository {
         return value == null ? null : mapper.readTree(value);
     }
     /** 목록 한 행 + 커서용 정렬 키 */
-    record Row(ReachFindingResponse item, int statusRank, int severityRank, int cveYear, int cveNumber) {}
+    record Row(ReachFindingResponse item, int deploymentRank, int statusRank, int severityRank, int cveYear, int cveNumber) {}
 
     private record Where(String sql, Map<String, Object> params) {}
 
@@ -317,8 +322,9 @@ public class ReachQueryRepository {
             params.put("cveContains", filter.cveContains());
         }
         if (after != null) {
-            conditions.add("(status_rank, severity_rank, cve_year, cve_number, finding_id)"
-                    + " > (:afterStatus, :afterSeverity, :afterYear, :afterNumber, :afterId)");
+            conditions.add("(deployment_rank, status_rank, severity_rank, cve_year, cve_number, finding_id)"
+                    + " > (:afterDeployment, :afterStatus, :afterSeverity, :afterYear, :afterNumber, :afterId)");
+            params.put("afterDeployment", after.deploymentRank());
             params.put("afterStatus", after.statusRank());
             params.put("afterSeverity", after.severityRank());
             params.put("afterYear", after.cveYear());
@@ -336,7 +342,7 @@ public class ReachQueryRepository {
     }
 
     private Row row(ResultSet rs, int rowNum) throws SQLException {
-        return new Row(finding(rs, rowNum), rs.getInt("status_rank"), rs.getInt("severity_rank"),
+        return new Row(finding(rs, rowNum), rs.getInt("deployment_rank"), rs.getInt("status_rank"), rs.getInt("severity_rank"),
                 rs.getInt("cve_year"), rs.getInt("cve_number"));
     }
 

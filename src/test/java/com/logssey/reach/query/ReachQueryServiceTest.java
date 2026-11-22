@@ -180,6 +180,40 @@ class ReachQueryServiceTest {
     }
 
     @Test
+    void runningImagesComeFirstThenUnknownThenNotRunning() {
+        // 기본 범위의 대상 셋: API 이미지(실행 중), WEB 이미지(실행 안 함), CHAT 레포(확인 못 함)
+        finding(scan, "a", "CVE-2026-1", "LOW", "UNREACHABLE", "UNREVIEWED");
+        long web = scan(target("sha256:b", "WEB"), "SUCCEEDED", 2);
+        finding(web, "b", "CVE-2026-2", "CRITICAL", "REACHABLE", "UNREVIEWED");
+        long chat = scan(repoTarget("CHAT", "1".repeat(40)), "SUCCEEDED", 2);
+        finding(chat, "c", "CVE-2026-3", "CRITICAL", "REACHABLE", "UNREVIEWED");
+        finding(scan, "d", "CVE-2026-4", "HIGH", "REACHABLE", "UNREVIEWED");
+        jdbc.update("UPDATE reach_findings f SET deployment = 'RUNNING' FROM reach_targets t "
+                + "WHERE t.target_id = f.target_id AND t.image_digest = 'sha256:a'");
+        jdbc.update("UPDATE reach_findings f SET deployment = 'NOT_RUNNING' FROM reach_targets t "
+                + "WHERE t.target_id = f.target_id AND t.image_digest = 'sha256:b'");
+
+        // 실행 중 이미지 안에서는 지금처럼 상태 → 심각도. 도달 가능 CRITICAL이어도 실행 중이 아니면 뒤에 온다
+        var expected = List.of("CVE-2026-4", "CVE-2026-1", "CVE-2026-3", "CVE-2026-2");
+        assertThat(cves(service.findings("admin", ALL, null, null, null))).containsExactlyElementsOf(expected);
+
+        // 커서가 배포 경계를 넘어도 빠지거나 겹치지 않는다
+        var seen = new ArrayList<String>();
+        String cursor = null;
+        do {
+            var page = service.findings("admin", ALL, 1, cursor, null);
+            seen.addAll(cves(page));
+            cursor = page.nextCursor();
+        } while (cursor != null);
+        assertThat(seen).containsExactlyElementsOf(expected);
+
+        // 배포 순위가 없던 커서(정렬 키 5개 + 필터)는 400
+        String old = java.util.Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(("0,0,2026,1,1," + ALL.fingerprint()).getBytes());
+        assertError(() -> service.findings("admin", ALL, 1, old, null), ErrorCode.INVALID_INPUT);
+    }
+
+    @Test
     void nullInsideAnArrayColumnIsSkipped() {
         long id = finding(scan, "a", "CVE-2026-1", "HIGH", "REACHABLE", "UNREVIEWED");
         jdbc.update("UPDATE reach_findings SET fixed_versions = ARRAY['1.0.1', NULL] WHERE finding_id = ?", id);
