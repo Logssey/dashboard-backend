@@ -10,7 +10,7 @@
 
 | 파일 | 내용 |
 | --- | --- |
-| `reach.yml` | 서비스 저장소 `.github/workflows/reach.yml`로 복사할 워크플로. 작업 세 개(`pr`, `image`, `manual`) |
+| `reach.yml` | 서비스 저장소 `.github/workflows/reach.yml`로 복사할 워크플로. 작업 세 개(`pr`, `image`, `manual`). 대시보드는 이 경로의 워크플로가 받은 토큰만 받으니(`job_workflow_ref`) 파일 이름·위치를 바꾸지 않는다 |
 | `reach-scan.sh` | 검사 등록부터 게이트까지 한 번에. 워크플로 밖(로컬)에서도 같은 순서로 돈다 |
 | `install-tools.sh` | Trivy·Grype·JaCoCo(에이전트·CLI)를 버전과 SHA-256으로 고정해 설치(infrastructure `iac-gate`와 같은 방식). JaCoCo 폴더는 `JACOCO_HOME` |
 | `l3-run.sh` | L3: 스캔한 이미지를 JaCoCo 에이전트와 띄우고 서비스 저장소의 시나리오를 보내며 실행 기록을 요청 단계마다 끊어 남긴다(아래 "L3"). 대조는 `reach-scan.sh`가 L2 뒤에 한다 |
@@ -69,7 +69,7 @@
 | 대시보드 주소 | 서비스 저장소 변수 `REACH_URL`(API), `REACH_UI_URL`(화면, 선택) | Logssey 설치는 `https://logssey.re-used.store` (둘 다) |
 | 감시 대상 등록 | 대시보드 설정 `logssey.reach.apps`에 이 레포(`repo`, 하위 경로면 `path`)와 이미지 저장소(`image`)를 앱 코드로 등록한다(PRD FR-15). 스크립트는 app을 보내지 않고(`APP`을 주면 그 값) 대시보드가 이 설정으로 정한다. 등록 안 된 레포·이미지는 422 | 설치마다 |
 | 이미지 저장소 | 서비스 저장소 변수 `REACH_ECR_REPOSITORY`(예: `logssey/reused-api`). 없으면 이미지 작업을 건너뛴다 | 설치마다 |
-| CI 인증 | 대시보드가 `/api/v1/reach/ci/**`에서 GitHub OIDC 토큰(`aud = logssey-reach`)을 받는다. 스크립트는 호출마다 새 토큰을 받아 `Authorization: Bearer`로 보낸다. 대시보드 설정 `logssey.reach.ci.repository-owner`(조직 이름)가 있어야 받고, PR 검사는 `pull_request` 이벤트, 이미지 검사는 기본 브랜치(`logssey.reach.ci.default-branch`, 기본 `main`)에서만 받는다. 조건은 API 명세 2-2 | 구현됨. 설치마다 조직 설정 |
+| CI 인증 | 대시보드가 `/api/v1/reach/ci/**`에서 GitHub OIDC 토큰(`aud = logssey-reach`)을 받는다. 스크립트는 호출마다 새 토큰을 받아 `Authorization: Bearer`로 보낸다. 대시보드 설정 `logssey.reach.ci.repository-owner`(조직 이름)가 있어야 받고, 토큰은 그 레포의 `.github/workflows/reach.yml`이 받은 것이어야 한다. PR 검사는 그 PR의 `pull_request` 이벤트, 이미지 검사는 기본 브랜치(`logssey.reach.ci.default-branch`, 기본 `main`)의 PR이 아닌 이벤트에서만 만들고, 결과도 같은 조건의 토큰만 올린다(PR 토큰은 이미지 검사에 못 올림). 조건은 API 명세 2-2 | 구현됨. 설치마다 조직 설정 |
 | dashboard-backend 읽기 | GitHub App 토큰. 비밀값 `REACH_APP_ID`, `REACH_APP_PRIVATE_KEY`(서비스 CI/CD의 gitops 토큰과 같은 방식) | 앱 미정. 나중에 분석기 이미지(GHCR)로 바꾸면 필요 없다 |
 | ECR 읽기 역할 | 비밀값 `REACH_ECR_READ_ROLE_ARN`. `ecr:DescribeImages`, `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`, `ecr:GetAuthorizationToken`만. 신뢰 정책은 이 저장소의 기본 브랜치 실행(`sub = repo:<조직>/<레포>:ref:refs/heads/<기본 브랜치>`, `image`의 `workflow_run`과 `manual`의 `workflow_dispatch`)으로 제한. 이 레포가 스캔할 이미지 저장소마다 읽기 권한 | Logssey 설치: infrastructure `logssey-dashboard/reach-ci.tf`(`logssey-dashboard-role-reach-ci-ecr-read`). 없거나 그 저장소 권한이 없으면 이미지 대상 `manual`은 `IMAGE_PULL_FAILED` |
 | 대시보드가 워크플로를 띄우는 앱 | 대시보드 설정 `logssey.reach.dispatch.app-id`·`private-key`(운영은 `/run/secrets` 파일). 권한은 `Actions: write` 하나, 감시 대상 서비스 저장소에만 설치. 위 dashboard-backend 읽기 앱과 따로 둔다(그 앱 키는 서비스 CI가 쓴다). 설정이 없으면 대시보드 스캔 요청은 `QUEUED`로 남는다 | 미정 |
