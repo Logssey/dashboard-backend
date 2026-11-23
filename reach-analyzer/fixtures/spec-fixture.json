@@ -972,6 +972,310 @@
         ],
         "note": "The 1.81 jar has no line numbers (every row of methods-installed.tsv has lines \"-\"), so the region is the whole method FrodoEngine.sample(short) (source lines 103-120, the secret-dependent branches are at 111-112 and 116-117). sample_matrix is left out because it only loops over sample. The region cannot tell decapsulation from key generation or encapsulation: sample also executes under kem_keypair and kem_enc, while the advisory limits the issue to decapsulation."
       }
+    },
+    {
+      "cve": "CVE-2026-76183",
+      "ghsa": "GHSA-q4fc-3vv4-fh24",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-websocket",
+        "artifact": "tomcat-embed-websocket",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.26",
+          "10.1.60",
+          "9.0.122"
+        ]
+      },
+      "severity": "CRITICAL",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "Tomcat WebSocket 서버가 요청 경로를 엔드포인트 경로 템플릿({변수})으로 잘못 해석해, 요청 경로에 중괄호를 넣으면 다른 경로의 WebSocket 엔드포인트에 연결되면서 그 경로에 걸린 컨테이너 보안 제약(security-constraint)을 건너뛸 수 있다.",
+      "summary_en": "WsServerContainer.findMapping parses the request path as a URI template (new UriTemplate(path)), so a request path with {…} segments can match a templated WebSocket endpoint and bypass the security constraints on that endpoint.",
+      "sinks": [
+        {
+          "class": "org.apache.tomcat.websocket.server.WsServerContainer",
+          "method": "findMapping",
+          "desc": "(Ljava/lang/String;)Lorg/apache/tomcat/websocket/server/WsMappingResult;",
+          "confidence": "high",
+          "note": "Called by WsFilter only when JSR-356 endpoints are registered in the WsServerContainer and the request is a WebSocket upgrade."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-q4fc-3vv4-fh24",
+        "https://github.com/apache/tomcat/commit/e182d86b7d4cc19ec4c24c38f37acc004404fe8e"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.tomcat.websocket.server.WsServerContainer",
+            "method": "findMapping",
+            "desc": "(Ljava/lang/String;)Lorg/apache/tomcat/websocket/server/WsMappingResult;",
+            "source": "org/apache/tomcat/websocket/server/WsServerContainer.java",
+            "lines": [
+              [
+                290,
+                290
+              ]
+            ]
+          }
+        ],
+        "note": "Line 290 parses the request path as a template; it runs for every WebSocket upgrade request with no exact endpoint match, so its execution does not show a path with {…} or a bypass."
+      }
+    },
+    {
+      "cve": "CVE-2026-86248",
+      "ghsa": "GHSA-c47j-g3rg-hrfq",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.26",
+          "10.1.60",
+          "9.0.122"
+        ]
+      },
+      "severity": "CRITICAL",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "Tomcat이 OpenSSL을 FFM(Java의 외부 함수 호출) 방식으로 쓰면서 클라이언트 인증서 로그인(CLIENT_CERT)에 OCSP 확인을 켜고 soft-fail을 끈 경우, 인증서 상태를 확인하지 못했는데도 로그인이 실패하지 않을 수 있다. 취약한 코드는 tomcat-embed-core가 아니라 별도 jar(org.apache.tomcat:tomcat-coyote-ffm)에 있다.",
+      "summary_en": "With OpenSSL over FFM (org.apache.tomcat.util.net.openssl.panama.OpenSSLEngine.processOCSP, shipped in tomcat-coyote-ffm, not in tomcat-embed-core), an OCSP check that cannot complete does not fail CLIENT_CERT authentication even when soft fail is disabled.",
+      "sinks": [
+        {
+          "class": "org.apache.tomcat.util.net.SSLHostConfig",
+          "method": "getOcspSoftFail",
+          "desc": "()Z",
+          "confidence": "low",
+          "note": "Representative only: the fixed code (panama OpenSSLEngine.processOCSP) is not in tomcat-embed-core; the rule on the tomcat-coyote-ffm jar decides."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-c47j-g3rg-hrfq",
+        "https://github.com/apache/tomcat/commit/9aab76056e7470bcc8ca9a20b33b6558b1046da2"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [],
+        "note": "The fixed code is in tomcat-coyote-ffm, not in this jar; nothing in tomcat-embed-core shows it ran."
+      }
+    },
+    {
+      "cve": "CVE-2026-86350",
+      "ghsa": "GHSA-6ff5-mwrj-376m",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.26",
+          "10.1.60",
+          "9.0.122"
+        ]
+      },
+      "severity": "CRITICAL",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "HTTP/2 요청 헤더를 풀 때(HPACK 허프만 해제) 허용되지 않는 문자를 만나면 예외로 중간에 멈추는데, 이때 헤더 해석 상태가 정리되지 않아 같은 연결의 다른 요청과 헤더가 섞일 수 있다. CVE-2026-41293 수정에서 들어온 회귀다.",
+      "summary_en": "HPackHuffman.decode (with isFieldName) throws IllegalArgumentException in the middle of an HPACK header block for an illegal character, a check added by the fix for CVE-2026-41293, which leaves the decoder state inconsistent and can mix request headers between requests.",
+      "sinks": [
+        {
+          "class": "org.apache.coyote.http2.HPackHuffman",
+          "method": "decode",
+          "desc": "(Ljava/nio/ByteBuffer;ILjava/lang/StringBuilder;Z)V",
+          "confidence": "high",
+          "note": "Runs for every Huffman-encoded HTTP/2 header; the rule on HTTP/2 being enabled decides."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-6ff5-mwrj-376m",
+        "https://github.com/apache/tomcat/commit/192bc74996e1ad35d79118f750574d366bd43cea"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.coyote.http2.HPackHuffman",
+            "method": "decode",
+            "desc": "(Ljava/nio/ByteBuffer;ILjava/lang/StringBuilder;Z)V",
+            "source": "org/apache/coyote/http2/HPackHuffman.java",
+            "lines": [
+              [
+                433,
+                434
+              ],
+              [
+                439,
+                440
+              ],
+              [
+                445,
+                446
+              ],
+              [
+                472,
+                473
+              ],
+              [
+                478,
+                479
+              ],
+              [
+                484,
+                485
+              ]
+            ]
+          }
+        ],
+        "note": "The throw statements for an illegal character in a header name or value (both decoding branches). They run only for such input, so execution here is close to the attack, but it does not show that headers were mixed."
+      }
+    },
+    {
+      "cve": "CVE-2026-101296",
+      "ghsa": "GHSA-5q2g-877c-9cwh",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.27",
+          "10.1.61",
+          "9.0.123"
+        ]
+      },
+      "severity": "CRITICAL",
+      "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:H/VI:H/VA:N/SC:N/SI:N/SA:N/E:X/CR:X/IR:X/AR:X/MAV:X/MAC:X/MAT:X/MPR:X/MUI:X/MVC:X/MVI:X/MVA:X/MSC:X/MSI:X/MSA:X/S:X/AU:X/R:X/V:X/RE:X/U:X",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "Tomcat의 JNDIRealm(LDAP으로 로그인 확인)에 GSSAPI가 아닌 SASL 인증 방식을 설정하면, 사용자 비밀번호로 LDAP에 다시 붙어 확인하는 단계가 설정된 SASL 방식으로 그대로 진행돼 비밀번호가 틀려도 로그인이 통과할 수 있다.",
+      "summary_en": "JNDIRealm.bindAsUser keeps a configured non-GSSAPI SASL mechanism when it binds as the user to check the password, so the bind can succeed without the user's password and authentication fails open.",
+      "sinks": [
+        {
+          "class": "org.apache.catalina.realm.JNDIRealm",
+          "method": "bindAsUser",
+          "desc": "(Ljavax/naming/directory/DirContext;Lorg/apache/catalina/realm/JNDIRealm$User;Ljava/lang/String;)Z",
+          "confidence": "high"
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-5q2g-877c-9cwh",
+        "https://github.com/apache/tomcat/commit/e43453fc04abb44f64faf571ca98af71aa3c20a1"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.catalina.realm.JNDIRealm",
+            "method": "bindAsUser",
+            "desc": "(Ljavax/naming/directory/DirContext;Lorg/apache/catalina/realm/JNDIRealm$User;Ljava/lang/String;)Z",
+            "source": "org/apache/catalina/realm/JNDIRealm.java",
+            "lines": [
+              [
+                1981,
+                1982
+              ]
+            ]
+          }
+        ],
+        "note": "Lines 1981-1982: the check that removes only GSSAPI before the bind; it runs for every bind-mode authentication, so its execution does not show a non-GSSAPI SASL mechanism is configured."
+      }
+    },
+    {
+      "cve": "CVE-2026-101356",
+      "ghsa": "GHSA-w9r8-5j45-v8mg",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.27",
+          "10.1.61",
+          "9.0.123"
+        ]
+      },
+      "severity": "CRITICAL",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:H",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "HTTP/2로 받은 비동기 서블릿 요청(Spring MVC의 DeferredResult·Callable·SseEmitter 등)에서 처리 중 오류가 나면, Tomcat이 그 요청 상태를 오류로 보지 못하고 객체를 다시 써서 다른 사용자의 요청·응답과 섞일 수 있다.",
+      "summary_en": "AsyncStateMachine.isAsyncError ignores the MUST_ERROR state, so after an error during asynchronous processing of an HTTP/2 stream the request and response objects can be recycled and reused while still in use, mixing requests or responses between users.",
+      "sinks": [
+        {
+          "class": "org.apache.coyote.AsyncStateMachine",
+          "method": "isAsyncError",
+          "desc": "()Z",
+          "confidence": "high",
+          "note": "Reached only through AsyncContextImpl (ActionCode.ASYNC_IS_ERROR), i.e. asynchronous servlet requests; HTTP/2 is required but not visible here."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-w9r8-5j45-v8mg",
+        "https://github.com/apache/tomcat/commit/1dc6aa151b3b99b32ac9ae7c60e41c326063321b"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.coyote.AsyncStateMachine",
+            "method": "isAsyncError",
+            "desc": "()Z",
+            "source": "org/apache/coyote/AsyncStateMachine.java",
+            "lines": [
+              [
+                220,
+                220
+              ]
+            ]
+          }
+        ],
+        "note": "Line 220 runs whenever the async state is asked whether it is in error (any async request, HTTP/1.1 or HTTP/2); its execution does not show HTTP/2 or an error."
+      }
+    },
+    {
+      "cve": "CVE-2026-103119",
+      "ghsa": "GHSA-64hx-4gc9-f6v4",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.27"
+        ]
+      },
+      "severity": "CRITICAL",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:H",
+      "invocation_kind": "both",
+      "summary_ko": "응답 길이(Content-Length)를 정한 응답을 비동기(논블로킹) 방식으로 크게 쓰면, Tomcat이 아직 소켓에 다 보내지 못한 상태에서 응답을 닫아 응답 본문 일부가 같은 연결의 다음 요청 응답으로 넘어갈 수 있다. 다음 요청이 실패하거나 앞 응답의 데이터가 다른 사용자에게 보일 수 있다.",
+      "summary_en": "OutputBuffer.updateBytesWritten closes the response as soon as Content-Length bytes are counted, even for a non-blocking write whose bytes are still buffered at the socket, so the rest of the body can be sent as part of the next response on the connection.",
+      "sinks": [
+        {
+          "class": "org.apache.catalina.connector.OutputBuffer",
+          "method": "updateBytesWritten",
+          "desc": "(I)V",
+          "confidence": "high",
+          "note": "Runs for every response write; only the non-blocking case (after setWriteListener) is vulnerable, so a rule decides."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-64hx-4gc9-f6v4",
+        "https://github.com/apache/tomcat/commit/f13748baa17a5e28925be455e0e2832e2032f58c"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.catalina.connector.OutputBuffer",
+            "method": "updateBytesWritten",
+            "desc": "(I)V",
+            "source": "org/apache/catalina/connector/OutputBuffer.java",
+            "lines": [
+              [
+                447,
+                448
+              ]
+            ]
+          }
+        ],
+        "note": "Line 447 is the condition the fix changed; it runs for every response write with a known Content-Length, blocking or not. Its execution does not show a non-blocking write."
+      }
     }
   ]
 }

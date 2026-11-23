@@ -8,7 +8,8 @@
     python3 vulndata.py apply bundles/CVE-2026-65637 --reviewed-by NAME
 
 prepare collects what is needed to find the vulnerable functions, without deciding anything:
-the advisory (GitHub Advisory Database), the installed and the fixed release from Maven Central, the methods
+the advisory (GitHub Advisory Database; an unreviewed one has no package, then the affected versions come from the
+CVE record and --coordinates names the Maven package), the installed and the fixed release from Maven Central, the methods
 whose code the fix changed (MethodDiff in reach-analyzer.jar), the fix commits the advisory links, and for
 each changed method the source lines the fix touched (candidates for the L3 vulnerable region).
 
@@ -16,12 +17,13 @@ The draft is a CANDIDATE. check compares it with the jars (every function and li
 writes REVIEW.md, the page a person reads before the data goes in. apply refuses a draft that fails check and
 records who reviewed it (PRD NFR-04: an AI proposes, a person confirms).
 
-Only the Python standard library is used. Network: api.github.com, github.com (fix commits) and
-repo1.maven.org. GITHUB_TOKEN, when set, is sent to api.github.com only (a higher rate limit).
+Only the Python standard library is used. Network: api.github.com, github.com (fix commits), cveawg.mitre.org
+(CVE records) and repo1.maven.org. GITHUB_TOKEN, when set, is sent to api.github.com only (a higher rate limit).
 """
 import argparse
 import datetime
 import difflib
+import functools
 import hashlib
 import json
 import os
@@ -44,6 +46,7 @@ ANALYZER_JAR = ROOT / "build" / "libs" / "reach-analyzer.jar"
 RECORDS = ROOT / "research" / "vulndata"
 MAVEN = "https://repo1.maven.org/maven2"
 ADVISORIES = "https://api.github.com/advisories"
+CVE_RECORDS = "https://cveawg.mitre.org/api/cve"
 
 KINDS = ("app_calls_library", "framework_calls_library", "framework_invokes", "both")
 # Kinds where a framework runs the code: the call graph alone cannot decide, so rules.json needs a rule
@@ -199,6 +202,8 @@ def load_advisory(cve, ghsa):
         data = json.loads(http_get(f"{ADVISORIES}/{ghsa}", "application/vnd.github+json"))
     else:
         found = json.loads(http_get(f"{ADVISORIES}?cve_id={cve}", "application/vnd.github+json"))
+        if not found:   # not reviewed yet: no package in it, the CVE record gives the versions (from_cve_record)
+            found = json.loads(http_get(f"{ADVISORIES}?cve_id={cve}&type=unreviewed", "application/vnd.github+json"))
         if not found:
             raise Stop(f"no advisory for {cve} in the GitHub Advisory Database; pass --ghsa if it has another id")
         if len(found) > 1:
@@ -206,6 +211,90 @@ def load_advisory(cve, ghsa):
             raise Stop(f"{cve} has more than one advisory ({ids}); pass --ghsa")
         data = found[0]
     return data
+
+
+def maven_rows(advisory):
+    return [r for r in advisory.get("vulnerabilities") or []
+            if ((r.get("package") or {}).get("ecosystem") or "").lower() == "maven"]
+
+
+def record_cvss(record):
+    """(severity, vector) of the CVE record: the CNA's CVSS first, then an ADP's (CISA adds one to many records)."""
+    containers = record.get("containers") or {}
+    for holder in [containers.get("cna") or {}] + list(containers.get("adp") or []):
+        for metric in holder.get("metrics") or []:
+            for key in ("cvssV3_1", "cvssV3_0", "cvssV4_0"):
+                cvss = metric.get(key)
+                if cvss and cvss.get("baseSeverity"):
+                    return cvss["baseSeverity"].upper(), cvss.get("vectorString")
+    return None, None
+
+
+def from_cve_record(advisory, record, coordinates):
+    """An advisory without a Maven package (unreviewed in the GitHub database) completed from the CVE record: every
+    affected version range of the record becomes a row for --coordinates. A range that ends at 'lessThan' is fixed in
+    that version; one that ends at 'lessThanOrEqual' has no fixed version yet (prepare asks Maven Central).
+    The CVSS of the record fills a severity the advisory does not have."""
+    rows = []
+    for affected in ((record.get("containers") or {}).get("cna") or {}).get("affected") or []:
+        for v in affected.get("versions") or []:
+            if v.get("status") != "affected":
+                continue
+            start, below, upto = v.get("version"), v.get("lessThan"), v.get("lessThanOrEqual")
+            bounds = [f">= {start}"] if start and start not in ("0", "*") else []
+            if below and below != "*":
+                bounds.append(f"< {below}")
+            elif upto and upto != "*":
+                bounds.append(f"<= {upto}")
+            elif start:
+                bounds = [f"= {start}"]
+            if bounds:
+                rows.append({"package": {"ecosystem": "maven", "name": coordinates},
+                             "vulnerable_version_range": ", ".join(bounds),
+                             "first_patched_version": below if below and below != "*" else None})
+    if not rows:
+        raise Stop("the CVE record lists no affected version range; pass --fixed")
+    out = dict(advisory, vulnerabilities=rows, package_source=f"CVE record ({CVE_RECORDS}/{record_id(record)})")
+    severity, vector = record_cvss(record)
+    if severity and (advisory.get("severity") or "unknown").lower() == "unknown":
+        out["severity"] = severity.lower()
+    if vector and not cvss_vector(advisory):
+        out["cvss"] = {"vector_string": vector}
+    return out
+
+
+def record_id(record):
+    return (record.get("cveMetadata") or {}).get("cveId") or "?"
+
+
+def next_release(versions, after):
+    """The first release after `after` on the same line (every number but the last the same: 11.0.25 -> 11.0.x,
+    1.1 -> 1.x; no qualifier such as -M1): the version that fixed a range ending at 'lessThanOrEqual after'."""
+    tokens = version_tokens(after)
+    line = tokens[:max(1, len(tokens) - 1)]
+    later = [v for v in versions if VERSION_RE.fullmatch(v) and all(isinstance(t, int) for t in version_tokens(v))
+             and version_tokens(v)[:len(line)] == line and compare_versions(v, after) > 0]
+    return min(later, key=functools.cmp_to_key(compare_versions)) if later else None
+
+
+def maven_versions(group, artifact):
+    text = http_get(f"{MAVEN}/{group.replace('.', '/')}/{artifact}/maven-metadata.xml").decode("utf-8", "replace")
+    return re.findall(r"<version>([^<]+)</version>", text)
+
+
+def complete_fixed(advisory, coordinates):
+    """Fills the fixed version of rows ending at '<= x' with the next release after x on Maven Central."""
+    group, artifact = coordinates.split(":")
+    versions = None
+    for row in advisory["vulnerabilities"]:
+        if patched(row):
+            continue
+        upto = [bound for op, bound in parse_range(row["vulnerable_version_range"]) if op == "<="]
+        if not upto:
+            continue
+        versions = versions if versions is not None else maven_versions(group, artifact)
+        row["first_patched_version"] = next_release(versions, upto[0])
+    return advisory
 
 
 def patched(row):
@@ -217,11 +306,11 @@ def patched(row):
 
 def choose_package(advisory, coordinates, installed, fixed_override=None):
     """-> (coordinates, fixed versions of every branch, the fixed version to compare the installed one with)"""
-    rows = [r for r in advisory.get("vulnerabilities") or []
-            if ((r.get("package") or {}).get("ecosystem") or "").lower() == "maven"]
+    rows = maven_rows(advisory)
     names = sorted({r["package"]["name"] for r in rows})
     if not names:
-        raise Stop("the advisory lists no Maven package (only Java libraries are supported)")
+        raise Stop("the advisory lists no Maven package (only Java libraries are supported); "
+                   "pass --coordinates group:artifact to read the affected versions from the CVE record")
     if not coordinates:
         if len(names) > 1:
             raise Stop("the advisory lists several packages; pass --coordinates: " + ", ".join(names))
@@ -425,11 +514,25 @@ def prepare(a):
     cache = out / "cache"
     cache.mkdir(parents=True, exist_ok=True)
 
+    extra_commits = []
+    for url in a.commit or []:
+        m = COMMIT_RE.fullmatch(url.strip())
+        if not m:
+            raise Stop(f"--commit {url!r} is not a https://github.com/<owner>/<repo>/commit/<sha> link")
+        extra_commits.append({"repository": m.group(1), "sha": m.group(2), "url": m.group(0)})
+
     advisory = load_advisory(a.cve, a.ghsa)
-    write_json(out / "advisory.json", advisory)
     cve = advisory.get("cve_id") or a.cve
     if not cve or not CVE_RE.fullmatch(cve):
         raise Stop("the advisory has no CVE id; verdict data is keyed by CVE")
+    if not maven_rows(advisory) and a.coordinates:
+        record = json.loads(http_get(f"{CVE_RECORDS}/{cve}"))
+        write_json(out / "cve-record.json", record)
+        advisory = from_cve_record(advisory, record, a.coordinates)
+        if not a.fixed:
+            complete_fixed(advisory, a.coordinates)
+        log(f"{cve}: the advisory has no package, the affected versions come from the CVE record")
+    write_json(out / "advisory.json", advisory)
     coordinates, fixed, target = choose_package(advisory, a.coordinates, a.installed, a.fixed)
     # these come from the advisory and go into URLs and file names
     if not COORD_RE.fullmatch(coordinates) or not all(VERSION_RE.fullmatch(v) for v in [target, *fixed]):
@@ -457,7 +560,9 @@ def prepare(a):
     write_tsv(out / "method-diff.tsv", ("status", "class", "method", "desc", "lines"), diff)
     write_tsv(out / "methods-installed.tsv", ("class", "method", "desc", "lines"), methods)
 
-    commits, patch_text, touched = fix_commits(advisory), "", set()
+    commits = fix_commits(advisory)
+    commits += [c for c in extra_commits if c["sha"] not in {k["sha"] for k in commits}]
+    patch_text, touched = "", set()
     for commit in commits:
         path = cache / f"{commit['sha'][:12]}.patch"
         if not fetch(commit["url"] + ".patch", path):
@@ -544,7 +649,8 @@ def write_advisory_md(path, advisory, meta):
     text = [f"# {meta['ghsa']} / {meta['cve']}", "",
             f"package: {p['coordinates']}", f"installed (vulnerable): {p['installed']}",
             f"fixed releases: {', '.join(p['fixed']) or '-'}", f"compared with: {meta['comparedWith']}",
-            f"severity: {meta['severity']}  {meta['cvss_vector'] or ''}", "",
+            f"severity: {meta['severity']}  {meta['cvss_vector'] or ''}",
+            f"versions from: {advisory.get('package_source') or 'the advisory'}", "",
             "## summary", advisory.get("summary") or "", "",
             "## description", (advisory.get("description") or "")[:8000], "",
             "## affected", *[f"- {r['package']['name']}  {r.get('vulnerable_version_range')}  "
@@ -926,6 +1032,9 @@ def main(argv=None):
     p.add_argument("--coordinates", help="group:artifact, when the advisory lists several packages")
     p.add_argument("--installed", required=True, help="the vulnerable version the service runs (from the SBOM)")
     p.add_argument("--fixed", help="the fixed version to compare with (default: from the advisory)")
+    p.add_argument("--commit", action="append", default=[],
+                   help="a fix commit (https://github.com/<owner>/<repo>/commit/<sha>) the advisory does not link; "
+                        "repeat for several (e.g. from the project's security page)")
     p.add_argument("--out", required=True, help="the bundle directory")
     p.add_argument("--analyzer-jar", default=str(ANALYZER_JAR))
     p.set_defaults(run=prepare)
