@@ -128,7 +128,7 @@ public class IacQueryService {
     }
 
     /** 경로에서 끊을 수 있는 관계와 그 조치 (API 계약 action 값). */
-    static List<IacPathDetailResponse.CutPoint> cutPoints(IacPathResponse path) {
+    public static List<IacPathDetailResponse.CutPoint> cutPoints(IacPathResponse path) {
         List<IacPathDetailResponse.CutPoint> cuts = new java.util.ArrayList<>();
         var hops = path.hops();
         for (int i = 0; i + 1 < hops.size(); i++) {
