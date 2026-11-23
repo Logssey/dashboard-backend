@@ -170,6 +170,45 @@ class Advisory(unittest.TestCase):
         self.assertIsNone(V.cvss_vector(advisory(cvss=None)))
 
 
+def cve_record(**cna_over):
+    """A CVE record (cveawg.mitre.org) shaped like Apache's: ranges ending at lessThanOrEqual, the CVSS from CISA (ADP)."""
+    cna = {"affected": [{"vendor": "Example", "product": "Example Lib", "defaultStatus": "unaffected", "versions": [
+        {"status": "affected", "version": "1.0", "lessThanOrEqual": "1.1", "versionType": "semver"},
+        {"status": "affected", "version": "2.0", "lessThan": "2.0.3", "versionType": "semver"},
+        {"status": "unaffected", "version": "0", "lessThan": "1.0", "versionType": "semver"}]}],
+        "metrics": [{"other": {"type": "Textual description of severity", "content": {"text": "important"}}}]}
+    cna.update(cna_over)
+    return {"cveMetadata": {"cveId": "CVE-2099-12345"}, "containers": {"cna": cna, "adp": [{"metrics": [
+        {"cvssV3_1": {"baseSeverity": "CRITICAL", "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}}]}]}}
+
+
+class CveRecord(unittest.TestCase):
+    """An unreviewed GitHub advisory has no package: the CVE record gives the affected versions."""
+
+    def test_affected_ranges_become_rows_for_the_given_coordinates(self):
+        got = V.from_cve_record(advisory(vulnerabilities=[], severity="unknown", cvss=None), cve_record(), "org.example:lib")
+        self.assertEqual([(r["package"]["name"], r["vulnerable_version_range"], r["first_patched_version"])
+                          for r in got["vulnerabilities"]],
+                         [("org.example:lib", ">= 1.0, <= 1.1", None), ("org.example:lib", ">= 2.0, < 2.0.3", "2.0.3")])
+        # the record's CVSS fills what the unreviewed advisory lacks, and the bundle says where the versions came from
+        self.assertEqual((got["severity"], got["cvss"]["vector_string"][:8]), ("critical", "CVSS:3.1"))
+        self.assertIn("cveawg.mitre.org/api/cve/CVE-2099-12345", got["package_source"])
+
+    def test_an_advisory_severity_is_kept(self):
+        got = V.from_cve_record(advisory(vulnerabilities=[]), cve_record(), "org.example:lib")
+        self.assertEqual((got["severity"], got["cvss"]["score"]), ("high", 7.5))
+
+    def test_a_record_without_affected_ranges_stops(self):
+        with self.assertRaisesRegex(V.Stop, "no affected version"):
+            V.from_cve_record(advisory(vulnerabilities=[]), cve_record(affected=[]), "org.example:lib")
+
+    def test_next_release_is_the_first_plain_release_on_the_same_line(self):
+        versions = ["11.0.24", "11.0.25", "11.0.26-M1", "11.0.26", "11.0.27", "12.0.0", "10.1.60"]
+        self.assertEqual(V.next_release(versions, "11.0.25"), "11.0.26")
+        self.assertEqual(V.next_release(versions, "10.1.59"), "10.1.60")
+        self.assertIsNone(V.next_release(versions, "11.0.27"))
+
+
 class Patch(unittest.TestCase):
 
     def test_java_files_without_tests(self):
@@ -306,13 +345,51 @@ class Bundle(unittest.TestCase):
         self.assertIn("cannot use", err)
         self.assertEqual(list((self.bundle / "cache").iterdir()), [])     # nothing was downloaded
 
+    def test_an_unreviewed_advisory_reads_the_versions_from_the_cve_record(self):
+        shutil.rmtree(self.bundle)
+        metadata = b"<metadata><versioning><versions><version>1.1</version><version>1.2-M1</version>" \
+                   b"<version>1.2</version><version>1.3</version></versions></versioning></metadata>"
+        commit = "https://github.com/example/lib/commit/fedcba9876543210fedcba9876543210fedcba98"
+        urls = []
+
+        def http_get(url, accept=None):
+            urls.append(url)
+            return json.dumps(cve_record()).encode() if "cveawg" in url else metadata
+
+        argv = ["prepare", "--cve", "CVE-2099-12345", "--coordinates", "org.example:lib", "--installed", "1.1",
+                "--commit", commit, "--out", str(self.bundle)]
+        unreviewed = advisory(vulnerabilities=[], severity="unknown", cvss=None, references=["https://example.org/n"])
+        with mock.patch.object(V, "load_advisory", return_value=unreviewed), \
+                mock.patch.object(V, "http_get", side_effect=http_get), \
+                mock.patch.object(V, "fetch", side_effect=self.fetch), \
+                mock.patch.object(V, "url_exists", return_value=False), \
+                mock.patch.object(V, "run_method_diff", side_effect=self.method_diff):
+            code, err = quiet(V.main, argv)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(urls, ["https://cveawg.mitre.org/api/cve/CVE-2099-12345",
+                                "https://repo1.maven.org/maven2/org/example/lib/maven-metadata.xml"])
+        meta = V.read_json(self.bundle / "meta.json")
+        # 1.0 <= installed <= 1.1: the next release on Maven Central (1.2, not 1.2-M1) is the fixed one
+        self.assertEqual((meta["comparedWith"], meta["severity"]), ("1.2", "CRITICAL"))
+        self.assertEqual([c["url"] for c in meta["fixCommits"]], [commit])
+        self.assertTrue((self.bundle / "cve-record.json").exists())
+        self.assertIn("versions from: CVE record", (self.bundle / "advisory.md").read_text())
+
+    def test_without_coordinates_an_unreviewed_advisory_stops(self):
+        shutil.rmtree(self.bundle)
+        code, err = self.prepare(vulnerabilities=[])
+        self.assertEqual(code, 1)
+        self.assertIn("pass --coordinates", err)
+
     def test_bad_arguments_stop_before_the_network(self):
         with mock.patch.object(V, "load_advisory", side_effect=AssertionError("called")):
             for argv in (["prepare", "--installed", "1.1", "--out", str(self.bundle)],
                          ["prepare", "--cve", "CVE-1", "--installed", "1.1", "--out", str(self.bundle)],
                          ["prepare", "--cve", "CVE-2099-12345", "--installed", "../1", "--out", str(self.bundle)],
                          ["prepare", "--cve", "CVE-2099-12345", "--coordinates", "a/b:c", "--installed", "1.1",
-                          "--out", str(self.bundle)]):
+                          "--out", str(self.bundle)],
+                         ["prepare", "--cve", "CVE-2099-12345", "--installed", "1.1", "--commit",
+                          "https://example.org/x.patch", "--out", str(self.bundle)]):
                 code, err = quiet(V.main, argv)
                 self.assertEqual(code, 1, argv)
                 self.assertIn("ERROR", err)

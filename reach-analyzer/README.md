@@ -115,7 +115,7 @@ python3 reach-analyzer/verdict/l3.py --spec src/main/resources/reach/vuln-functi
 
 | 단계 | 누가 | 하는 일 |
 |---|---|---|
-| `prepare` | 도구 | 권고문(GitHub Advisory Database) → 설치 버전과 수정 버전의 jar·소스(Maven Central) → 코드가 바뀐 메서드(`MethodDiff`) → 권고문의 수정 커밋으로 후보를 좁힘 → 메서드마다 수정이 건드린 줄(L3 취약 구간 후보) |
+| `prepare` | 도구 | 권고문(GitHub Advisory Database. 검토 전 권고문에는 패키지가 없어, 그때는 CVE 기록의 영향 버전과 `--coordinates`로 채운다) → 설치 버전과 수정 버전의 jar·소스(Maven Central) → 코드가 바뀐 메서드(`MethodDiff`) → 권고문의 수정 커밋으로 후보를 좁힘 → 메서드마다 수정이 건드린 줄(L3 취약 구간 후보) |
 | 초안 | AI | 묶음 폴더의 `PROMPT.md`대로 `draft.json`을 쓴다: 취약 함수, 호출 방식, 요약, 취약 구간, 사람이 확인할 것 |
 | `check` → `apply` | 도구, 사람 | 초안이 가리키는 메서드·줄이 설치 버전 jar에 실제로 있는지 검사하고 검토 문서 `REVIEW.md`를 만든다. 사람이 확인한 뒤 `vuln-functions.json`에 넣는다 |
 
@@ -137,7 +137,15 @@ python3 vulndata.py check ~/.vulndata/CVE-2026-65637
 python3 vulndata.py apply ~/.vulndata/CVE-2026-65637 --reviewed-by <이름>
 ```
 
-묶음 폴더는 저장소 밖에 둔다(jar와 소스가 들어 있어 수십 MB다). Python 표준 라이브러리만 쓰고, 네트워크는 `api.github.com`·`github.com`·`repo1.maven.org`에만 나간다. GitHub 요청 한도에 걸리면 `GITHUB_TOKEN`을 준다(`api.github.com`에만 보낸다).
+**권고문이 아직 검토 전일 때**(GitHub Advisory Database에 `unreviewed`로만 있음. 최근 Tomcat CVE 다수가 그렇다): 권고문에 Maven 패키지·수정 버전·수정 커밋이 없다. 그때는 `--coordinates`를 꼭 주면 도구가 공식 CVE 기록(`cveawg.mitre.org`)의 영향 버전 범위로 채운다. 범위가 "이하(≤)"로 끝나면 수정 버전은 Maven Central에서 그 다음 릴리스다. 심각도·CVSS도 CVE 기록에서 가져온다(`advisory.md`의 "versions from"). 수정 커밋은 프로젝트 보안 페이지(Tomcat은 `tomcat.apache.org/security-11.html`의 "fixed with commit")에서 찾아 `--commit`으로 준다(여러 번 가능). 수정 커밋이 없으면 두 릴리스 사이에 바뀐 메서드가 모두 후보가 된다.
+
+```bash
+python3 vulndata.py prepare --cve CVE-2026-76183 --coordinates org.apache.tomcat.embed:tomcat-embed-websocket \
+    --installed 11.0.24 --commit https://github.com/apache/tomcat/commit/e182d86b7d4cc19ec4c24c38f37acc004404fe8e \
+    --out ~/.vulndata/CVE-2026-76183
+```
+
+묶음 폴더는 저장소 밖에 둔다(jar와 소스가 들어 있어 수십 MB다). Python 표준 라이브러리만 쓰고, 네트워크는 `api.github.com`·`github.com`·`cveawg.mitre.org`·`repo1.maven.org`에만 나간다. GitHub 요청 한도에 걸리면 `GITHUB_TOKEN`을 준다(`api.github.com`에만 보낸다).
 
 `check`가 오류로 막는 것(사람 판단과 상관없이 틀린 것): jar에 없는 클래스·메서드·descriptor, 실행 코드가 없는 줄만 잡은 구간, 줄 번호가 없는 jar에 줄을 적은 구간, 권고문에서 온 값(패키지·버전·심각도)을 바꾼 것, 한국어 요약 없음. 확인으로 남기는 것(`REVIEW.md`에 표시): 수정에서 바뀌지 않은 메서드를 취약 함수로 잡은 것, 수정이 건드린 줄과 겹치지 않는 구간, 프레임워크가 실행하는 코드인데 `rules.json`에 규칙이 없는 것.
 
@@ -150,6 +158,7 @@ python3 vulndata.py apply ~/.vulndata/CVE-2026-65637 --reviewed-by <이름>
 한계:
 
 - Maven Central에 있는 Java 라이브러리만 된다. JDK 자체의 취약점은 비교할 jar가 없다.
+- 스캐너가 CVE를 제품 이름으로 붙인 경우(Grype의 NVD 대조) 취약한 코드가 그 jar에 없을 수 있다. 예: CVE-2026-86248은 `tomcat-embed-core`에 붙지만 코드는 별도 jar `tomcat-coyote-ffm`에 있다. 그때는 그 jar의 대표 메서드를 sink로 두고 규칙(jar 유무)으로 판정한다.
 - 후보는 "수정 커밋이 건드린 클래스 근처에서 코드가 바뀐 메서드"다. 데이터만 고친 수정(차단 목록 등)이나 권고문에 수정 커밋이 없는 CVE는 바뀐 메서드 전체가 후보가 되고, AI가 `method-diff.tsv`와 소스에서 찾는다. 사람 데이터가 있는 14개 CVE로 돌리면 13개에서 사람이 고른 취약 함수가 후보에 들어 있다(없는 하나는 차단 목록만 고친 CVE-2026-83557).
 - 초안의 취약 함수는 그 패키지의 설치 버전 jar에 있는 메서드만 된다. 다른 라이브러리에서 부르는 쪽이나 다른 버전에서 바뀐 이름은 도구가 확인할 수 없어 `check`가 막는다. 필요하면 반영한 뒤 사람이 직접 더한다(분석기는 라이브러리 안의 호출을 따라가므로 부르는 쪽은 대개 필요 없다).
 - 취약 구간의 줄 번호는 설치 버전 하나의 것이다. 서비스가 라이브러리 버전을 올리면 L3는 그 CVE를 "함수까지"로만 보인다.
