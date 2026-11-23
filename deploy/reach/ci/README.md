@@ -28,7 +28,7 @@
 - **Java 앱 jar가 없는 대상도 스캔한다.** 레포 대상은 그 경로에 `gradlew`가 있을 때만 bootJar를 빌드하고, 없으면(예: Node 앱의 `package-lock.json`) `trivy fs`로 잠금 파일에서 SBOM을 만든다(`FS_DIR`). 이미지 대상은 `/app/app.jar`가 없으면(Node·nginx 이미지) jar 없이 이미지 SBOM만 쓴다. 이때 L2를 건너뛰고(`bundle.py --no-l2`) Finding은 모두 `NOT_ANALYZED`다: npm 등은 `UNSUPPORTED_ECOSYSTEM`, OS 패키지는 `OS_PACKAGE`, 이미지에 섞인 Java 패키지는 데이터가 없으면 `NO_VULN_FUNCTION_DATA`·있으면 `UNANALYZED_COPY`(앱 jar를 못 찾았다는 설명). SBOM·CVE 대조·L1(배포 여부)은 그대로라 취약점 목록과 실행 중 여부는 보인다.
 - `manual`에서 스캔 전 단계(입력 확인, 빌드, 이미지 받기, 도구 설치)가 실패하면 실패 묶음(`failure.code` `BUILD_FAILED`·`IMAGE_PULL_FAILED`)을 올려 대시보드 스캔이 `QUEUED`에 남지 않고 `FAILED`로 끝난다. 스캔 단계 안의 실패는 지금처럼 `ANALYSIS_FAILED`다.
 - `workflow_dispatch`도 기본 브랜치에 있는 파일로만 돈다. 대시보드는 기본 브랜치(`logssey.reach.ci.default-branch`)로 띄운다.
-- 이미지 대상은 이미지 태그 `pr-{sha}`가 있으면 그 커밋을 받아 `verdict.py`에 설정 파일을 준다. 없으면 설정 파일 없이 판정한다.
+- 이미지 대상은 이미지 태그 `pr-{sha}`가 있으면 그 커밋을 받아 `verdict.py`에 설정 파일을 준다. 없어도 앱 jar 안의 설정 파일(`BOOT-INF/classes`의 `application.properties` 등)은 읽는다(`--jar`). 둘 다 못 읽으면 설정을 보는 규칙은 도달 불가 대신 미확인이 된다(규칙 명세 4절).
 
 - 서비스의 CI/CD 워크플로는 고치지 않는다. `image` 작업은 이미지를 받아 읽고, 시나리오가 있을 때만 L3로 러너 안에서 실행한다(아래). API가 바뀌지 않아 이미지가 없으면 건너뛴다.
 - 머지할 때도 CI/CD가 돌지만 이미지는 같은 digest라 같은 `Idempotency-Key`가 된다. 이때는 다시 스캔하지 않고 이미 끝난 검사 결과만 보인다.

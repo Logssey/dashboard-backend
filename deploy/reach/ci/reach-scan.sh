@@ -316,9 +316,10 @@ l2() {
     --spec "$DATA/vuln-functions.json" --rules "$DATA/rules.json" --out "$OUT/reach-result.json"
   local repo_args=()
   [ -n "${SOURCE:-}" ] && repo_args=(--repo "$SOURCE")
+  # the jar's own config files are read too: an image without its source commit (no pr-<sha> tag) still has them
   python3 "$VERDICT/verdict.py" --reach "$OUT/reach-result.json" \
     --spec "$DATA/vuln-functions.json" --rules "$DATA/rules.json" \
-    --trivy "$OUT/trivy.json" "${repo_args[@]}" --out "$OUT/verdicts.json" --md "$OUT/verdicts.md"
+    --trivy "$OUT/trivy.json" "${repo_args[@]}" --jar "$JAR" --out "$OUT/verdicts.json" --md "$OUT/verdicts.md"
 }
 
 report() {
