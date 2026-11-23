@@ -158,9 +158,10 @@ def main():
     reach_by_cve = {c["cve"]: c for c in reach.get("cves", [])}
     spec_by_cve = {c["cve"]: c for c in spec.get("cves", [])}
 
-    cve_ids = list(spec_by_cve)
-    if trivy:  # only what the scanner actually reported, plus anything reported that we have no spec for
-        cve_ids = [c for c in spec_by_cve if c in trivy] + sorted(c for c in trivy if c not in spec_by_cve)
+    # every CVE we have data for, plus what Trivy reported that we have no data for. Not only what Trivy reported:
+    # bundle.py also takes Grype's matches (Grype finds some CVEs Trivy does not, e.g. Tomcat CVEs through NVD), and a
+    # match whose CVE is in the data must have a verdict. A verdict for a CVE no scanner reported is not used
+    cve_ids = list(spec_by_cve) + sorted(c for c in trivy if c not in spec_by_cve)
 
     verdicts = []
     for cve in cve_ids:

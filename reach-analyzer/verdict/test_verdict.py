@@ -75,6 +75,20 @@ class VerdictTest(unittest.TestCase):
             out = json.load(f)
         return out, {v["cve"]: v for v in out["verdicts"]}
 
+    def test_a_cve_in_the_data_is_judged_when_only_grype_reports_it(self):
+        # Trivy reports only PLAIN. Grype finds CONF too (bundle.py merges both): CONF needs a verdict, or the bundle fails
+        trivy = {"Results": [{"Vulnerabilities": [{"VulnerabilityID": PLAIN, "PkgName": "lib", "InstalledVersion": "1",
+                                                     "PkgIdentifier": {"PURL": "pkg:maven/org.example/lib@1"},
+                                                     "Severity": "HIGH"}]}]}
+        args = [sys.executable, "-B", os.path.join(HERE, "verdict.py"),
+                "--reach", self.json("reach.json", reach()), "--spec", self.json("spec.json", spec()),
+                "--rules", self.json("rules.json", rules()), "--trivy", self.json("trivy.json", trivy),
+                "--out", self.path("verdicts.json"), "--md", self.path("v.md")]
+        subprocess.run(args, check=True, capture_output=True)
+        with open(self.path("verdicts.json"), encoding="utf-8") as f:
+            cves = {v["cve"] for v in json.load(f)["verdicts"]}
+        self.assertEqual(cves, {CONF, PLAIN})
+
     def test_config_that_was_never_read_is_not_evidence_of_absence(self):
         out, v = self.run_verdict()
         self.assertEqual(out["config_sources"], [])
