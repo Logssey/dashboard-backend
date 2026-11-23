@@ -2,6 +2,7 @@ package com.logssey.reach.ci;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -42,17 +43,48 @@ public class ReachCiCheckRepository {
                 .single();
     }
 
-    record KeyedCheck(long checkId, String requestHash) {}
+    record KeyedCheck(long checkId, String requestHash, String scanStatus) {}
 
     Optional<KeyedCheck> checkByKey(String scope, String key) {
         return jdbcClient.sql("""
-                        SELECT check_id, request_hash FROM reach_ci_checks
-                        WHERE idempotency_scope = :scope AND idempotency_key = :key
+                        SELECT c.check_id, c.request_hash, s.scan_status FROM reach_ci_checks c
+                        JOIN reach_scans s ON s.scan_id = c.scan_id
+                        WHERE c.idempotency_scope = :scope AND c.idempotency_key = :key
                         """)
                 .param("scope", scope)
                 .param("key", key)
-                .query((rs, i) -> new KeyedCheck(rs.getLong("check_id"), rs.getString("request_hash")))
+                .query((rs, i) -> new KeyedCheck(rs.getLong("check_id"), rs.getString("request_hash"),
+                        rs.getString("scan_status")))
                 .optional();
+    }
+
+    /**
+     * 실패한 검사의 멱등 키를 놓아 준다. 같은 키로 새 검사를 만들 수 있게 키를 released-<검사 ID>로 바꾼다.
+     * 검사·스캔·실패 사유는 그대로 남는다 (명세 2-7)
+     */
+    void releaseKey(long checkId) {
+        jdbcClient.sql("UPDATE reach_ci_checks SET idempotency_key = 'released-' || check_id WHERE check_id = :checkId")
+                .param("checkId", checkId)
+                .update();
+    }
+
+    /**
+     * 결과가 오지 않은 채 오래된 스캔을 실패로 끝낸다 (러너가 취소·시간 초과로 실패 묶음도 못 올린 경우).
+     * CI 검사가 있는 스캔만 본다. 끝낸 스캔 수를 준다
+     */
+    int failStale(Duration olderThan) {
+        return jdbcClient.sql("""
+                        UPDATE reach_scans s
+                        SET scan_status = 'FAILED', finished_at = now(), failure_code = 'RUNNER_NO_RESULT',
+                            failure_message = :message
+                        FROM reach_ci_checks c
+                        WHERE c.scan_id = s.scan_id AND s.scan_status IN ('QUEUED', 'RUNNING')
+                          AND s.created_at < now() - make_interval(secs => :seconds)
+                        """)
+                .param("message", "No result from the runner within " + olderThan.toMinutes()
+                        + " minutes (cancelled, timed out or never started)")
+                .param("seconds", (double) olderThan.toSeconds())
+                .update();
     }
 
     record TargetRow(long id, String app) {}
