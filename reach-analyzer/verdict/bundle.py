@@ -347,12 +347,17 @@ def analysed_verdict(v, ctx, analysed_at):
     if not paths and pkg.get("reachable") and pkg.get("witness_path"):
         paths.append(path_evidence(pkg["witness_path"], "PACKAGE", f"패키지 {pkg.get('artifact')}", not pkg.get("reachable_strong")))
 
+    if v.get("config_unseen"):
+        # verdict.py turned an unreachable into unknown: the rule needs config files that could not be read
+        notes.append({"kind": "NOTE", "summary": "앱 설정 파일(소스 레포, 앱 jar 안)을 읽지 못해 규칙이 보는 설정을 확인하지 못했다. "
+                                                 "도달 불가가 아니라 미확인으로 둔다"})
     rule_id = f"RULE-{cve}" if cve in ctx.rules else None
     evidence = facts + notes
     if rule_id:
-        matched = CLAUSES.get(decided.get("clause"), "DEFAULT")
+        matched = "UNKNOWN" if v.get("config_unseen") else CLAUSES.get(decided.get("clause"), "DEFAULT")
         evidence.append({"kind": "RULE", "ruleId": rule_id, "matchedCondition": matched,
-                         "summary": (f"기본값({STATUS_KO.get(status, status)})이 적용됨: 어느 조건에도 맞지 않음" if matched == "DEFAULT"
+                         "summary": ("설정 파일을 읽지 못해 미확인으로 둠" if v.get("config_unseen")
+                                     else f"기본값({STATUS_KO.get(status, status)})이 적용됨: 어느 조건에도 맞지 않음" if matched == "DEFAULT"
                                      else f"{STATUS_KO.get(matched, matched)} 조건에 맞음")})
     evidence += paths
 

@@ -3,6 +3,7 @@ package com.logssey.reach.ci;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HexFormat;
@@ -165,6 +166,14 @@ public class ReachCiCheckService {
     }
 
     /**
+     * 결과가 오지 않은 채 오래된 CI 스캔을 실패(RUNNER_NO_RESULT)로 끝낸다 (ReachStaleScanJob).
+     * 러너가 취소·시간 초과로 실패 묶음도 못 올렸거나, 띄운 워크플로가 시작하지 않은 경우다. 끝낸 스캔 수를 준다
+     */
+    public int failStaleScans(Duration olderThan) {
+        return repository.failStale(olderThan);
+    }
+
+    /**
      * 하루 1번 재대조 (PRD FR-11, 명세 6-1 SCHEDULE). 대시보드 예약 작업(ReachRescanJob)이 실행 중인 이미지의 스캔마다 부른다.
      * mode = SCHEDULE, rescanOf = 그 스캔인 검사를 만들고(요청 주체 SYSTEM) 그 앱 레포의 Reach 워크플로를 띄운다.
      * 멱등 키는 스캔·날짜라 같은 날 다시 불러도 한 번만 띄운다. 띄우는 설정이 없으면 만들지 않는다(빈 값).
@@ -246,7 +255,11 @@ public class ReachCiCheckService {
         String hash = sha256(mapper.writeValueAsString(request));
         repository.lockIdempotencyKey(scope, key);
         var existing = repository.checkByKey(scope, key);
-        if (existing.isPresent()) {
+        if (existing.isPresent() && "FAILED".equals(existing.get().scanStatus())) {
+            // 실패한 검사는 돌려주지 않고 새로 만든다: 같은 빌드를 다시 돌리면(Re-run) 다시 스캔한다 (명세 2-7).
+            // 돌려주면 러너가 끝난 검사에 올리지 못해 같은 커밋의 PR 검사가 새 커밋 없이는 풀리지 않는다
+            repository.releaseKey(existing.get().checkId());
+        } else if (existing.isPresent()) {
             // 명세의 409는 IDEMPOTENCY_CONFLICT지만 공통 ErrorCode에 없어 같은 상태 코드의 CONFLICT를 쓴다
             if (!existing.get().requestHash().equals(hash)) throw new ApiException(ErrorCode.CONFLICT);
             return new Created(created(existing.get().checkId()), true);

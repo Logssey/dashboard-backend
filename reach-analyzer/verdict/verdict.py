@@ -2,8 +2,12 @@
 """verdict.py — turns reach-result.json (+ optional Trivy JSON and repo checks) into per-CVE verdicts.
 
     python3 verdict.py --reach reach-result.json --spec ../data/vuln-functions.json \
-        --rules ../data/rules.json [--trivy trivy.json ...] [--repo /path/to/repo] \
+        --rules ../data/rules.json [--trivy trivy.json ...] [--repo /path/to/repo] [--jar app.jar] \
         --out verdicts.json --md verdicts.md
+
+Config facts (rules.json repo_facts) are read from the source repository and from the config files packed in the app
+jar (BOOT-INF/classes, WEB-INF, not the library jars). When neither could be read, a rule that looks at config does not
+say unreachable: the config was not seen, so the verdict is unknown.
 
 Status values: reachable / unreachable / unknown (never drop a finding; unknown when unsure).
 No third-party dependencies (Python 3.8+).
@@ -14,7 +18,10 @@ import json
 import os
 import re
 import sys
+import zipfile
 
+CONFIG_UNSEEN_KO = ("이 판정은 앱 설정 파일을 봐야 하는데, 소스 레포도 앱 jar 안의 설정 파일도 읽지 못했다. "
+                    "설정이 없다고 볼 수 없어 도달 불가가 아니라 미확인으로 둔다.")
 STATUS_KO = {"reachable": "도달 가능", "unreachable": "도달 불가", "unknown": "미확인", "not_analyzed": "분석 대상 아님"}
 
 
@@ -41,27 +48,65 @@ def trivy_findings(paths):
     return out
 
 
-def repo_facts(repo, defs):
-    """Regex checks over configuration files in the source repository."""
+# the default rule for a CVE without its own rule: a weak path only (Object methods, JDK callbacks) is not enough
+# to say reachable, and not enough to rule it out either
+DEFAULT_RULE = {"method": "callgraph", "reachable_if": [["sink"]], "unknown_if": [["sinks_missing"], ["sink_weak"]],
+                "otherwise": "unreachable"}
+
+
+def match_config(defs, name, lines, where, found):
+    for d in defs:
+        if not any(fnmatch.fnmatch(name, pat) for pat in d["files"]):
+            continue
+        for no, line in enumerate(lines, 1):
+            if re.search(d["regex"], line):
+                found[d["id"]].append({"where": f"{where}:{no}", "detail": line.strip()[:160]})
+
+
+def jar_facts(jar, defs, found):
+    """The same checks over the config files packed in the app jar. Library jars (BOOT-INF/lib, WEB-INF/lib) are not
+    the app's config. Returns whether the jar could be read."""
+    if not jar:
+        return False
+    try:
+        with zipfile.ZipFile(jar) as z:
+            for info in z.infolist():
+                entry = info.filename
+                if info.is_dir() or "/lib/" in "/" + entry or entry.endswith((".class", ".jar")):
+                    continue
+                name = entry.rsplit("/", 1)[-1]
+                if not any(fnmatch.fnmatch(name, pat) for d in defs for pat in d["files"]):
+                    continue
+                text = z.read(info).decode("utf-8", errors="replace")
+                match_config(defs, name, text.splitlines(), f"{os.path.basename(jar)}!/{entry}", found)
+        return True
+    except (OSError, zipfile.BadZipFile):
+        return False
+
+
+def repo_facts(repo, defs, jar=None):
+    """Regex checks over configuration files in the source repository and in the app jar.
+    Returns (found, sources read): an empty list means no config was seen."""
     found = {d["id"]: [] for d in defs}
-    if not repo:
-        return found, False
+    sources = ["jar"] if jar_facts(jar, defs, found) else []
+    if not repo or not os.path.isdir(repo):
+        return found, sources
+    sources.insert(0, "repo")
     skip_dirs = {".git", "node_modules", "build", "target", ".gradle", ".idea", "out"}
     for root, dirs, files in os.walk(repo):
         dirs[:] = [d for d in dirs if d not in skip_dirs]
         for name in files:
-            for d in defs:
-                if not any(fnmatch.fnmatch(name, pat) for pat in d["files"]):
-                    continue
-                path = os.path.join(root, name)
-                try:
-                    with open(path, encoding="utf-8", errors="replace") as f:
-                        for no, line in enumerate(f, 1):
-                            if re.search(d["regex"], line):
-                                found[d["id"]].append({"where": f"{os.path.relpath(path, repo)}:{no}", "detail": line.strip()[:160]})
-                except OSError:
-                    pass
-    return found, True
+            if not any(fnmatch.fnmatch(name, pat) for d in defs for pat in d["files"]):
+                continue
+            path = os.path.join(root, name)
+            if os.path.islink(path):   # a PR checkout is untrusted: do not follow links out of it
+                continue
+            try:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    match_config(defs, name, f.read().splitlines(), os.path.relpath(path, repo), found)
+            except OSError:
+                pass
+    return found, sources
 
 
 def short_path(steps, limit=8):
@@ -96,6 +141,7 @@ def main():
     ap.add_argument("--rules", required=True)
     ap.add_argument("--trivy", action="append", default=[])
     ap.add_argument("--repo")
+    ap.add_argument("--jar", help="the app jar: its packed config files are read like the repository's")
     ap.add_argument("--out", default="verdicts.json")
     ap.add_argument("--md", default="verdicts.md")
     a = ap.parse_args()
@@ -104,7 +150,8 @@ def main():
     spec = load(a.spec)
     rules = load(a.rules)
     trivy = trivy_findings(a.trivy)
-    rfacts, repo_checked = repo_facts(a.repo, rules.get("repo_facts", []))
+    rfacts, config_sources = repo_facts(a.repo, rules.get("repo_facts", []), a.jar)
+    repo_checked = bool(config_sources)
 
     occurrences = {k: v for k, v in reach.get("facts", {}).items()}
     occurrences.update(rfacts)
@@ -134,8 +181,13 @@ def main():
         facts["sinks_missing"] = bool(r.get("all_sinks_missing"))
         facts["package"] = bool(r.get("package", {}).get("reachable"))
         facts["package_present"] = bool(r.get("package", {}).get("present"))
-        rule = rules["verdicts"].get(cve, {"method": "callgraph", "reachable_if": [["sink"]], "unknown_if": [["sinks_missing"]], "otherwise": "unreachable"})
+        rule = rules["verdicts"].get(cve, DEFAULT_RULE)
         status, conds, clause = evaluate(rule, facts)
+        mentioned = sorted({f.lstrip("!") for cl in ("reachable_if", "unreachable_if", "unknown_if") for c in rule.get(cl, []) for f in c})
+        # the rule looks at config we could not read: absent config is not evidence, so do not rule it out
+        config_unseen = not repo_checked and status == "unreachable" and any(f.startswith("repo.") for f in mentioned)
+        if config_unseen:
+            status = "unknown"
         cond = [f for c in conds for f in c]
         cond = list(dict.fromkeys(cond))  # unique, keep order
 
@@ -152,7 +204,6 @@ def main():
                 decided.append({"fact": name, "result": "예"})
             else:
                 decided.append({"fact": name, "result": "있음", "occurrences": occurrences.get(name, [])[:5]})
-        mentioned = sorted({f.lstrip("!") for cl in ("reachable_if", "unreachable_if", "unknown_if") for c in rule.get(cl, []) for f in c})
         checked_absent = [f for f in mentioned if not facts.get(f) and f not in ("sinks_missing", "sink_weak")]
         if not repo_checked:
             checked_absent = [f for f in checked_absent if not f.startswith("repo.")]
@@ -172,7 +223,8 @@ def main():
             "fixed": t.get("fixed") or ", ".join(s["package"]["fixed"]),
             "severity": t.get("severity") or s.get("severity"),
             "summary_ko": s.get("summary_ko"),
-            "why_ko": rule.get("why_ko", {}).get(status, ""),
+            "why_ko": (CONFIG_UNSEEN_KO if config_unseen else rule.get("why_ko", {}).get(status, "")),
+            "config_unseen": config_unseen,
             "decided_by": {"clause": clause, "conditions": conds, "evidence": decided},
             "checked_absent": checked_absent,
             "info": [{"fact": f, "occurrences": occurrences.get(f, [])[:5]} for f in rule.get("info", []) if occurrences.get(f)],
@@ -186,6 +238,7 @@ def main():
                 "sink_paths": [{"sink": x["sink"], "path": short_path(x["path"])} for x in r["sinks"] if x.get("reachable")][:3],
             },
             "repo_checked": repo_checked,
+            "config_sources": config_sources,
         }
         verdicts.append(v)
         # same CVE in a package the spec and rules were not written for: say so instead of hiding it behind this row
@@ -198,8 +251,8 @@ def main():
                              "installed": installed, "fixed": x.get("fixed"),
                              "why_ko": f"같은 CVE가 다른 패키지에서도 나왔다. 취약 함수 데이터와 규칙은 {coords} 기준이라 이 패키지는 판정하지 않았다."})
 
-    out = {"tool": "verdict.py 0.1.0", "reach_tool": reach.get("tool"), "app": reach.get("input", {}).get("app"),
-           "trivy_reports": a.trivy, "repo": a.repo, "verdicts": verdicts}
+    out = {"tool": "verdict.py 0.2.0", "reach_tool": reach.get("tool"), "app": reach.get("input", {}).get("app"),
+           "trivy_reports": a.trivy, "repo": a.repo, "jar": a.jar, "config_sources": config_sources, "verdicts": verdicts}
     with open(a.out, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
         f.write("\n")
@@ -210,7 +263,7 @@ def main():
         counts[v["status"]] = counts.get(v["status"], 0) + 1
     lines = ["# 도달 가능성 판정 결과", ""]
     lines.append(f"- 대상: `{out['app']}`")
-    lines.append(f"- 판정 도구: {reach.get('tool')} + verdict.py, 저장소 설정 확인: {'예' if repo_checked else '아니요'}")
+    lines.append(f"- 판정 도구: {reach.get('tool')} + verdict.py, 설정 확인: {', '.join(config_sources) if config_sources else '아니요'}")
     lines.append("- 요약: " + ", ".join(f"{STATUS_KO[k]} {n}개" for k, n in sorted(counts.items())))
     lines += ["", "| CVE | 패키지 | 심각도 | 판정 | 방식 | 근거 요약 |", "|---|---|---|---|---|---|"]
     for v in verdicts:

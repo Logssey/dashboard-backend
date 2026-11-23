@@ -95,12 +95,17 @@ summary() { if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then echo "$*" >> "$GITHUB_STE
 
 # ---- dashboard API ----
 
+# Every call to the dashboard retries a dropped connection, a timeout and 408/429/5xx (curl --retry), so one restart of
+# the dashboard (a deploy) does not fail the check. Creating a check is safe to retry (Idempotency-Key); an upload the
+# dashboard did store before the reply was lost comes back 409 and is checked below (upload)
+CURL_RETRY=(--connect-timeout 10 --max-time "${REACH_CURL_MAX_TIME:-300}" --retry 4 --retry-delay 5 --retry-connrefused)
+
 AUTH=()
 set_auth() {
   AUTH=()
   if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
     local token
-    token=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+    token=$(curl -sSf "${CURL_RETRY[@]}" -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
       "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=logssey-reach" | jq -r .value)
     echo "::add-mask::$token"
     AUTH=(-H "Authorization: Bearer $token")
@@ -119,7 +124,7 @@ api() {
   local method=$1 path=$2 response
   shift 2
   set_auth
-  response=$(curl -sS -X "$method" "${AUTH[@]}" -w $'\n%{http_code}' "$@" "$REACH_URL$path")
+  response=$(curl -sS "${CURL_RETRY[@]}" -X "$method" "${AUTH[@]}" -w $'\n%{http_code}' "$@" "$REACH_URL$path")
   HTTP=${response##*$'\n'}
   BODY=${response%$'\n'*}
 }
@@ -159,6 +164,7 @@ if [ "$MODE" != MANUAL ]; then
 fi
 
 # the same key (a re-run of the same build) returns the existing check; report it instead of uploading twice.
+# A check that FAILED is not returned: the dashboard opens a new one for the key, so a re-run scans again (API spec 2-7).
 # MANUAL: a re-run of the dispatched workflow finds the check already finished
 api GET "/api/v1/reach/ci/checks/$CHECK_ID"
 if [ "$HTTP" != 200 ]; then
@@ -191,27 +197,55 @@ REACH_COMMIT=$(reach_ref)
 [ -n "$REACH_COMMIT" ] && TOOLS+=(--tool "reachRef=$REACH_COMMIT")
 UPLOADED=""
 
+# UPLOADED is set only when the dashboard took the bundle: after a failed upload (e.g. 502 while it restarts) the
+# failure bundle still goes up, so the scan does not stay QUEUED
 upload() {
   api PUT "/api/v1/reach/ci/checks/$CHECK_ID/results" \
     -H 'Content-Type: application/json' -H 'Content-Encoding: gzip' --data-binary "@$1"
-  UPLOADED=1
-  if [ "$HTTP" != 202 ] && [ "$HTTP" != 200 ]; then
-    log "API-13 upload failed: HTTP $HTTP $BODY"
-    return 1
+  if [ "$HTTP" = 202 ] || [ "$HTTP" = 200 ]; then
+    UPLOADED=1
+    return 0
+  fi
+  if [ "$HTTP" = 409 ]; then
+    # a retried upload: the first attempt may have been stored before its reply was lost
+    local refused="$BODY"
+    api GET "/api/v1/reach/ci/checks/$CHECK_ID"
+    if [ "$HTTP" = 200 ] && [ "$(jq -r .scanStatus <<< "$BODY")" = SUCCEEDED ]; then
+      log "API-13 said 409 but the check already SUCCEEDED (an earlier attempt was stored)"
+      UPLOADED=1
+      return 0
+    fi
+    BODY="$refused"
+    HTTP=409
+  fi
+  log "API-13 upload failed: HTTP $HTTP $BODY"
+  return 1
+}
+
+# A failure bundle for the step that was running, so the scan ends FAILED with a reason instead of staying QUEUED
+fail_bundle() {
+  local code=$1 message=$2
+  if [ -n "${CHECK_ID:-}" ] && [ -z "$UPLOADED" ] && [ -n "$CURRENT" ]; then
+    log "step $CURRENT: $message; uploading a failure bundle"
+    python3 "$VERDICT/bundle.py" --failure-code "$code" --failure-stage "$CURRENT" \
+      --failure-message "runner step $CURRENT: $message, see the workflow log" \
+      "${TOOLS[@]}" "${STAGES[@]}" --stage "$CURRENT=failed" --out "$OUT/failure.json.gz" \
+      && upload "$OUT/failure.json.gz" || log "failure bundle upload failed too"
   fi
 }
 
 on_error() {
   local rc=$?
-  trap - ERR
-  if [ -n "${CHECK_ID:-}" ] && [ -z "$UPLOADED" ] && [ -n "$CURRENT" ]; then
-    log "step $CURRENT failed (exit $rc); uploading a failure bundle"
-    python3 "$VERDICT/bundle.py" --failure-code ANALYSIS_FAILED --failure-stage "$CURRENT" \
-      --failure-message "runner step $CURRENT failed (exit $rc), see the workflow log" \
-      "${TOOLS[@]}" "${STAGES[@]}" --stage "$CURRENT=failed" --out "$OUT/failure.json.gz" \
-      && upload "$OUT/failure.json.gz" || log "failure bundle upload failed too"
-  fi
+  trap - ERR TERM INT
+  fail_bundle ANALYSIS_FAILED "failed (exit $rc)"
   exit "$rc"
+}
+
+# The job was cancelled or hit timeout-minutes: GitHub sends SIGINT, then SIGTERM. The ERR trap does not run then
+on_signal() {
+  trap - ERR TERM INT
+  fail_bundle RUNNER_CANCELLED "cancelled or timed out"
+  exit 143
 }
 
 stage() {
@@ -228,7 +262,7 @@ stored_sbom() {
   [ "$MODE" = MANUAL ] && [ -n "${RESCAN_OF:-}" ] || return 1
   set_auth
   local code
-  code=$(curl -sS "${AUTH[@]}" -o "$OUT/stored-sbom.json.gz" -w '%{http_code}' \
+  code=$(curl -sS "${CURL_RETRY[@]}" "${AUTH[@]}" -o "$OUT/stored-sbom.json.gz" -w '%{http_code}' \
     "$REACH_URL/api/v1/reach/ci/checks/$CHECK_ID/sbom") || return 1
   if [ "$code" != 200 ]; then
     log "no stored SBOM for scan $RESCAN_OF (HTTP $code); making the SBOM"
@@ -297,7 +331,7 @@ stored_l3() {
   [ "$MODE" = MANUAL ] && [ -n "${RESCAN_OF:-}" ] && [ -n "$JAR" ] || return 1
   set_auth
   local code
-  code=$(curl -sS "${AUTH[@]}" -o "$OUT/stored-l3-record.tar.xz" -w '%{http_code}' \
+  code=$(curl -sS "${CURL_RETRY[@]}" "${AUTH[@]}" -o "$OUT/stored-l3-record.tar.xz" -w '%{http_code}' \
     "$REACH_URL/api/v1/reach/ci/checks/$CHECK_ID/l3-record") || return 1
   if [ "$code" != 200 ]; then
     log "no kept L3 record for this image (HTTP $code); the rescan has no L3"
@@ -316,9 +350,10 @@ l2() {
     --spec "$DATA/vuln-functions.json" --rules "$DATA/rules.json" --out "$OUT/reach-result.json"
   local repo_args=()
   [ -n "${SOURCE:-}" ] && repo_args=(--repo "$SOURCE")
+  # the jar's own config files are read too: an image without its source commit (no pr-<sha> tag) still has them
   python3 "$VERDICT/verdict.py" --reach "$OUT/reach-result.json" \
     --spec "$DATA/vuln-functions.json" --rules "$DATA/rules.json" \
-    --trivy "$OUT/trivy.json" "${repo_args[@]}" --out "$OUT/verdicts.json" --md "$OUT/verdicts.md"
+    --trivy "$OUT/trivy.json" "${repo_args[@]}" --jar "$JAR" --out "$OUT/verdicts.json" --md "$OUT/verdicts.md"
 }
 
 report() {
@@ -332,6 +367,7 @@ report() {
 
 if [ "$ALREADY" = QUEUED ]; then
   trap on_error ERR
+  trap on_signal TERM INT
   db_updated=$(trivy version --format json 2> /dev/null | jq -r '.VulnerabilityDB.UpdatedAt // empty' || true)
   [ -n "$db_updated" ] && TOOLS+=(--tool "trivyDbUpdatedAt=$db_updated")
   stage sbom sbom
@@ -369,7 +405,7 @@ if [ "$ALREADY" = QUEUED ]; then
   stage report report
   CURRENT=report
   upload "$OUT/bundle.json.gz"
-  trap - ERR
+  trap - ERR TERM INT
 else
   log "check $CHECK_ID is already $ALREADY (re-run of the same build); not uploading again"
 fi

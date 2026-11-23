@@ -303,6 +303,54 @@ class ReachCiCheckServiceTest {
     }
 
     @Test
+    void aFailedCheckGivesItsKeyToANewCheckSoARerunScansAgain() {
+        long first = service.create("admin", "pr-1-abc", pr("REPORT_ONLY")).check().id();
+        long firstScan = service.check("admin", first).scanId();
+        finish(firstScan, "FAILED");
+
+        // the same build run again (a re-run, or REACH_POLICY changed in between): a new check, not the FAILED one
+        var again = service.create("admin", "pr-1-abc", pr("GATE"));
+        assertThat(again.replayed()).isFalse();
+        assertThat(again.check().id()).isNotEqualTo(first);
+        assertThat(again.check().scanStatus()).isEqualTo("QUEUED");
+        assertThat(again.check().policy()).isEqualTo("GATE");
+        // the failed check and its scan stay as they were, only the key moved on
+        assertThat(service.check("admin", first).scanStatus()).isEqualTo("FAILED");
+        assertThat(jdbc.queryForObject("SELECT idempotency_key FROM reach_ci_checks WHERE check_id = ?", String.class, first))
+                .isEqualTo("released-" + first);
+
+        // the new one replays as usual while it is not FAILED
+        assertThat(service.create("admin", "pr-1-abc", pr("GATE")).check().id()).isEqualTo(again.check().id());
+        assertError(() -> service.create("admin", "pr-1-abc", pr("REPORT_ONLY")), ErrorCode.CONFLICT);
+        finish(again.check().scanId(), "SUCCEEDED");
+        assertThat(service.create("admin", "pr-1-abc", pr("GATE")).replayed()).isTrue();
+    }
+
+    @Test
+    void scansWithoutAResultForTooLongAreFailed() {
+        long stale = service.create("admin", "old", pr("GATE")).check().id();
+        long fresh = service.create("admin", "new", pr("GATE")).check().id();
+        long done = service.create("admin", "done", pr("GATE")).check().id();
+        long staleScan = service.check("admin", stale).scanId();
+        long doneScan = service.check("admin", done).scanId();
+        jdbc.update("UPDATE reach_scans SET created_at = now() - interval '3 hours' WHERE scan_id IN (?, ?)", staleScan, doneScan);
+        finish(doneScan, "SUCCEEDED");
+        // a scan without a CI check (not from a runner) is not touched
+        long loose = scan(imageTarget(), "QUEUED");
+        jdbc.update("UPDATE reach_scans SET created_at = now() - interval '3 hours' WHERE scan_id = ?", loose);
+
+        assertThat(service.failStaleScans(java.time.Duration.ofHours(2))).isEqualTo(1);
+        assertThat(jdbc.queryForMap("SELECT scan_status, failure_code, finished_at IS NOT NULL AS finished FROM reach_scans WHERE scan_id = ?",
+                staleScan)).containsEntry("scan_status", "FAILED").containsEntry("failure_code", "RUNNER_NO_RESULT")
+                .containsEntry("finished", true);
+        assertThat(service.check("admin", fresh).scanStatus()).isEqualTo("QUEUED");
+        assertThat(service.check("admin", done).scanStatus()).isEqualTo("SUCCEEDED");
+        assertThat(jdbc.queryForObject("SELECT scan_status FROM reach_scans WHERE scan_id = ?", String.class, loose)).isEqualTo("QUEUED");
+        // and a re-run of that build gets a new check
+        assertThat(service.create("admin", "old", pr("GATE")).replayed()).isFalse();
+    }
+
+    @Test
     void failedScanHasNoGate() {
         long checkId = service.create("admin", "k", pr("GATE")).check().id();
         finish(service.check("admin", checkId).scanId(), "FAILED");

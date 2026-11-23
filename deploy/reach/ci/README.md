@@ -28,10 +28,13 @@
 - **Java 앱 jar가 없는 대상도 스캔한다.** 레포 대상은 그 경로에 `gradlew`가 있을 때만 bootJar를 빌드하고, 없으면(예: Node 앱의 `package-lock.json`) `trivy fs`로 잠금 파일에서 SBOM을 만든다(`FS_DIR`). 이미지 대상은 `/app/app.jar`가 없으면(Node·nginx 이미지) jar 없이 이미지 SBOM만 쓴다. 이때 L2를 건너뛰고(`bundle.py --no-l2`) Finding은 모두 `NOT_ANALYZED`다: npm 등은 `UNSUPPORTED_ECOSYSTEM`, OS 패키지는 `OS_PACKAGE`, 이미지에 섞인 Java 패키지는 데이터가 없으면 `NO_VULN_FUNCTION_DATA`·있으면 `UNANALYZED_COPY`(앱 jar를 못 찾았다는 설명). SBOM·CVE 대조·L1(배포 여부)은 그대로라 취약점 목록과 실행 중 여부는 보인다.
 - `manual`에서 스캔 전 단계(입력 확인, 빌드, 이미지 받기, 도구 설치)가 실패하면 실패 묶음(`failure.code` `BUILD_FAILED`·`IMAGE_PULL_FAILED`)을 올려 대시보드 스캔이 `QUEUED`에 남지 않고 `FAILED`로 끝난다. 스캔 단계 안의 실패는 지금처럼 `ANALYSIS_FAILED`다.
 - `workflow_dispatch`도 기본 브랜치에 있는 파일로만 돈다. 대시보드는 기본 브랜치(`logssey.reach.ci.default-branch`)로 띄운다.
-- 이미지 대상은 이미지 태그 `pr-{sha}`가 있으면 그 커밋을 받아 `verdict.py`에 설정 파일을 준다. 없으면 설정 파일 없이 판정한다.
+- 이미지 대상은 이미지 태그 `pr-{sha}`가 있으면 그 커밋을 받아 `verdict.py`에 설정 파일을 준다. 없어도 앱 jar 안의 설정 파일(`BOOT-INF/classes`의 `application.properties` 등)은 읽는다(`--jar`). 둘 다 못 읽으면 설정을 보는 규칙은 도달 불가 대신 미확인이 된다(규칙 명세 4절).
 
 - 서비스의 CI/CD 워크플로는 고치지 않는다. `image` 작업은 이미지를 받아 읽고, 시나리오가 있을 때만 L3로 러너 안에서 실행한다(아래). API가 바뀌지 않아 이미지가 없으면 건너뛴다.
 - 머지할 때도 CI/CD가 돌지만 이미지는 같은 digest라 같은 `Idempotency-Key`가 된다. 이때는 다시 스캔하지 않고 이미 끝난 검사 결과만 보인다.
+- **실패한 검사는 Re-run으로 다시 스캔한다.** 같은 키의 검사가 `FAILED`면 대시보드가 새 검사를 만든다(API 명세 2-7). 그래서 대시보드 일시 오류로 PR 검사가 실패해도 "Re-run jobs"로 풀린다(새 커밋이 필요 없다). 성공한 검사는 다시 돌려도 다시 스캔하지 않는다.
+- 대시보드 호출은 끊긴 연결·시간 초과·408/429/5xx를 4번까지 다시 시도한다(5초 간격, 호출마다 최대 300초 `REACH_CURL_MAX_TIME`). 대시보드 배포로 API가 잠깐 재시작해도 검사가 실패하지 않는다. 다시 보낸 업로드가 409면 앞선 시도가 저장된 것인지 검사 상태로 확인한다.
+- 작업이 취소되거나 `timeout-minutes`에 걸리면 그때 돌던 단계의 실패 묶음(`RUNNER_CANCELLED`)을 올린다. 그것도 못 올리면 대시보드가 2시간 뒤 `RUNNER_NO_RESULT`로 끝낸다.
 - `workflow_run` 워크플로는 기본 브랜치에 있는 파일로만 돈다. `image` 작업은 `reach.yml`이 기본 브랜치에 머지된 뒤부터 동작한다.
 - `POLICY`(저장소 변수 `REACH_POLICY`)가 `REPORT_ONLY`(기본)면 대시보드가 내려가 있어도 PR을 막지 않는다(`continue-on-error`). `GATE`면 게이트 `FAIL`(종료 코드 1)이 PR 검사 실패가 된다. 게이트는 PR 검사에만 건다. 이미지 빌드 검사는 `GATE`여도 리포트 전용으로 등록한다(기준 스캔이 없어 운영에 이미 있는 Finding으로 실패하기 때문). PR 검사는 그 앱이 운영에서 실행 중인 이미지의 스캔과 비교해, 운영에 없던 Finding만 새 것으로 센다(실행 중 이미지를 모르면 모두 새 것). 비교한 스캔은 실행 요약에 나온다.
 - `pr` 작업을 브랜치 보호의 필수 검사(`Reach / pr`)로 둘 수 있게, 경로 필터를 `on.pull_request.paths`가 아니라 작업 안 "Changed files" 단계에 둔다(워크플로가 시작하지 않으면 필수 검사가 "대기 중"에 묶인다). 비교는 PR 머지 커밋과 그 첫 부모(기본 브랜치) 사이다. 포크에서 연 PR은 비밀값·OIDC 토큰을 받지 못해 스캔할 수 없다: `REPORT_ONLY`면 알림만 남기고 통과, `GATE`면 실패한다(레포에 브랜치를 올려 PR을 연다).
@@ -107,7 +110,7 @@ REACH_URL=http://localhost:<포트> REACH_CURL_OPTS="-b <쿠키 파일> -H X-XSR
 bash deploy/reach/ci/reach-scan.sh
 ```
 
-- 같은 값으로 다시 돌리면 같은 검사를 다시 보고만 한다. 값 하나라도 다르면(예: `BASE_REF`를 뺌) 같은 키에 다른 본문이라 409다.
+- 같은 값으로 다시 돌리면 같은 검사를 다시 보고만 한다. 값 하나라도 다르면(예: `BASE_REF`를 뺌) 같은 키에 다른 본문이라 409다. 그 검사가 `FAILED`면 새 검사를 만들어 다시 스캔한다.
 - 단계가 실패하면 실패 묶음(`failure.code = ANALYSIS_FAILED`, 실패한 단계)을 올려 스캔이 `FAILED`로 끝난다. 검사 등록 전(빌드 실패, 대시보드 연결 실패)은 대시보드에 남지 않고 워크플로만 실패한다.
 - 이미지 모드는 `MODE=IMAGE_BUILD IMAGE_REPOSITORY=logssey/reused-api IMAGE_DIGEST=sha256:… IMAGE_REF=<trivy가 받을 이미지>`와, 그 이미지에서 꺼낸 jar를 `JAR`로 준다.
 - L3: `IMAGE_REF=<이미지> JAR=<그 이미지의 app.jar> SCENARIO=<서비스 저장소>/.reach/l3-scenario.json JACOCO_HOME=/tmp/reach-bin/jacoco OUT=reach-out/l3 bash deploy/reach/ci/l3-run.sh` 뒤 `reach-scan.sh`에 `JACOCO_HOME=/tmp/reach-bin/jacoco L3_SEGMENTS=reach-out/l3/segments L3_RUN=reach-out/l3/run.json`을 더한다. `JACOCO_HOME`과 `TMPDIR`은 Docker가 마운트할 수 있는 곳이어야 한다
