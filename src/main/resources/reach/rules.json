@@ -582,6 +582,139 @@
       "names": [
         "addEndpoint"
       ]
+    },
+    {
+      "id": "tomcat.udsPathString",
+      "type": "ldc",
+      "regex": "^unixDomainSocketPath(Permissions)?$"
+    },
+    {
+      "id": "tomcat.rewriteValveNew",
+      "type": "new",
+      "classes": [
+        "org/apache/catalina/valves/rewrite/RewriteValve"
+      ]
+    },
+    {
+      "id": "tomcat.rewriteValveSubclass",
+      "type": "extends",
+      "classes": [
+        "org/apache/catalina/valves/rewrite/RewriteValve"
+      ]
+    },
+    {
+      "id": "tomcat.dataSourceRealmNew",
+      "type": "new",
+      "classes": [
+        "org/apache/catalina/realm/DataSourceRealm"
+      ]
+    },
+    {
+      "id": "tomcat.dataSourceRealmSubclass",
+      "type": "extends",
+      "classes": [
+        "org/apache/catalina/realm/DataSourceRealm"
+      ]
+    },
+    {
+      "id": "tomcat.simpleAuthConfigProviderNew",
+      "type": "new",
+      "classes": [
+        "org/apache/catalina/authenticator/jaspic/SimpleAuthConfigProvider"
+      ]
+    },
+    {
+      "id": "tomcat.simpleAuthConfigProviderSubclass",
+      "type": "extends",
+      "classes": [
+        "org/apache/catalina/authenticator/jaspic/SimpleAuthConfigProvider"
+      ]
+    },
+    {
+      "id": "tomcat.crlCall",
+      "type": "call",
+      "owners": [
+        "org/apache/tomcat/util/net/SSLHostConfig"
+      ],
+      "names": [
+        "setCertificateRevocationListFile",
+        "setCertificateRevocationListPath"
+      ]
+    },
+    {
+      "id": "tomcat.opensslLifecycleListenerNew",
+      "type": "new",
+      "classes": [
+        "org/apache/catalina/core/OpenSSLLifecycleListener"
+      ]
+    },
+    {
+      "id": "tomcat.opensslListenerFips",
+      "type": "call",
+      "owners": [
+        "org/apache/catalina/core/OpenSSLLifecycleListener"
+      ],
+      "names": [
+        "setFIPSMode"
+      ]
+    },
+    {
+      "id": "websocket.springEnableAnn",
+      "type": "annotation",
+      "annotations": [
+        "Lorg/springframework/web/socket/config/annotation/EnableWebSocket;",
+        "Lorg/springframework/web/socket/config/annotation/EnableWebSocketMessageBroker;"
+      ]
+    },
+    {
+      "id": "websocket.springConfigurer",
+      "type": "extends",
+      "classes": [
+        "org/springframework/web/socket/config/annotation/WebSocketConfigurer",
+        "org/springframework/web/socket/config/annotation/WebSocketMessageBrokerConfigurer",
+        "org/springframework/web/socket/config/annotation/WebSocketConfigurationSupport",
+        "org/springframework/web/socket/config/annotation/WebSocketMessageBrokerConfigurationSupport"
+      ]
+    },
+    {
+      "id": "websocket.asyncRemote",
+      "type": "call",
+      "owners": [
+        "jakarta/websocket/Session"
+      ],
+      "names": [
+        "getAsyncRemote"
+      ]
+    },
+    {
+      "id": "websocket.asyncSendTimeout",
+      "type": "call",
+      "owners": [
+        "jakarta/websocket/WebSocketContainer",
+        "jakarta/websocket/RemoteEndpoint$Async",
+        "org/springframework/web/socket/server/standard/ServletServerContainerFactoryBean"
+      ],
+      "names": [
+        "setAsyncSendTimeout",
+        "setSendTimeout"
+      ]
+    },
+    {
+      "id": "spring.setSsl",
+      "type": "call",
+      "owners": [
+        "org/springframework/boot/web/server/ConfigurableWebServerFactory"
+      ],
+      "names": [
+        "setSsl"
+      ]
+    },
+    {
+      "id": "tomcat.sslHostConfigNew",
+      "type": "new",
+      "classes": [
+        "org/apache/tomcat/util/net/SSLHostConfig"
+      ]
     }
   ],
   "repo_facts": [
@@ -658,6 +791,56 @@
         "*.xml"
       ],
       "regex": "org\\.apache\\.catalina\\.realm\\.JNDIRealm"
+    },
+    {
+      "id": "repo.tomcat.udsPath",
+      "files": [
+        "server.xml",
+        "*.xml"
+      ],
+      "regex": "unixDomainSocketPath"
+    },
+    {
+      "id": "repo.tomcat.rewriteValve",
+      "files": [
+        "server.xml",
+        "context.xml",
+        "*.xml"
+      ],
+      "regex": "org\\.apache\\.catalina\\.valves\\.rewrite\\.RewriteValve"
+    },
+    {
+      "id": "repo.tomcat.dataSourceRealm",
+      "files": [
+        "server.xml",
+        "context.xml",
+        "*.xml"
+      ],
+      "regex": "org\\.apache\\.catalina\\.realm\\.DataSourceRealm"
+    },
+    {
+      "id": "repo.tomcat.simpleAuthConfigProvider",
+      "files": [
+        "jaspic-providers.xml",
+        "*.xml"
+      ],
+      "regex": "org\\.apache\\.catalina\\.authenticator\\.jaspic\\.SimpleAuthConfigProvider"
+    },
+    {
+      "id": "repo.tomcat.crl",
+      "files": [
+        "server.xml",
+        "*.xml"
+      ],
+      "regex": "certificateRevocationList(File|Path)"
+    },
+    {
+      "id": "repo.tomcat.opensslListener",
+      "files": [
+        "server.xml",
+        "*.xml"
+      ],
+      "regex": "org\\.apache\\.catalina\\.core\\.OpenSSLLifecycleListener"
     }
   ],
   "verdicts": {
@@ -1387,6 +1570,536 @@
       "why_ko": {
         "unreachable": "앱이 AJP 커넥터를 만들지 않는다. Spring Boot 내장 Tomcat은 AJP를 기본으로 열지 않는다. Tomcat 보안 공지 제목이 'AJP response mix-up'이라 AJP로 받은 요청에서 생기는 문제로 본다(11/23 결정. 권고문 설명과 수정 코드 OutputBuffer.updateBytesWritten에는 AJP가 나오지 않는다).",
         "unknown": "앱이 AJP 커넥터를 만든다. 그 커넥터로 받은 요청에 Content-Length를 정한 응답을 논블로킹 출력(ServletOutputStream.setWriteListener, Tomcat 위의 Spring WebFlux)으로 쓰는지 사람이 확인해야 한다. Spring MVC만 쓰면 블로킹 출력이다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 켜지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로, 다른 버전(Spring Boot 2·3, Spring Boot 없이 Tomcat을 쓰는 앱)은 도달 불가로 두지 않는다."
+      }
+    },
+    "CVE-2026-65183": {
+      "method": "rule",
+      "reachable_if": [],
+      "unknown_if": [
+        [
+          "tomcat.udsPathString"
+        ],
+        [
+          "repo.tomcat.udsPath"
+        ],
+        [
+          "sink"
+        ],
+        [
+          "sink_weak"
+        ],
+        [
+          "!jar.springBoot4"
+        ]
+      ],
+      "otherwise": "unreachable",
+      "why_ko": {
+        "unreachable": "앱이 Unix 도메인 소켓 커넥터를 설정하지 않는다(unixDomainSocketPath 속성 문자열, server.xml 설정 없음). Spring Boot 내장 Tomcat은 TCP 커넥터만 만든다. 소켓을 만든 뒤 권한을 바꾸는 NioEndpoint.initServerSocket의 Unix 도메인 소켓 분기가 실행되지 않는다.",
+        "unknown": "앱이 Unix 도메인 소켓 커넥터를 설정한다. 소켓 권한(unixDomainSocketPathPermissions)을 정했고 같은 호스트에 믿지 못할 로컬 사용자가 있는지 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      }
+    },
+    "CVE-2026-65927": {
+      "method": "rule",
+      "reachable_if": [],
+      "unknown_if": [
+        [
+          "tomcat.rewriteValveNew"
+        ],
+        [
+          "tomcat.rewriteValveSubclass"
+        ],
+        [
+          "repo.tomcat.rewriteValve"
+        ],
+        [
+          "sink"
+        ],
+        [
+          "sink_weak"
+        ],
+        [
+          "!jar.springBoot4"
+        ]
+      ],
+      "otherwise": "unreachable",
+      "why_ko": {
+        "unreachable": "앱이 RewriteValve를 만들거나 설정하지 않는다. Spring Boot 내장 Tomcat은 RewriteValve를 붙이지 않으므로 [N] 플래그로 규칙을 처음부터 다시 도는 RewriteValve.invoke 분기가 실행되지 않는다.",
+        "unknown": "앱이 RewriteValve를 쓴다. rewrite.config에 [N](next) 플래그 규칙이 있고 첫 규칙이 접근 제한인지 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      }
+    },
+    "CVE-2026-66422": {
+      "method": "rule",
+      "reachable_if": [],
+      "unknown_if": [
+        [
+          "tomcat.addConstraint"
+        ],
+        [
+          "tomcat.securityCollection"
+        ],
+        [
+          "tomcat.servletSecurityAnn"
+        ],
+        [
+          "tomcat.setServletSecurity"
+        ],
+        [
+          "repo.webxml.securityConstraint"
+        ],
+        [
+          "sink"
+        ],
+        [
+          "sink_weak"
+        ],
+        [
+          "!jar.springBoot4"
+        ]
+      ],
+      "otherwise": "unreachable",
+      "why_ko": {
+        "unreachable": "앱이 Tomcat 컨테이너 보안 제약을 추가하지 않는다(web.xml security-constraint, @ServletSecurity, Context.addConstraint 없음). 선언적 제약 확인(RealmBase.hasResourcePermission → hasRole)에서 role 별칭이 잘못 적용되는 문제라, 제약이 없으면 우회할 것이 없다. Spring Security의 권한 확인은 다른 구현이다.",
+        "unknown": "앱이 컨테이너 보안 제약을 추가한다. 서블릿에 security-role-ref 별칭이 있고 제약 역할과 이름이 겹치는지 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      }
+    },
+    "CVE-2026-68569": {
+      "method": "rule",
+      "reachable_if": [],
+      "unknown_if": [
+        [
+          "tomcat.dataSourceRealmNew"
+        ],
+        [
+          "tomcat.dataSourceRealmSubclass"
+        ],
+        [
+          "repo.tomcat.dataSourceRealm"
+        ],
+        [
+          "sink"
+        ],
+        [
+          "sink_weak"
+        ],
+        [
+          "!jar.springBoot4"
+        ]
+      ],
+      "otherwise": "unreachable",
+      "why_ko": {
+        "unreachable": "앱이 Tomcat DataSourceRealm을 만들거나 설정하지 않는다. Spring Boot 내장 Tomcat은 Realm을 따로 설정하지 않으므로 이름으로 주체를 찾는 DataSourceRealm.getPrincipal이 실행되지 않는다. Spring Security의 JDBC 인증은 다른 구현이다.",
+        "unknown": "앱이 Tomcat DataSourceRealm을 쓴다. CLIENT-CERT·SPNEGO처럼 이름만으로 주체를 찾는 인증을 쓰는지 사람이 확인해야 한다. 그렇다면 DB에 사용자가 없거나 연결이 실패해도 로그인될 수 있다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      }
+    },
+    "CVE-2026-75973": {
+      "method": "rule",
+      "reachable_if": [],
+      "unknown_if": [
+        [
+          "tomcat.simpleAuthConfigProviderNew"
+        ],
+        [
+          "tomcat.simpleAuthConfigProviderSubclass"
+        ],
+        [
+          "repo.tomcat.simpleAuthConfigProvider"
+        ],
+        [
+          "sink"
+        ],
+        [
+          "sink_weak"
+        ],
+        [
+          "!jar.springBoot4"
+        ]
+      ],
+      "otherwise": "unreachable",
+      "why_ko": {
+        "unreachable": "앱이 Jakarta Authentication(JASPIC)의 SimpleAuthConfigProvider를 쓰지 않는다. Spring Boot 내장 Tomcat은 JASPIC 공급자를 설정하지 않으므로 첫 웹앱의 인증 설정을 모든 웹앱에 쓰는 캐시가 실행되지 않는다.",
+        "unknown": "앱이 SimpleAuthConfigProvider를 쓴다. 이 공급자를 기본으로 두고 웹앱이 여럿인지 사람이 확인해야 한다(Spring Boot 내장 Tomcat은 보통 웹앱이 하나). 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      }
+    },
+    "CVE-2026-73581": {
+      "method": "rule",
+      "reachable_if": [],
+      "unknown_if": [
+        [
+          "tomcat.crlCall"
+        ],
+        [
+          "repo.tomcat.crl"
+        ],
+        [
+          "sink"
+        ],
+        [
+          "sink_weak"
+        ],
+        [
+          "!jar.springBoot4"
+        ]
+      ],
+      "otherwise": "unreachable",
+      "why_ko": {
+        "unreachable": "앱이 내장 Tomcat에 인증서 폐기 목록(CRL)을 설정하지 않는다. 키스토어로 준 인증서에 CRL이 적용되지 않는 문제라, CRL이 없으면 무시될 것이 없다. Spring Boot 내장 Tomcat의 TLS는 기본으로 JSSE이고 이 문제는 OpenSSL(tomcat-native·FFM) 구현에서 생긴다.",
+        "unknown": "앱이 CRL을 설정한다. 내장 Tomcat이 TLS를 직접 받고 SSL 구현이 OpenSSL(tomcat-native 또는 tomcat-coyote-ffm)이며 인증서를 키스토어로 주는지 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      }
+    },
+    "CVE-2026-74048": {
+      "method": "rule",
+      "reachable_if": [],
+      "unknown_if": [
+        [
+          "tomcat.opensslLifecycleListenerNew"
+        ],
+        [
+          "tomcat.opensslListenerFips"
+        ],
+        [
+          "repo.tomcat.opensslListener"
+        ],
+        [
+          "sink"
+        ],
+        [
+          "sink_weak"
+        ],
+        [
+          "!jar.springBoot4"
+        ]
+      ],
+      "otherwise": "unreachable",
+      "why_ko": {
+        "unreachable": "앱이 OpenSSLLifecycleListener를 만들거나 설정하지 않는다. Spring Boot 내장 Tomcat은 이 리스너를 붙이지 않으므로 FIPS 모드 활성화 실패를 처리하는 OpenSSLLifecycleListener.lifecycleEvent 분기가 실행되지 않는다.",
+        "unknown": "앱이 OpenSSLLifecycleListener를 쓴다. FIPS 모드를 켰고(setFIPSMode) 런타임이 Java 22 이상인지 사람이 확인해야 한다. 그렇다면 FIPS 활성화가 실패해도 FIPS가 아닌 TLS로 시작한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      }
+    },
+    "CVE-2026-68763": {
+      "method": "rule",
+      "reachable_if": [],
+      "unknown_if": [
+        [
+          "repo.spring.http2Enabled"
+        ],
+        [
+          "repo.spring.http2Yaml"
+        ],
+        [
+          "tomcat.http2ProtocolNew"
+        ],
+        [
+          "tomcat.addUpgradeProtocol"
+        ],
+        [
+          "spring.http2SetEnabled"
+        ],
+        [
+          "sink"
+        ],
+        [
+          "sink_weak"
+        ],
+        [
+          "!jar.springBoot4"
+        ]
+      ],
+      "otherwise": "unreachable",
+      "why_ko": {
+        "unreachable": "HTTP/2를 켜는 설정이나 코드가 없다. Spring Boot 내장 Tomcat은 server.http2.enabled가 true일 때만 HTTP/2를 등록하고 기본값은 false다(CVE-2026-65637 규칙에서 Spring Boot 4.1.1 바이트코드로 확인). HTTP/2 요청을 받지 않으므로 흐름 제어 대기열을 관리하는 Http2UpgradeHandler.reserveWindowSize·allocate가 실행되지 않는다. 배포할 때 환경 변수(SERVER_HTTP2_ENABLED)로 켜는 경우는 그 값이 레포에 있을 때만 보인다.",
+        "unknown": "HTTP/2를 켜는 설정이나 코드가 있다. 대기열에 들어간 스트림을 리셋해 연결 창을 줄이는 DoS가 가능하다. 앞단 프록시가 HTTP/2를 끝내고 Tomcat에는 HTTP/1.1로 넘기는지 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      }
+    },
+    "CVE-2026-77762": {
+      "method": "rule",
+      "reachable_if": [],
+      "unknown_if": [
+        [
+          "repo.spring.http2Enabled"
+        ],
+        [
+          "repo.spring.http2Yaml"
+        ],
+        [
+          "tomcat.http2ProtocolNew"
+        ],
+        [
+          "tomcat.addUpgradeProtocol"
+        ],
+        [
+          "spring.http2SetEnabled"
+        ],
+        [
+          "sink"
+        ],
+        [
+          "sink_weak"
+        ],
+        [
+          "!jar.springBoot4"
+        ]
+      ],
+      "otherwise": "unreachable",
+      "why_ko": {
+        "unreachable": "HTTP/2를 켜는 설정이나 코드가 없다. Spring Boot 내장 Tomcat은 server.http2.enabled가 true일 때만 HTTP/2를 등록하고 기본값은 false다(CVE-2026-65637 규칙에서 Spring Boot 4.1.1 바이트코드로 확인). HTTP/2 요청을 받지 않으므로 끝난 스트림의 HPACK 헤더 처리(Http2UpgradeHandler.replaceStream, HpackDecoder.emitHeader)가 실행되지 않는다. 배포할 때 환경 변수(SERVER_HTTP2_ENABLED)로 켜는 경우는 그 값이 레포에 있을 때만 보인다.",
+        "unknown": "HTTP/2를 켜는 설정이나 코드가 있다. 끝난 스트림으로 보낸 트레일러가 재사용된 다른 요청에 들어갈 수 있다. 앞단 프록시가 HTTP/2를 끝내고 Tomcat에는 HTTP/1.1로 넘기는지 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      }
+    },
+    "CVE-2026-78437": {
+      "method": "rule",
+      "reachable_if": [],
+      "unknown_if": [
+        [
+          "repo.spring.http2Enabled"
+        ],
+        [
+          "repo.spring.http2Yaml"
+        ],
+        [
+          "tomcat.http2ProtocolNew"
+        ],
+        [
+          "tomcat.addUpgradeProtocol"
+        ],
+        [
+          "spring.http2SetEnabled"
+        ],
+        [
+          "sink"
+        ],
+        [
+          "sink_weak"
+        ],
+        [
+          "!jar.springBoot4"
+        ]
+      ],
+      "otherwise": "unreachable",
+      "why_ko": {
+        "unreachable": "HTTP/2를 켜는 설정이나 코드가 없다. Spring Boot 내장 Tomcat은 server.http2.enabled가 true일 때만 HTTP/2를 등록하고 기본값은 false다(CVE-2026-65637 규칙에서 Spring Boot 4.1.1 바이트코드로 확인). HTTP/2 요청을 받지 않으므로 HTTP/2 요청 검사(StreamProcessor.validateRequest)가 실행되지 않는다. 배포할 때 환경 변수(SERVER_HTTP2_ENABLED)로 켜는 경우는 그 값이 레포에 있을 때만 보인다.",
+        "unknown": "HTTP/2를 켜는 설정이나 코드가 있다. 잘못된 :authority·host 헤더의 표시가 남아 다른 요청이 400으로 실패할 수 있다(영향 버전 11.0.19~11.0.25). 앞단 프록시가 HTTP/2를 끝내고 Tomcat에는 HTTP/1.1로 넘기는지 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      }
+    },
+    "CVE-2026-88041": {
+      "method": "rule",
+      "reachable_if": [],
+      "unknown_if": [
+        [
+          "repo.spring.http2Enabled"
+        ],
+        [
+          "repo.spring.http2Yaml"
+        ],
+        [
+          "tomcat.http2ProtocolNew"
+        ],
+        [
+          "tomcat.addUpgradeProtocol"
+        ],
+        [
+          "spring.http2SetEnabled"
+        ],
+        [
+          "sink"
+        ],
+        [
+          "sink_weak"
+        ],
+        [
+          "!jar.springBoot4"
+        ]
+      ],
+      "otherwise": "unreachable",
+      "why_ko": {
+        "unreachable": "HTTP/2를 켜는 설정이나 코드가 없다. Spring Boot 내장 Tomcat은 server.http2.enabled가 true일 때만 HTTP/2를 등록하고 기본값은 false다(CVE-2026-65637 규칙에서 Spring Boot 4.1.1 바이트코드로 확인). HTTP/2 요청을 받지 않으므로 HTTP/2 헤더 처리(HpackDecoder.emitHeader, Http2UpgradeHandler.headersStart)가 실행되지 않는다. 배포할 때 환경 변수(SERVER_HTTP2_ENABLED)로 켜는 경우는 그 값이 레포에 있을 때만 보인다.",
+        "unknown": "HTTP/2를 켜는 설정이나 코드가 있다. 스트림 교체와 헤더 해석이 겹치면 앞 요청의 트레일러가 다음 요청에 들어갈 수 있다. 앞단 프록시가 HTTP/2를 끝내고 Tomcat에는 HTTP/1.1로 넘기는지 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      }
+    },
+    "CVE-2026-77756": {
+      "method": "rule",
+      "reachable_if": [],
+      "unknown_if": [],
+      "otherwise": "unknown",
+      "why_ko": {
+        "unknown": "Tomcat 기본 HTTP/1.1 커넥터는 HTTP/1.0 요청도 받으므로 앱 코드·설정으로 가를 수 없다. 앞단 리버스 프록시가 HTTP/1.0 + Transfer-Encoding 요청을 그대로 넘기는지(프록시가 본문 길이를 다르게 해석하는지) 사람이 확인해야 한다."
+      }
+    },
+    "CVE-2026-78383": {
+      "method": "rule",
+      "reachable_if": [],
+      "unknown_if": [
+        [
+          "tomcat.ajpProtocolNew"
+        ],
+        [
+          "tomcat.ajpConnectorString"
+        ],
+        [
+          "sink"
+        ],
+        [
+          "sink_weak"
+        ],
+        [
+          "!jar.springBoot4"
+        ]
+      ],
+      "otherwise": "unreachable",
+      "why_ko": {
+        "unreachable": "앱이 AJP 커넥터를 만들지 않는다. Spring Boot 내장 Tomcat은 AJP를 기본으로 열지 않으므로 AJP 요청의 본문을 기다리는 AjpProcessor.finishResponse가 실행되지 않는다.",
+        "unknown": "앱이 AJP 커넥터를 만든다. AJP 포트에 믿지 못할 클라이언트가 닿는지 사람이 확인해야 한다. 본문을 보낸다고 알리고 보내지 않으면 처리 스레드가 묶인다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      }
+    },
+    "CVE-2026-73180": {
+      "method": "rule",
+      "reachable_if": [],
+      "unknown_if": [
+        [
+          "websocket.serverEndpointAnn"
+        ],
+        [
+          "websocket.endpointExporterNew"
+        ],
+        [
+          "websocket.addEndpoint"
+        ],
+        [
+          "websocket.springEnableAnn"
+        ],
+        [
+          "websocket.springConfigurer"
+        ],
+        [
+          "sink"
+        ],
+        [
+          "sink_weak"
+        ],
+        [
+          "!jar.springBoot4"
+        ]
+      ],
+      "otherwise": "unreachable",
+      "why_ko": {
+        "unreachable": "앱에 WebSocket 서버 코드가 없다(JSR-356 @ServerEndpoint·ServerEndpointExporter·addEndpoint, Spring @EnableWebSocket·@EnableWebSocketMessageBroker·WebSocketConfigurer). Spring WebSocket도 Tomcat에서는 ServerContainer.upgradeHttpToWebSocket으로 Tomcat의 WebSocket 처리(WsSession 등)를 쓰지만, 업그레이드할 엔드포인트가 없으면 인증된 WebSocket 세션 등록(WsServerContainer.registerAuthenticatedSession)가 실행되지 않는다.",
+        "unknown": "앱에 WebSocket 서버 코드가 있다. HTTP 세션 인증(서블릿 세션 로그인)을 쓰고 핸드셰이크 뒤 세션 ID가 바뀌는지(로그인 뒤 세션 고정 방지 등) 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      }
+    },
+    "CVE-2026-77791": {
+      "method": "rule",
+      "reachable_if": [],
+      "unknown_if": [
+        [
+          "websocket.serverEndpointAnn"
+        ],
+        [
+          "websocket.endpointExporterNew"
+        ],
+        [
+          "websocket.addEndpoint"
+        ],
+        [
+          "websocket.springEnableAnn"
+        ],
+        [
+          "websocket.springConfigurer"
+        ],
+        [
+          "sink"
+        ],
+        [
+          "sink_weak"
+        ],
+        [
+          "!jar.springBoot4"
+        ]
+      ],
+      "otherwise": "unreachable",
+      "why_ko": {
+        "unreachable": "앱에 WebSocket 서버 코드가 없다(JSR-356 @ServerEndpoint·ServerEndpointExporter·addEndpoint, Spring @EnableWebSocket·@EnableWebSocketMessageBroker·WebSocketConfigurer). Spring WebSocket도 Tomcat에서는 ServerContainer.upgradeHttpToWebSocket으로 Tomcat의 WebSocket 처리(WsSession 등)를 쓰지만, 업그레이드할 엔드포인트가 없으면 close를 보낼 때의 대기(WsRemoteEndpointImplServer.acquireMessagePartInProgressSemaphore)가 실행되지 않는다.",
+        "unknown": "앱에 WebSocket 서버 코드가 있다. 메시지를 보내는 중에 클라이언트가 close를 보내 CPU를 쓰게 할 수 있는지 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      }
+    },
+    "CVE-2026-87022": {
+      "method": "rule",
+      "reachable_if": [],
+      "unknown_if": [
+        [
+          "websocket.serverEndpointAnn"
+        ],
+        [
+          "websocket.endpointExporterNew"
+        ],
+        [
+          "websocket.addEndpoint"
+        ],
+        [
+          "websocket.springEnableAnn"
+        ],
+        [
+          "websocket.springConfigurer"
+        ],
+        [
+          "sink"
+        ],
+        [
+          "sink_weak"
+        ],
+        [
+          "!jar.springBoot4"
+        ]
+      ],
+      "otherwise": "unreachable",
+      "why_ko": {
+        "unreachable": "앱에 WebSocket 서버 코드가 없다(JSR-356 @ServerEndpoint·ServerEndpointExporter·addEndpoint, Spring @EnableWebSocket·@EnableWebSocketMessageBroker·WebSocketConfigurer). Spring WebSocket도 Tomcat에서는 ServerContainer.upgradeHttpToWebSocket으로 Tomcat의 WebSocket 처리(WsSession 등)를 쓰지만, 업그레이드할 엔드포인트가 없으면 permessage-deflate 압축 해제(PerMessageDeflate.getMoreData)가 실행되지 않는다.",
+        "unknown": "앱에 WebSocket 서버 코드가 있다. 클라이언트가 permessage-deflate를 요청하면 Tomcat이 협상하므로, 압축 메시지를 받는 엔드포인트가 메시지 경계를 믿는지 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      }
+    },
+    "CVE-2026-79677": {
+      "method": "rule",
+      "reachable_if": [],
+      "unknown_if": [
+        [
+          "websocket.asyncRemote",
+          "websocket.asyncSendTimeout"
+        ],
+        [
+          "!jar.springBoot4"
+        ]
+      ],
+      "otherwise": "unreachable",
+      "why_ko": {
+        "unreachable": "앱이 WebSocket 비동기 전송(Session.getAsyncRemote)과 전송 시간 제한(setAsyncSendTimeout 등)을 함께 쓰지 않는다. 시간 제한을 등록하는 WsWriteTimeout.register는 비동기 전송에 시간 제한이 있을 때만 실행된다(기본 -1). Spring WebSocket은 블로킹 전송(getBasicRemote)만 쓴다.",
+        "unknown": "앱이 WebSocket 비동기 전송과 시간 제한을 쓴다. 느린 클라이언트로 쓰기 시간 제한이 사라져 연결이 쌓이는지 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      }
+    },
+    "CVE-2026-93446": {
+      "method": "rule",
+      "reachable_if": [],
+      "unknown_if": [
+        [
+          "repo.spring.serverSsl"
+        ],
+        [
+          "spring.setSsl"
+        ],
+        [
+          "tomcat.sslHostConfigNew"
+        ],
+        [
+          "sink"
+        ],
+        [
+          "sink_weak"
+        ],
+        [
+          "!jar.springBoot4"
+        ]
+      ],
+      "otherwise": "unreachable",
+      "why_ko": {
+        "unreachable": "내장 Tomcat이 TLS를 직접 받지 않는다(server.ssl 설정, setSsl 호출, SSLHostConfig 생성 없음). Spring Boot는 Ssl이 켜져 있을 때만 커넥터에 TLS를 붙이므로 TLS 1.3 핸드셰이크 표시를 다루는 SecureNioChannel이 실행되지 않는다.",
+        "unknown": "내장 Tomcat이 TLS를 받을 수 있다(server.ssl.enabled=false여도 이 사실은 맞는다). TLS 1.3을 쓰고 NIO 커넥터인지 사람이 확인해야 한다. 간헐적으로 TLS 연결이 실패할 수 있다(가용성). 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
       }
     }
   }
