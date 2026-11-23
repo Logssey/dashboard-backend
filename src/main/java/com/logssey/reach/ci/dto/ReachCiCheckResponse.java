@@ -17,6 +17,6 @@ public record ReachCiCheckResponse(
 
     public record Reason(String condition, long count, String summary) {}
 
-    /** 기준 스캔에 없던 purl × CVE. byStatus는 0까지 채운다 */
+    /** 기준 스캔에 없던 purl × CVE, 또는 기준 스캔보다 판정이 나빠진 것(명세 6-2). byStatus는 0까지 채운다 */
     public record NewFindings(long total, Map<String, Long> byStatus) {}
 }
