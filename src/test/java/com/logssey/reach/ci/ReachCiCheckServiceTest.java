@@ -58,6 +58,39 @@ class ReachCiCheckServiceTest {
     }
 
     @Test
+    void theCodeCommitIsTheOneTheDashboardRuns() {
+        var repository = new ReachCiCheckRepository(JdbcClient.create(jdbc));
+        var access = new com.logssey.reach.ci.auth.ReachCiAccess(ReachTestProperties.REUSED,
+                new com.logssey.reach.ci.auth.ReachCiProperties("Logssey", null, null));
+        var code = new ReachCiCodeService(repository, access, " " + COMMIT + " ");
+        assertThat(code.code("admin").commit()).isEqualTo(COMMIT);
+        assertError(() -> code.code(null), ErrorCode.UNAUTHENTICATED);
+        assertError(() -> code.code("nobody"), ErrorCode.FORBIDDEN);
+
+        // the Reach workflow of a registered repo, on any event (PR, image build, dispatch)
+        var pr = new com.logssey.reach.ci.auth.ReachCiCaller("Logssey/service-backend", "repo:x", "pull_request",
+                "refs/pull/1/merge", "Logssey/service-backend/.github/workflows/reach.yml@refs/pull/1/merge");
+        assertThat(code.codeForCi(pr).commit()).isEqualTo(COMMIT);
+        var otherWorkflow = new com.logssey.reach.ci.auth.ReachCiCaller("Logssey/service-backend", "repo:x", "push",
+                "refs/heads/develop", "Logssey/service-backend/.github/workflows/ci.yml@refs/heads/develop");
+        assertError(() -> code.codeForCi(otherWorkflow), ErrorCode.FORBIDDEN);
+        var otherRepo = new com.logssey.reach.ci.auth.ReachCiCaller("Logssey/unknown", "repo:x", "push",
+                "refs/heads/develop", "Logssey/unknown/.github/workflows/reach.yml@refs/heads/develop");
+        assertError(() -> code.codeForCi(otherRepo), ErrorCode.FORBIDDEN);
+
+        // where the commit comes from: the image's LOGSSEY_BUILD_COMMIT, unless the setting says otherwise
+        var env = new org.springframework.mock.env.MockEnvironment().withProperty("LOGSSEY_BUILD_COMMIT", COMMIT);
+        assertThat(env.resolvePlaceholders(ReachCiCodeService.COMMIT_SOURCE)).isEqualTo(COMMIT);
+        env.setProperty("logssey.reach.ci.code-commit", "c".repeat(40));
+        assertThat(env.resolvePlaceholders(ReachCiCodeService.COMMIT_SOURCE)).isEqualTo("c".repeat(40));
+        assertThat(new org.springframework.mock.env.MockEnvironment().resolvePlaceholders(ReachCiCodeService.COMMIT_SOURCE)).isEmpty();
+
+        // a dashboard that does not know its commit (local run): 404, the runner then needs REACH_REF
+        assertError(() -> new ReachCiCodeService(repository, access, "").code("admin"), ErrorCode.NOT_FOUND);
+        assertError(() -> new ReachCiCodeService(repository, access, "abc").codeForCi(pr), ErrorCode.NOT_FOUND);
+    }
+
+    @Test
     void requiresAdmin() {
         assertError(() -> service.create(null, "k", pr("GATE")), ErrorCode.UNAUTHENTICATED);
         assertError(() -> service.create("nobody", "k", pr("GATE")), ErrorCode.FORBIDDEN);

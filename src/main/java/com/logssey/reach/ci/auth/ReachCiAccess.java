@@ -46,6 +46,12 @@ public class ReachCiAccess {
         return new ReachCiAccess(new ReachProperties(null, null), ReachCiProperties.closed());
     }
 
+    /** 검사와 묶이지 않은 CI 조회(분석 코드 커밋). 허용된 레포의 Reach 워크플로가 받은 토큰이면 된다 */
+    public void authorizeRead(ReachCiCaller caller) {
+        requireAllowedRepository(caller);
+        requireReachWorkflow(caller);
+    }
+
     /** API-12 실행. 본문 형식 검사(400) 뒤에 부른다 */
     public void authorizeCreate(ReachCiCaller caller, ReachCiCheckRequest request) {
         requireAllowedRepository(caller);

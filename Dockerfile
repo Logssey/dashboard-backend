@@ -33,6 +33,9 @@ ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=70 -XX:+ExitOnOutOfMemoryError -XX:-
 USER 10001:10001
 
 FROM runtime AS api
+# The commit this image was built from (Dashboard deploy passes the merge commit). Reach runners ask it (GET /api/v1/reach/ci/code)
+ARG LOGSSEY_BUILD_COMMIT=
+ENV LOGSSEY_BUILD_COMMIT=$LOGSSEY_BUILD_COMMIT
 COPY --from=build --chown=10001:10001 /workspace/build/libs/dashboard-backend-*.jar /app/api.jar
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "/app/api.jar", "--spring.config.import=file:/run/config/application.properties,configtree:/run/secrets/"]

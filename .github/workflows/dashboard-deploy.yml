@@ -98,7 +98,11 @@ jobs:
             local image="$registry/$3:$tag" digest
             # Tags are immutable, so a re-run of the same commit reuses the image it already pushed
             if ! aws ecr describe-images --repository-name "$3" --image-ids imageTag="$tag" > /dev/null 2>&1; then
-              docker build --target "$2" -t "$image" .
+              # The API tells the Reach runners which commit it runs (GET /api/v1/reach/ci/code): they fetch the
+              # analyzer, judgement data and scripts of that commit, so they always match the API they upload to
+              local args=()
+              [ "$2" = api ] && args=(--build-arg "LOGSSEY_BUILD_COMMIT=$GITHUB_SHA")
+              docker build --target "$2" "${args[@]}" -t "$image" .
               docker push "$image"
             fi
             digest=$(aws ecr describe-images --repository-name "$3" --image-ids imageTag="$tag" \
@@ -203,34 +207,3 @@ jobs:
           INSTANCE_ID: ${{ vars.DASHBOARD_INSTANCE_ID }}
           DIGEST: ${{ steps.image.outputs.digest }}
         run: bash .github/scripts/dashboard-deploy-ssm.sh iac-worker "$DIGEST"
-
-  # Reach: the service repos scan with the analyzer, judgement data and scripts of the dashboard-backend commit in
-  # their repository variable REACH_REF (deploy/reach/ci). After the API of this commit is deployed, move that
-  # variable here, so merged rules reach the scans without anyone editing it. Only forward: a re-run of an older
-  # run leaves a newer value alone. Off until REACH_REF_REPOSITORIES (comma-separated repo names) is set; the app
-  # (secrets REACH_REF_APP_ID, REACH_REF_APP_PRIVATE_KEY) needs only "Variables: read and write" on those repos.
-  reach-ref:
-    name: Point the Reach scans of the service repos at this commit
-    needs: deploy
-    if: github.ref == 'refs/heads/develop' && vars.REACH_REF_REPOSITORIES != ''
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          fetch-depth: 0   # the script checks that the current value is an ancestor of this commit
-      - name: Token for the service repos
-        id: token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
-        with:
-          app-id: ${{ secrets.REACH_REF_APP_ID }}
-          private-key: ${{ secrets.REACH_REF_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ vars.REACH_REF_REPOSITORIES }}
-      - name: Set REACH_REF
-        env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
-          COMMIT: ${{ github.sha }}
-          OWNER: ${{ github.repository_owner }}
-          REPOSITORIES: ${{ vars.REACH_REF_REPOSITORIES }}
-        run: bash .github/scripts/reach-ref-set.sh
