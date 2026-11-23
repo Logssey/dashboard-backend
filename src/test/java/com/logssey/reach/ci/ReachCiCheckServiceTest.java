@@ -268,6 +268,50 @@ class ReachCiCheckServiceTest {
     }
 
     @Test
+    void aFindingWhoseVerdictGotWorseThanTheBaselineCountsAsNew() {
+        // 라이브러리는 그대로인데 코드가 바뀌어 판정이 나빠지면 새 것이다. 같거나 나아지면 이미 있던 것이다
+        long baseline = scan(imageTarget(), "SUCCEEDED");
+        finding(baseline, "a", "CRITICAL", "UNREACHABLE");
+        finding(baseline, "b", "LOW", "UNREACHABLE");
+        finding(baseline, "c", "LOW", "UNKNOWN");
+        finding(baseline, "d", "HIGH", "REACHABLE");
+        finding(baseline, "e", "HIGH", "NOT_ANALYZED");
+
+        long checkId = service.create("admin", "w", request("MANUAL", repo(COMMIT), null, baseline, "GATE")).check().id();
+        long scanId = service.check("admin", checkId).scanId();
+        finding(scanId, "a", "CRITICAL", "REACHABLE");      // UNREACHABLE → REACHABLE: REACHABLE_CRITICAL_HIGH
+        finding(scanId, "b", "LOW", "UNKNOWN");             // UNREACHABLE → UNKNOWN: UNKNOWN_ANY
+        finding(scanId, "c", "LOW", "UNKNOWN");             // 그대로 → 새 것 아님
+        finding(scanId, "d", "HIGH", "UNREACHABLE");        // 나아짐 → 새 것 아님
+        finding(scanId, "e", "HIGH", "UNKNOWN");            // NOT_ANALYZED → UNKNOWN은 같은 순위 → 새 것 아님
+        finish(scanId, "SUCCEEDED");
+
+        var gate = service.check("admin", checkId).gate();
+        assertThat(gate.result()).isEqualTo("FAIL");
+        assertThat(gate.reasons()).extracting(ReachCiCheckResponse.Reason::condition)
+                .containsExactly("REACHABLE_CRITICAL_HIGH", "UNKNOWN_ANY");
+        assertThat(gate.newFindings().total()).isEqualTo(2);
+    }
+
+    @Test
+    void aBaselineAnalyzedWithOlderVerdictDataCountsTheNewVerdictAsNew() {
+        // 판정 데이터를 더한 직후: 기준(운영 이미지)은 아직 데이터 없음(NOT_ANALYZED), PR은 새 데이터로 REACHABLE.
+        // 이미 있던 위험이지만 다음 재대조(또는 운영 이미지 스캔 요청)로 기준이 바뀔 때까지 새 것으로 센다 (명세 6-2)
+        long baseline = scan(imageTarget(), "SUCCEEDED");
+        finding(baseline, "a", "HIGH", "NOT_ANALYZED");
+
+        long checkId = service.create("admin", "d", request("MANUAL", repo(COMMIT), null, baseline, "GATE")).check().id();
+        long scanId = service.check("admin", checkId).scanId();
+        finding(scanId, "a", "HIGH", "REACHABLE");
+        finish(scanId, "SUCCEEDED");
+
+        var gate = service.check("admin", checkId).gate();
+        assertThat(gate.result()).isEqualTo("FAIL");
+        assertThat(gate.reasons()).extracting(ReachCiCheckResponse.Reason::condition)
+                .containsExactly("REACHABLE_CRITICAL_HIGH");
+    }
+
+    @Test
     void pullRequestUsesTheRunningImageAsBaselineAndIgnoresPurlQualifiers() {
         // 운영에서 실행 중인 API 이미지의 스캔 (Trivy는 한정자 없이 적는다)
         long running = scan(imageTarget(), "SUCCEEDED");

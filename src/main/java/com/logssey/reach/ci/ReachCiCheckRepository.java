@@ -345,7 +345,18 @@ public class ReachCiCheckRepository {
     record NewFindingRow(String status, String severity, long count) {}
 
     /**
-     * 이 스캔의 도구 판정 중 기준 스캔에 없던 purl × CVE를 상태·심각도별로 센다 (명세 6-2 "새 Finding").
+     * 판정의 위험 순위. REACHABLE > UNKNOWN = NOT_ANALYZED > UNREACHABLE.
+     * UNKNOWN과 NOT_ANALYZED는 둘 다 "안전하다고 확인하지 못함"이라 같은 순위로 본다
+     */
+    private static String rank(String alias) {
+        return "CASE " + alias + ".status WHEN 'REACHABLE' THEN 3 WHEN 'UNREACHABLE' THEN 1 ELSE 2 END";
+    }
+
+    /**
+     * 이 스캔의 도구 판정 중 "새 Finding"을 상태·심각도별로 센다 (명세 6-2).
+     * 새 Finding = 기준 스캔에 없던 purl × CVE, 또는 기준 스캔에서는 판정이 더 낮던 것.
+     * 라이브러리는 그대로인데 코드가 바뀌어 UNREACHABLE → REACHABLE이 된 것을 잡으려는 것이다.
+     * 기준에서 이미 같은 순위 이상이던 것(이미 있던 위험)은 세지 않는다. PR을 막는 이유가 되지 않는다.
      * 기준 스캔은 다른 대상(예: 운영 이미지)일 수 있어 Finding id가 아니라 purl과 CVE로 비교한다.
      * purl은 한정자(?…)와 하위 경로(#…)를 떼고 비교한다. 레포 SBOM(cdxgen)은 pkg:maven/g/a@v?type=jar,
      * 이미지 스캔(Trivy)은 pkg:maven/g/a@v로 같은 패키지를 다르게 적어서다.
@@ -363,9 +374,10 @@ public class ReachCiCheckRepository {
                               WHERE bv.scan_id = :baselineScanId AND bv.method IS DISTINCT FROM 'MANUAL'
                                 AND split_part(split_part(bf.purl, '#', 1), '?', 1)
                                     = split_part(split_part(f.purl, '#', 1), '?', 1)
-                                AND bf.vulnerability_id = f.vulnerability_id)
+                                AND bf.vulnerability_id = f.vulnerability_id
+                                AND %s >= %s)
                         GROUP BY v.status, f.severity
-                        """)
+                        """.formatted(rank("bv"), rank("v")))
                 .param("scanId", scanId)
                 .param("baselineScanId", baselineScanId)
                 .query((rs, i) -> new NewFindingRow(rs.getString("status"), rs.getString("severity"), rs.getLong("n")))
