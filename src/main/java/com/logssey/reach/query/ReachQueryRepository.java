@@ -28,7 +28,7 @@ import tools.jackson.databind.json.JsonMapper;
 @Repository
 public class ReachQueryRepository {
     /**
-     * 기준 범위(latest)의 Finding + 현재 판정 + 검토 (DB 스키마 5절). 목록과 요약이 같이 쓴다. latest는 {@link #latest}.
+     * 기준 범위(latest)의 Finding + 판정 + 검토 (DB 스키마 5절). 목록과 요약이 같이 쓴다. latest는 {@link #latest}, 판정은 {@link #verdictOf}.
      * Finding은 last_scan_id가 아니라 그 스캔의 도구 판정으로 잇는다. 같은 레포 커밋을 PR로 다시 스캔하면
      * last_scan_id가 PR 스캔으로 바뀌어도 기준 스캔의 Finding이 빠지지 않는다 (API-03 counts와 같은 기준)
      */
@@ -54,7 +54,7 @@ public class ReachQueryRepository {
              AND EXISTS (SELECT 1 FROM reach_verdicts lv
                          WHERE lv.finding_id = f.finding_id AND lv.scan_id = l.scan_id
                            AND lv.method IS DISTINCT FROM 'MANUAL')
-            JOIN reach_verdicts v ON v.finding_id = f.finding_id AND v.is_current
+            JOIN reach_verdicts v ON v.finding_id = f.finding_id AND %s
             JOIN reach_reviews r ON r.finding_id = f.finding_id
             LEFT JOIN reach_l3_results x ON x.finding_id = f.finding_id
     """;
@@ -125,7 +125,16 @@ public class ReachQueryRepository {
     }
 
     static String currentFindings(Long scanId, Long target, Basis basis) {
-        return CURRENT_FINDINGS.formatted(latest(scanId, target, basis));
+        return CURRENT_FINDINGS.formatted(latest(scanId, target, basis), verdictOf(scanId));
+    }
+
+    /**
+     * 어느 판정을 보이나 (DB 스키마 5절). 기준 범위·target은 지금 판정(사람 판정 MANUAL 포함)이다.
+     * scanId로 고른 지난 스캔은 그 스캔의 도구 판정이다: PR 검사 결과(API-12 findingsUrl)와 스캔 이력이 오늘 판정이 아니라
+     * 그때 판정을 보인다. 사람 판정은 지금 기준에만 넣는다
+     */
+    private static String verdictOf(Long scanId) {
+        return scanId == null ? "v.is_current" : "v.scan_id = l.scan_id AND v.method IS DISTINCT FROM 'MANUAL'";
     }
 
     /** latest()가 쓰는 파라미터를 넣는다 */

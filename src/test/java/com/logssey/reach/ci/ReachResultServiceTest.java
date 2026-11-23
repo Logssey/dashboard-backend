@@ -210,6 +210,49 @@ class ReachResultServiceTest {
     }
 
     @Test
+    void anUploadWaitsForAReviewBeingSavedAndThenJudgesIt() throws Exception {
+        var evidence = List.of(map("kind", "NOTE", "summary", "no path"));
+        upload(check("a"), item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence));
+        long a = finding("a");
+        long base = jdbc.queryForObject("SELECT verdict_id FROM reach_verdicts WHERE finding_id = ? AND is_current", Long.class, a);
+
+        // a person is saving UNREACHABLE (API-06 holds the review row in its transaction, not committed yet)
+        try (var person = jdbc.getDataSource().getConnection()) {
+            person.setAutoCommit(false);
+            try (var lock = person.prepareStatement("SELECT 1 FROM reach_reviews WHERE finding_id = ? FOR UPDATE")) {
+                lock.setLong(1, a);
+                lock.executeQuery().close();
+            }
+            try (var save = person.prepareStatement("""
+                    UPDATE reach_reviews SET review_state = 'CONFIRMED', status = 'UNREACHABLE', note = 'checked',
+                           reviewer_user_id = 1, reviewed_at = now(), version = version + 1, base_verdict_id = ?
+                    WHERE finding_id = ?""")) {
+                save.setLong(1, base);
+                save.setLong(2, a);
+                save.executeUpdate();
+            }
+
+            // meanwhile the next scan says REACHABLE: it must wait for that save, not read the old UNREVIEWED row
+            var next = new java.util.concurrent.CompletableFuture<Long>();
+            long nextCheck = check("a");
+            var uploader = new Thread(() -> {
+                try {
+                    next.complete(upload(nextCheck, item("a", "CVE-2026-1", "HIGH", "REACHABLE", "CALLGRAPH", null, evidence)));
+                } catch (Throwable e) {
+                    next.completeExceptionally(e);
+                }
+            });
+            uploader.start();
+            Thread.sleep(1500);
+            assertThat(next).isNotDone();
+            person.commit();
+            next.get(30, java.util.concurrent.TimeUnit.SECONDS);
+        }
+        // it saw the person's UNREACHABLE and reset it against the new REACHABLE
+        assertThat(review(a)).isEqualTo("UNREVIEWED:3:VERDICT_CHANGED");
+    }
+
+    @Test
     void nextScanOfTheSameTargetKeepsAnUnchangedReviewAndResetsAChangedOne() {
         var evidence = List.of(map("kind", "NOTE", "summary", "no path"));
         upload(check("a"), item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence),

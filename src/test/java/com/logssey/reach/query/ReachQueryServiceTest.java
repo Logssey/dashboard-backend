@@ -141,6 +141,42 @@ class ReachQueryServiceTest {
     }
 
     @Test
+    void aPastScanShowsItsOwnToolVerdictsNotTodays() {
+        long a = target("sha256:b");
+        long old = scan(a, "SUCCEEDED", 3);
+        long id = finding(old, "lib", "CVE-2026-1", "HIGH", "UNREACHABLE", "UNREVIEWED");
+        long other = finding(old, "zlib", "CVE-2026-2", "HIGH", "NOT_ANALYZED", "UNREVIEWED");
+        // a later scan of the same image says REACHABLE (today's verdict). A person judged the NOT_ANALYZED one by hand
+        long latest = scan(a, "SUCCEEDED", 1);
+        jdbc.update("UPDATE reach_verdicts SET is_current = false WHERE finding_id IN (?, ?)", id, other);
+        jdbc.update("""
+                INSERT INTO reach_verdicts (finding_id, scan_id, status, method, summary, engine, evidence_hash, is_current, analyzed_at)
+                VALUES (?, ?, 'REACHABLE', 'CALLGRAPH', 'later', '{}', 'h2', true, now())
+                """, id, latest);
+        jdbc.update("""
+                INSERT INTO reach_verdicts (finding_id, scan_id, status, not_analyzed_reason, summary, engine, evidence_hash, is_current, analyzed_at)
+                VALUES (?, ?, 'NOT_ANALYZED', 'OS_PACKAGE', 'later', '{}', 'h', false, now())
+                """, other, latest);
+        jdbc.update("""
+                INSERT INTO reach_verdicts (finding_id, scan_id, status, method, summary, is_current, analyzed_at, created_by_user_id)
+                VALUES (?, ?, 'UNREACHABLE', 'MANUAL', 'by hand', true, now(), 1)
+                """, other, latest);
+
+        // the default scope and target are today: REACHABLE and the human verdict
+        assertThat(service.findings("admin", ALL, null, null, null).items())
+                .extracting(i -> i.vulnerability().id() + ":" + i.verdict().status())
+                .containsExactly("CVE-2026-1:REACHABLE", "CVE-2026-2:UNREACHABLE");
+        // the old scan (e.g. a PR check result, a scan in the history) shows what that scan said
+        var then = service.findings("admin", scope(old, null), null, null, null);
+        assertThat(then.items()).extracting(i -> i.vulnerability().id() + ":" + i.verdict().status())
+                .containsExactly("CVE-2026-1:UNREACHABLE", "CVE-2026-2:NOT_ANALYZED");
+        var summary = service.summary("admin", null, old, null, null);
+        assertThat(summary.totals().findings()).isEqualTo(2);
+        assertThat(service.findings("admin", new ReachFindingFilter(List.of("REACHABLE"), null, null, null, null, old, null, null, null),
+                null, null, null).items()).isEmpty();
+    }
+
+    @Test
     void scopeParametersAreChecked() {
         long a = target("sha256:b");
         long b = target("sha256:c");
