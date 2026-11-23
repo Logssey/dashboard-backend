@@ -444,6 +444,11 @@ public class ReachResultRepository {
     record ReviewState(String reviewState, String status, String note, Long reviewerUserId,
                        String baseStatus, String baseEvidenceHash) {}
 
+    /**
+     * 검토 행을 잠그고 읽는다. 사람이 같은 Finding을 저장하는 중(API-06, 같은 행을 잠근다)이면 끝날 때까지 기다려
+     * 그 판정을 보고 되돌릴지 정한다. 잠그지 않으면 방금 저장한 사람 판정을 모른 채 version 없이 덮어쓸 수 있었다.
+     * 업로드가 먼저 잡으면 사람의 저장은 version이 달라 409로 다시 읽게 된다
+     */
     ReviewState reviewState(long findingId) {
         return jdbcClient.sql("""
                         SELECT r.review_state, r.status, r.note, r.reviewer_user_id, b.status AS base_status,
@@ -451,6 +456,7 @@ public class ReachResultRepository {
                         FROM reach_reviews r
                         LEFT JOIN reach_verdicts b ON b.verdict_id = r.base_verdict_id
                         WHERE r.finding_id = :findingId
+                        FOR UPDATE OF r
                         """)
                 .param("findingId", findingId)
                 .query((rs, i) -> new ReviewState(rs.getString("review_state"), rs.getString("status"),

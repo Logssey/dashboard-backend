@@ -123,6 +123,43 @@ class ReachReviewServiceTest {
     }
 
     @Test
+    void theBaseIsTheToolVerdictOnScreenNotALaterPullRequestVerdict() {
+        long id = finding("CVE-2026-1", "REACHABLE");
+        long shown = currentVerdictId(id);
+        // a PR check of the same commit leaves its own verdict on this finding (ARD SR-09) with a later analyzedAt
+        long pr = prVerdict(id, "UNREACHABLE", "CALLGRAPH", "now() + interval '1 hour'");
+
+        service.save("admin", id, confirm("REACHABLE", 1));
+        assertThat(jdbc.queryForObject("SELECT base_verdict_id FROM reach_reviews WHERE finding_id = ?", Long.class, id))
+                .isEqualTo(shown).isNotEqualTo(pr);
+    }
+
+    @Test
+    void unreviewedNeverRestoresAPullRequestVerdict() {
+        long id = finding("CVE-2026-1", "NOT_ANALYZED");
+        long tool = currentVerdictId(id);
+        service.save("admin", id, confirm("UNREACHABLE", 1));   // MANUAL becomes current
+        prVerdict(id, "NOT_ANALYZED", null, "now() + interval '1 hour'");
+
+        service.save("admin", id, new ReachReviewRequest("UNREVIEWED", null, null, null, 2));
+        assertThat(currentVerdictId(id)).isEqualTo(tool);
+    }
+
+    /** 같은 Finding에 PR 검사 스캔이 남긴 도구 판정 */
+    private static long prVerdict(long findingId, String status, String method, String analyzedAt) {
+        long prScan = jdbc.queryForObject("""
+                INSERT INTO reach_scans (target_id, scan_status, trigger_type, requested_by_kind, finished_at)
+                SELECT target_id, 'SUCCEEDED', 'PR', 'SYSTEM', now() FROM reach_findings WHERE finding_id = ? RETURNING scan_id
+                """, Long.class, findingId);
+        return jdbc.queryForObject("""
+                INSERT INTO reach_verdicts (finding_id, scan_id, status, method, not_analyzed_reason, summary,
+                                            engine, evidence_hash, is_current, analyzed_at)
+                VALUES (?, ?, ?, ?, ?, 'pr', '{}', 'h2', false, %s) RETURNING verdict_id
+                """.formatted(analyzedAt), Long.class, findingId, prScan, status, method,
+                method == null ? "UNANALYZED_COPY" : null);
+    }
+
+    @Test
     void proposalIsOnlyKeptWhileUnreviewed() {
         long id = finding("CVE-2026-89407", "NOT_ANALYZED");
         var proposal = new ReachReviewRequest.Proposal("UNREACHABLE", "발동 조건 없음", "규칙명세서 9-1");

@@ -51,11 +51,18 @@ public class ReachReviewRepository {
                 .optional();
     }
 
+    /**
+     * 검토가 본 도구 판정 (base_verdict_id). 사람이 화면에서 본 지금 판정이 도구 판정이면 그것이다.
+     * 지금 판정이 사람 판정(MANUAL)이면 PR이 아닌 스캔의 가장 늦게 넣은 도구 판정이다.
+     * PR 검사가 같은 Finding에 남긴 판정(ARD SR-09)은 기준이 아니고, 판정 시각(analyzed_at)은 러너가 보낸 값이라 순서로 쓰지 않는다.
+     * PR에서만 나온 Finding은 PR 판정뿐이라 그것을 쓴다
+     */
     ToolVerdict latestToolVerdict(long findingId) {
         return jdbcClient.sql("""
-                        SELECT verdict_id, status FROM reach_verdicts
-                        WHERE finding_id = :findingId AND method IS DISTINCT FROM 'MANUAL'
-                        ORDER BY analyzed_at DESC, verdict_id DESC
+                        SELECT v.verdict_id, v.status FROM reach_verdicts v
+                        JOIN reach_scans s ON s.scan_id = v.scan_id
+                        WHERE v.finding_id = :findingId AND v.method IS DISTINCT FROM 'MANUAL'
+                        ORDER BY v.is_current DESC, (s.trigger_type <> 'PR') DESC, v.verdict_id DESC
                         LIMIT 1
                         """)
                 .param("findingId", findingId)
