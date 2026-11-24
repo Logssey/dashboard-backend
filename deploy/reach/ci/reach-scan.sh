@@ -26,7 +26,8 @@
 # L3 (optional, FR-14): L3_SEGMENTS (the execution data of l3-run.sh, one file per segment) and L3_RUN (its
 #   run.json), with JAR and JACOCO_HOME (jacococli.jar): after L2 the segments become JaCoCo reports of the classes
 #   the L3 data and the L2 call paths name, verdict/l3.py says how far the run got per CVE and in which requests,
-#   and that goes into the bundle as its l3 object. It is evidence next to the L2 verdict and never changes it.
+#   and that goes into the bundle as its l3 object. It is evidence next to the L2 verdict; this script never changes
+#   the verdict. The dashboard raises it when it takes the bundle, only as far as the CVE's rule allows (rules.json l3).
 #   The segments of a fresh run are also sent as the bundle's l3Record: the dashboard keeps them, and a rescan
 #   (MANUAL with RESCAN_OF) gets them back (GET …/l3-record) and matches them again with today's data instead of
 #   running the app. Without a kept record a rescan has no L3.

@@ -476,6 +476,46 @@ class ReachResultServiceTest {
     }
 
     @Test
+    void anotherJarOfTheSameGroupTakesTheL3ResultOnlyWhenTheBundleGaveItTheVerdict() {
+        // bundle.py가 판정 데이터 좌표(test:ws)의 판정을 준 같은 그룹의 다른 jar(test:core)는 그 L3 결과로 올라간다.
+        // 판정하지 않은 사본(같은 그룹이어도 bundle.py가 NOT_ANALYZED로 둔 것: 버전이 다름 등)에는 붙이지 않는다
+        var evidence = List.of(map("kind", "NOTE", "summary", "no path"));
+        uploadWithL3(check("a"), l3(l3Cve("CVE-2026-1", "ws", "REGION", true, false)),
+                item("core", "CVE-2026-1", "HIGH", "UNREACHABLE", "RULE", null, evidence),
+                item("el", "CVE-2026-1", "HIGH", "NOT_ANALYZED", null, "UNANALYZED_COPY", List.of()));
+        assertThat(l3Results()).hasSize(1).allMatch(r -> r.startsWith("core:REGION:"));
+        assertThat(jdbc.queryForObject("SELECT status FROM reach_verdicts WHERE finding_id = ? AND is_current",
+                String.class, finding("core"))).isEqualTo("REACHABLE");
+    }
+
+    @Test
+    void l3RaisesOnlyAsFarAsTheRuleDataOfTheCveSays() {
+        // 실제 규칙 데이터: 103119의 구간은 Content-Length가 있는 모든 응답 쓰기에서 실행돼 AJP(규칙 조건)를 보여 주지 않는다.
+        // 76183의 구간은 WebSocket 엔드포인트가 있을 때만 실행돼 기능 사용까지만 보여 준다
+        var evidence = List.of(map("kind", "NOTE", "summary", "no path"));
+        uploadWithL3(check("a"), l3(l3Cve("CVE-2026-103119", "core", "REGION", true, false),
+                        l3Cve("CVE-2026-76183", "ws", "REGION", true, false)),
+                item("core", "CVE-2026-103119", "CRITICAL", "UNREACHABLE", "RULE", null, evidence),
+                item("ws", "CVE-2026-76183", "CRITICAL", "UNREACHABLE", "RULE", null, evidence));
+        assertThat(jdbc.queryForList("SELECT f.component_name || ':' || v.status FROM reach_findings f "
+                + "JOIN reach_verdicts v ON v.finding_id = f.finding_id AND v.is_current ORDER BY 1", String.class))
+                .containsExactly("core:UNREACHABLE", "ws:UNKNOWN");
+        // 올리지 않은 판정에는 RUNTIME 근거가 없다(근거 해시가 L2 그대로라 검토가 되돌아가지 않는다). L3 결과는 저장한다
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM reach_evidence e JOIN reach_verdicts v ON v.verdict_id = e.verdict_id "
+                + "WHERE v.finding_id = ? AND e.kind = 'RUNTIME'", Long.class, finding("core"))).isZero();
+        assertThat(l3Results()).hasSize(2);
+        assertThat(jdbc.queryForObject("SELECT summary FROM reach_verdicts WHERE finding_id = ? AND is_current",
+                String.class, finding("ws"))).contains("취약 조건까지 보여 주지는 않아, 도달 불가를 확인 못 함으로 올렸다");
+
+        // 앱을 다시 띄우지 않는 재대조(저장된 L3 결과를 다시 씀)도 같다
+        upload(check("a"), item("core", "CVE-2026-103119", "CRITICAL", "UNREACHABLE", "RULE", null, evidence),
+                item("ws", "CVE-2026-76183", "CRITICAL", "UNREACHABLE", "RULE", null, evidence));
+        assertThat(jdbc.queryForList("SELECT f.component_name || ':' || v.status FROM reach_findings f "
+                + "JOIN reach_verdicts v ON v.finding_id = f.finding_id AND v.is_current ORDER BY 1", String.class))
+                .containsExactly("core:UNREACHABLE", "ws:UNKNOWN");
+    }
+
+    @Test
     void anL3RaiseResetsAReviewOnceAndARescanWithoutTheAppKeepsIt() {
         var evidence = List.of(map("kind", "NOTE", "summary", "no path"));
         var a = item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence);

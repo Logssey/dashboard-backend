@@ -943,6 +943,7 @@ def review_md(b, findings):
             "- [ ] 모든 요청에서 실행되는 공용 메서드가 sink에 들어가지 않았는가(들어가면 항상 '도달 가능')",
             "- [ ] 취약 구간이 취약한 줄만 잡는가(구간이 넓으면 실행됐다는 근거가 약해진다)",
             "- [ ] 호출 방식이 맞는가. 프레임워크가 실행하는 코드면 `rules.json` 규칙을 쓴다",
+            "- [ ] 규칙에 L3 한도 `l3`(region·function·why_ko)를 썼는가: 조건을 갖추지 않은 앱에서도 이 구간·함수가 실행되면 none(없으면 서버가 뜨지 않는다)",
             "- [ ] 요약(한국어)이 권고문과 맞는가", ""]
     return "\n".join(out)
 
@@ -1013,7 +1014,8 @@ def apply(a):
     write_json(records / f"{entry['cve']}.json", record)
     log(f"{entry['cve']} -> {spec_path} ({len(spec['cves'])} CVEs), record {records / (entry['cve'] + '.json')}")
     if entry["invocation_kind"] in NEEDS_RULE and not (rules and entry["cve"] in (rules.get("verdicts") or {})):
-        log(f"NEXT: write the rule for {entry['cve']} in rules.json (invocation_kind={entry['invocation_kind']}); "
+        log(f"NEXT: write the rule for {entry['cve']} in rules.json (invocation_kind={entry['invocation_kind']}), "
+            "with its L3 limits \"l3\" (region, function, why_ko; the server does not start without them); "
             "ReachRuleServiceTest lists the facts of rules.json")
     log("NEXT: ./gradlew :reach-analyzer:fixtureTest :reach-analyzer:verdictTest and :test --tests "
         "'com.logssey.reach.rule.*'; then run the analyzer on the service jar and read the verdict")

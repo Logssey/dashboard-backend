@@ -107,9 +107,30 @@ final class ReachL3Input {
         return new Record(bytes);
     }
 
-    /** 이 Finding의 L3 결과. CVE와 패키지 좌표(group:artifact)로 잇는다. 같은 좌표의 여러 버전은 같은 결과를 받는다 */
-    Optional<Result> result(String vulnerabilityId, String purl) {
-        return Optional.ofNullable(results.get(key(vulnerabilityId, coordinates(purl))));
+    /**
+     * 이 Finding의 L3 결과. CVE와 패키지 좌표(group:artifact)로 잇는다. 같은 좌표의 여러 버전은 같은 결과를 받는다.
+     * 좌표가 다르면 묶음이 판정을 준 행(judged, 러너 bundle.py same_group: 스캐너가 CVE를 판정 데이터 좌표와 groupId·버전이 같은
+     * 다른 jar에 붙인 경우, Tomcat WebSocket CVE를 tomcat-embed-core에)에만 같은 CVE·같은 groupId의 결과 하나를 쓴다.
+     * 잇는 기준(버전 포함)은 bundle.py 한 곳에서 정하고 여기서는 다시 보지 않는다. 판정하지 않은 사본에는 붙이지 않는다
+     */
+    Optional<Result> result(String vulnerabilityId, String purl, boolean judged) {
+        String coordinates = coordinates(purl);
+        Result exact = results.get(key(vulnerabilityId, coordinates));
+        if (exact != null || !judged || purl == null || !purl.startsWith("pkg:maven/")) return Optional.ofNullable(exact);
+        String group = group(coordinates);
+        if (group.isEmpty()) return Optional.empty();
+        String prefix = key(vulnerabilityId, "");
+        var sameGroup = results.entrySet().stream()
+                .filter(e -> e.getKey().startsWith(prefix) && group.equals(group(e.getKey().substring(prefix.length()))))
+                .map(Map.Entry::getValue)
+                .toList();
+        return sameGroup.size() == 1 ? Optional.of(sameGroup.get(0)) : Optional.empty();
+    }
+
+    /** org.apache.tomcat.embed:tomcat-embed-core → org.apache.tomcat.embed. groupId가 없으면 빈 문자열 */
+    static String group(String coordinates) {
+        int at = coordinates.lastIndexOf(':');
+        return at <= 0 ? "" : coordinates.substring(0, at);
     }
 
     private static ReachL3Input failed(String error) {

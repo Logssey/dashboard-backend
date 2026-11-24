@@ -1,6 +1,6 @@
 {
   "schema": "reach-rules/v0",
-  "note": "facts: what the tool looks for in first-party (app) classes. verdicts: how verdict.py combines facts. A condition is a list of fact ids that must all hold; '!id' means the fact must be absent. Order: reachable_if -> unreachable_if -> unknown_if -> otherwise. Pseudo facts from the call graph: sink (a vulnerable method is reachable through ordinary call edges), sink_weak (reachable only through Object.equals/hashCode/toString dispatch or JDK callbacks), sinks_missing (none of the vulnerable methods exist in the analysed jars), package (any method of the vulnerable library is reachable). Optional per-verdict 'info': fact ids shown in the report for reference only; they never decide the verdict.",
+  "note": "facts: what the tool looks for in first-party (app) classes. verdicts: how verdict.py combines facts. A condition is a list of fact ids that must all hold; '!id' means the fact must be absent. Order: reachable_if -> unreachable_if -> unknown_if -> otherwise. Pseudo facts from the call graph: sink (a vulnerable method is reachable through ordinary call edges), sink_weak (reachable only through Object.equals/hashCode/toString dispatch or JDK callbacks), sinks_missing (none of the vulnerable methods exist in the analysed jars), package (any method of the vulnerable library is reachable). Optional per-verdict 'info': fact ids shown in the report for reference only; they never decide the verdict. Per-verdict 'l3' (required when method is rule): how far an L3 run of the app may raise the verdict, a property of the CVE and its rule, not of the app. region (a vulnerable region of vuln-functions.json ran): reachable (the run shows the rule's condition) | unknown (it shows the feature is in use, not the vulnerable condition: unreachable becomes unknown) | none (the code also runs in apps without the feature: no raise). function (only a vulnerable method ran and the regions could not be checked, e.g. another library version): unknown | none. Callgraph verdicts and CVEs without a rule use region reachable, function unknown.",
   "dto_roots": {
     "param_annotations": [
       "Lorg/springframework/web/bind/annotation/RequestBody;",
@@ -877,6 +877,11 @@
       "why_ko": {
         "unreachable": "앱이 Tomcat 컨테이너 보안 제약을 추가하지 않는다. Spring Boot 내장 Tomcat은 제약을 만들지 않으므로(Spring Boot 4.0.8·4.1.1 소스 확인), 요청마다 RealmBase.findSecurityConstraints가 호출돼도 제약 목록이 비어 있어 취약한 prefix 비교 구간에 들어가지 않는다.",
         "unknown": "앱이 컨테이너 보안 제약을 직접 추가한다. 한 컬렉션 안에서 긴 '/x/*' 패턴이 짧은 패턴보다 먼저 오는지 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 쓰지 않는다는 근거는 Spring Boot 4.0.8·4.1.1 소스로만 확인했으므로, 다른 버전(Spring Boot 2·3, Spring Boot 없이 Tomcat을 쓰는 앱)은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "unknown",
+        "function": "none",
+        "why_ko": "구간 RealmBase 639행('/x/*' 패턴 비교)은 컨테이너 보안 제약이 있을 때만 돌지만 긴 패턴이 짧은 패턴보다 먼저 오는지는 보여 주지 않고, sink findSecurityConstraints는 제약이 없어도 모든 요청에서 불리므로(바로 돌아감), 규칙 조건(컨테이너 보안 제약 추가)에 대해 구간은 '확인 못 함'까지만, 함수는 올리지 않는다."
       }
     },
     "CVE-2026-65905": {
@@ -908,6 +913,11 @@
         "reachable": "앱이 Tomcat DigestAuthenticator를 설치한다. 재전송 창 계산 버그가 있는 코드가 실제 인증에 쓰인다.",
         "unreachable": "Tomcat DigestAuthenticator를 만드는 코드가 없다. Spring Boot 내장 Tomcat은 기본으로 NonLoginAuthenticator만 넣고, web.xml을 읽지 않는다(ContextConfig 없음). Spring Security의 Digest 필터는 별도 구현이라 이 CVE와 무관하다.",
         "unknown": "web.xml에 DIGEST 인증이 있다. Spring Boot 내장 Tomcat은 web.xml을 읽지 않지만, 외부 Tomcat에 WAR로 배포하는지 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 쓰지 않는다는 근거는 Spring Boot 4.0.8·4.1.1 소스로만 확인했으므로, 다른 버전(Spring Boot 2·3, Spring Boot 없이 Tomcat을 쓰는 앱)은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "reachable",
+        "function": "unknown",
+        "why_ko": "구간 NonceInfo.nonceCountValid 806-808행(재전송 창 갱신)은 Tomcat DigestAuthenticator가 nonce count를 실제로 받아들일 때만 돌아 규칙의 도달 가능 조건(DigestAuthenticator 설치)과 같고, sink nonceCountValid·doAuthenticate도 DIGEST 인증에서만 돈다."
       }
     },
     "CVE-2026-68525": {
@@ -955,6 +965,11 @@
         "reachable": "앱이 Tomcat FormAuthenticator와 HTTP 메서드별 보안 제약을 함께 쓴다. 로그인 후 복원된 POST가 GET 기준 제약으로 검사된다.",
         "unreachable": "Tomcat FormAuthenticator를 쓰지 않는다. 기본 NonLoginAuthenticator는 요청 메서드를 바꾸지 않으므로 취약한 복원 경로가 없다. Spring Security의 formLogin은 별도 구현이라 이 CVE와 무관하다.",
         "unknown": "FormAuthenticator를 쓰지만 메서드별 제약 여부가 불분명하다. GET보다 POST를 더 엄격하게 막는 제약이 있는지 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 쓰지 않는다는 근거는 Spring Boot 4.0.8·4.1.1 소스로만 확인했으므로, 다른 버전(Spring Boot 2·3, Spring Boot 없이 Tomcat을 쓰는 앱)은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "unknown",
+        "function": "unknown",
+        "why_ko": "구간 FormAuthenticator.restoreRequest 641행(저장된 메서드 복원)은 FORM 로그인 뒤 요청을 복원할 때만 돌지만 메서드별 보안 제약이 있는지는 보여 주지 않고, sink restoreRequest·doAuthenticate도 FormAuthenticator를 쓸 때만 돌아, 규칙 조건(FormAuthenticator + 메서드별 제약)의 절반만 보인다."
       }
     },
     "CVE-2025-14813": {
@@ -1075,7 +1090,12 @@
       },
       "info": [
         "dto.floating.any"
-      ]
+      ],
+      "l3": {
+        "region": "reachable",
+        "function": "unknown",
+        "why_ko": "구간 NumberInput.looksLikeValidNumber 626-627행(정규식)은 문자열 값을 실수형(또는 JsonNode 숫자 변환)으로 바꿀 때만 돌아 규칙이 보는 '실수형 값이 문자열로 와서 취약 정규식을 거침'과 같고, sink(_parseFloat·_parseDouble·BigDecimal/Number 역직렬화기·StringNode)는 실수형 필드를 역직렬화하는 앱에서만 돈다."
+      }
     },
     "CVE-2026-89425": {
       "method": "callgraph",
@@ -1133,6 +1153,11 @@
         "reachable": "외부 입력을 역직렬화하는 타입에 javax.xml.datatype Duration/XMLGregorianCalendar 필드가 있다.",
         "unreachable": "앱 코드 어디에서도 javax.xml.datatype Duration/XMLGregorianCalendar를 쓰지 않는다. 이 역직렬화기는 그 타입을 읽을 때만 실행된다.",
         "unknown": "해당 타입을 쓰지만 외부 입력 경로와 연결되는지 확정하지 못했다."
+      },
+      "l3": {
+        "region": "reachable",
+        "function": "unknown",
+        "why_ko": "구간 CoreXMLDeserializers$Std._deserialize 137·141행은 Duration·XMLGregorianCalendar를 문자열에서 만들 때만 돌아 규칙의 도달 가능 조건(dto.xmlDatatype)과 같고, sink deserialize·_deserialize는 javax.xml 타입(QName 포함)을 역직렬화할 때만 돈다. 141행('Date d;')은 바이트코드가 없어 XMLGregorianCalendar 쪽은 구간으로 잡히지 않는다(구간 줄 보정은 판정 데이터의 할 일)."
       }
     },
     "CVE-2026-91776": {
@@ -1175,6 +1200,11 @@
         "reachable": "외부 입력 타입에 defaultImpl이 있는 @JsonTypeInfo가 있다. 알 수 없는 type id가 기본 구현으로 대체되며 캐시에 계속 쌓인다.",
         "unreachable": "다형성 타입 처리(@JsonTypeInfo, default typing, 문제 처리기)를 쓰지 않는다. 기본 설정에서는 알 수 없는 type id가 예외로 끝나 캐시에 쌓이지 않는다.",
         "unknown": "다형성 타입 처리를 쓰지만 대체(fallback) 동작 여부를 정적으로 확정하지 못했다."
+      },
+      "l3": {
+        "region": "unknown",
+        "function": "unknown",
+        "why_ko": "구간 166·198행과 sink(_findDeserializer, AsPropertyTypeDeserializer._deserializeTypedForId)는 @JsonTypeInfo나 default typing(앱 코드 또는 GenericJackson2JsonRedisSerializer 같은 라이브러리 내부)이 있을 때만 돌아 규칙이 보는 기능(다형성 타입 처리) 사용을 보여 준다. 그러나 198행은 알려진 정상 type id를 처음 풀 때마다 돌고, 취약 조건인 알 수 없는 id 대체(defaultImpl, 157행)는 구간에 없어 취약 조건까지는 보여 주지 않는다."
       }
     },
     "CVE-2026-91777": {
@@ -1205,6 +1235,11 @@
         "reachable": "외부 입력 타입의 컬렉션·맵 원소에 @JsonIdentityInfo가 있다. 전방 참조가 많으면 제곱 시간이 걸린다.",
         "unreachable": "@JsonIdentityInfo를 쓰지 않는다. 취약한 경로는 object id가 켜진 컬렉션·맵에서만 실행된다.",
         "unknown": "@JsonIdentityInfo를 쓰지만 외부 입력 컬렉션과 연결되는지 확정하지 못했다."
+      },
+      "l3": {
+        "region": "reachable",
+        "function": "none",
+        "why_ko": "구간 resolveForwardReference 647-656·969-978행(전방 참조 선형 탐색)은 @JsonIdentityInfo가 붙은 컬렉션·맵 원소의 전방 참조를 풀 때만 돌아 규칙의 도달 가능 조건(dto.identityCollection)과 같지만, sink 중 MapDeserializer._readAndBind는 @JsonIdentityInfo 없이도 문자열이 아닌 키의 모든 Map 역직렬화에서 돌아 함수 근거로는 올리지 않는다."
       }
     },
     "CVE-2026-13506": {
@@ -1296,6 +1331,11 @@
         "reachable": "외부 입력을 역직렬화하는 타입에 java.nio.file.Path 필드가 있다. 입력 URI의 스킴이 제한되지 않는다.",
         "unreachable": "역직렬화될 수 있는 타입에 java.nio.file.Path 필드가 없고, 다형성 타입 지정도 없다. Path 역직렬화기는 그 타입을 읽을 때만 실행된다.",
         "unknown": "Path 필드를 가진 타입이 class 리터럴·TypeReference 등으로 지정되거나 다형성 타입 지정이 있지만, 외부 입력으로 역직렬화되는지 정적으로 확정하지 못했다."
+      },
+      "l3": {
+        "region": "reachable",
+        "function": "unknown",
+        "why_ko": "구간 NioPathHelper.deserialize 375-396행은 ':'가 든 URI 형식 문자열을 Path로 만들 때만 돌아 규칙의 도달 가능 조건(입력 타입의 Path 필드, 스킴 제한 없음)과 같고, sink NioPathHelper.deserialize는 Path를 역직렬화할 때만 돈다."
       }
     },
     "CVE-2026-83557": {
@@ -1327,6 +1367,11 @@
         "reachable": "@JsonTypeInfo를 쓰고, 외부 입력 타입에 Comparable 타입 필드가 있다. 기본 검증기가 Comparable을 막지 않아 거의 모든 클래스를 만들 수 있다.",
         "unreachable": "@JsonTypeInfo를 쓰지 않는다. 이 결함은 @JsonTypeInfo의 기본 검증기에만 있고, 전역 default typing은 명시적 검증기가 필요해서 해당하지 않는다.",
         "unknown": "@JsonTypeInfo를 쓰지만 기반 타입이 Comparable인지, 커스텀 검증기가 있는지 정적으로 확정하지 못했다. 사람이 확인해야 한다."
+      },
+      "l3": {
+        "region": "none",
+        "function": "unknown",
+        "why_ko": "수정이 거부 목록 데이터만 바꿔 구간이 없고, sink DefaultBaseTypeLimitingValidator.isUnsafeBaseType·isSafeSubType는 기본 검증기로 클래스 이름 기반 @JsonTypeInfo(Id.CLASS·MINIMAL_CLASS)를 처리할 때만 돌아 규칙 조건(@JsonTypeInfo 사용)이 있을 때만 실행된다."
       }
     },
     "CVE-2026-65637": {
@@ -1368,6 +1413,11 @@
         "reachable": "설정에서 HTTP/2를 켰고(server.http2.enabled=true) 내장 Tomcat이 TLS를 직접 받는다(server.ssl.*). HTTP/2 요청의 필수 헤더 검사가 호스트 이름 없는 요청을 거르지 않아, 호스트 이름과 SNI를 맞춰 보는 검사(strictSni, 기본 켜짐)를 건너뛴다.",
         "unreachable": "HTTP/2를 켜는 설정이나 코드가 없다. Spring Boot 내장 Tomcat은 server.http2.enabled가 true일 때만 HTTP/2(Http2Protocol)를 등록하고 기본값은 false다(Spring Boot 4.1.1의 TomcatWebServerFactory와 Http2 바이트코드 확인). HTTP/2 요청을 받지 않으므로 취약한 필수 헤더 검사(Stream.receivedEndOfHeaders)가 실행되지 않는다. 배포할 때 환경 변수(SERVER_HTTP2_ENABLED)로 켜는 경우는 그 값이 레포에 있을 때만 보인다.",
         "unknown": "HTTP/2를 켜는 설정이나 코드가 있다. 취약하려면 Tomcat이 TLS를 직접 끝내야 하고(앞단 프록시·로드밸런서가 TLS를 끝내면 해당 없음) strictSni를 끄지 않았어야 한다. 커넥터의 TLS 설정을 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 HTTP/2를 기본으로 켜지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로, 다른 버전(Spring Boot 2·3, Spring Boot 없이 Tomcat을 쓰는 앱)은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "none",
+        "function": "unknown",
+        "why_ko": "구간이 없고(604행 필수 헤더 검사는 모든 HTTP/2 요청이 평가), sink Stream.receivedEndOfHeaders는 HTTP/2 요청마다 돌아 규칙의 확인 못 함 조건(HTTP/2 켬)만 보여 주며 TLS 직접 종료·호스트 없는 요청 수락은 보여 주지 않는다."
       }
     },
     "CVE-2026-5598": {
@@ -1425,6 +1475,11 @@
       "why_ko": {
         "unreachable": "앱이 Tomcat WebSocket 서버 컨테이너에 JSR-356 엔드포인트(@ServerEndpoint, ServerEndpointExporter, ServerContainer.addEndpoint)를 등록하지 않는다. 등록된 엔드포인트가 없으면 WsFilter가 업그레이드 요청을 엔드포인트와 맞춰 보지 않아(WsFilter 58행) 요청 경로를 템플릿으로 잘못 읽는 WsServerContainer.findMapping이 실행되지 않는다. Spring의 @EnableWebSocket·STOMP는 이 컨테이너에 엔드포인트를 등록하지 않는다.",
         "unknown": "앱이 JSR-356 WebSocket 엔드포인트를 등록한다. 엔드포인트 경로에 템플릿 변수({id} 등)가 있고 그 경로를 Tomcat 컨테이너 보안 제약(web.xml security-constraint, @ServletSecurity, Context.addConstraint)으로 막고 있는지 사람이 확인해야 한다. Spring Security로 막는 것은 이 우회의 대상이 아니다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 켜지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로, 다른 버전(Spring Boot 2·3, Spring Boot 없이 Tomcat을 쓰는 앱)은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "unknown",
+        "function": "unknown",
+        "why_ko": "구간 WsServerContainer.findMapping 290행은 JSR-356 엔드포인트가 등록된 컨테이너에서 정확히 맞는 경로가 없는 업그레이드 요청마다 돌아 템플릿 경로·컨테이너 보안 제약은 보여 주지 않고, sink findMapping도 WsFilter가 엔드포인트 등록 시에만 불러 규칙 조건(JSR-356 엔드포인트 등록)과 같다."
       }
     },
     "CVE-2026-86248": {
@@ -1445,6 +1500,11 @@
       "why_ko": {
         "unreachable": "취약한 코드(OpenSSL FFM 구현 org.apache.tomcat.util.net.openssl.panama.OpenSSLEngine.processOCSP)는 tomcat-embed-core가 아니라 별도 jar(org.apache.tomcat:tomcat-coyote-ffm)에 있고, 앱에 그 jar가 없다. 스캐너는 이 CVE를 제품 이름(Apache Tomcat)으로 tomcat-embed-core에 붙인다.",
         "unknown": "앱에 tomcat-coyote-ffm jar가 있다. 내장 Tomcat이 TLS를 직접 받고 SSL 구현으로 OpenSSL FFM을 쓰며, 클라이언트 인증서 확인과 OCSP를 켜고 soft-fail을 껐는지 사람이 확인해야 한다."
+      },
+      "l3": {
+        "region": "none",
+        "function": "none",
+        "why_ko": "취약 코드가 tomcat-coyote-ffm jar에 있어 구간이 없고, 대표 sink SSLHostConfig.getOcspSoftFail은 FFM jar 없이 JSSE로 OCSP를 켠 앱(SSLUtilBase)에서도 돌아 규칙 조건(tomcat-coyote-ffm jar 존재)을 보여 주지 않는다."
       }
     },
     "CVE-2026-86350": {
@@ -1480,6 +1540,11 @@
       "why_ko": {
         "unreachable": "HTTP/2를 켜는 설정이나 코드가 없다. Spring Boot 내장 Tomcat은 server.http2.enabled가 true일 때만 HTTP/2를 등록하고 기본값은 false다(CVE-2026-65637 규칙에서 Spring Boot 4.1.1 바이트코드로 확인). HTTP/2 요청을 받지 않으므로 헤더를 푸는 HPackHuffman.decode가 실행되지 않는다. 배포할 때 환경 변수(SERVER_HTTP2_ENABLED)로 켜는 경우는 그 값이 레포에 있을 때만 보인다.",
         "unknown": "HTTP/2를 켜는 설정이나 코드가 있다. HTTP/2 헤더에 허용되지 않는 문자가 들어오면 헤더 해석이 중간에 멈춰 다른 요청과 섞일 수 있다(설치 버전이 11.0.22~11.0.25일 때). 앞단 프록시가 HTTP/2를 끝내고 Tomcat에는 HTTP/1.1로 넘기는지 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 켜지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로, 다른 버전(Spring Boot 2·3, Spring Boot 없이 Tomcat을 쓰는 앱)은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "unknown",
+        "function": "unknown",
+        "why_ko": "구간인 HPackHuffman.decode의 throw 줄(433~485행 중 6곳)은 HTTP/2를 받는 앱에 허용되지 않는 문자가 든 허프만 헤더가 들어올 때만 돌아 기능을 쓰고 있다는 신호는 되지만, 이 규칙은 일부러 reachable_if를 비워 두고 앞단 프록시가 HTTP/2를 끝내는지를 사람이 확인하게 하며, 프록시 없이 Tomcat에 바로 보내는 L3 실행은 이를 보여 주지 못하고 헤더가 섞였는지도 보여 주지 않으므로(l3.note) 구간은 UNKNOWN까지만 올리고, sink decode는 HTTP/2를 켠 앱의 허프만 헤더마다 돌아 규칙 조건(HTTP/2 켬)만 보여 주므로 함수 단계도 UNKNOWN까지만 올린다."
       }
     },
     "CVE-2026-101296": {
@@ -1509,6 +1574,11 @@
       "why_ko": {
         "unreachable": "앱이 Tomcat JNDIRealm을 만들거나 설정하지 않는다. Spring Boot 내장 Tomcat은 Realm을 따로 설정하지 않으므로 LDAP으로 비밀번호를 확인하는 JNDIRealm.bindAsUser가 실행되지 않는다. Spring Security의 LDAP 인증은 다른 구현이라 해당 없다.",
         "unknown": "앱이 Tomcat JNDIRealm을 쓴다. 비밀번호를 사용자로 다시 붙어 확인하는 방식(bind 모드)이고 authentication 설정이 GSSAPI가 아닌 SASL 방식(DIGEST-MD5, EXTERNAL 등)인지 사람이 확인해야 한다. 그렇다면 틀린 비밀번호로도 로그인될 수 있다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 켜지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로, 다른 버전(Spring Boot 2·3, Spring Boot 없이 Tomcat을 쓰는 앱)은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "unknown",
+        "function": "unknown",
+        "why_ko": "구간 JNDIRealm.bindAsUser 1981-1982행(GSSAPI만 빼는 검사)은 JNDIRealm bind 모드 인증마다 돌아 GSSAPI가 아닌 SASL 설정은 보여 주지 않고, sink bindAsUser도 JNDIRealm을 쓸 때만 돌아 규칙 조건(JNDIRealm 사용)과 같다."
       }
     },
     "CVE-2026-101356": {
@@ -1544,6 +1614,11 @@
       "why_ko": {
         "unreachable": "HTTP/2를 켜는 설정이나 코드가 없다. Spring Boot 내장 Tomcat은 server.http2.enabled가 true일 때만 HTTP/2를 등록하고 기본값은 false다(CVE-2026-65637 규칙에서 Spring Boot 4.1.1 바이트코드로 확인). 이 문제는 HTTP/2로 받은 비동기 요청에서만 생긴다.",
         "unknown": "HTTP/2를 켜는 설정이나 코드가 있다. 비동기 서블릿(Spring MVC의 DeferredResult·Callable·SseEmitter·StreamingResponseBody 등)을 쓰는지와, 앞단 프록시가 HTTP/2를 끝내고 Tomcat에는 HTTP/1.1로 넘기는지 사람이 확인해야 한다(설치 버전이 11.0.22~11.0.26일 때). 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 켜지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로, 다른 버전(Spring Boot 2·3, Spring Boot 없이 Tomcat을 쓰는 앱)은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "none",
+        "function": "none",
+        "why_ko": "구간 AsyncStateMachine.isAsyncError 220행과 sink isAsyncError는 HTTP/1.1이든 HTTP/2든 모든 비동기 서블릿 요청에서 돌아, 규칙 조건(HTTP/2 켬)이 없는 앱에서도 실행된다."
       }
     },
     "CVE-2026-103119": {
@@ -1570,6 +1645,11 @@
       "why_ko": {
         "unreachable": "앱이 AJP 커넥터를 만들지 않는다. Spring Boot 내장 Tomcat은 AJP를 기본으로 열지 않는다. Tomcat 보안 공지 제목이 'AJP response mix-up'이라 AJP로 받은 요청에서 생기는 문제로 본다(11/23 결정. 권고문 설명과 수정 코드 OutputBuffer.updateBytesWritten에는 AJP가 나오지 않는다).",
         "unknown": "앱이 AJP 커넥터를 만든다. 그 커넥터로 받은 요청에 Content-Length를 정한 응답을 논블로킹 출력(ServletOutputStream.setWriteListener, Tomcat 위의 Spring WebFlux)으로 쓰는지 사람이 확인해야 한다. Spring MVC만 쓰면 블로킹 출력이다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 켜지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로, 다른 버전(Spring Boot 2·3, Spring Boot 없이 Tomcat을 쓰는 앱)은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "none",
+        "function": "none",
+        "why_ko": "구간 OutputBuffer.updateBytesWritten 447-448행과 sink updateBytesWritten은 블로킹 여부와 무관하게 Content-Length가 정해진 모든 응답 쓰기에서 돌아, 규칙 조건(AJP 커넥터)이 없는 일반 앱에서도 실행된다."
       }
     },
     "CVE-2026-65183": {
@@ -1596,6 +1676,11 @@
       "why_ko": {
         "unreachable": "앱이 Unix 도메인 소켓 커넥터를 설정하지 않는다(unixDomainSocketPath 속성 문자열, server.xml 설정 없음). Spring Boot 내장 Tomcat은 TCP 커넥터만 만든다. 소켓을 만든 뒤 권한을 바꾸는 NioEndpoint.initServerSocket의 Unix 도메인 소켓 분기가 실행되지 않는다.",
         "unknown": "앱이 Unix 도메인 소켓 커넥터를 설정한다. 소켓 권한(unixDomainSocketPathPermissions)을 정했고 같은 호스트에 믿지 못할 로컬 사용자가 있는지 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "unknown",
+        "function": "none",
+        "why_ko": "구간 NioEndpoint.initServerSocket 317-321행은 Unix 도메인 소켓 커넥터를 열 때만 돌아(319-321행은 권한 설정 시) 규칙 조건(UDS 커넥터)을 보여 주지만 믿지 못할 로컬 사용자는 보여 주지 않고, sink initServerSocket은 TCP 포트 커넥터 포함 모든 NIO 커넥터 시작 때 돈다."
       }
     },
     "CVE-2026-65927": {
@@ -1625,6 +1710,11 @@
       "why_ko": {
         "unreachable": "앱이 RewriteValve를 만들거나 설정하지 않는다. Spring Boot 내장 Tomcat은 RewriteValve를 붙이지 않으므로 [N] 플래그로 규칙을 처음부터 다시 도는 RewriteValve.invoke 분기가 실행되지 않는다.",
         "unknown": "앱이 RewriteValve를 쓴다. rewrite.config에 [N](next) 플래그 규칙이 있고 첫 규칙이 접근 제한인지 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "unknown",
+        "function": "unknown",
+        "why_ko": "구간 RewriteValve.invoke 555행(i = 0)은 [N] 플래그 규칙이 맞아 다시 돌 때만 실행되지만 건너뛴 첫 규칙이 접근 제한인지는 보여 주지 않고, sink invoke는 RewriteValve가 설정된 앱의 모든 요청에서 돌아 규칙 조건(RewriteValve 사용)과 같다."
       }
     },
     "CVE-2026-66422": {
@@ -1660,6 +1750,11 @@
       "why_ko": {
         "unreachable": "앱이 Tomcat 컨테이너 보안 제약을 추가하지 않는다(web.xml security-constraint, @ServletSecurity, Context.addConstraint 없음). 선언적 제약 확인(RealmBase.hasResourcePermission → hasRole)에서 role 별칭이 잘못 적용되는 문제라, 제약이 없으면 우회할 것이 없다. Spring Security의 권한 확인은 다른 구현이다.",
         "unknown": "앱이 컨테이너 보안 제약을 추가한다. 서블릿에 security-role-ref 별칭이 있고 제약 역할과 이름이 겹치는지 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "unknown",
+        "function": "unknown",
+        "why_ko": "구간 RealmBase.hasRole 907행은 11.0.24에서 Context 아래 서블릿이면 역할 매핑이 없어도(findRoleMapping이 역할 이름을 그대로 돌려줌) 모든 역할 확인(제약 확인과 Request.isUserInRole)에서 실행돼 함수 실행과 같은 근거이고, 별칭이 보안 제약에 적용됐음을 보여 주지 않는다. sink hasRole은 Tomcat 인증 주체가 있을 때만 불려 규칙 조건(컨테이너 보안 제약)에 가까운 컨테이너 보안 사용을 뜻한다."
       }
     },
     "CVE-2026-68569": {
@@ -1689,6 +1784,11 @@
       "why_ko": {
         "unreachable": "앱이 Tomcat DataSourceRealm을 만들거나 설정하지 않는다. Spring Boot 내장 Tomcat은 Realm을 따로 설정하지 않으므로 이름으로 주체를 찾는 DataSourceRealm.getPrincipal이 실행되지 않는다. Spring Security의 JDBC 인증은 다른 구현이다.",
         "unknown": "앱이 Tomcat DataSourceRealm을 쓴다. CLIENT-CERT·SPNEGO처럼 이름만으로 주체를 찾는 인증을 쓰는지 사람이 확인해야 한다. 그렇다면 DB에 사용자가 없거나 연결이 실패해도 로그인될 수 있다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "unknown",
+        "function": "unknown",
+        "why_ko": "구간 DataSourceRealm.getPrincipal 454·457행은 DataSourceRealm으로 이름만으로 주체를 찾을 때 돌지만 DIGEST 경로(비밀번호 확인 뒤)·authenticate(String)에서도 돌아 CLIENT-CERT·SPNEGO와 없는 사용자를 보여 주지 않고, sink getPrincipal·authenticate도 DataSourceRealm을 쓸 때만 돌아 규칙 조건(DataSourceRealm 사용)과 같다."
       }
     },
     "CVE-2026-75973": {
@@ -1718,6 +1818,11 @@
       "why_ko": {
         "unreachable": "앱이 Jakarta Authentication(JASPIC)의 SimpleAuthConfigProvider를 쓰지 않는다. Spring Boot 내장 Tomcat은 JASPIC 공급자를 설정하지 않으므로 첫 웹앱의 인증 설정을 모든 웹앱에 쓰는 캐시가 실행되지 않는다.",
         "unknown": "앱이 SimpleAuthConfigProvider를 쓴다. 이 공급자를 기본으로 두고 웹앱이 여럿인지 사람이 확인해야 한다(Spring Boot 내장 Tomcat은 보통 웹앱이 하나). 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "unknown",
+        "function": "unknown",
+        "why_ko": "구간 SimpleAuthConfigProvider.getServerAuthConfig 73-74행(캐시 읽기)은 이 공급자를 통한 JASPIC 인증마다(웹앱이 하나여도) 돌아 두 번째 웹앱이 첫 설정을 받았음을 보여 주지 않고, sink getServerAuthConfig도 SimpleAuthConfigProvider를 쓸 때만 돌아 규칙 조건과 같다."
       }
     },
     "CVE-2026-73581": {
@@ -1744,6 +1849,11 @@
       "why_ko": {
         "unreachable": "앱이 내장 Tomcat에 인증서 폐기 목록(CRL)을 설정하지 않는다. 키스토어로 준 인증서에 CRL이 적용되지 않는 문제라, CRL이 없으면 무시될 것이 없다. Spring Boot 내장 Tomcat의 TLS는 기본으로 JSSE이고 이 문제는 OpenSSL(tomcat-native·FFM) 구현에서 생긴다.",
         "unknown": "앱이 CRL을 설정한다. 내장 Tomcat이 TLS를 직접 받고 SSL 구현이 OpenSSL(tomcat-native 또는 tomcat-coyote-ffm)이며 인증서를 키스토어로 주는지 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "none",
+        "function": "none",
+        "why_ko": "구간 OpenSSLContext.addCertificate 545-546행(키스토어 분기)과 sink addCertificate는 tomcat-native OpenSSL에서 키스토어 인증서마다 CRL 설정 여부와 무관하게 돌아, 규칙 조건(CRL 설정)이 없는 앱에서도 실행된다."
       }
     },
     "CVE-2026-74048": {
@@ -1773,6 +1883,11 @@
       "why_ko": {
         "unreachable": "앱이 OpenSSLLifecycleListener를 만들거나 설정하지 않는다. Spring Boot 내장 Tomcat은 이 리스너를 붙이지 않으므로 FIPS 모드 활성화 실패를 처리하는 OpenSSLLifecycleListener.lifecycleEvent 분기가 실행되지 않는다.",
         "unknown": "앱이 OpenSSLLifecycleListener를 쓴다. FIPS 모드를 켰고(setFIPSMode) 런타임이 Java 22 이상인지 사람이 확인해야 한다. 그렇다면 FIPS 활성화가 실패해도 FIPS가 아닌 TLS로 시작한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "reachable",
+        "function": "unknown",
+        "why_ko": "구간 OpenSSLLifecycleListener.lifecycleEvent 143-147행은 FIPSMode를 off가 아닌 값으로 정했고 Java 22 이상(그 아래는 126-129행에서 돌아감)에서 FIPS 활성화가 실패해 시작이 계속될 때만 돌아 취약 상태 자체이고, sink lifecycleEvent는 리스너를 등록한 앱에서만 돌아 규칙 조건(OpenSSLLifecycleListener 사용)과 같다."
       }
     },
     "CVE-2026-68763": {
@@ -1808,6 +1923,11 @@
       "why_ko": {
         "unreachable": "HTTP/2를 켜는 설정이나 코드가 없다. Spring Boot 내장 Tomcat은 server.http2.enabled가 true일 때만 HTTP/2를 등록하고 기본값은 false다(CVE-2026-65637 규칙에서 Spring Boot 4.1.1 바이트코드로 확인). HTTP/2 요청을 받지 않으므로 흐름 제어 대기열을 관리하는 Http2UpgradeHandler.reserveWindowSize·allocate가 실행되지 않는다. 배포할 때 환경 변수(SERVER_HTTP2_ENABLED)로 켜는 경우는 그 값이 레포에 있을 때만 보인다.",
         "unknown": "HTTP/2를 켜는 설정이나 코드가 있다. 대기열에 들어간 스트림을 리셋해 연결 창을 줄이는 DoS가 가능하다. 앞단 프록시가 HTTP/2를 끝내고 Tomcat에는 HTTP/1.1로 넘기는지 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "unknown",
+        "function": "unknown",
+        "why_ko": "구간 Http2UpgradeHandler.reserveWindowSize 1088-1090·1098-1103행(연결 창 소진 시 대기열 진입)은 HTTP/2에서만 돌지만 느린 클라이언트의 큰 응답에서도 돌아 대기 스트림 리셋을 보여 주지 않고, sink reserveWindowSize·replaceStream·allocate도 HTTP/2에서만 돌아 규칙 조건(HTTP/2 켬)과 같다."
       }
     },
     "CVE-2026-77762": {
@@ -1843,6 +1963,11 @@
       "why_ko": {
         "unreachable": "HTTP/2를 켜는 설정이나 코드가 없다. Spring Boot 내장 Tomcat은 server.http2.enabled가 true일 때만 HTTP/2를 등록하고 기본값은 false다(CVE-2026-65637 규칙에서 Spring Boot 4.1.1 바이트코드로 확인). HTTP/2 요청을 받지 않으므로 끝난 스트림의 HPACK 헤더 처리(Http2UpgradeHandler.replaceStream, HpackDecoder.emitHeader)가 실행되지 않는다. 배포할 때 환경 변수(SERVER_HTTP2_ENABLED)로 켜는 경우는 그 값이 레포에 있을 때만 보인다.",
         "unknown": "HTTP/2를 켜는 설정이나 코드가 있다. 끝난 스트림으로 보낸 트레일러가 재사용된 다른 요청에 들어갈 수 있다. 앞단 프록시가 HTTP/2를 끝내고 Tomcat에는 HTTP/1.1로 넘기는지 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "unknown",
+        "function": "unknown",
+        "why_ko": "구간 Stream.emitHeader 508행(트레일러 추가)은 HTTP/2 요청 트레일러마다(정상 트레일러 포함) 돌아 재사용된 요청에 들어갔음을 보여 주지 않고, sink replaceStream·HpackDecoder.emitHeader도 HTTP/2 스트림·헤더마다 돌아 규칙 조건(HTTP/2 켬)과 같다."
       }
     },
     "CVE-2026-78437": {
@@ -1878,6 +2003,11 @@
       "why_ko": {
         "unreachable": "HTTP/2를 켜는 설정이나 코드가 없다. Spring Boot 내장 Tomcat은 server.http2.enabled가 true일 때만 HTTP/2를 등록하고 기본값은 false다(CVE-2026-65637 규칙에서 Spring Boot 4.1.1 바이트코드로 확인). HTTP/2 요청을 받지 않으므로 HTTP/2 요청 검사(StreamProcessor.validateRequest)가 실행되지 않는다. 배포할 때 환경 변수(SERVER_HTTP2_ENABLED)로 켜는 경우는 그 값이 레포에 있을 때만 보인다.",
         "unknown": "HTTP/2를 켜는 설정이나 코드가 있다. 잘못된 :authority·host 헤더의 표시가 남아 다른 요청이 400으로 실패할 수 있다(영향 버전 11.0.19~11.0.25). 앞단 프록시가 HTTP/2를 끝내고 Tomcat에는 HTTP/1.1로 넘기는지 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "unknown",
+        "function": "unknown",
+        "why_ko": "구간 Stream.parseAuthority 535행·compareAuthority 563행은 HTTP/2에서 잘못된 :authority·host가 올 때만 돌지만 표시를 남기는 정상 동작이라 스트림이 validateRequest 전에 끝나 표시가 남았음은 보여 주지 않고, sink validateRequest·process는 HTTP/2 요청마다 돌아 규칙 조건(HTTP/2 켬)과 같다."
       }
     },
     "CVE-2026-88041": {
@@ -1913,6 +2043,11 @@
       "why_ko": {
         "unreachable": "HTTP/2를 켜는 설정이나 코드가 없다. Spring Boot 내장 Tomcat은 server.http2.enabled가 true일 때만 HTTP/2를 등록하고 기본값은 false다(CVE-2026-65637 규칙에서 Spring Boot 4.1.1 바이트코드로 확인). HTTP/2 요청을 받지 않으므로 HTTP/2 헤더 처리(HpackDecoder.emitHeader, Http2UpgradeHandler.headersStart)가 실행되지 않는다. 배포할 때 환경 변수(SERVER_HTTP2_ENABLED)로 켜는 경우는 그 값이 레포에 있을 때만 보인다.",
         "unknown": "HTTP/2를 켜는 설정이나 코드가 있다. 스트림 교체와 헤더 해석이 겹치면 앞 요청의 트레일러가 다음 요청에 들어갈 수 있다. 앞단 프록시가 HTTP/2를 끝내고 Tomcat에는 HTTP/1.1로 넘기는지 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "unknown",
+        "function": "unknown",
+        "why_ko": "구간 Stream.emitHeader 508행은 HTTP/2 요청 트레일러마다(정상 포함) 돌아 스트림 교체와 헤더 해석의 경쟁을 보여 주지 않고, sink HpackDecoder.emitHeader·headersStart·replaceStream도 HTTP/2 헤더·스트림마다 돌아 규칙 조건(HTTP/2 켬)과 같다."
       }
     },
     "CVE-2026-77756": {
@@ -1922,6 +2057,11 @@
       "otherwise": "unknown",
       "why_ko": {
         "unknown": "Tomcat 기본 HTTP/1.1 커넥터는 HTTP/1.0 요청도 받으므로 앱 코드·설정으로 가를 수 없다. 앞단 리버스 프록시가 HTTP/1.0 + Transfer-Encoding 요청을 그대로 넘기는지(프록시가 본문 길이를 다르게 해석하는지) 사람이 확인해야 한다."
+      },
+      "l3": {
+        "region": "none",
+        "function": "none",
+        "why_ko": "구간 Http11Processor.prepareInputFilters 827-831행은 일반 HTTP/1.1 chunked 업로드를 포함해 Transfer-Encoding이 있는 모든 HTTP/1.x 요청에서, sink prepareInputFilters는 모든 HTTP/1.x 요청에서 돌아, 규칙 조건(앞단 프록시가 HTTP/1.0 + Transfer-Encoding을 넘김, 규칙은 항상 확인 못 함)을 보여 주지 않는다."
       }
     },
     "CVE-2026-78383": {
@@ -1948,6 +2088,11 @@
       "why_ko": {
         "unreachable": "앱이 AJP 커넥터를 만들지 않는다. Spring Boot 내장 Tomcat은 AJP를 기본으로 열지 않으므로 AJP 요청의 본문을 기다리는 AjpProcessor.finishResponse가 실행되지 않는다.",
         "unknown": "앱이 AJP 커넥터를 만든다. AJP 포트에 믿지 못할 클라이언트가 닿는지 사람이 확인해야 한다. 본문을 보낸다고 알리고 보내지 않으면 처리 스레드가 묶인다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "unknown",
+        "function": "unknown",
+        "why_ko": "구간 AjpProcessor.finishResponse 1019행(읽지 않은 본문 블로킹 읽기)은 AJP 요청에서만 돌지만 앱이 본문을 안 읽은 정상 요청에서도 돌아 본문을 보내지 않는 클라이언트를 보여 주지 않고, sink finishResponse는 AJP 요청마다 돌아 규칙 조건(AJP 커넥터)과 같다."
       }
     },
     "CVE-2026-73180": {
@@ -1983,6 +2128,11 @@
       "why_ko": {
         "unreachable": "앱에 WebSocket 서버 코드가 없다(JSR-356 @ServerEndpoint·ServerEndpointExporter·addEndpoint, Spring @EnableWebSocket·@EnableWebSocketMessageBroker·WebSocketConfigurer). Spring WebSocket도 Tomcat에서는 ServerContainer.upgradeHttpToWebSocket으로 Tomcat의 WebSocket 처리(WsSession 등)를 쓰지만, 업그레이드할 엔드포인트가 없으면 인증된 WebSocket 세션 등록(WsServerContainer.registerAuthenticatedSession)가 실행되지 않는다.",
         "unknown": "앱에 WebSocket 서버 코드가 있다. HTTP 세션 인증(서블릿 세션 로그인)을 쓰고 핸드셰이크 뒤 세션 ID가 바뀌는지(로그인 뒤 세션 고정 방지 등) 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "unknown",
+        "function": "unknown",
+        "why_ko": "구간 WsServerContainer.registerAuthenticatedSession 370행은 HTTP 세션과 인증 주체가 있는 WebSocket 핸드셰이크마다 돌아 이후 세션 ID 변경을 보여 주지 않고, sink registerAuthenticatedSession도 WebSocket 서버(JSR-356·Spring WebSocket)에서만 돌아 규칙 조건(WebSocket 서버 코드)과 같다."
       }
     },
     "CVE-2026-77791": {
@@ -2018,6 +2168,11 @@
       "why_ko": {
         "unreachable": "앱에 WebSocket 서버 코드가 없다(JSR-356 @ServerEndpoint·ServerEndpointExporter·addEndpoint, Spring @EnableWebSocket·@EnableWebSocketMessageBroker·WebSocketConfigurer). Spring WebSocket도 Tomcat에서는 ServerContainer.upgradeHttpToWebSocket으로 Tomcat의 WebSocket 처리(WsSession 등)를 쓰지만, 업그레이드할 엔드포인트가 없으면 close를 보낼 때의 대기(WsRemoteEndpointImplServer.acquireMessagePartInProgressSemaphore)가 실행되지 않는다.",
         "unknown": "앱에 WebSocket 서버 코드가 있다. 메시지를 보내는 중에 클라이언트가 close를 보내 CPU를 쓰게 할 수 있는지 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "reachable",
+        "function": "unknown",
+        "why_ko": "11.0.24 소스에서 138행 Thread.yield()는 close 메시지를 보내는 스레드가 소켓 잠금을 쥐고(120행) 다른 메시지 조각이 전송 중이라 tryAcquire가 실패할 때(126행)만 도는 바쁜 대기 루프 안이라, 실행됐다면 규칙이 사람에게 확인을 맡긴 조건(메시지를 보내는 중에 close가 겹침)에서 취약한 루프가 실제로 돈 것이다. 돈 시간은 피해 크기의 문제라 구간은 reachable이다. sink acquireMessagePartInProgressSemaphore는 서버가 보내는 모든 WebSocket 메시지에서 실행되지만 WebSocket 서버 코드가 있는 앱에서만 생기므로 함수는 unknown이다."
       }
     },
     "CVE-2026-87022": {
@@ -2053,6 +2208,11 @@
       "why_ko": {
         "unreachable": "앱에 WebSocket 서버 코드가 없다(JSR-356 @ServerEndpoint·ServerEndpointExporter·addEndpoint, Spring @EnableWebSocket·@EnableWebSocketMessageBroker·WebSocketConfigurer). Spring WebSocket도 Tomcat에서는 ServerContainer.upgradeHttpToWebSocket으로 Tomcat의 WebSocket 처리(WsSession 등)를 쓰지만, 업그레이드할 엔드포인트가 없으면 permessage-deflate 압축 해제(PerMessageDeflate.getMoreData)가 실행되지 않는다.",
         "unknown": "앱에 WebSocket 서버 코드가 있다. 클라이언트가 permessage-deflate를 요청하면 Tomcat이 협상하므로, 압축 메시지를 받는 엔드포인트가 메시지 경계를 믿는지 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "unknown",
+        "function": "unknown",
+        "why_ko": "구간 PerMessageDeflate.getMoreData 270행은 permessage-deflate로 압축된 메시지가 정상적으로 끝날 때마다 돌아 메시지 중간의 BFINAL 블록을 보여 주지 않고, sink getMoreData·endFrame은 압축을 협상한 WebSocket 연결에서만 돌아 규칙 조건(WebSocket 서버 코드)과 같다."
       }
     },
     "CVE-2026-79677": {
@@ -2071,6 +2231,11 @@
       "why_ko": {
         "unreachable": "앱이 WebSocket 비동기 전송(Session.getAsyncRemote)과 전송 시간 제한(setAsyncSendTimeout 등)을 함께 쓰지 않는다. 시간 제한을 등록하는 WsWriteTimeout.register는 비동기 전송에 시간 제한이 있을 때만 실행된다(기본 -1). Spring WebSocket은 블로킹 전송(getBasicRemote)만 쓴다.",
         "unknown": "앱이 WebSocket 비동기 전송과 시간 제한을 쓴다. 느린 클라이언트로 쓰기 시간 제한이 사라져 연결이 쌓이는지 사람이 확인해야 한다. 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "unknown",
+        "function": "unknown",
+        "why_ko": "구간 WsWriteTimeout.register 95행은 시간 제한이 양수인 비동기 전송마다 돌아 규칙 조건(getAsyncRemote + 전송 시간 제한)과 정확히 같지만 시간 제한이 사라졌음은 보여 주지 않고, sink register·backgroundProcess도 그 조건(기본값 -1이면 안 불림)에서만 돈다."
       }
     },
     "CVE-2026-93446": {
@@ -2100,6 +2265,11 @@
       "why_ko": {
         "unreachable": "내장 Tomcat이 TLS를 직접 받지 않는다(server.ssl 설정, setSsl 호출, SSLHostConfig 생성 없음). Spring Boot는 Ssl이 켜져 있을 때만 커넥터에 TLS를 붙이므로 TLS 1.3 핸드셰이크 표시를 다루는 SecureNioChannel이 실행되지 않는다.",
         "unknown": "내장 Tomcat이 TLS를 받을 수 있다(server.ssl.enabled=false여도 이 사실은 맞는다). TLS 1.3을 쓰고 NIO 커넥터인지 사람이 확인해야 한다. 간헐적으로 TLS 연결이 실패할 수 있다(가용성). 또는 Spring Boot 4가 아니다. 내장 Tomcat이 이 기능을 기본으로 쓰지 않는다는 근거는 Spring Boot 4.1.1로만 확인했으므로 다른 버전은 도달 불가로 두지 않는다."
+      },
+      "l3": {
+        "region": "unknown",
+        "function": "unknown",
+        "why_ko": "구간 SecureNioChannel.reset 114행·write 911행은 NIO 커넥터의 일반 TLS 트래픽에서 돌아 Tomcat이 TLS를 직접 받는다는 것만 보여 주고 플래그가 남아 연결이 실패했음은 보여 주지 않으며, sink reset·write도 TLS를 켠 NIO 커넥터에서만 돌아 규칙 조건(server.ssl·SSLHostConfig)과 같다."
       }
     }
   }

@@ -1461,7 +1461,7 @@
             ]
           }
         ],
-        "note": "Line 907 (role = realRole) runs only when the servlet or context has an alias for the checked role. It runs for both callers (declarative constraint check and Request.isUserInRole), so its execution does not show the alias was applied to a security constraint."
+        "note": "Line 907 (role = realRole) runs for every role check of a servlet under a Context, also without a role mapping (StandardContext.findRoleMapping returns the role name itself), for both callers (declarative constraint check and Request.isUserInRole). Its execution shows no more than the method ran, not that an alias was applied to a security constraint."
       }
     },
     {

@@ -11,7 +11,7 @@
 | `src/main/java/com/logssey/reach/analyzer/` | 분석기 (Java 21, ASM). bootJar의 바이트코드로 호출 그래프를 만들고 사실을 모은다 |
 | `verdict/verdict.py` | 분석 결과 + 규칙 (+ Trivy 보고서, 레포 설정 파일) → CVE별 판정 |
 | `verdict/bundle.py` | SBOM + 스캐너 결과(Trivy, Grype) + 분석 결과 + 판정 → API-13 결과 묶음(gzip) |
-| `verdict/l3.py` | L3: JaCoCo XML(앱을 띄워 시나리오를 돌린 실행 기록) + 취약 구간(`vuln-functions.json`의 `l3`) + L2 호출 경로 → CVE별로 실제 실행이 어디까지 갔는지(구간·함수), 어느 요청에서인지. L2 판정을 바꾸지 않는 근거 |
+| `verdict/l3.py` | L3: JaCoCo XML(앱을 띄워 시나리오를 돌린 실행 기록) + 취약 구간(`vuln-functions.json`의 `l3`) + L2 호출 경로 → CVE별로 실제 실행이 어디까지 갔는지(구간·함수), 어느 요청에서인지. 이 스크립트는 판정을 바꾸지 않고, 결과를 받은 서버가 규칙의 `l3` 한도 안에서 판정을 올린다(아래 "판정 올리기") |
 | `verdict/l3_runner.py` | L3 러너 도우미: 서비스 저장소의 시나리오(JSON) 검사·실행, 요청 단계마다 실행 기록 끊기, 리포트용 클래스 파일 준비, 에이전트 기록 범위. `deploy/reach/ci/l3-run.sh`·`reach-scan.sh`가 부른다 |
 | `../src/main/resources/reach/` | 판정 데이터. `vuln-functions.json`(CVE 16개의 취약 함수 49개), `rules.json`(사실·CVE별 규칙). 대시보드 API-09·10도 같은 파일을 쓴다 |
 | `vulndata/` | 새 CVE의 판정 데이터 만들기: `vulndata.py`(자료 모으기·초안 검사·반영), `PROMPT.md`(AI에게 주는 지시문). 아래 "판정 데이터 만들기" |
@@ -72,7 +72,8 @@ curl -X PUT -H 'Content-Type: application/json' -H 'Content-Encoding: gzip' \
 ```
 
 - 판정한 CVE·패키지는 `verdicts.json`의 판정과 근거를 API 모양(명세 3-4, 3-5)으로 옮긴다. 사실 → 메모 → 적용 규칙 → 호출 경로 순서다. 호출 그래프가 취약 함수에 닿으면 규칙으로 판정했어도 후보 경로와 그 이유(메모)를 남긴다.
-- 판정하지 않은 매칭은 `NOT_ANALYZED`와 사유: OS 패키지(`OS_PACKAGE`), maven이 아닌 생태계(`UNSUPPORTED_ECOSYSTEM`), 판정한 CVE의 다른 패키지 사본(`UNANALYZED_COPY`), 취약 함수 데이터 없음(`NO_VULN_FUNCTION_DATA`).
+- 스캐너가 판정한 CVE를 판정 데이터 좌표와 **groupId가 같고 버전이 분석기가 읽은 데이터 jar(`reach-result.json` `package.jars`)와 같은 다른 jar**에 붙였으면(Grype가 Tomcat WebSocket CVE를 `tomcat-embed-core`에) 데이터 좌표의 판정과 근거를 그대로 쓰고, 맨 앞에 그 사실을 적은 메모를 더한다. 취약 함수는 클래스 이름으로 앱의 모든 jar에서 찾으므로 스캐너가 어느 jar를 댔는지와 판정은 상관없다. 서버(`ReachL3Input`)는 묶음이 이렇게 판정을 준 행에만 같은 CVE·같은 groupId의 L3 결과를 붙인다(잇는 기준은 여기 한 곳).
+- 판정하지 않은 매칭은 `NOT_ANALYZED`와 사유: OS 패키지(`OS_PACKAGE`), maven이 아닌 생태계(`UNSUPPORTED_ECOSYSTEM`), 판정한 CVE의 groupId나 버전이 다른 패키지 사본(`UNANALYZED_COPY`, 예: 데이터는 Jackson 3 `tools.jackson.*`인데 Jackson 2 `com.fasterxml.*`), 취약 함수 데이터 없음(`NO_VULN_FUNCTION_DATA`).
 - Trivy와 Grype가 같은 purl × CVE를 찾으면 한 Finding이다(Grype의 GHSA는 연결된 CVE로 맞춘다). 심각도가 다르면 Trivy 값을 쓰고 `severityNote`에 둘 다 남긴다.
 - `vulnFunctionIds`는 `vuln-functions.json`의 함수 순서(API-10 id), `engine`의 버전은 두 데이터 파일의 스키마 버전(API-09·10 `version`)과 같다.
 - Java 코드가 없는 대상(npm만, OS 패키지만)은 L2를 돌리지 않는다. `--reach`·`--verdicts`를 빼면 모든 매칭이 `NOT_ANALYZED`이고 `reachResult`는 빈 객체다. maven 패키지가 있는데 둘을 빼면 L2를 빠뜨린 것이라 실패한다.
@@ -81,7 +82,7 @@ curl -X PUT -H 'Content-Type: application/json' -H 'Content-Encoding: gzip' \
 
 ## L3 실행 확인
 
-앱(같은 이미지)을 JaCoCo 에이전트와 함께 띄우고 요청 시나리오를 돌린 뒤, 취약 코드 쪽으로 **실제로 어디까지 실행됐는지**를 근거로 남긴다(PRD FR-14). L3는 L2 판정 옆에 놓는 근거이고 판정(status)을 바꾸지 않는다. L2가 무엇이라고 했든 판정 데이터가 있는 모든 CVE를 본다.
+앱(같은 이미지)을 JaCoCo 에이전트와 함께 띄우고 요청 시나리오를 돌린 뒤, 취약 코드 쪽으로 **실제로 어디까지 실행됐는지**를 근거로 남긴다(PRD FR-14). `l3.py`는 판정(status)을 바꾸지 않는다. 결과를 받은 서버(API-13)가 CVE마다 `rules.json`의 `l3` 한도 안에서 판정을 올린다(아래 "판정 올리기"). 내리지는 않는다. L2가 무엇이라고 했든 판정 데이터가 있는 모든 CVE를 본다.
 
 ```bash
 # 실행 기록(구간마다 1개) → XML. 클래스 파일은 그 이미지의 jar에서(verdict/l3_runner.py classes)
@@ -92,7 +93,7 @@ python3 reach-analyzer/verdict/l3.py --spec src/main/resources/reach/vuln-functi
 
 - 실행 기록은 **구간**으로 나뉜다: `startup`(앱이 준비될 때까지, 준비 확인 요청 포함)과 시나리오 단계마다 하나(`001`, `002`, …). 그래서 결과가 "어느 요청에서 실행됐는지"를 말한다. 러너 쪽은 `deploy/reach/ci/README.md` "L3".
 - 메서드가 아니라 **취약 구간** 단위로 본다. Tomcat `RealmBase.findSecurityConstraints`는 요청마다 실행되지만, 취약한 `/xxx/*` 비교 줄은 보안 제약이 있을 때만 실행된다.
-- 취약 구간은 `vuln-functions.json` CVE마다 `l3`에 둔다: `version`(줄 번호가 맞는 라이브러리 버전), `regions`(클래스·메서드·desc·소스 파일·`lines` 줄 범위), `note`. 취약 버전과 수정 버전의 소스 jar를 비교해 sink 메서드 안에서 바뀐 줄로 잡고 사람이 골랐다(호출하는 쪽 sink에는 두지 않는다). `lines`가 없으면 메서드 전체다(bcprov 배포 jar에는 줄 번호가 없다).
+- 취약 구간은 `vuln-functions.json` CVE마다 `l3`에 둔다: `version`(줄 번호가 맞는 라이브러리 버전), `regions`(클래스·메서드·desc·소스 파일·`lines` 줄 범위), `note`. 취약 버전과 수정 버전의 소스 jar를 비교해 sink 메서드 안에서 바뀐 줄로 잡고 사람이 골랐다(호출하는 쪽 sink에는 두지 않는다). `lines`가 없으면 메서드 전체다(bcprov 배포 jar에는 줄 번호가 없다). 구간이 실행됐을 때 판정을 어디까지 올릴지는 여기가 아니라 `rules.json`의 `l3`에 둔다(아래 "판정 올리기").
 - CVE마다 도달 수준 `reached`. SBOM에 없는 패키지의 CVE는 넣지 않는다.
   - `REGION`: 취약 구간이 실행됨
   - `FUNCTION`: 취약 함수(sink 메서드)는 실행됐지만 구간은 아님. `regionsChecked`가 true면 구간을 봤고 실행되지 않은 것, false면 구간을 확인하지 못한 것(라이브러리 버전이 `version`과 다름, 구간 데이터 없음, 줄 번호 없는 클래스)
@@ -108,6 +109,23 @@ python3 reach-analyzer/verdict/l3.py --spec src/main/resources/reach/vuln-functi
   - 에이전트가 뜨기 전에 로드된 JDK 클래스(`HashMap`, `regex.Pattern` 등)는 기록되지 않는다. 클래스 파일을 주지 않은 클래스는 `NOT_RECORDED`가 된다
   - 요청 뒤에 앱이 백그라운드로 하는 일은 다음 구간에 잡힐 수 있다
 - 에이전트 범위: `includes=*`에 `inclbootstrapclasses=true`를 같이 주면 JVM이 뜨지 않는다. JDK는 `java.util.*`처럼 패키지를 골라 넣는다.
+
+### 판정 올리기 (서버)
+
+구간이 실행됐다고 해서 규칙이 본 조건(설정·기능 사용)이 성립하는 것은 아니다. 예: CVE-2026-103119는 AJP 커넥터가 있을 때만 영향이 있는데, 그 구간 `OutputBuffer.updateBytesWritten` 447-448행은 Content-Length가 있는 모든 응답 쓰기에서 실행된다. 그래서 얼마나 올릴지를 CVE마다 `rules.json` 판정 항목의 `l3`에 적는다. 앱이 아니라 CVE와 규칙의 성질이다.
+
+```json
+"l3": {"region": "reachable | unknown | none", "function": "unknown | none", "why_ko": "..."}
+```
+
+- `region`: 취약 구간이 실행됐을 때(`REGION`). `reachable`이면 도달 불가·확인 못 함 → 도달 가능, `unknown`이면 도달 불가 → 확인 못 함만, `none`이면 올리지 않는다.
+- `function`: 취약 함수만 실행되고 구간은 확인하지 못했을 때(`FUNCTION`, `regionsChecked` false). `unknown`이면 도달 불가 → 확인 못 함, `none`이면 올리지 않는다.
+- `NONE`·`NOT_RECORDED`, 구간을 봤는데 실행되지 않은 `FUNCTION`은 올리지도 내리지도 않는다.
+- 고르는 기준은 "규칙의 조건을 갖추지 않은 앱에서도 이 줄·메서드가 실행되나?"다. 실행되면 `none`. 그 기능을 쓸 때만 실행되지만 취약 조건까지 보여 주지 않으면 `unknown`. 조건 자체를 보여 주면 `reachable`. `why_ko`에 그 이유를 적는다.
+- 방법이 규칙(`"method": "rule"`)인 판정에는 `l3`가 꼭 있어야 한다(없으면 서버가 뜨지 않는다). `l3`가 없는 호출 그래프 판정과 규칙이 없는 CVE는 `region` reachable, `function` unknown이다(취약 함수가 실행되면 그대로 반증이라서).
+- 올리지 않으면 L3 결과는 저장해 보이지만 판정 근거에 실행 근거(RUNTIME)를 더하지 않는다. `unknown` 한도로 구간에서 올렸으면 RUNTIME 근거가 "이 구간은 그 기능을 쓸 때 실행되지만 취약 조건까지 보여 주지는 않아, 도달 불가를 확인 못 함으로 올렸다"고 말한다.
+- 한도는 결과를 받을 때마다 다시 계산한다. 앱을 띄우지 않은 스캔(재대조 등)이 그 이미지에 남은 L3 결과를 다시 쓸 때도 같다. 그래서 `l3`를 고쳐 배포하면 그 이미지의 다음 스캔·재대조부터 판정이 바뀐다. 사람이 검토한 Finding은 판정이 바뀌면 검토가 `VERDICT_CHANGED`로 되돌아간다. PR 검사는 L3를 받지 않아 게이트와는 상관없다.
+- 목록·상세(API-04·05)의 `l3.raiseLimit`(`REACHABLE`·`UNKNOWN`·`NONE`)이 그 L3 결과로 올릴 수 있는 한도다. 규칙 조회(API-09)는 `definition.verdict`에 `l3`를 그대로 보인다.
 
 ## 판정 데이터 만들기
 
@@ -151,7 +169,7 @@ python3 vulndata.py prepare --cve CVE-2026-76183 --coordinates org.apache.tomcat
 
 반영한 뒤 할 일:
 
-- 호출 방식이 `app_calls_library`가 아니면 `rules.json`에 그 CVE의 규칙을 쓴다(사람이 쓴다). 규칙이 없으면 호출 그래프만으로 판정해 "도달 불가"가 잘못 나올 수 있다. 사실(fact)을 더하면 `ReachRuleServiceTest`의 기대값도 고친다.
+- 호출 방식이 `app_calls_library`가 아니면 `rules.json`에 그 CVE의 규칙을 쓴다(사람이 쓴다). 규칙에는 L3로 판정을 어디까지 올릴지(`l3`, 위 "판정 올리기")도 같이 쓴다. AI 초안은 `l3.note`에 구간이 무엇을 보여 주지 못하는지 설명만 한다. 규칙이 없으면 호출 그래프만으로 판정해 "도달 불가"가 잘못 나올 수 있다. 사실(fact)을 더하면 `ReachRuleServiceTest`의 기대값도 고친다.
 - `fixtureTest`·`verdictTest`와 `./gradlew :test --tests 'com.logssey.reach.rule.*'`를 돌리고, 서비스 jar에 분석기를 돌려 판정을 읽는다.
 - 데이터·규칙은 PR 하나로 올린다. 화면(API-09·10)과 분석이 같은 파일을 쓴다.
 

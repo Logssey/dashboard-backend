@@ -17,8 +17,11 @@ unless --no-l2 says the runner found no app jar to analyse (an image or repo pat
 NOT_ANALYZED too (NO_VULN_FUNCTION_DATA when the CVE has no data, otherwise UNANALYZED_COPY).
 
 One bundle item per scanner match (purl x CVE). Matches that verdict.py analysed get its verdict and
-evidence; the rest are NOT_ANALYZED with the reason (OS package, unsupported ecosystem, another copy of
-an analysed CVE, no vuln function data). Field names follow the API spec 3-3, 3-4, 3-5 (API-13 bundle).
+evidence, and so does a match of the same CVE on another jar of the data coordinate's groupId and of the
+version the analyser read (scanners disagree on which jar of a project a CVE belongs to, see same_group; the
+server links L3 results to such a match only because it has a verdict). The rest are NOT_ANALYZED with the
+reason (OS package, unsupported ecosystem, a copy of an analysed CVE in a package of another groupId or
+version, no vuln function data). Field names follow the API spec 3-3, 3-4, 3-5 (API-13 bundle).
 --l3 adds the L3 run (l3.py result plus the run summary of l3-run.sh) as the bundle's "l3" object, as is;
 --l3-error adds {"error": "..."} when the L3 run failed. Either way the scan itself is not affected.
 --l3-record adds the execution record of that run (l3_runner.py pack) as "l3Record", base64 in JSON; the
@@ -231,9 +234,48 @@ def verdict_for(match, ctx, analysed_at):
     if spec_coords == coords:
         # the CVE and package are in the data, so verdict.py must have judged it: the inputs do not belong together
         raise BundleError(f"{cve} {coords} is in vuln-functions.json but not in verdicts.json")
+    v = ctx.analysed.get((cve, spec_coords))
+    if (v is not None and same_group(coords, spec_coords)
+            and (parse_purl(match["purl"])[3] or match.get("version")) in data_jar_versions(ctx.reach_by_cve.get(cve))):
+        return reported_on(coords, spec_coords, analysed_verdict(v, ctx, analysed_at))
     return not_analyzed("UNANALYZED_COPY",
                         f"같은 CVE가 다른 패키지에서도 나왔다. 취약 함수 데이터와 규칙은 {spec_coords} 기준이라 "
                         f"이 패키지 사본은 판정하지 않았다.", ctx, analysed_at)
+
+
+def same_group(a, b):
+    """org.apache.tomcat.embed:tomcat-embed-core and …:tomcat-embed-websocket: one project, released together.
+
+    Scanners do not agree on which jar of such a project a CVE belongs to (GitHub advisories, Anchore's NVD overrides),
+    and the analyser looks the vuln functions up by class name in every jar of the app and the rules look at app code
+    and config, so a match on another jar of the same groupId and the same version as the analysed data jar gets the
+    verdict of the data coordinate. Not for another version (bcprov-jdk15on 1.70 next to bcprov-jdk18on 1.81): the
+    analyser keeps the first class of a name it reads, so that verdict may be about the other jar's code. Not for
+    another groupId (Jackson 2 com.fasterxml.* for data on Jackson 3 tools.jackson.*): other code with other class
+    names. Those stay unanalysed copies.
+    Assumes the data lists the classes of every implementation in the group that an advisory names (a CVE in both
+    spring-webmvc and spring-webflux needs the sinks of both)."""
+    ga, _, _ = a.rpartition(":")
+    gb, _, _ = b.rpartition(":")
+    return bool(ga) and ga == gb
+
+
+def data_jar_versions(r):
+    """versions of the data jar the analyser read: reach-result package.jars (tomcat-embed-websocket-11.0.24.jar).
+    The analyser picks the jars by artifact name only, so data on Jackson 3 jackson-core also lists jackson-core-2.21.5.jar;
+    same_group keeps that Jackson 2 version from being used."""
+    pkg = (r or {}).get("package") or {}
+    artifact = pkg.get("artifact") or ""
+    return {j[len(artifact) + 1:-len(".jar")] for j in pkg.get("jars") or []
+            if artifact and j.startswith(artifact + "-") and j.endswith(".jar")}
+
+
+def reported_on(coords, spec_coords, verdict):
+    # fixed text, coordinates only: the evidence hash takes it, so a run-dependent value would reset reviews every scan
+    note = {"kind": "NOTE", "summary": f"스캐너는 이 CVE를 {coords}에 붙였다. 판정과 근거(패키지 도달 포함)는 같은 그룹·같은 버전의 "
+                                       f"{spec_coords} 기준이다. 취약 함수는 클래스 이름으로 앱의 모든 jar에서 찾고 규칙은 앱 코드·설정을 "
+                                       f"보므로 스캐너가 어느 jar에 붙였는지와 판정은 상관없다."}
+    return {**verdict, "evidence": [note] + verdict["evidence"]}
 
 
 def location(fact, where):

@@ -39,11 +39,11 @@ public record ReachFindingDetailResponse(
     public record Reviewer(long id, String name) {}
     /**
      * L3 능동 관측 (FR-14): 이 이미지를 실제로 띄워 시나리오를 보냈을 때 취약 코드 쪽으로 어디까지 실행됐나.
-     * 판정 옆의 근거이고 판정·검토를 바꾸지 않는다. reached·regionsChecked·startupOnly는 목록(API-04)과 같다.
+     * 서버가 결과를 받을 때 raiseLimit까지 판정을 올린다. reached·regionsChecked·startupOnly·raiseLimit은 목록(API-04)과 같다.
      * during은 그 수준에 닿은 구간 id("startup" 또는 run.invocations의 segment), functions·regions·paths는
      * 러너 출력 그대로(실행된 취약 함수, 구간과 실행된 줄, L2 호출 경로를 진입점부터 끊기지 않고 탄 단계 수)
      */
-    public record L3(String reached, boolean regionsChecked, boolean startupOnly,
+    public record L3(String reached, boolean regionsChecked, boolean startupOnly, String raiseLimit,
                      JsonNode during, JsonNode functions, JsonNode regions, JsonNode paths, String note, L3Run run) {}
     /**
      * 그 관측의 근거 항목 (FR-14 수용 기준 3). configKeys는 이름과 켜짐 여부뿐이고 값은 없다.
