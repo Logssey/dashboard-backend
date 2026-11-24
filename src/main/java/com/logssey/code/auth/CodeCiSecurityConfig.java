@@ -1,0 +1,131 @@
+package com.logssey.code.auth;
+
+import java.io.IOException;
+import java.util.Collection;
+import java.util.List;
+import java.util.Optional;
+
+import com.logssey.common.error.ApiErrorResponse;
+import com.logssey.common.error.ErrorCode;
+
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2Error;
+import org.springframework.security.oauth2.core.OAuth2TokenValidatorResult;
+import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtClaimNames;
+import org.springframework.security.oauth2.jwt.JwtClaimValidator;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtValidators;
+import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
+import org.springframework.security.web.AuthenticationEntryPoint;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.access.AccessDeniedHandler;
+import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
+import org.springframework.security.web.util.matcher.AndRequestMatcher;
+import org.springframework.security.web.util.matcher.RequestMatcher;
+
+/**
+ * 서비스 레포 code-scan 워크플로가 SARIF 를 올릴 때의 인증 (GitHub Actions OIDC, IaC CI 체인과 같은 방식의 별도 체인).
+ * 기존 SecurityConfig·Reach·IaC 체인은 그대로 둔다.
+ *
+ * - Bearer 헤더가 있는 /api/v1/code/scans 만 받는다. 헤더가 없으면 기존 체인(대시보드 세션)이 받는다
+ * - 서명(GitHub JWKS)·발급자·만료·aud(logssey-code)·repository·ref·event_name·job_workflow_ref 를 본다 (CodeCiProperties).
+ *   틀리면 401. 허용: 결과 업로드(POST) 하나. 그 밖은 403
+ * - 토큰 디코더는 이 체인 안에서만 쓴다 (Bean 으로 내놓지 않는다)
+ */
+@Configuration
+@EnableConfigurationProperties(CodeCiProperties.class)
+public class CodeCiSecurityConfig {
+
+    public static final String AUTHORITY = "CODE_CI";
+    private static final String SCANS = "/api/v1/code/scans";
+
+    @Bean
+    @Order(5)
+    SecurityFilterChain codeCiSecurityFilterChain(HttpSecurity http, CodeCiProperties properties) throws Exception {
+        var paths = PathPatternRequestMatcher.withDefaults();
+        RequestMatcher bearer = request -> {
+            String header = request.getHeader(HttpHeaders.AUTHORIZATION);
+            return header != null && header.regionMatches(true, 0, "Bearer ", 0, 7);
+        };
+        JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
+        converter.setJwtGrantedAuthoritiesConverter(jwt -> List.of(new SimpleGrantedAuthority(AUTHORITY)));
+
+        http.securityMatcher(new AndRequestMatcher(paths.matcher(SCANS + "/**"), bearer))
+                .authorizeHttpRequests(auth -> auth
+                        .requestMatchers(paths.matcher(HttpMethod.POST, SCANS)).hasAuthority(AUTHORITY)
+                        .anyRequest().denyAll())
+                .oauth2ResourceServer(server -> server
+                        .jwt(jwt -> jwt.decoder(decoder(properties)).jwtAuthenticationConverter(converter))
+                        .authenticationEntryPoint(unauthenticated())
+                        .accessDeniedHandler(forbidden()))
+                .exceptionHandling(exceptions -> exceptions
+                        .authenticationEntryPoint(unauthenticated())
+                        .accessDeniedHandler(forbidden()))
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .csrf(AbstractHttpConfigurer::disable)
+                .requestCache(AbstractHttpConfigurer::disable)
+                .formLogin(AbstractHttpConfigurer::disable)
+                .httpBasic(AbstractHttpConfigurer::disable)
+                .logout(AbstractHttpConfigurer::disable);
+        return http.build();
+    }
+
+    /** CI 로 인증된 요청이면 토큰의 레포(예: Logssey/service-backend) */
+    public static Optional<String> ciRepository(Authentication authentication) {
+        if (authentication == null || !(authentication.getPrincipal() instanceof Jwt jwt)
+                || authentication.getAuthorities().stream().noneMatch(a -> AUTHORITY.equals(a.getAuthority()))) {
+            return Optional.empty();
+        }
+        return Optional.of(jwt.getClaimAsString("repository"));
+    }
+
+    static JwtDecoder decoder(CodeCiProperties properties) {
+        NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(properties.jwkSetUri())
+                .jwsAlgorithm(SignatureAlgorithm.RS256)
+                .build();
+        decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
+                JwtValidators.createDefaultWithIssuer(properties.issuer()),
+                new JwtClaimValidator<Object>(JwtClaimNames.AUD, aud -> audienceContains(aud, properties.audience())),
+                jwt -> properties.accepts(jwt.getClaimAsString("repository"), jwt.getClaimAsString("ref"),
+                        jwt.getClaimAsString("event_name"), jwt.getClaimAsString("job_workflow_ref"))
+                        ? OAuth2TokenValidatorResult.success()
+                        : OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", "Not the code-scan workflow", null))));
+        return decoder;
+    }
+
+    private static boolean audienceContains(Object aud, String expected) {
+        if (aud instanceof Collection<?> values) return values.contains(expected);
+        return expected.equals(aud);
+    }
+
+    private static AuthenticationEntryPoint unauthenticated() {
+        return (request, response, exception) -> write(response, ErrorCode.UNAUTHENTICATED);
+    }
+
+    private static AccessDeniedHandler forbidden() {
+        return (request, response, exception) -> write(response, ErrorCode.FORBIDDEN);
+    }
+
+    private static void write(HttpServletResponse response, ErrorCode errorCode) throws IOException {
+        response.setStatus(errorCode.status().value());
+        response.setCharacterEncoding("UTF-8");
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        response.getWriter().write(ApiErrorResponse.of(errorCode).toJson());
+    }
+}
