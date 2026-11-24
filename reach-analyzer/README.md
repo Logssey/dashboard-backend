@@ -72,7 +72,8 @@ curl -X PUT -H 'Content-Type: application/json' -H 'Content-Encoding: gzip' \
 ```
 
 - 판정한 CVE·패키지는 `verdicts.json`의 판정과 근거를 API 모양(명세 3-4, 3-5)으로 옮긴다. 사실 → 메모 → 적용 규칙 → 호출 경로 순서다. 호출 그래프가 취약 함수에 닿으면 규칙으로 판정했어도 후보 경로와 그 이유(메모)를 남긴다.
-- 판정하지 않은 매칭은 `NOT_ANALYZED`와 사유: OS 패키지(`OS_PACKAGE`), maven이 아닌 생태계(`UNSUPPORTED_ECOSYSTEM`), 판정한 CVE의 다른 패키지 사본(`UNANALYZED_COPY`), 취약 함수 데이터 없음(`NO_VULN_FUNCTION_DATA`).
+- 스캐너가 판정한 CVE를 판정 데이터 좌표와 **groupId가 같고 버전이 분석기가 읽은 데이터 jar(`reach-result.json` `package.jars`)와 같은 다른 jar**에 붙였으면(Grype가 Tomcat WebSocket CVE를 `tomcat-embed-core`에) 데이터 좌표의 판정과 근거를 그대로 쓰고, 맨 앞에 그 사실을 적은 메모를 더한다. 취약 함수는 클래스 이름으로 앱의 모든 jar에서 찾으므로 스캐너가 어느 jar를 댔는지와 판정은 상관없다. 서버(`ReachL3Input`)는 묶음이 이렇게 판정을 준 행에만 같은 CVE·같은 groupId의 L3 결과를 붙인다(잇는 기준은 여기 한 곳).
+- 판정하지 않은 매칭은 `NOT_ANALYZED`와 사유: OS 패키지(`OS_PACKAGE`), maven이 아닌 생태계(`UNSUPPORTED_ECOSYSTEM`), 판정한 CVE의 groupId나 버전이 다른 패키지 사본(`UNANALYZED_COPY`, 예: 데이터는 Jackson 3 `tools.jackson.*`인데 Jackson 2 `com.fasterxml.*`), 취약 함수 데이터 없음(`NO_VULN_FUNCTION_DATA`).
 - Trivy와 Grype가 같은 purl × CVE를 찾으면 한 Finding이다(Grype의 GHSA는 연결된 CVE로 맞춘다). 심각도가 다르면 Trivy 값을 쓰고 `severityNote`에 둘 다 남긴다.
 - `vulnFunctionIds`는 `vuln-functions.json`의 함수 순서(API-10 id), `engine`의 버전은 두 데이터 파일의 스키마 버전(API-09·10 `version`)과 같다.
 - Java 코드가 없는 대상(npm만, OS 패키지만)은 L2를 돌리지 않는다. `--reach`·`--verdicts`를 빼면 모든 매칭이 `NOT_ANALYZED`이고 `reachResult`는 빈 객체다. maven 패키지가 있는데 둘을 빼면 L2를 빠뜨린 것이라 실패한다.

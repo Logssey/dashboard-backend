@@ -166,7 +166,8 @@ public class ReachResultService {
             // 이번 실행의 L3 결과, 이번에 앱을 띄우지 않았으면(재대조, L3 실패) 그 이미지에 남은 마지막 결과.
             // 그래서 앱을 띄우지 않는 재대조도 같은 판정이 된다. PR 검사는 L3가 없다
             var observedL3 = pr ? Optional.<ReachL3Input.Result>empty()
-                    : l3Results ? l3.result(row.vulnerabilityId(), row.purl()) : repository.l3Result(findingId);
+                    : l3Results ? l3.result(row.vulnerabilityId(), row.purl(), !"NOT_ANALYZED".equals(row.status()))
+                    : repository.l3Result(findingId);
             var judged = withL3(row, observedL3.orElse(null));
             long verdictId = repository.insertToolVerdict(judged.verdict().withIds(findingId, scanId));
             repository.insertEvidence(verdictId, judged.evidence());

@@ -476,6 +476,19 @@ class ReachResultServiceTest {
     }
 
     @Test
+    void anotherJarOfTheSameGroupTakesTheL3ResultOnlyWhenTheBundleGaveItTheVerdict() {
+        // bundle.py가 판정 데이터 좌표(test:ws)의 판정을 준 같은 그룹의 다른 jar(test:core)는 그 L3 결과로 올라간다.
+        // 판정하지 않은 사본(같은 그룹이어도 bundle.py가 NOT_ANALYZED로 둔 것: 버전이 다름 등)에는 붙이지 않는다
+        var evidence = List.of(map("kind", "NOTE", "summary", "no path"));
+        uploadWithL3(check("a"), l3(l3Cve("CVE-2026-1", "ws", "REGION", true, false)),
+                item("core", "CVE-2026-1", "HIGH", "UNREACHABLE", "RULE", null, evidence),
+                item("el", "CVE-2026-1", "HIGH", "NOT_ANALYZED", null, "UNANALYZED_COPY", List.of()));
+        assertThat(l3Results()).hasSize(1).allMatch(r -> r.startsWith("core:REGION:"));
+        assertThat(jdbc.queryForObject("SELECT status FROM reach_verdicts WHERE finding_id = ? AND is_current",
+                String.class, finding("core"))).isEqualTo("REACHABLE");
+    }
+
+    @Test
     void anL3RaiseResetsAReviewOnceAndARescanWithoutTheAppKeepsIt() {
         var evidence = List.of(map("kind", "NOTE", "summary", "no path"));
         var a = item("a", "CVE-2026-1", "HIGH", "UNREACHABLE", "CALLGRAPH", null, evidence);
