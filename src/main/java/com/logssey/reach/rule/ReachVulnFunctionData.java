@@ -34,6 +34,7 @@ public class ReachVulnFunctionData {
     private final String generated;
     private final List<ReachVulnFunctionResponse> items;
     private final Map<String, List<String>> packagesByCve;
+    private final Map<String, String> summariesByCve;
 
     public ReachVulnFunctionData() {
         this(read(RESOURCE));
@@ -47,6 +48,7 @@ public class ReachVulnFunctionData {
 
         var parsed = new ArrayList<ReachVulnFunctionResponse>();
         var packages = new LinkedHashMap<String, List<String>>();
+        var summaries = new LinkedHashMap<String, String>();
         JsonNode cves = root.path("cves");
         require(cves.isArray() && !cves.isEmpty(), "vuln-functions must contain cves");
         for (JsonNode entry : cves) {
@@ -55,6 +57,8 @@ public class ReachVulnFunctionData {
             require(!packages.containsKey(cve), "Duplicate CVE: " + cve);
             String purl = purl(text(entry.path("package"), "coordinates"));
             packages.put(cve, List.of(purl));
+            String summary = optional(entry, "summary_ko");
+            if (summary != null) summaries.put(cve, summary);
             List<String> fixed = new ArrayList<>();
             entry.path("package").path("fixed").forEach(value -> fixed.add(value.asString()));
             fixed.sort(ReachVulnFunctionData::compareVersions);
@@ -74,6 +78,7 @@ public class ReachVulnFunctionData {
         }
         this.items = List.copyOf(parsed);
         this.packagesByCve = Map.copyOf(packages);
+        this.summariesByCve = Map.copyOf(summaries);
     }
 
     /** 데이터 버전 (스키마 reach-spec/v0의 v0) */
@@ -93,6 +98,14 @@ public class ReachVulnFunctionData {
     /** CVE의 패키지 purl(버전 제외). 규칙(API-09)이 쓴다 */
     public List<String> packages(String cve) {
         return packagesByCve.getOrDefault(cve, List.of());
+    }
+
+    /**
+     * CVE의 한국어 요약(summary_ko). 없으면 null. 취약점 자체의 설명이라 같은 CVE가 붙은 다른 패키지(Jackson 2 사본)에도 맞는다.
+     * 공통 리포트 Reach 장이 판정 전 사본의 제목에 쓴다
+     */
+    public String summaryKo(String cve) {
+        return summariesByCve.get(cve);
     }
 
     /** CVE를 연도·번호 숫자로 비교한다 (CVE-2026-8763 < CVE-2026-13506) */

@@ -571,6 +571,33 @@ class ReachQueryServiceTest {
         assertThat(service.summary("admin", null, scan, null, null, null).basis()).isNull();   // scanId·target이면 basis 없음
     }
 
+    @Test
+    void reportScopeIsTheRunningImagesWithTheFirstTimeTheFindingAppearedInAnImage() {
+        // 공통 리포트 취약점 장: 실행 중 이미지의 Finding만, 발견일은 같은 앱·패키지·CVE가 이미지에 처음 나온 때
+        String old = digest('1'), now = digest('2'), pr = digest('3');
+        long oldFinding = finding(scan(target(old), "SUCCEEDED", 240), "lib", "CVE-2026-0001", "HIGH", "REACHABLE", "UNREVIEWED");
+        jdbc.update("UPDATE reach_findings SET first_seen_at = now() - interval '10 days' WHERE finding_id = ?", oldFinding);
+        // PR 검사에서만 본 것은 발견일에 넣지 않는다
+        long prFinding = finding(scan(target(pr), "SUCCEEDED", 480, "PR"), "lib", "CVE-2026-0001", "HIGH", "REACHABLE", "UNREVIEWED");
+        jdbc.update("UPDATE reach_findings SET first_seen_at = now() - interval '20 days' WHERE finding_id = ?", prFinding);
+        long runningScan = scan(target(now), "SUCCEEDED", 1);
+        long current = finding(runningScan, "lib", "CVE-2026-0001", "HIGH", "REACHABLE", "UNREVIEWED");
+        // 레포 대상은 넣지 않는다
+        finding(scan(repoTarget("API", "a".repeat(40)), "SUCCEEDED", 1), "repo-lib", "CVE-2026-0009", "CRITICAL", "REACHABLE", "UNREVIEWED");
+        observe(2, new String[] {"reused-api", "logssey/reused-api:1", now});
+
+        var report = service.reportScope("admin");
+        assertThat(report.appliedBasis()).isEqualTo("RUNNING");
+        assertThat(report.rows()).singleElement().satisfies(row -> {
+            assertThat(row.findingId()).isEqualTo(current);
+            assertThat(row.running()).isTrue();
+            assertThat(row.firstFoundAt()).isBetween(java.time.OffsetDateTime.now().minusDays(11), java.time.OffsetDateTime.now().minusDays(9));
+        });
+        assertThat(report.appsWithoutImage()).isEmpty();
+        assertThat(report.unscannedRunning()).isZero();
+        assertError(() -> service.reportScope("nobody"), ErrorCode.FORBIDDEN);
+    }
+
     private static String digest(char c) {
         return "sha256:" + String.valueOf(c).repeat(64);
     }

@@ -176,6 +176,28 @@ public class ReachQueryService {
                 OffsetDateTime.now());
     }
 
+    /**
+     * 공통 리포트 "취약점(이미지·공급망)" 장의 데이터 (ReachReportChapterProvider).
+     * 기본 범위(RUNNING, L1 조회가 없으면 LATEST)의 이미지 대상 Finding이다. 레포 대상은 넣지 않고, 이미지 스캔 없이 레포만 있는 앱은
+     * appsWithoutImage로 알린다. unscannedRunning은 실행 중인데 성공 스캔이 없는 워크로드 수(이름은 넣지 않는다)
+     */
+    public record ReportScope(String appliedBasis, List<ReachQueryRepository.ReportRow> rows, int unscannedRunning,
+                              List<String> appsWithoutImage) {}
+
+    public ReportScope reportScope(String loginId) {
+        requireAdmin(loginId);
+        var basis = basis("RUNNING");
+        boolean running = repository.hasFreshObservation(basis);
+        var applied = running ? basis : ReachQueryRepository.Basis.LATEST;
+        var scans = repository.scopeScanList(applied);
+        var imageApps = scans.stream().filter(s -> "IMAGE".equals(s.targetType())).map(ReachQueryRepository.ScopeScan::app)
+                .collect(java.util.stream.Collectors.toSet());
+        var withoutImage = scans.stream().filter(s -> "REPO".equals(s.targetType()) && !imageApps.contains(s.app()))
+                .map(ReachQueryRepository.ScopeScan::app).distinct().sorted().toList();
+        return new ReportScope(running ? "RUNNING" : "LATEST", repository.reportRows(applied),
+                repository.unscannedRunning(applied).size(), withoutImage);
+    }
+
     /** API-08 basis: 기본 범위로 쓴 스캔과 실행 중인데 스캔이 없는 워크로드 */
     private ReachSummaryResponse.Basis basisInfo(String requested, ReachQueryRepository.Basis basis) {
         boolean running = repository.hasFreshObservation(basis);

@@ -180,6 +180,66 @@ public class ReachQueryRepository {
                 .single());
     }
 
+    /**
+     * 공통 리포트 "취약점(이미지·공급망)" 장의 한 줄 (ReachReportChapterProvider). 기본 범위의 이미지 대상 Finding과 지금 판정·검토.
+     * firstFoundAt은 같은 앱·패키지 이름·CVE가 이미지 대상(PR이 아닌 스캔의 도구 판정이 있는 Finding)에 처음 나온 때다:
+     * digest가 바뀌면 대상이 새로 생겨 first_seen_at이 다시 시작하므로, 그대로 쓰면 대응 기한이 배포마다 늘어난다
+     */
+    public record ReportRow(long findingId, String app, String displayName, boolean running, OffsetDateTime scannedAt,
+                            String vulnerabilityId, String severity, String componentName, String componentVersion,
+                            String componentPath, String vulnTitle, String affectedFeature, List<String> fixedVersions,
+                            String status, String method, String summary, String notAnalyzedReason,
+                            String reviewState, String reviewStatus, String l3Reached, boolean l3Raised,
+                            OffsetDateTime firstFoundAt) {}
+
+    private static final String REPORT_ROWS = """
+            WITH scope AS (
+                %s
+            )
+            SELECT f.finding_id, t.app, t.display_name, sc.running, s.finished_at AS scanned_at,
+                   f.vulnerability_id, f.severity, f.component_name, f.component_version, f.component_path,
+                   f.vuln_title, f.affected_feature, f.fixed_versions,
+                   v.status, v.method, v.summary, v.not_analyzed_reason,
+                   r.review_state, r.status AS review_status, x.reached AS l3_reached,
+                   EXISTS (SELECT 1 FROM reach_evidence e WHERE e.verdict_id = v.verdict_id AND e.kind = 'RUNTIME') AS l3_raised,
+                   (SELECT MIN(f2.first_seen_at) FROM reach_findings f2
+                    JOIN reach_targets t2 ON t2.target_id = f2.target_id
+                    WHERE t2.target_type = 'IMAGE' AND t2.app = t.app
+                      AND f2.component_name = f.component_name AND f2.vulnerability_id = f.vulnerability_id
+                      AND EXISTS (SELECT 1 FROM reach_verdicts v2 JOIN reach_scans s2 ON s2.scan_id = v2.scan_id
+                                  WHERE v2.finding_id = f2.finding_id AND s2.trigger_type <> 'PR'
+                                    AND v2.method IS DISTINCT FROM 'MANUAL')) AS first_found_at
+            FROM scope sc
+            JOIN reach_targets t ON t.target_id = sc.target_id
+            JOIN reach_scans s ON s.scan_id = sc.scan_id
+            JOIN reach_findings f ON f.target_id = sc.target_id
+             AND EXISTS (SELECT 1 FROM reach_verdicts lv
+                         WHERE lv.finding_id = f.finding_id AND lv.scan_id = sc.scan_id
+                           AND lv.method IS DISTINCT FROM 'MANUAL')
+            JOIN reach_verdicts v ON v.finding_id = f.finding_id AND v.is_current
+            JOIN reach_reviews r ON r.finding_id = f.finding_id
+            LEFT JOIN reach_l3_results x ON x.finding_id = f.finding_id
+            WHERE sc.target_type = 'IMAGE'
+            ORDER BY sc.running DESC, t.app, f.finding_id""";
+
+    /** 기본 범위(basis)의 이미지 대상 Finding. 레포 대상과 PR 검사는 넣지 않는다(리포트는 운영 이미지 기준) */
+    List<ReportRow> reportRows(Basis basis) {
+        var params = new HashMap<String, Object>();
+        basisParams(params, basis);
+        return jdbcClient.sql(REPORT_ROWS.formatted(scopeScans(basis)))
+                .params(params)
+                .query((rs, i) -> new ReportRow(rs.getLong("finding_id"), rs.getString("app"), rs.getString("display_name"),
+                        rs.getBoolean("running"), rs.getObject("scanned_at", OffsetDateTime.class),
+                        rs.getString("vulnerability_id"), rs.getString("severity"), rs.getString("component_name"),
+                        rs.getString("component_version"), rs.getString("component_path"), rs.getString("vuln_title"),
+                        rs.getString("affected_feature"), strings(rs.getArray("fixed_versions")),
+                        rs.getString("status"), rs.getString("method"), rs.getString("summary"),
+                        rs.getString("not_analyzed_reason"), rs.getString("review_state"), rs.getString("review_status"),
+                        rs.getString("l3_reached"), rs.getBoolean("l3_raised"),
+                        rs.getObject("first_found_at", OffsetDateTime.class)))
+                .list();
+    }
+
     /** 실행 중인데 PR이 아닌 성공 스캔이 없는 워크로드 (API-08 basis.unscannedRunning). repository는 API-07과 같은 식 */
     record UnscannedWorkload(String namespace, String name, String container, String imageRepository, String imageDigest) {}
 
