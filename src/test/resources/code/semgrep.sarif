@@ -1,0 +1,126 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "results": [
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "requires login"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/ci.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 34,
+                  "endLine": 35,
+                  "snippet": {
+                    "text": "      - uses: actions/checkout@v7"
+                  },
+                  "startColumn": 9,
+                  "startLine": 35
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "GitHub Actions step uses a mutable tag or branch reference. Tags and branch names can be silently repointed by the action owner, enabling supply-chain attacks — as seen in the trivy-action and kics-github-action compromises. Pin the reference to a full 40-character commit SHA instead, e.g. `uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608`."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "requires login"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/ci.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 31,
+                  "endLine": 254,
+                  "snippet": {
+                    "text": "        run: |\n          git config user.name \"logssey-gitops-bot[bot]\"\n          git config user.email \"logssey-gitops-bot[bot]@users.noreply.github.com\"\n          git add apps/\n\n          if git diff --cached --quiet; then\n            echo \"변경 사항이 없다.\"\n            exit 0\n          fi\n\n          git commit -m \"cd: 이미지 태그를 ${IMAGE_TAG} 로 갱신\n\n          PR: #${{ github.event.pull_request.number }} ${{ github.event.pull_request.title }}\n          Actor: ${{ github.actor }}\"\n          git push origin main"
+                  },
+                  "startColumn": 9,
+                  "startLine": 240
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection"
+        }
+      ],
+      "tool": {
+        "driver": {
+          "name": "Semgrep OSS",
+          "rules": [
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "trimmed"
+              },
+              "helpUri": "https://semgrep.dev/r/yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+              "id": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+              "name": "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag",
+              "properties": {
+                "precision": "very-high",
+                "tags": [
+                  "CWE-1357: Reliance on Insufficiently Trustworthy Component",
+                  "CWE-353: Missing Support for Integrity Check",
+                  "HIGH CONFIDENCE",
+                  "OWASP-A08:2021 - Software and Data Integrity Failures",
+                  "OWASP-A08:2025 - Software and Data Integrity Failures",
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "Semgrep Finding: yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "trimmed"
+              },
+              "helpUri": "https://semgrep.dev/r/yaml.github-actions.security.run-shell-injection.run-shell-injection",
+              "id": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+              "name": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+              "properties": {
+                "precision": "very-high",
+                "tags": [
+                  "CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+                  "HIGH CONFIDENCE",
+                  "OWASP-A01:2017 - Injection",
+                  "OWASP-A03:2021 - Injection",
+                  "OWASP-A05:2025 - Injection",
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "Semgrep Finding: yaml.github-actions.security.run-shell-injection.run-shell-injection"
+              }
+            }
+          ],
+          "semanticVersion": "1.185.0"
+        }
+      }
+    }
+  ],
+  "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/schemas/sarif-schema-2.1.0.json"
+}
