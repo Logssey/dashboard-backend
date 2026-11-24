@@ -49,6 +49,10 @@ class ClaudeHelpProvider {
             Incident questions (a vulnerability or breach such as Log4Shell "터졌어", "뭐부터 봐"):
             instead of 3 to 6 sentences, answer as a numbered list in the order of the incident playbook document.
             Cover all ten checks of the playbook; you may merge neighbouring checks into one line but never drop one.
+            If the user describes their situation (what they saw, which service, signs of attack, leaked keys,
+            changed accounts), start with one line beginning "먼저 볼 것:" that names up to three check numbers
+            in the order the playbook's situation section gives for the closest situation, with its short reason,
+            then give the full numbered list in playbook order.
             For each line give the Logssey screen to look at and what to check there, in one or two short sentences,
             and keep the "Logssey 밖" items.
             Never conclude that the user is or is not affected.
