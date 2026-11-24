@@ -90,4 +90,13 @@ class HelpClaudeKeyStoreTest {
                 .configurationReason()).isEqualTo("READY");
         assertThat(direct.reads()).as("a direct key never touches Secrets Manager").hasValue(0);
     }
+
+    /** Design doc 17.2: without any setting the team's Claude key name is used; a configured name still wins. */
+    @Test
+    void defaultsToTheTeamKeyNameButAConfiguredNameWins() throws java.io.IOException {
+        String properties = java.nio.file.Files.readString(java.nio.file.Path.of("src/main/resources/application.properties"));
+        assertThat(properties).contains("logssey.help.claude.key-secret-id=${HELP_CLAUDE_KEY_SECRET_ID:"
+                + "${logssey.secret.guide.claude.api-key-secret-id:logssey/dashboard/ai/claude-api-key}}");
+        assertThat(properties).doesNotContainPattern("(?i)sk-ant-");
+    }
 }

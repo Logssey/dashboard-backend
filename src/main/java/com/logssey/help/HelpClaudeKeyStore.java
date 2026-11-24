@@ -7,6 +7,9 @@ import java.util.function.Supplier;
 
 import com.logssey.secret.aws.SecretAwsSourceCredentials;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
 
@@ -18,6 +21,7 @@ import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
  */
 final class HelpClaudeKeyStore implements Supplier<String> {
 
+    private static final Logger log = LoggerFactory.getLogger(HelpClaudeKeyStore.class);
     static final Duration KEEP_KEY = Duration.ofMinutes(10);
     static final Duration KEEP_FAILURE = Duration.ofMinutes(1);
     private static final String SECRET_ID = "[A-Za-z0-9/_+=.@:-]{1,512}";
@@ -46,14 +50,19 @@ final class HelpClaudeKeyStore implements Supplier<String> {
         long now = clock.getAsLong();
         if (readAt != 0 && now - readAt < (failed ? KEEP_FAILURE : KEEP_KEY).toNanos()) return failed ? null : key;
         String value;
+        String failure = null;
         try {
             value = reader.get();
         } catch (RuntimeException unavailable) {
             value = null;
+            // Only the kind of failure is logged, never the key, the secret value or the AWS message.
+            failure = unavailable.getClass().getSimpleName();
         }
         boolean usable = value != null && !value.isBlank() && value.length() <= 4_096
                 && value.strip().chars().allMatch(c -> c >= 0x21 && c <= 0x7e);
         key = usable ? value.strip() : null;
+        if (!usable && !failed) log.warn("Help Claude key unavailable from Secrets Manager: {}", failure == null ? "EMPTY_OR_INVALID" : failure);
+        if (usable && failed) log.info("Help Claude key available from Secrets Manager again");
         failed = !usable;
         readAt = now == 0 ? 1 : now;
         return key;
