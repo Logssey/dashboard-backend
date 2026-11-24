@@ -37,6 +37,20 @@ class HelpIncidentPlaybookTest {
     }
 
     @Test
+    void situationPrioritiesNameOnlyRealChecksAndKeepAllTen() {
+        String text = playbook().text();
+        int start = text.indexOf("## 상황별로 먼저 볼 것");
+        assertThat(start).isPositive();
+        String section = text.substring(start, text.indexOf("\n## ", start + 1));
+        assertThat(section).contains("10개 항목은 모두 확인합니다", "Logssey 밖");
+        List<Integer> named = Pattern.compile("(\\d+)번").matcher(section).results()
+                .map(result -> Integer.parseInt(result.group(1))).toList();
+        assertThat(named).isNotEmpty().allSatisfy(n -> assertThat(n).isBetween(1, 10));
+        // The numbered checks stay exactly 1..10 so card parsing and fallback text are unchanged.
+        assertThat(NUMBERED_SECTION.matcher(text).results().count()).isEqualTo(10);
+    }
+
+    @Test
     void requestCarriesIncidentRulesAndRoomForTheChecklist() {
         var provider = new ClaudeHelpProvider(true, "unused", "", "https://api.anthropic.com/v1/messages", 30_000,
                 HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build(), false);
@@ -46,7 +60,8 @@ class HelpIncidentPlaybookTest {
         assertThat(body.path("max_tokens").asInt()).isEqualTo(ClaudeHelpProvider.MAX_TOKENS).isEqualTo(3_000);
         String system = body.path("system").get(0).path("text").asText();
         assertThat(system).contains("never drop one", "cannot see", "Never conclude", "responsible team",
-                "3 to 5 sentences", "ground every answer in the documents again", "plain text only");
+                "3 to 5 sentences", "ground every answer in the documents again", "plain text only",
+                "먼저 볼 것:", "situation section");
         assertThat(body.has("tools")).isFalse();
     }
 
