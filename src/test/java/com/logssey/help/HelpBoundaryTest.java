@@ -23,11 +23,22 @@ class HelpBoundaryTest {
     private static final Pattern TABLE_REFERENCE = Pattern.compile(
             "(?i)\\b(?:FROM|INTO|UPDATE|JOIN|TABLE)\\s+([a-z][a-z0-9]*_[a-z0-9_]*)");
 
+    /** Design doc 17: the only allowed outside import is the AWS credential helper, used by the key store only. */
+    private static final String KEY_STORE = "HelpClaudeKeyStore.java";
+    private static final String CREDENTIAL_HELPER = "import com.logssey.secret.aws.SecretAwsSourceCredentials;";
+
     @Test
     void helpPackageImportsNoDataModules() throws IOException {
         try (Stream<Path> files = Files.list(SOURCE)) {
             for (Path file : files.toList()) {
                 String text = Files.readString(file);
+                boolean keyStore = file.getFileName().toString().equals(KEY_STORE);
+                if (keyStore) {
+                    assertThat(text).contains(CREDENTIAL_HELPER);
+                    text = text.replace(CREDENTIAL_HELPER, "");
+                } else {
+                    assertThat(text).as(file.toString()).doesNotContain("software.amazon.awssdk", "SecretAwsSourceCredentials");
+                }
                 assertThat(FORBIDDEN_IMPORT.matcher(text).find()).as(file.toString()).isFalse();
                 assertThat(text).as(file.toString()).doesNotContain("Repository", "EntityManager");
             }

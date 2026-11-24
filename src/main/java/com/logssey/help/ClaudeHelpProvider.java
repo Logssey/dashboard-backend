@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -69,6 +70,8 @@ class ClaudeHelpProvider {
     private final boolean enabled;
     private final String apiKey;
     private final boolean keyFileUnreadable;
+    /** Secrets Manager key (design doc 17). Used only when no key is given directly. Null when not configured. */
+    private final Supplier<String> keyStore;
     private final URI endpoint;
     private final boolean endpointAllowed;
     private final HttpClient http;
@@ -76,21 +79,34 @@ class ClaudeHelpProvider {
     private final JsonMapper json = new JsonMapper();
 
     @Autowired
-    ClaudeHelpProvider(@Value("${logssey.help.claude.enabled:false}") boolean enabled,
+    ClaudeHelpProvider(@Value("${logssey.help.claude.enabled:true}") boolean enabled,
                        @Value("${logssey.help.claude.api-key:}") String apiKey,
                        @Value("${logssey.help.claude.api-key-file:}") String keyFile,
+                       // Same Secrets Manager secret and AWS session settings as the secret-guide and report parts
+                       @Value("${logssey.help.claude.key-secret-id:${logssey.secret.guide.claude.api-key-secret-id:}}") String secretId,
+                       @Value("${logssey.help.claude.aws-region:${logssey.secret.guide.claude.aws-region:ap-northeast-1}}") String region,
+                       @Value("${logssey.secret.aws.collection.credentials-mode:WORKLOAD}") String credentialsMode,
+                       @Value("${logssey.secret.aws.collection.profile:}") String profile,
+                       @Value("${logssey.secret.aws.collection.credentials-file:}") String credentialsFile,
                        @Value("${logssey.help.claude.url:https://api.anthropic.com/v1/messages}") String url,
                        @Value("${logssey.help.claude.timeout-ms:30000}") int timeoutMillis) {
-        this(enabled, apiKey, keyFile, url, timeoutMillis, defaultClient(), false);
+        this(enabled, apiKey, keyFile, HelpClaudeKeyStore.secretsManager(secretId, region, credentialsMode, profile, credentialsFile),
+                url, timeoutMillis, defaultClient(), false);
     }
 
     /** Package-local constructor; loopback endpoints are accepted only from tests. */
     ClaudeHelpProvider(boolean enabled, String apiKey, String keyFile, String url, int timeoutMillis,
                        HttpClient http, boolean allowLoopback) {
+        this(enabled, apiKey, keyFile, null, url, timeoutMillis, http, allowLoopback);
+    }
+
+    ClaudeHelpProvider(boolean enabled, String apiKey, String keyFile, Supplier<String> keyStore, String url,
+                       int timeoutMillis, HttpClient http, boolean allowLoopback) {
         this.enabled = enabled;
         var key = readKey(apiKey, keyFile);
         this.apiKey = key.value();
         this.keyFileUnreadable = key.unreadable();
+        this.keyStore = keyStore;
         this.timeoutMillis = timeoutMillis;
         this.http = http;
         URI parsed;
@@ -107,11 +123,22 @@ class ClaudeHelpProvider {
     String configurationReason() {
         if (!enabled) return "DISABLED";
         if (keyFileUnreadable) return "KEY_FILE_UNREADABLE";
-        if (apiKey == null || apiKey.isBlank()) return "KEY_MISSING";
-        if (apiKey.chars().anyMatch(c -> c < 0x21 || c > 0x7e)) return "KEY_INVALID";
+        String key = currentKey();
+        if (key == null || key.isBlank()) return keyStore != null && !hasDirectKey() ? "KEY_STORE_UNAVAILABLE" : "KEY_MISSING";
+        if (key.chars().anyMatch(c -> c < 0x21 || c > 0x7e)) return "KEY_INVALID";
         if (!endpointAllowed) return "ENDPOINT_NOT_ALLOWED";
         if (timeoutMillis < 1_000 || timeoutMillis > 60_000) return "CONFIGURATION_INVALID";
         return "READY";
+    }
+
+    private boolean hasDirectKey() {
+        return apiKey != null && !apiKey.isBlank();
+    }
+
+    /** A key given directly (environment or file) wins; otherwise the Secrets Manager key, which may be null. */
+    private String currentKey() {
+        if (hasDirectKey()) return apiKey;
+        return keyStore == null ? null : keyStore.get();
     }
 
     String model() {
@@ -180,10 +207,12 @@ class ClaudeHelpProvider {
     }
 
     Reply send(String body) {
+        String key = currentKey();
+        if (key == null || key.isBlank()) return Reply.failed("PROVIDER_UNAVAILABLE");
         try {
             var request = HttpRequest.newBuilder(endpoint)
                     .timeout(Duration.ofMillis(timeoutMillis))
-                    .header("x-api-key", apiKey)
+                    .header("x-api-key", key)
                     .header("anthropic-version", API_VERSION)
                     .header("content-type", "application/json")
                     .header("accept", "application/json")
