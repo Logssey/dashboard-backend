@@ -297,8 +297,8 @@ class ReachQueryServiceTest {
         var byCve = items.stream().collect(java.util.stream.Collectors.toMap(i -> i.vulnerability().id(), i -> i));
         // L2 판정은 그대로이고 L3가 옆에 붙는다 (L2 도달 불가 + L3 구간 실행이 사람이 볼 1순위)
         assertThat(byCve.get("CVE-2026-1").verdict().status()).isEqualTo("UNREACHABLE");
-        assertThat(byCve.get("CVE-2026-1").l3()).isEqualTo(new ReachFindingResponse.L3("REGION", true, false));
-        assertThat(byCve.get("CVE-2026-2").l3()).isEqualTo(new ReachFindingResponse.L3("FUNCTION", false, true));
+        assertThat(byCve.get("CVE-2026-1").l3()).isEqualTo(new ReachFindingResponse.L3("REGION", true, false, "REACHABLE"));
+        assertThat(byCve.get("CVE-2026-2").l3()).isEqualTo(new ReachFindingResponse.L3("FUNCTION", false, true, "UNKNOWN"));
         assertThat(byCve.get("CVE-2026-3").l3()).isNull();
 
         var executed = new ReachFindingFilter(null, null, null, null, null, null, null, null, List.of("REGION", "FUNCTION"));

@@ -10,7 +10,10 @@ The reports come from running the app (same image) with the JaCoCo agent and a r
 scenario step ("001", "002", …), each a JaCoCo XML report <id>.xml in --segments. That is how a result
 says in which requests the code ran. --jacoco is one report of a whole run (segment "all").
 
-L3 is evidence next to the L2 verdict; it never changes it. It looks at every CVE of vuln-functions.json whose
+L3 is evidence next to the L2 verdict; this script never changes it. The dashboard does when it takes the
+result (API-13): it raises the verdict only as far as the CVE's rule allows ("l3" of the verdict entry in
+rules.json: region reachable | unknown | none, function unknown | none; callgraph verdicts without "l3" and CVEs
+without a rule: region reachable, function unknown), and never lowers it. It looks at every CVE of vuln-functions.json whose
 package is in the SBOM, whatever L2 said. Each CVE may carry
 
     "l3": {"version": "3.1.5",                      # library version the line numbers belong to

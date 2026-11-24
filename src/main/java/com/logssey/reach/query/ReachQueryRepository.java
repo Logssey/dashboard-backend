@@ -14,7 +14,9 @@ import java.util.Optional;
 
 import com.logssey.reach.query.dto.ReachFindingResponse;
 import com.logssey.reach.query.dto.ReachFindingDetailResponse;
+import com.logssey.reach.rule.ReachL3Raise;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 import tools.jackson.databind.JsonNode;
@@ -211,10 +213,18 @@ public class ReachQueryRepository {
     " ORDER BY deployment_rank, status_rank, severity_rank, cve_year, cve_number, finding_id";
 
     private final JdbcClient jdbcClient;
+    private final ReachL3Raise l3Raise;
     private final JsonMapper mapper = JsonMapper.builder().build();
 
-    public ReachQueryRepository(JdbcClient jdbcClient) {
+    @Autowired
+    public ReachQueryRepository(JdbcClient jdbcClient, ReachL3Raise l3Raise) {
         this.jdbcClient = jdbcClient;
+        this.l3Raise = l3Raise;
+    }
+
+    /** 동봉한 규칙 데이터로 (Spring 없이 만드는 테스트용) */
+    public ReachQueryRepository(JdbcClient jdbcClient) {
+        this(jdbcClient, ReachL3Raise.bundled());
     }
 
     boolean isAdmin(String loginId){
@@ -273,7 +283,9 @@ public class ReachQueryRepository {
                         json(rs.getString("proposal")), rs.getString("reset_reason")),
                 // L3 결과가 없으면 null (앱을 띄워 본 적 없는 이미지, 판정 데이터 없는 CVE)
                 rs.getString("l3_reached") == null ? null : new ReachFindingResponse.L3(rs.getString("l3_reached"),
-                        rs.getBoolean("l3_regions_checked"), rs.getBoolean("l3_startup_only")),
+                        rs.getBoolean("l3_regions_checked"), rs.getBoolean("l3_startup_only"),
+                        l3Raise.limit(rs.getString("vulnerability_id"), rs.getString("l3_reached"),
+                                rs.getBoolean("l3_regions_checked"))),
                 rs.getObject("first_seen_at", OffsetDateTime.class));
     }
 
@@ -495,6 +507,7 @@ public class ReachQueryRepository {
         JsonNode note = detail.get("note");
         return new ReachFindingDetailResponse.L3(reached, rs.getBoolean("l3_regions_checked"),
                 rs.getBoolean("l3_startup_only"),
+                l3Raise.limit(rs.getString("vulnerability_id"), reached, rs.getBoolean("l3_regions_checked")),
                 detail.get("during"), detail.get("functions"), detail.get("regions"), detail.get("paths"),
                 note == null || !note.isString() ? null : note.asString(),
                 new ReachFindingDetailResponse.L3Run(rs.getLong("l3_scan_id"), rs.getString("l3_scenario"),

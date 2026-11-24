@@ -95,7 +95,12 @@ whose execution shows that the vulnerable code itself ran, not only the method a
   the statement that is unsafe without the check.
 - When the narrowest line also runs for harmless input (the fix added one term to a condition that is
   always evaluated), keep that line and say in `l3.note` what its execution does not show. A region is
-  evidence that the code ran, not that the input was an attack.
+  evidence that the code ran, not that the input was an attack. Whether its run also shows the condition
+  the rule checks (a configuration or feature) depends on the line: a line that runs only when that feature
+  is set up may show it, a line that runs in every application, whether or not the feature is in use, does
+  not. How far a run of the region may raise the verdict is
+  set by the person who writes the rule (`l3` of the verdict entry in `rules.json`); you only explain in
+  `l3.note` what the region's execution shows and what it does not.
 - Regions do not have to cover every sink. The narrowest place is enough; leave out a method that only
   loops over or forwards to it.
 - When `lines` of the method is `-` the jar has no line numbers: leave `lines` out. The region is then the

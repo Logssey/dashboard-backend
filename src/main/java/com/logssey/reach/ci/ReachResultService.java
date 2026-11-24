@@ -24,6 +24,7 @@ import com.logssey.reach.ci.auth.ReachCiAccess;
 import com.logssey.reach.ci.auth.ReachCiCaller;
 import com.logssey.reach.ci.dto.ReachResultUploadResponse;
 import com.logssey.reach.l1.ReachL1Service;
+import com.logssey.reach.rule.ReachL3Raise;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -65,6 +66,7 @@ public class ReachResultService {
     private final ReachL1Service l1;
     private final TransactionTemplate tx;
     private final ReachCiAccess access;
+    private final ReachL3Raise l3Raise;
     private final JsonMapper mapper = JsonMapper.builder()
             .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)   // 러너가 칸을 더해도 받는다
             .build();
@@ -75,16 +77,17 @@ public class ReachResultService {
 
     @Autowired
     public ReachResultService(ReachResultRepository repository, ReachL1Service l1, PlatformTransactionManager manager,
-                              ReachCiAccess access) {
+                              ReachCiAccess access, ReachL3Raise l3Raise) {
         this.repository = repository;
         this.l1 = l1;
         this.tx = new TransactionTemplate(manager);
         this.access = access;
+        this.l3Raise = l3Raise;
     }
 
-    /** CI 설정 없이(CI 토큰은 모두 거부) */
+    /** CI 설정 없이(CI 토큰은 모두 거부), 동봉한 규칙 데이터로 */
     ReachResultService(ReachResultRepository repository, ReachL1Service l1, PlatformTransactionManager manager) {
-        this(repository, l1, manager, ReachCiAccess.closed());
+        this(repository, l1, manager, ReachCiAccess.closed(), ReachL3Raise.bundled());
     }
 
     /** 검사를 마친 Finding 하나. id 칸(대상·스캔·Finding)은 적재하면서 채운다 */
@@ -232,23 +235,28 @@ public class ReachResultService {
     }
 
     /**
-     * L3가 실제 실행을 확인했으면 L2 판정을 올린다 (PRD FR-14).
-     * 취약 구간이 실행됐으면(REGION) 도달 불가·확인 못 함 → 도달 가능. 취약 함수는 실행됐는데 구간을 확인하지 못했으면
-     * (FUNCTION, regionsChecked=false) 도달 불가 → 확인 못 함. 실행되지 않았다는 것(NONE)으로는 내리지 않는다.
+     * L3가 실제 실행을 확인했으면 L2 판정을 올린다 (PRD FR-14). 어디까지 올리는지는 CVE마다 규칙 데이터가 정한다(ReachL3Raise).
+     * 호출 그래프 판정은 취약 구간이 실행됐으면(REGION) 도달 불가·확인 못 함 → 도달 가능, 취약 함수는 실행됐는데 구간을
+     * 확인하지 못했으면(FUNCTION, regionsChecked=false) 도달 불가 → 확인 못 함. 규칙 판정은 그 실행이 규칙의 조건을 보여 줄 때만
+     * 도달 가능, 기능을 쓴다는 것만 보여 주면 확인 못 함까지, 어느 앱에서나 실행되는 코드면 올리지 않는다.
+     * 실행되지 않았다는 것(NONE)으로는 내리지 않는다.
      * 근거 끝에 RUNTIME 한 줄을 더하고 근거 해시를 다시 만든다. 그 줄에는 스캔 번호·관측 시각처럼 다시 대조할 때마다 바뀌는
      * 값을 넣지 않는다. 같은 L3 결과면 같은 해시라 재대조마다 사람 검토가 되돌아가지 않는다(관측 근거 항목은 Finding의 l3.run)
      */
     private Row withL3(Row row, ReachL3Input.Result l3) {
         if (l3 == null) return row;
         boolean region = "REGION".equals(l3.reached());
-        String raised = region && List.of("UNREACHABLE", "UNKNOWN").contains(row.status()) ? "REACHABLE"
-                : "FUNCTION".equals(l3.reached()) && !l3.regionsChecked() && "UNREACHABLE".equals(row.status()) ? "UNKNOWN"
-                : null;
+        String raised = l3Raise.raise(row.vulnerabilityId(), row.status(), l3.reached(), l3.regionsChecked());
         if (raised == null) return row;
 
-        String said = region
+        // 앞 두 문장은 이 규칙 전부터 쓰던 그대로다(근거 해시가 같아야 이미 올린 Finding의 검토가 되돌아가지 않는다)
+        String said = region && "REACHABLE".equals(raised)
                 ? (l3.startupOnly() ? "L3: 이미지를 띄웠을 때 앱이 뜨는 동안 취약 구간이 실제로 실행돼 도달 가능으로 올렸다(요청으로 실행된 것은 아니다)."
                         : "L3: 이미지를 띄워 보낸 요청에서 취약 구간이 실제로 실행돼 도달 가능으로 올렸다.")
+                : region
+                ? (l3.startupOnly() ? "L3: 이미지를 띄웠을 때 앱이 뜨는 동안 취약 구간이 실행됐다. "
+                        : "L3: 이미지를 띄워 보낸 요청에서 취약 구간이 실행됐다. ")
+                        + "이 구간은 그 기능을 쓸 때 실행되지만 취약 조건까지 보여 주지는 않아, 도달 불가를 확인 못 함으로 올렸다."
                 : "L3: 취약 함수가 실제로 실행됐지만 취약 구간은 확인하지 못해, 도달 불가를 확인 못 함으로 올렸다.";
         var detail = mapper.createObjectNode()
                 .put("executed", region)
