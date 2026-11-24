@@ -780,3 +780,11 @@ Logssey 사용법 도우미에서 "대응 순서 물어보기"로 먼저 볼 것
 - 한도에 닿으면 질문만 "오늘 질문 한도를 모두 썼어요"로 막히고, 숫자 상자·신호 알림은 AI를 쓰지 않으므로 계속 동작한다.
 - 서버를 다시 켜면 횟수가 0으로 돌아가므로 마지막 안전장치는 Anthropic 콘솔 월 지출 상한(8만원)이다.
 - 바꾸려면 `HELP_LIMIT_USER_PER_DAY`, `HELP_LIMIT_GLOBAL_PER_DAY`(또는 api.properties의 `logssey.help.limit.*`).
+
+### 17.2 키 이름 기본값 (2026-11-24)
+#172 배포 뒤 운영 상태가 `KEY_MISSING`이었다. 켜기는 됐지만 운영 호스트의 `api.properties`에 시크릿 가이드용 비밀 이름 줄이 아직 없어서(인프라 README: 그 설정은 해당 API 이미지를 배포한 뒤 호스트에 반영) 키를 찾을 곳을 몰랐다.
+
+- 설정이 없으면 팀이 정한 Claude 키 이름 `logssey/dashboard/ai/claude-api-key`(인프라 README)를 기본값으로 쓴다. 이름이지 값이 아니다. 운영 `api.properties`에 `logssey.help.claude.key-secret-id`나 `logssey.secret.guide.claude.api-key-secret-id`가 있으면 그 값이 우선이다.
+- 키를 못 읽으면 실패 종류(예외 이름)만 서버 로그에 한 번 남긴다(키·AWS 메시지는 남기지 않음). 상태는 `KEY_STORE_UNAVAILABLE`.
+- 그래도 `KEY_STORE_UNAVAILABLE`이면 남은 원인은 운영 쪽이다: API 역할의 그 비밀 읽기 권한(인프라 `claude-api.tf` 적용 여부), 운영 `api.properties`의 AWS 세션 설정(`logssey.secret.aws.collection.credentials-mode=WORKLOAD`, `credentials-file=/run/aws/credentials.json`). 이건 서버 담당자가 확인한다.
+- 팀 방식과 다른 점(공유용): 이름 기본값을 코드에 둠(호스트 설정이 우선), 키가 있으면 기본으로 켜짐(#172부터), 챗봇 PR은 develop으로 바로 올림.
