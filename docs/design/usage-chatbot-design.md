@@ -751,3 +751,32 @@ Logssey 사용법 도우미에서 "대응 순서 물어보기"로 먼저 볼 것
 - 프론트 테스트 431개 통과 (자동 15분 주기와 "지금 확인"이 바로 다시 읽는지 포함, 신호 4종 조건, 나아질 때는 알리지 않음, 처음 탭 기준, 질문에 숫자 없음, 저장 값 검사·로그아웃 삭제, 신호 조회가 도움말 API를 부르지 않음), 빌드 성공.
 - 로컬 크롬: 처음 로그인 때는 기준만 저장되고 점이 없음. 기준의 정상 센서를 2로 바꾸자 `?` 버튼에 빨간 점과 "새 보안 신호 1개", 카드에 "정상 런타임 센서가 2개에서 0개로 줄었어요"와 "런타임 보안 열기". "확인했어요"를 누르면 점과 카드가 사라지고 기준이 갱신됨. Claude 호출 없음, 콘솔 에러 없음.
 - "지금 확인" (같은 날): 누르면 바로 GET 6개(런타임·시크릿·IaC·취약점 3)가 나가고 확인 시각이 갱신됨(15:52 → 15:53), 콘솔 에러 없음.
+
+## 17. 운영 키: Secrets Manager에서 읽기 (2026-11-24)
+
+배포 사이트 챗봇이 `DISABLED`였던 이유: 운영 서버는 환경변수가 아니라 호스트의 `api.properties`로 설정하고, 그 파일에는 시크릿 가이드·리포트가 쓰는 Claude 키의 **Secrets Manager 비밀 이름**(`logssey.secret.guide.claude.api-key-secret-id=logssey/dashboard/ai/claude-api-key`)만 있다. 챗봇은 환경변수·키 파일로만 키를 받아서 운영에서 키를 찾지 못했다.
+
+| 항목 | 정한 내용 |
+| --- | --- |
+| 키를 찾는 순서 | `HELP_ANTHROPIC_API_KEY`(없으면 `ANTHROPIC_API_KEY`) → `HELP_ANTHROPIC_API_KEY_FILE` → Secrets Manager. 직접 준 키가 있으면 Secrets Manager를 부르지 않는다 |
+| Secrets Manager 설정 | 리포트 파트(`ReportClaudeKeySource`)와 같다. 비밀 이름 `logssey.help.claude.key-secret-id`(없으면 `logssey.secret.guide.claude.api-key-secret-id`), 리전, AWS 세션 설정(`logssey.secret.aws.collection.*`). 운영 IAM 권한은 이미 API 역할에 있다(infrastructure `claude-api.tf`) |
+| 코드 경계 | 새 클래스 `HelpClaudeKeyStore` 하나만 AWS를 쓰고, 밖에서 가져다 쓰는 것은 AWS 자격 증명 도구 `com.logssey.secret.aws.SecretAwsSourceCredentials` 하나뿐이다(고치지 않음). `HelpBoundaryTest`가 이 한 줄만 허용하고, 다른 챗봇 파일은 AWS·시크릿 코드를 쓰지 못하게 검사한다. 시크릿 탐지 결과·키 목록은 여전히 읽지 않는다 |
+| 기억 | 읽은 키는 10분, 실패는 1분 기억한다. 상태 확인마다 AWS를 부르지 않는다. 키 값은 로그·응답에 남기지 않고, AWS 요청 본문 로그가 켜져 있으면 읽지 않는다 |
+| 켜기 | `logssey.help.claude.enabled` 기본값을 `true`로 바꿨다. 키를 못 찾으면 `KEY_MISSING`(설정 없음) 또는 `KEY_STORE_UNAVAILABLE`(읽기 실패)로 "준비되지 않았어요"만 보인다. 끄려면 `HELP_CLAUDE_ENABLED=false` 또는 `logssey.help.claude.enabled=false` |
+| 비용 | 배포되면 바로 질문을 받을 수 있다. 같은 키를 시크릿 가이드·리포트와 함께 쓰고 팀 예산이 월 8만원(약 $55)이라, 하루 한도를 **사용자 15회, 전체 40회**로 낮췄다(아래 17.1). Anthropic 콘솔 지출 상한도 8만원으로 건다 |
+
+확인: 챗봇 테스트 48개 통과 (키 10분·실패 1분 기억, 잘못된 값 거절, 비밀 이름·리전 검사, 직접 키가 있으면 Secrets Manager 안 부름, 상태 코드, Secrets Manager 키가 헤더로만 나가고 본문에 없음, 경계 테스트).
+
+### 17.1 하루 한도 낮춤 (2026-11-24)
+팀 Claude 예산이 월 8만원(약 $55)이고 시크릿 가이드·리포트와 같은 키를 쓴다. 7.2의 처음 한도(사용자 하루 40회, 전체 하루 300회)로는 평소 사용(하루 100회 예시, 월 약 $72)만으로도 넘을 수 있어서 낮췄다.
+
+| 제한 | 처음 | 바꾼 값 |
+| --- | --- | --- |
+| 전체 하루 | 300회 | **40회** |
+| 사용자 하루 | 40회 | **15회** |
+| 사용자 분당 5회, 동시 1건, 전체 분당 20회 | | 그대로 |
+
+- 하루 40회를 모두 가장 비싼 질문(약 $0.035)으로 써도 하루 약 $1.4, 월 약 $42. 평소 섞어 쓰면 월 약 $25~30. 남는 몫은 시크릿 가이드·리포트용이다.
+- 한도에 닿으면 질문만 "오늘 질문 한도를 모두 썼어요"로 막히고, 숫자 상자·신호 알림은 AI를 쓰지 않으므로 계속 동작한다.
+- 서버를 다시 켜면 횟수가 0으로 돌아가므로 마지막 안전장치는 Anthropic 콘솔 월 지출 상한(8만원)이다.
+- 바꾸려면 `HELP_LIMIT_USER_PER_DAY`, `HELP_LIMIT_GLOBAL_PER_DAY`(또는 api.properties의 `logssey.help.limit.*`).

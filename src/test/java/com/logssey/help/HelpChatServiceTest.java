@@ -70,6 +70,20 @@ class HelpChatServiceTest {
         return new ClaudeHelpProvider(enabled, enabled ? FAKE_KEY : "", "", endpoint, 5_000, http, true);
     }
 
+    @Test
+    void keyFromSecretsManagerIsSentOnlyInTheHeader() {
+        var http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2))
+                .followRedirects(HttpClient.Redirect.NEVER).build();
+        var store = new HelpClaudeKeyStore(() -> FAKE_KEY, () -> 1_000L);
+        var provider = new ClaudeHelpProvider(true, "", "", store, endpoint, 5_000, http, true);
+        NEXT_RESPONSE.set("{}");
+        assertThat(provider.configurationReason()).isEqualTo("READY");
+        provider.send(provider.requestBody(new HelpDocumentLibrary().documents(), "요약", java.util.List.of(), "스캔은 어떻게 해요?"));
+        assertThat(REQUESTS).hasSize(1);
+        assertThat(REQUESTS.get(0).apiKey()).isEqualTo(FAKE_KEY);
+        assertThat(REQUESTS.get(0).body()).doesNotContain(FAKE_KEY);
+    }
+
     private static HelpChatService service(HelpCallBudget.Limits limits) {
         var clock = new HelpCallBudgetTest.MutableClock(Instant.parse("2026-11-19T01:00:00Z"), ZoneId.of("Asia/Seoul"));
         return new HelpChatService(new HelpDocumentLibrary(), provider(true), new HelpCallBudget(limits, clock));

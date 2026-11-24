@@ -95,4 +95,15 @@ class HelpCallBudgetTest {
         var budget = new HelpCallBudget(new HelpCallBudget.Limits(5, 40, 20, 300), clock());
         assertThat(budget.acquire(" ").allowed()).isFalse();
     }
+
+    /** Design doc 17.1: the shared team key has a monthly budget, so the daily caps stay small by default. */
+    @org.junit.jupiter.api.Test
+    void defaultDailyCapsFitTheMonthlyBudget() throws java.io.IOException {
+        String properties = java.nio.file.Files.readString(java.nio.file.Path.of("src/main/resources/application.properties"));
+        org.assertj.core.api.Assertions.assertThat(properties)
+                .contains("logssey.help.limit.user-per-day=${HELP_LIMIT_USER_PER_DAY:15}")
+                .contains("logssey.help.limit.global-per-day=${HELP_LIMIT_GLOBAL_PER_DAY:40}");
+        // 40 calls a day at the dearest answer (about $0.035) stay near $42 a month.
+        org.assertj.core.api.Assertions.assertThat(40 * 0.035 * 30).isLessThan(55);
+    }
 }

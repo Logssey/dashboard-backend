@@ -40,9 +40,9 @@ class HelpCallBudget {
 
     @Autowired
     HelpCallBudget(@Value("${logssey.help.limit.user-per-minute:5}") int userPerMinute,
-                   @Value("${logssey.help.limit.user-per-day:40}") int userPerDay,
+                   @Value("${logssey.help.limit.user-per-day:15}") int userPerDay,
                    @Value("${logssey.help.limit.global-per-minute:20}") int globalPerMinute,
-                   @Value("${logssey.help.limit.global-per-day:300}") int globalPerDay) {
+                   @Value("${logssey.help.limit.global-per-day:40}") int globalPerDay) {
         this(new Limits(userPerMinute, userPerDay, globalPerMinute, globalPerDay),
                 Clock.system(ZoneId.of("Asia/Seoul")));
     }
