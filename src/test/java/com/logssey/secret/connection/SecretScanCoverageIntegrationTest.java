@@ -13,7 +13,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 import static org.assertj.core.api.Assertions.*;
 
 class SecretScanCoverageIntegrationTest {
-    @Test void notionCoverageGatesRuntimeSupportAndRetainsTheCommonStoragePolicyRequirement() {
+    @Test void notionCoverageChecksRuntimeSupportAndAvoidsPolicyWorkWithoutFindings() {
         long c=connection(),s=scope(c,"NOTION_PAGE_CONTENT");
         jdbc.update("UPDATE secret_connections SET provider='NOTION',auth_ref='notion-internal:default' WHERE connection_id=?",c);
         jdbc.update("UPDATE secret_connection_scopes SET history_limit='CURRENT_VERSION_ONLY',"
@@ -27,7 +27,7 @@ class SecretScanCoverageIntegrationTest {
         assertThat(((Map<?,?>)enabled.get("capabilities")).get("canTest")).isEqualTo(true);
         var scope=items(service.scopes("operator",c,"ALL","ALL",false,0,20)).getFirst();
         assertThat(scope.get("contentType")).isEqualTo("NOTION_PAGE_CONTENT");
-        assertThat(scope.get("setupReasonCodes").toString()).contains("POLICY_MISSING");
+        assertThat(scope.get("setupReasonCodes").toString()).doesNotContain("POLICY_MISSING");
         assertThat(scope.get("setupState")).isEqualTo("READY");
         jdbc.update("UPDATE secret_connection_scopes SET approved_ref=approved_ref||'?all=true' WHERE scope_id=?",s);
         assertThat(items(service.connections("operator","ALL","ALL",0,20)).getFirst().get("scanBlockedReasonCode"))
@@ -49,9 +49,45 @@ class SecretScanCoverageIntegrationTest {
         jdbc.update("UPDATE secret_connection_scopes SET approved_ref='github://Logssey/test-find-key/main/fixtures/' WHERE scope_id=?",s);
         var row=items(service.scopes("operator",c,"ALL","ALL",false,0,20)).getFirst();
         assertThat(row.get("safeDisplayAlias")).isEqualTo("Logssey/test-find-key · main · fixtures/");
+        assertThat(row.get("githubTarget")).isEqualTo(new com.logssey.secret.query.SecretSourceDetails.GitHubTarget(
+                "Logssey/test-find-key","main","fixtures/"));
         var connection=items(service.connections("operator","ALL","ALL",0,20)).getFirst();
         assertThat(connection.get("targetSummary").toString()).contains("Logssey/test-find-key");
         assertThat(connection.toString()).doesNotContain("github://","secret-value","approved_ref");
+    }
+
+    @Test void scopeTargetsSeparateBranchesAndFollowOnlyTheCurrentApprovedScope() {
+        long c=connection(),main=scope(c,"GITHUB_REPOSITORY_FILES"),develop=scope(c,"GITHUB_REPOSITORY_FILES");
+        jdbc.update("UPDATE secret_connection_scopes SET approved_ref='github://Logssey/project/main/src/' WHERE scope_id=?",main);
+        jdbc.update("UPDATE secret_connection_scopes SET approved_ref='github://Logssey/project/develop/src/' WHERE scope_id=?",develop);
+        var targets=items(service.scopes("operator",c,"ALL","ALL",false,0,20)).stream().map(item->item.get("githubTarget")).toList();
+        assertThat(targets).containsExactly(
+                new com.logssey.secret.query.SecretSourceDetails.GitHubTarget("Logssey/project","main","src/"),
+                new com.logssey.secret.query.SecretSourceDetails.GitHubTarget("Logssey/project","develop","src/"));
+        jdbc.update("UPDATE secret_connection_scopes SET approved_ref='github://Logssey/project/feature%2Fsecret/config/' WHERE scope_id=?",develop);
+        assertThat(items(service.scopes("operator",c,"ALL","ALL",false,0,20)).getLast().get("githubTarget"))
+                .isEqualTo(new com.logssey.secret.query.SecretSourceDetails.GitHubTarget("Logssey/project","feature/secret","config/"));
+        assertThatThrownBy(()->service.scopes("stranger",c,"ALL","ALL",false,0,20)).isInstanceOf(ApiException.class);
+    }
+
+    @Test void executionTargetsRetainTheirOriginalBranchAndDoNotInventUnknownHistory() {
+        long c=connection(),s=scope(c,"GITHUB_REPOSITORY_FILES");
+        jdbc.update("UPDATE secret_connection_scopes SET approved_ref='github://Logssey/project/main/src/' WHERE scope_id=?",s);
+        long run=run(c,"SUCCEEDED");
+        outcome(run,s,"SUCCEEDED","SKIPPED",false);
+        jdbc.update("UPDATE secret_connection_scopes SET revision=2,approved_ref='github://Logssey/project/develop/config/' WHERE scope_id=?",s);
+        assertThat(facts.scopes(run).getFirst().githubTarget())
+                .isEqualTo(new com.logssey.secret.query.SecretSourceDetails.GitHubTarget("Logssey/project","main","src/"));
+        var mapper=tools.jackson.databind.json.JsonMapper.builder().build();
+        var target=mapper.readTree(mapper.writeValueAsString(facts.scopes(run))).get(0).get("githubTarget");
+        assertThat(target.get("repository").asString()).isEqualTo("Logssey/project");
+        assertThat(target.get("branch").asString()).isEqualTo("main");
+        assertThat(target.get("path").asString()).isEqualTo("src/");
+        assertThat(items(service.scopes("operator",c,"ALL","ALL",false,0,20)).getFirst().get("githubTarget"))
+                .isEqualTo(new com.logssey.secret.query.SecretSourceDetails.GitHubTarget("Logssey/project","develop","config/"));
+        jdbc.update("UPDATE secret_run_scopes SET snapshot_approved_ref=NULL WHERE run_id=?",run);
+        assertThat(facts.scopes(run).getFirst().githubTarget()).isNull();
+        assertThat(mapper.writeValueAsString(facts.scopes(run))).doesNotContain("develop","approved_ref","github://");
     }
     @Test void exclusiveOutcomesCountSuccessfulSeparatelyFromFinishedAndUseStageEvidence(){
         long c=connection();List<Long> scopes=new ArrayList<>();for(int i=0;i<12;i++)scopes.add(scope(c,"GITHUB_REPOSITORY_FILES"));

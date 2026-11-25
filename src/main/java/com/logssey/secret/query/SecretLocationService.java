@@ -301,6 +301,7 @@ public class SecretLocationService {
         if(row.allCurrentFindingsCorrected()&&row.caseId()==null) return "VIEW_DECISION_HISTORY";
         if(row.requiresReassessment() && access.hasConnectionRole(actor,row.connectionId(),SecretRole.SECURITY)) return "REVIEW_EVIDENCE";
         if(row.caseId()!=null) return "VIEW_CASE";
+        if("CANDIDATE".equals(row.componentState()) || !"PRESENT".equals(row.presence())) return "VIEW_DETAIL";
         if(access.hasConnectionRole(actor,row.connectionId(),SecretRole.SECURITY))
             return "ABNORMAL".equals(row.exposure())?"LINK_CASE":"REVIEW_EVIDENCE";
         return "VIEW_DETAIL";
@@ -321,6 +322,7 @@ public class SecretLocationService {
         if("RESOLVED".equals(row.actionStatus())) return "INVENTORY";
         if(row.requiresReassessment()) return "NEEDS_DECISION";
         if("ABNORMAL".equals(row.exposure())) return row.caseId()==null?"NEEDS_CASE_LINK":"ACTION_REQUIRED";
+        if("CANDIDATE".equals(row.componentState()) || !"PRESENT".equals(row.presence())) return "INVENTORY";
         if("NORMAL".equals(row.exposure())&&"ALLOWED".equals(row.storagePolicyResult())&&!row.requiresReassessment()) return "NORMAL_INVENTORY";
         return "NEEDS_DECISION";
     }

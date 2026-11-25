@@ -12,7 +12,7 @@ public record SecretRunProgress(
         String eventsStatus, boolean historyComplete, boolean truncated, long suppressedEventCount,
         OffsetDateTime recordedFrom, OffsetDateTime expiredAt,
         List<Stage> stages, List<Event> events, long nextAfterEventId, boolean hasMore,
-        ValidationSummary validationSummary) {
+        ValidationSummary validationSummary, String scanKind) {
     public record Capabilities(boolean canViewFindings) {}
     public record Stage(String key, String status, OffsetDateTime startedAt,
                         OffsetDateTime finishedAt, String reasonCode,

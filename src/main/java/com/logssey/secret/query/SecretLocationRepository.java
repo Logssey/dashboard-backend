@@ -22,8 +22,9 @@ public class SecretLocationRepository {
 
     /** Called only with a row that passed the shared occurrence ACL. */
     public Map<String,Object> sourceDetails(Row row) {
-        return jdbc.query("SELECT s.approved_ref,o.source_object_ref,o.location_key FROM secret_occurrences o JOIN secret_connection_scopes s USING(scope_id) WHERE o.occurrence_id=:id",
-            Map.of("id",row.occurrenceId()),(rs,n)->SecretSourceDetails.describe(row.source(),rs.getString(1),rs.getString(2),rs.getString(3))).stream().findFirst().orElse(Map.of());
+        return jdbc.query("SELECT s.approved_ref,o.source_object_ref,o.location_key,o.source_context_ref,o.source_context_status FROM secret_occurrences o JOIN secret_connection_scopes s USING(scope_id) WHERE o.occurrence_id=:id",
+            Map.of("id",row.occurrenceId()),(rs,n)->SecretSourceDetails.describeObserved(row.source(),rs.getString(1),
+                    rs.getString(4),rs.getString(5),rs.getString(2),rs.getString(3))).stream().findFirst().orElse(Map.of());
     }
     public List<Map<String,Object>> detectionEvidence(Row row) {
         return jdbc.query("SELECT rule_id,detected_at,run_id FROM secret_findings WHERE occurrence_id=:id ORDER BY detected_at DESC,finding_id DESC LIMIT 20",

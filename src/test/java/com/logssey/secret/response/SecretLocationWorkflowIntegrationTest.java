@@ -151,9 +151,10 @@ class SecretLocationWorkflowIntegrationTest {
                 approved,
                 occurrence);
         jdbc.update(
-                "UPDATE secret_occurrences SET source_object_ref=?,location_key=? WHERE occurrence_id=?",
+                "UPDATE secret_occurrences SET source_object_ref=?,location_key=?,source_context_ref=?,source_context_status='OBSERVED' WHERE occurrence_id=?",
                 path,
                 line,
+                approved,
                 occurrence);
     }
 
@@ -210,6 +211,37 @@ class SecretLocationWorkflowIntegrationTest {
         tx.execute(s->service.checklist(caseId,own,new SecretLocationWorkflow.Checklist(true,"S2_V1","TICKET:SEC-1",2L),"alice"));
         assertThat(jdbc.queryForObject("SELECT response_status FROM secret_case_occurrences WHERE occurrence_id=?",String.class,occ1)).isEqualTo("OPEN");
         assertThat(((java.util.List<?>)service.detail(caseId,"alice").get("checklist"))).hasSize(4);
+    }
+    @Test void optedInCoordinatorInheritsOnlyUnassignedEligibleLocationsAndFutureLinks() {
+        grant(alice,"REMEDIATOR",conn2);
+        tx.execute(status->service.coordinator(caseId,new SecretLocationWorkflow.Coordinator(null,alice,"INITIAL_ASSIGNMENT",0L,true),"security"));
+        assertThat(jdbc.queryForList("SELECT assigned_user_id FROM secret_case_occurrences WHERE case_id=?",Long.class,caseId)).containsOnly(alice);
+        long key=jdbc.queryForObject("SELECT credential_set_id FROM secret_response_cases WHERE case_id=?",Long.class,caseId);
+        long nextConnection=connection();grant(alice,"REMEDIATOR",nextConnection);
+        long third=occurrence(key,nextConnection);
+        // Use another line so the existing same-scope location remains independently addressable.
+        jdbc.update("UPDATE secret_occurrences SET location_key='L9' WHERE occurrence_id=?",third);
+        jdbc.update("INSERT INTO secret_case_occurrences(case_id,occurrence_id,credential_set_id) VALUES(?,?,?)",caseId,third,key);
+        assertThat(jdbc.queryForObject("SELECT assigned_user_id FROM secret_case_occurrences WHERE occurrence_id=?",Long.class,third)).isEqualTo(alice);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_location_activities WHERE occurrence_id=? AND activity_type='LOCATION_ASSIGNED'",Long.class,third)).isEqualTo(1);
+    }
+    @Test void selfAssignmentRequiresActualRemediatorGrantsAndPreservesOtherOwners() {
+        code(ErrorCode.INVALID_INPUT,()->tx.execute(status->service.assignSelf(caseId,new SecretLocationWorkflow.SelfAssignment(0L,true),"security")));
+        grant(security,"REMEDIATOR",conn1);grant(security,"REMEDIATOR",conn2);
+        assign(occ2,bob,0,0);
+        tx.execute(status->service.assignSelf(caseId,new SecretLocationWorkflow.SelfAssignment(1L,true),"security"));
+        assertThat(jdbc.queryForObject("SELECT assigned_user_id FROM secret_case_occurrences WHERE occurrence_id=?",Long.class,occ1)).isEqualTo(security);
+        assertThat(jdbc.queryForObject("SELECT assigned_user_id FROM secret_case_occurrences WHERE occurrence_id=?",Long.class,occ2)).isEqualTo(bob);
+    }
+    @Test void internalActionReferenceAndCompletionCommitTogetherAndReplayOnce() {
+        assign(occ1,alice,0,0);
+        var request=new SecretLocationWorkflow.Action("ROTATED",occ1,OffsetDateTime.now().minusMinutes(1),null,1L,1L,"internal-and-done",true);
+        var result=service.action(caseId,request,"alice");
+        assertThat(service.action(caseId,request,"alice")).isEqualTo(result);
+        assertThat(jdbc.queryForObject("SELECT evidence_ref FROM secret_action_records",String.class)).matches("CHANGE:ACTION-[1-9][0-9]*");
+        assertThat(jdbc.queryForObject("SELECT response_status FROM secret_case_occurrences WHERE occurrence_id=?",String.class,occ1)).isEqualTo("REVALIDATION_PENDING");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_location_activities WHERE activity_type IN ('ACTION_RECORDED','ACTIONS_COMPLETED')",Long.class)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT version FROM secret_response_cases WHERE case_id=?",Long.class,caseId)).isEqualTo(2);
     }
     private SecretLocationWorkflow.Action action(long occ,String type,long cv,long ov,String key){return new SecretLocationWorkflow.Action(type,occ,OffsetDateTime.now().minusMinutes(1),"CHANGE:SEC-12",cv,ov,key);}
     private void assign(long occ,long user,long cv,long ov){tx.execute(s->service.assign(caseId,occ,new SecretLocationWorkflow.Assignment(null,user,"INITIAL_ASSIGNMENT",cv,ov),"security"));}

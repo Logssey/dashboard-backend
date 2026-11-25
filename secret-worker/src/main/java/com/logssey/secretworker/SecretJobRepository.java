@@ -41,12 +41,25 @@ JOIN secret_connections c ON c.connection_id = j.connection_id
 JOIN secret_scan_runs r ON r.job_id = j.job_id
 WHERE j.status = 'PENDING' AND j.available_at <= ? AND c.status = 'ACTIVE'
   AND c.provider = COALESCE(?, c.provider)
+  AND (j.kind NOT IN ('FULL_SCAN','REVALIDATE') OR NOT EXISTS(
+    SELECT 1 FROM secret_jobs active WHERE active.connection_id=j.connection_id
+      AND active.kind IN ('FULL_SCAN','REVALIDATE') AND active.status='LEASED'))
   AND (c.provider<>'NOTION' OR NOT EXISTS(SELECT 1 FROM secret_connections cooldown
     WHERE cooldown.provider='NOTION' AND cooldown.auth_ref=c.auth_ref
       AND cooldown.source_retry_at>clock_timestamp()))
 ORDER BY j.available_at, j.job_id
-LIMIT ? FOR UPDATE OF j SKIP LOCKED
+LIMIT ? FOR UPDATE OF c,j SKIP LOCKED
 """, (rs, row) -> jobRow(rs), now, provider, limit);
+    }
+
+    boolean connectionAvailableForClaim(long jobId) {
+        // Recheck in a fresh READ COMMITTED statement after lockAvailable owns the connection lock.
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT j.kind NOT IN ('FULL_SCAN','REVALIDATE') OR NOT EXISTS(
+                  SELECT 1 FROM secret_jobs active WHERE active.connection_id=j.connection_id
+                    AND active.kind IN ('FULL_SCAN','REVALIDATE') AND active.status='LEASED')
+                FROM secret_jobs j WHERE j.job_id=?
+                """,Boolean.class,jobId));
     }
 
     List<JobRow> lockExpired(OffsetDateTime now, int limit) {
@@ -228,7 +241,7 @@ WHERE job_id = ?
                 """, code, row.runId());
         jdbc.update("""
                 UPDATE secret_run_scopes SET
-                    collection_status = 'PENDING', object_count = NULL, failure_code = NULL,excluded_object_count=0,
+                    collection_status = 'PENDING', object_count = NULL, failure_code = NULL,excluded_object_count=0,exclusion_reasons=NULL,
                     started_at = NULL, finished_at = NULL
                 WHERE run_id = ? AND collection_status IN ('RUNNING', 'PARTIAL', 'FAILED')
                 """, row.runId());
@@ -282,6 +295,9 @@ WHERE job_id = ?
                                   AND rs.collection_status = 'SUCCEEDED'
                                   AND rs.detection_stage_status IN ('SUCCEEDED','SKIPPED')
                                   AND rs.scope_revision = v.scope_revision AND scope.revision = v.scope_revision AND scope.response_origin_version=v.scope_origin_version
+                                  AND (scope.content_type<>'GITHUB_REPOSITORY_FILES' OR
+                                       (target_occurrence.source_context_ref=rs.snapshot_approved_ref
+                                         AND target_occurrence.source_context_ref=scope.approved_ref))
                                   AND co.action_cycle = v.action_cycle AND co.version = v.occurrence_version
                                   AND co.last_material_action_at = v.last_material_action_at
                                   AND co.actions_completed_at = v.actions_completed_at
@@ -314,6 +330,7 @@ WHERE job_id = ?
                     JOIN secret_connections conn ON conn.connection_id = v.connection_id
                     JOIN secret_connection_scopes scope ON scope.scope_id = v.scope_id
                     JOIN secret_case_occurrences co ON co.case_id=v.case_id AND co.occurrence_id=v.occurrence_id
+                    JOIN secret_occurrences target_occurrence ON target_occurrence.occurrence_id=v.occurrence_id
                     JOIN secret_response_cases c ON c.case_id=v.case_id
                     JOIN secret_credential_sets k ON k.credential_set_id=c.credential_set_id
                     JOIN secret_action_records a ON a.action_id = v.action_id

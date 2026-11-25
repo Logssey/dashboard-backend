@@ -6,6 +6,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.logssey.secret.snapshot.SecretReadSnapshots;
+import com.logssey.secret.access.SecretAccessService;
+import com.logssey.secret.connection.SecretCoverageService;
+import org.springframework.jdbc.core.JdbcTemplate;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
@@ -33,4 +36,19 @@ class SecretWorkbenchRecoveryFactsTest {
     assertThat(link).containsEntry("nextActionCode", "OPEN_REVIEW");
     assertThat(duplicate).containsEntry("nextActionCode", "OPEN_REVIEW");
   }
+
+    @Test
+    void executablePreviewItemsComeFirstBeforeTheFiveItemLimitWithStableTies() {
+        var snapshots=mock(SecretReadSnapshots.class);
+        var now=OffsetDateTime.now();
+        var header=new SecretReadSnapshots.Header(UUID.randomUUID(),"WORKBENCH",1L,now,now.plusMinutes(5),false);
+        var rows=java.util.stream.LongStream.rangeClosed(1,7)
+                .mapToObj(id->Map.<String,Object>of("caseId",id,"stage","OPEN","taskGuidance",Map.of("canExecute",id>5))).toList();
+        when(snapshots.page(header,"ResponseCase",0,Integer.MAX_VALUE)).thenReturn(rows);
+        var recovery=new SecretWorkbenchRecoveryFacts(mock(JdbcTemplate.class),mock(SecretAccessService.class),
+                mock(SecretCoverageService.class),snapshots);
+        var response=(Map<?,?>)recovery.previews(header,true,true).get("response");
+        var items=(List<Map<String,Object>>)response.get("items");
+        assertThat(items).extracting(item->item.get("caseId")).containsExactly(6L,7L,1L,2L,3L);
+    }
 }

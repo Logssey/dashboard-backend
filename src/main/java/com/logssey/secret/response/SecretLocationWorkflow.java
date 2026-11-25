@@ -41,10 +41,18 @@ public class SecretLocationWorkflow {
     }
     public record Assignment(String team,Long assigneeUserId,String reasonCode,Long expectedCaseVersion,Long expectedOccurrenceVersion) {}
     public record Action(String actionType,Long occurrenceId,OffsetDateTime performedAt,String evidenceRef,
-                         Long expectedCaseVersion,Long expectedOccurrenceVersion,String idempotencyKey) {}
+                         Long expectedCaseVersion,Long expectedOccurrenceVersion,String idempotencyKey,
+                         @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) Boolean completeActions) {
+        public Action(String type,Long occurrence,OffsetDateTime performed,String reference,Long caseVersion,Long occurrenceVersion,String key) {
+            this(type,occurrence,performed,reference,caseVersion,occurrenceVersion,key,null);
+        }
+    }
     public record Completion(Long expectedCaseVersion,Long expectedOccurrenceVersion,String idempotencyKey) {}
     public record Checklist(Boolean completed,String guideVersion,String evidenceRef,Long expectedCaseVersion) {}
-    public record Coordinator(String team,Long assigneeUserId,String reasonCode,Long expectedVersion) {}
+    public record Coordinator(String team,Long assigneeUserId,String reasonCode,Long expectedVersion,Boolean applyToUnassigned) {
+        public Coordinator(String team,Long user,String reason,Long version) { this(team,user,reason,version,null); }
+    }
+    public record SelfAssignment(Long expectedVersion,Boolean applyToUnassigned) {}
 
     @Transactional(readOnly=true)
     public Map<String,Object> detail(long caseId,String login) {
@@ -58,7 +66,7 @@ public class SecretLocationWorkflow {
             LEFT JOIN dashboard_users u ON u.user_id=c.assigned_user_id WHERE case_id=?
             """,caseId);
         boolean allSecurity=hasAllSecurity(actor,caseId);
-        boolean current=Boolean.TRUE.equals(c.get("is_current"))&&"IN_SCOPE".equals(c.get("disposition"));
+        boolean current=Boolean.TRUE.equals(c.get("is_current"))&&"IN_SCOPE".equals(c.get("disposition"))&&!"RESOLVED".equals(c.get("action_status"));
         List<Map<String,Object>> items=locations.stream().map(o->{
             long occurrence=num(o,"occurrence_id"),connection=num(o,"connection_id");
             boolean security=access.hasConnectionRole(actor,connection,SecretRole.SECURITY);
@@ -75,7 +83,7 @@ public class SecretLocationWorkflow {
                 "assignedTeam",o.get("assigned_team"),"assignedUserId",o.get("assigned_user_id"),
                 "assigneeDisplayName",o.get("assignee_name"),"actionCycle",o.get("action_cycle"),
                 "lastMaterialActionAt",o.get("last_material_action_at"),"actionsCompletedAt",o.get("actions_completed_at"),
-                "canAssign",security&&current,"canRecordAction",assigned&&actionable,"canCompleteActions",assigned&&actionable&&o.get("last_material_action_at")!=null,
+                "canAssign",security&&current,"canRecordInternalAction",assigned&&actionable,"canRecordAndCompleteActions",assigned&&actionable,"canRecordAction",assigned&&actionable,"canCompleteActions",assigned&&actionable&&o.get("last_material_action_at")!=null,
                 "canRequestRevalidation",ready.get("canRequestRevalidation"),"canResume",ready.get("canResume"),
                 "requiredRemediation",current&&!"RESOLVED".equals(o.get("response_status")),"actionStatus",o.get("response_status"),
                 "currentCoverage",observed.get("lastSuccessfulScan")!=null&&((List<?>)observed.get("gapReasonCodes")).isEmpty(),"lastSeenAt",o.get("last_seen_at"),
@@ -95,25 +103,61 @@ public class SecretLocationWorkflow {
         if(unassigned)priorities.add("ASSIGNEE_REQUIRED");
         boolean allMissing=((Number)remediation.get("requiredLocationCount")).longValue()>0
             &&Objects.equals(remediation.get("requiredLocationCount"),remediation.get("postActionMissingLocationCount"));
-        String next=unassigned?"ASSIGN_LOCATION":allMissing?"REVIEW_CLOSURE":"REVALIDATION_PENDING".equals(c.get("action_status"))?"REQUEST_REVALIDATION":"RESOLVED".equals(c.get("action_status"))?"VIEW_DETAIL":"RECORD_LOCATION_ACTION";
-        boolean executable=items.stream().anyMatch(i->Boolean.TRUE.equals(i.get(unassigned?"canAssign":next.equals("REQUEST_REVALIDATION")?"canRequestRevalidation":"canRecordAction")))||Set.of("VIEW_DETAIL","REVIEW_CLOSURE").contains(next);
+        var resumable=items.stream().filter(item->Boolean.TRUE.equals(item.get("canResume"))).findFirst();
+        var queued=items.stream().filter(item->item.get("recentRevalidation") instanceof Map<?,?> recent
+            &&Set.of("PENDING","LEASED").contains(recent.get("jobStatus"))).findFirst();
+        String next="VIEW_DETAIL";
+        String blocked="ROLE_REQUIRED";
+        String requiredRole="REMEDIATOR";
+        boolean executable=true;
+        Map<String,Object> actionTarget=facts("type","CASE","id",caseId);
+        if(current) {
+            if(unassigned&&items.stream().anyMatch(item->Boolean.TRUE.equals(item.get("canAssign"))))next="ASSIGN_LOCATION";
+            else if(resumable.isPresent())next="RESUME_REMEDIATION";
+            else if(allMissing)next="REVIEW_CLOSURE";
+            else if(items.stream().anyMatch(item->Boolean.TRUE.equals(item.get("canRecordAction"))))next="RECORD_LOCATION_ACTION";
+            else if(items.stream().anyMatch(item->Boolean.TRUE.equals(item.get("canRequestRevalidation"))))next="REQUEST_REVALIDATION";
+            else if(queued.isPresent())next="WAIT_FOR_REVALIDATION";
+            else if(unassigned) {next="ASSIGN_LOCATION";executable=false;requiredRole="SECURITY";}
+            else if("REVALIDATION_PENDING".equals(c.get("action_status"))) {
+                next="REQUEST_REVALIDATION";executable=false;
+                blocked=items.stream().map(item->item.get("revalidationBlockReasonCode")).filter(Objects::nonNull)
+                    .map(Object::toString).findFirst().orElse("EVIDENCE_REQUIRED");
+            }
+        }
+        if(next.equals("RESUME_REMEDIATION"))actionTarget.put("occurrenceId",resumable.orElseThrow().get("occurrenceId"));
+        if(next.equals("WAIT_FOR_REVALIDATION")) {
+            var location=queued.orElseThrow();var recent=(Map<?,?>)location.get("recentRevalidation");
+            actionTarget=facts("type","RUN","id",recent.get("runId"),"runId",recent.get("runId"),
+                "caseId",caseId,"occurrenceId",location.get("occurrenceId"));
+            executable=Boolean.TRUE.equals(recent.get("canViewRun"));requiredRole="OPERATIONS";
+        }
         var result=facts("caseId",caseId,"secretId",c.get("credential_set_id"),"maskedLabel",c.get("masked_label"),
             "issuer",c.get("issuer"),"credentialType",c.get("credential_type"),"caseOrigin",c.get("case_origin"),
             "stage",c.get("action_status"),"disposition",c.get("disposition"),"isCurrent",c.get("is_current"),
             "assigneeTeam",allSecurity?c.get("assigned_team"):null,"assigneeUserId",allSecurity?c.get("assigned_user_id"):null,
-            "assigneeDisplayName",allSecurity?c.get("assignee_name"):null,"version",c.get("version"),
+            "assigneeDisplayName",allSecurity?c.get("assignee_name"):null,"inheritUnassigned",allSecurity?c.get("inherit_unassigned"):null,"version",c.get("version"),
             "openingDecisionId",c.get("opening_decision"),"createdAt",c.get("opened_at"),"updatedAt",allSecurity?c.get("updated_at"):null,
             "visibleOccurrenceCount",items.size(),"restrictedCoverage",!access.hasGlobalRole(actor,SecretRole.SECURITY),"occurrences",items,
             "checklist",checklist(caseId,locations),"actions",List.of(),"assignmentHistory",List.of(),
             "checklistHistory",List.of(),"stageHistory",List.of(),"reviews",List.of(),
             "reviewStatus","NOT_REQUIRED","readAt",OffsetDateTime.now(),"changedSinceSnapshot",false,
-            "capabilities",facts("canAssign",allSecurity&&current,"canReview",false,"canStart",false,
+            "capabilities",facts("canAssign",allSecurity&&current,
+                "canAssignSelf",allSecurity&&current&&locations.stream().allMatch(o->access.hasConnectionRole(actor,num(o,"connection_id"),SecretRole.REMEDIATOR)),
+                "canAssignUnassigned",allSecurity&&current,"canBatchRevalidate",items.stream().anyMatch(i->Boolean.TRUE.equals(i.get("canRequestRevalidation"))),"canReview",false,"canStart",false,
                 "canRecordAction",items.stream().anyMatch(i->Boolean.TRUE.equals(i.get("canRecordAction"))),
                 "canUpdateChecklist",current&&(allSecurity||items.stream().anyMatch(i->Boolean.TRUE.equals(i.get("canRecordAction")))),"canResolve",false,"canRequestRevalidation",items.stream().anyMatch(i->Boolean.TRUE.equals(i.get("canRequestRevalidation")))));
         result.put("remediationSummary",remediation);
+        long completed=items.stream().filter(item->item.get("actionsCompletedAt")!=null).count();
+        long queuedCount=items.stream().filter(item->item.get("recentRevalidation") instanceof Map<?,?> recent
+            &&Set.of("PENDING","LEASED").contains(recent.get("jobStatus"))).count();
+        result.put("responseProgress",facts("unit","Occurrence","visibleLocationCount",items.size(),
+            "actionRecordedCount",items.stream().filter(item->item.get("lastMaterialActionAt")!=null).count(),
+            "actionsCompletedCount",completed,"revalidationQueuedCount",queuedCount,
+            "postActionMissingCount",remediation.get("postActionMissingLocationCount"),"restrictedCoverage",restricted));
         result.put("whyHereCode","ACTIVE_RESPONSE");result.put("nextActionCode",next);
-        result.put("taskGuidance",com.logssey.secret.query.SecretTaskGuidance.build("ACTIVE_RESPONSE",next,facts("type","CASE","id",caseId),executable,
-            next.equals("REQUEST_REVALIDATION")?"EVIDENCE_REQUIRED":"ROLE_REQUIRED",unassigned?"SECURITY":"REMEDIATOR",remediation.get("evidenceObservedAt"),null,null,List.of(),priorities));
+        result.put("taskGuidance",com.logssey.secret.query.SecretTaskGuidance.build("ACTIVE_RESPONSE",next,actionTarget,executable,
+            blocked,requiredRole,remediation.get("evidenceObservedAt"),null,null,List.of(),priorities));
         return result;
     }
 
@@ -222,7 +266,18 @@ public class SecretLocationWorkflow {
         if(request.assigneeUserId()!=null&&candidates.stream().noneMatch(v->Objects.equals(((Map<?,?>)v).get("userId"),request.assigneeUserId())
             &&(request.team()==null||Objects.equals(((Map<?,?>)v).get("team"),request.team()))))invalid();
         if(request.assigneeUserId()==null&&request.team()!=null&&candidates.stream().noneMatch(v->Objects.equals(((Map<?,?>)v).get("team"),request.team())))invalid();
-        jdbc.update("UPDATE secret_response_cases SET assigned_team=?,assigned_user_id=?,version=version+1,updated_at=now() WHERE case_id=?",request.team(),request.assigneeUserId(),caseId);
+        jdbc.update("UPDATE secret_response_cases SET assigned_team=?,assigned_user_id=?,inherit_unassigned=?,version=version+1,updated_at=now() WHERE case_id=?",
+            request.team(),request.assigneeUserId(),request.applyToUnassigned()==null?Boolean.TRUE.equals(c.get("inherit_unassigned")):request.applyToUnassigned(),caseId);
+        if(Boolean.TRUE.equals(request.applyToUnassigned())) {
+            for(var location:visibleLocations(caseId,actor)) {
+                if(location.get("assigned_user_id")!=null || location.get("assigned_team")!=null
+                    || "RESOLVED".equals(location.get("response_status")))continue;
+                long occurrence=num(location,"occurrence_id");
+                jdbc.update("UPDATE secret_case_occurrences SET assigned_team=?,assigned_user_id=?,version=version+1 WHERE case_id=? AND occurrence_id=?",
+                    request.team(),request.assigneeUserId(),caseId,occurrence);
+                event(caseId,occurrence,"LOCATION_ASSIGNED",actor.userId(),num(c,"version")+1,num(location,"version")+1,null,request.reasonCode());
+            }
+        }
         jdbc.update("INSERT INTO secret_assignment_history(case_id,from_team,to_team,from_user_id,to_user_id,reason,changed_by_user_id,case_version) VALUES (?,?,?,?,?,?,?,?)",
             caseId,c.get("assigned_team"),request.team(),c.get("assigned_user_id"),request.assigneeUserId(),request.reasonCode(),actor.userId(),num(c,"version")+1);
         event(caseId,null,"COORDINATOR_ASSIGNED",actor.userId(),num(c,"version")+1,null,null,request.reasonCode());
@@ -231,28 +286,48 @@ public class SecretLocationWorkflow {
         return detail(caseId,login);
     }
 
+    @Transactional
+    public Map<String,Object> assignSelf(long caseId,SelfAssignment request,String login) {
+        var actor=access.requirePrincipal(login);
+        if(request==null)invalid();
+        return coordinator(caseId,new Coordinator(null,actor.userId(),"INITIAL_ASSIGNMENT",request.expectedVersion(),!Boolean.FALSE.equals(request.applyToUnassigned())),login);
+    }
+
     public SecretCommandResult action(long caseId,Action request,String login) {
         SecretPrincipal actor=access.requirePrincipal(login);
         if(request==null||request.occurrenceId()==null||!ACTIONS.contains(request.actionType()==null?"":request.actionType())
-            ||request.performedAt()==null||!evidence(request.evidenceRef()))invalid();
+            ||request.performedAt()==null||(request.evidenceRef()!=null&&!request.evidenceRef().isBlank()&&!evidence(request.evidenceRef())))invalid();
         long occurrence=request.occurrenceId();
-        return commands.execute(actor,SecretCommandExecutor.Kind.LOCATION_ACTION,request.idempotencyKey(),digest(caseId,request),
+        return commands.execute(actor,SecretCommandExecutor.Kind.LOCATION_ACTION,request.idempotencyKey(),actionDigest(caseId,request),
             ()->requireAssigned(actor,caseId,occurrence),()->{
                 var c=lockCase(caseId);var o=lockLocation(caseId,occurrence);versions(request.expectedCaseVersion(),request.expectedOccurrenceVersion(),c,o);active(c);
                 OffsetDateTime now=jdbc.queryForObject("SELECT CURRENT_TIMESTAMP",OffsetDateTime.class);
                 if(request.performedAt().isBefore(now.minusDays(30))||request.performedAt().isAfter(now.plusMinutes(5)))invalid();
                 if(!Set.of("OPEN","IN_PROGRESS").contains(o.get("response_status")))conflict();
-                long id=jdbc.queryForObject("""
-                    INSERT INTO secret_action_records(case_id,occurrence_id,action_type,performed_at,recorded_by_user_id,evidence_ref,case_version,action_cycle)
-                    VALUES (?,?,?,?,?,?,?,?) RETURNING action_id
-                    """,Long.class,caseId,occurrence,request.actionType(),request.performedAt(),actor.userId(),request.evidenceRef(),num(c,"version")+1,num(o,"action_cycle"));
+                boolean complete=Boolean.TRUE.equals(request.completeActions());
+                boolean material=!"PERMISSION_REDUCED".equals(request.actionType());
+                if(complete&&!material&&!Boolean.TRUE.equals(jdbc.queryForObject("""
+                    SELECT EXISTS(SELECT 1 FROM secret_action_records WHERE case_id=? AND occurrence_id=?
+                      AND action_cycle=? AND action_type IN ('ROTATED','REVOKED','REMOVED_FROM_SOURCE'))
+                    """,Boolean.class,caseId,occurrence,num(o,"action_cycle"))))conflict();
+                long id=jdbc.queryForObject("SELECT nextval(pg_get_serial_sequence('secret_action_records','action_id'))",Long.class);
+                String reference=request.evidenceRef()==null||request.evidenceRef().isBlank()?"CHANGE:ACTION-"+id:request.evidenceRef();
                 jdbc.update("""
-                    UPDATE secret_case_occurrences SET response_status='IN_PROGRESS',version=version+1,
+                    INSERT INTO secret_action_records(action_id,case_id,occurrence_id,action_type,performed_at,recorded_by_user_id,evidence_ref,case_version,action_cycle)
+                    OVERRIDING SYSTEM VALUE VALUES (?,?,?,?,?,?,?,?,?)
+                    """,id,caseId,occurrence,request.actionType(),request.performedAt(),actor.userId(),reference,num(c,"version")+1,num(o,"action_cycle"));
+                jdbc.update("""
+                    UPDATE secret_case_occurrences SET response_status=?,version=version+1,
+                      actions_completed_at=CASE WHEN ? THEN now() ELSE actions_completed_at END,
                       last_material_action_at=CASE WHEN ? THEN greatest(last_material_action_at,?) ELSE last_material_action_at END
                     WHERE case_id=? AND occurrence_id=?
-                    """,!"PERMISSION_REDUCED".equals(request.actionType()),request.performedAt(),caseId,occurrence);
-                bumpCase(caseId,"IN_PROGRESS");stage(c,"IN_PROGRESS",actor.userId());event(caseId,occurrence,"ACTION_RECORDED",actor.userId(),num(c,"version")+1,num(o,"version")+1,id,request.actionType());
-                snapshots.invalidateOccurrence(occurrence);return new SecretCommandResult(caseId,num(c,"version")+1,SecretCommandResult.Status.IN_PROGRESS);
+                    """,complete?"REVALIDATION_PENDING":"IN_PROGRESS",complete,material,request.performedAt(),caseId,occurrence);
+                boolean remaining=Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM secret_case_occurrences WHERE case_id=? AND response_status IN ('OPEN','IN_PROGRESS'))",Boolean.class,caseId));
+                String nextStage=complete&&!remaining?"REVALIDATION_PENDING":"IN_PROGRESS";
+                bumpCase(caseId,nextStage);stage(c,nextStage,actor.userId());
+                event(caseId,occurrence,"ACTION_RECORDED",actor.userId(),num(c,"version")+1,num(o,"version")+1,id,request.actionType());
+                if(complete)event(caseId,occurrence,"ACTIONS_COMPLETED",actor.userId(),num(c,"version")+1,num(o,"version")+1,id,null);
+                snapshots.invalidateOccurrence(occurrence);return new SecretCommandResult(caseId,num(c,"version")+1,SecretCommandResult.Status.valueOf(nextStage));
             });
     }
     public SecretCommandResult complete(long caseId,long occurrence,Completion request,String login) {
@@ -345,14 +420,16 @@ public class SecretLocationWorkflow {
         return jdbc
                 .query(
                         """
-                        SELECT s.approved_ref,o.source_object_ref,o.location_key
+                        SELECT s.approved_ref,o.source_object_ref,o.location_key,o.source_context_ref,o.source_context_status
                         FROM secret_occurrences o JOIN secret_connection_scopes s USING(scope_id)
                         WHERE o.occurrence_id=? AND o.connection_id=?
                         """,
                         (rs, n) ->
-                                com.logssey.secret.query.SecretSourceDetails.describe(
+                                com.logssey.secret.query.SecretSourceDetails.describeObserved(
                                         (String) authorizedLocation.get("source"),
                                         rs.getString(1),
+                                        rs.getString(4),
+                                        rs.getString(5),
                                         rs.getString(2),
                                         rs.getString(3)),
                         num(authorizedLocation, "occurrence_id"),
@@ -399,6 +476,14 @@ public class SecretLocationWorkflow {
     }
     static long num(Map<String,Object> row,String key) {return ((Number)row.get(key)).longValue();}
     static boolean evidence(String ref) {return ref!=null&&ref.matches("(TICKET|CHANGE):[A-Z]{2,10}-[1-9][0-9]{0,9}");}
+    private static byte[] actionDigest(long caseId,Action request) {
+        if(Boolean.TRUE.equals(request.completeActions()))return digest(caseId,request);
+        String legacy="Action[actionType="+request.actionType()+", occurrenceId="+request.occurrenceId()
+            +", performedAt="+request.performedAt()+", evidenceRef="+request.evidenceRef()
+            +", expectedCaseVersion="+request.expectedCaseVersion()+", expectedOccurrenceVersion="+request.expectedOccurrenceVersion()
+            +", idempotencyKey="+request.idempotencyKey()+"]";
+        return digest(caseId,legacy);
+    }
     private static byte[] digest(Object... parts) {try{return MessageDigest.getInstance("SHA-256").digest(Arrays.deepToString(parts).getBytes(StandardCharsets.UTF_8));}catch(Exception e){throw new IllegalStateException(e);}}
     private static Set<String> csv(String input,Set<String> allowed) {if(input==null||input.isBlank())return Set.of();var result=new HashSet<>(Arrays.asList(input.split(",",-1)));if(!allowed.containsAll(result))invalid();return result;}
     private static void page(int page,int size) {if(page<0||page>1_000_000||size<1||size>100)invalid();}

@@ -58,6 +58,8 @@ class SecretRevalidationServiceIntegrationTest {
 
     @Autowired private JdbcTemplate jdbc;
     @Autowired private SecretRevalidationService service;
+    @Autowired private SecretRevalidationRepository revalidationRepository;
+    @Autowired private SecretRevalidationBatchService batches;
     @Autowired private SecretLocationReadiness readiness;
     @Autowired private com.logssey.secret.lifecycle.SecretLifecycleService lifecycle;
     @Autowired private SecretGuideService guide;
@@ -184,6 +186,73 @@ class SecretRevalidationServiceIntegrationTest {
     }
 
     @Test
+    void guidanceLinksTheQueuedRunAndThenResumesARedetectedLocation() {
+        var result=service.request(caseId,new SecretRevalidationRequest(occurrenceId,0L,0L,"guidance-run"),"revalidation-admin");
+        var detail=workflow.detail(caseId,"revalidation-admin");
+        assertThat(detail.get("nextActionCode")).isEqualTo("WAIT_FOR_REVALIDATION");
+        var guidance=(java.util.Map<?,?>)detail.get("taskGuidance");
+        assertThat(((java.util.Map<?,?>)guidance.get("target")).get("runId")).isEqualTo(result.runId());
+        jdbc.update("UPDATE secret_jobs SET status='SUCCEEDED',finished_at=clock_timestamp() WHERE job_id=(SELECT job_id FROM secret_scan_runs WHERE run_id=?)",result.runId());
+        jdbc.update("UPDATE secret_case_revalidations SET status='PRESENT',finished_at=clock_timestamp() WHERE revalidation_id=?",result.revalidationId());
+        detail=workflow.detail(caseId,"revalidation-admin");
+        assertThat(detail.get("nextActionCode")).isEqualTo("RESUME_REMEDIATION");
+        guidance=(java.util.Map<?,?>)detail.get("taskGuidance");
+        assertThat(guidance.get("canExecute")).isEqualTo(true);
+        assertThat(((java.util.Map<?,?>)guidance.get("target")).get("occurrenceId")).isEqualTo(occurrenceId);
+    }
+
+    @Test
+    void completedPositiveFileInPartialCollectionSuppliesComparableBaseline() {
+        jdbc.update("UPDATE secret_run_scopes SET collection_status='PARTIAL'");
+        jdbc.update("UPDATE secret_scan_runs SET collection_status='PARTIAL',result_status='PARTIAL'");
+        jdbc.update("UPDATE secret_tool_runs SET status='PARTIAL'");
+        jdbc.update("UPDATE secret_occurrences SET latest_object_version='collected-blob-sha' WHERE occurrence_id=?",occurrenceId);
+        var result=service.request(caseId,new SecretRevalidationRequest(occurrenceId,0L,0L,"partial-file-baseline"),"revalidation-admin");
+        assertThat(jdbc.queryForMap("SELECT baseline_config_hash,baseline_engine_version,baseline_fingerprint_version FROM secret_case_revalidations WHERE run_id=?",result.runId()))
+            .containsEntry("baseline_config_hash","a".repeat(64)).containsEntry("baseline_engine_version","8.0.0").containsEntry("baseline_fingerprint_version","test-v1");
+        fixture();
+        jdbc.update("UPDATE secret_run_scopes SET collection_status='PARTIAL'");
+        var unknown=service.request(caseId,new SecretRevalidationRequest(occurrenceId,0L,0L,"partial-without-file-proof"),"revalidation-admin");
+        assertThat(jdbc.queryForObject("SELECT baseline_config_hash FROM secret_case_revalidations WHERE run_id=?",String.class,unknown.runId())).isNull();
+    }
+
+    @Test
+    void batchQueuesSameConnectionLocationsAndPreservesItemFailuresAndReplay() {
+        long second=jdbc.queryForObject("""
+            INSERT INTO secret_occurrences(credential_set_id,connection_id,scope_id,source_object_ref,location_key,
+              environment,exposure_status,exposure_range,presence_status,first_seen_at,last_seen_at,last_seen_run_id)
+            SELECT credential_set_id,connection_id,scope_id,source_object_ref,'L9',environment,exposure_status,
+              exposure_range,presence_status,first_seen_at,last_seen_at,last_seen_run_id FROM secret_occurrences
+            WHERE occurrence_id=? RETURNING occurrence_id
+            """,Long.class,occurrenceId);
+        jdbc.update("""
+            INSERT INTO secret_case_occurrences(case_id,occurrence_id,credential_set_id,response_status,assigned_user_id,
+              last_material_action_at,actions_completed_at)
+            SELECT case_id,?,credential_set_id,response_status,assigned_user_id,last_material_action_at,actions_completed_at
+            FROM secret_case_occurrences WHERE case_id=? AND occurrence_id=?
+            """,second,caseId,occurrenceId);
+        jdbc.update("""
+            INSERT INTO secret_action_records(case_id,occurrence_id,action_type,performed_at,recorded_by_user_id,evidence_ref,case_version)
+            SELECT case_id,?,action_type,performed_at,recorded_by_user_id,evidence_ref,case_version+1 FROM secret_action_records
+            WHERE case_id=? AND occurrence_id=?
+            """,second,caseId,occurrenceId);
+        var request=new SecretRevalidationBatchService.Request(0L,"batch-same-connection",java.util.List.of(
+            new SecretRevalidationBatchService.Item(occurrenceId,0L),new SecretRevalidationBatchService.Item(second,0L),
+            new SecretRevalidationBatchService.Item(99999L,0L)));
+        var result=batches.request(caseId,request,"revalidation-admin");
+        assertThat(result).containsEntry("acceptedCount",2L).containsEntry("failedCount",1L).containsEntry("caseVersion",2L);
+        assertThat(batches.request(caseId,request,"revalidation-admin")).isEqualTo(result);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_jobs WHERE kind='REVALIDATE' AND status='PENDING'",Long.class)).isEqualTo(2);
+        assertThatThrownBy(()->service.request(caseId,new SecretRevalidationRequest(occurrenceId,2L,1L,"single-still-busy"),"revalidation-admin"))
+            .isInstanceOf(ApiException.class);
+        long connection=jdbc.queryForObject("SELECT connection_id FROM secret_occurrences WHERE occurrence_id=?",Long.class,occurrenceId);
+        assertThatThrownBy(()->jdbc.update("""
+            INSERT INTO secret_jobs(kind,connection_id,scheduled_at,available_at,attempt_no,max_attempts,status)
+            VALUES('FULL_SCAN',?,now(),now(),0,3,'PENDING')
+            """,connection)).isInstanceOf(org.springframework.dao.DataAccessException.class);
+    }
+
+    @Test
     void databaseOnlyAssessmentDoesNotBlockAnExternalLocationRecheck() {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_jobs WHERE kind='ASSESS' AND status='PENDING'", Long.class))
                 .isPositive();
@@ -232,6 +301,45 @@ class SecretRevalidationServiceIntegrationTest {
     }
 
     @Test
+    void changedGitHubBranchBlocksReadinessBaselineAndTheActualRequestTogether() {
+        var principal = new com.logssey.secret.access.SecretPrincipal(actor());
+        assertThat(readiness.capabilities(principal, caseId, occurrenceId).get("canRequestRevalidation")).isEqualTo(true);
+        assertThat(revalidationRepository.baseline(occurrenceId)).isPresent();
+        jdbc.update("UPDATE secret_connection_scopes SET approved_ref='github://Other/fixture/develop/src/'");
+        var blocked = readiness.capabilities(principal, caseId, occurrenceId);
+        assertThat(blocked).containsEntry("canRequestRevalidation", false)
+                .containsEntry("revalidationBlockReasonCode", "SOURCE_APPROVAL_CHANGED");
+        assertThat(revalidationRepository.baseline(occurrenceId)).isEmpty();
+        assertThatThrownBy(() -> service.request(caseId,
+                new SecretRevalidationRequest(occurrenceId, 0L, 0L, "changed-branch"), "revalidation-admin"))
+                .isInstanceOf(ApiException.class);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_jobs WHERE kind='REVALIDATE'", Long.class)).isZero();
+    }
+
+    @Test
+    void branchAndSnapshotContextAlsoFenceResumeAndAbsenceEvidence() {
+        var accepted = service.request(caseId,
+                new SecretRevalidationRequest(occurrenceId, 0L, 0L, "branch-proof"), "revalidation-admin");
+        jdbc.update("UPDATE secret_jobs SET status='SUCCEEDED',finished_at=clock_timestamp() WHERE job_id=(SELECT job_id FROM secret_scan_runs WHERE run_id=?)", accepted.runId());
+        jdbc.update("UPDATE secret_scan_runs SET collection_status='SUCCEEDED',detection_status='SUCCEEDED',validation_status='SKIPPED',result_status='SUCCEEDED',finished_at=clock_timestamp() WHERE run_id=?", accepted.runId());
+        jdbc.update("UPDATE secret_run_scopes SET collection_status='SUCCEEDED',object_count=1,started_at=clock_timestamp(),finished_at=clock_timestamp(),detection_stage_status='SUCCEEDED',validation_stage_status='SKIPPED',validation_required=false WHERE run_id=?", accepted.runId());
+        jdbc.update("UPDATE secret_case_revalidations SET status='PRESENT',finished_at=clock_timestamp() WHERE run_id=?", accepted.runId());
+        var principal = new com.logssey.secret.access.SecretPrincipal(actor());
+        assertThat(readiness.capabilities(principal, caseId, occurrenceId).get("canResume")).isEqualTo(true);
+        jdbc.update("UPDATE secret_connection_scopes SET approved_ref='github://Other/fixture/develop/src/'");
+        assertThat(readiness.capabilities(principal, caseId, occurrenceId).get("canResume")).isEqualTo(false);
+        jdbc.update("UPDATE secret_connection_scopes SET approved_ref='github://Other/fixture/main/src/'");
+        jdbc.update("UPDATE secret_case_revalidations SET status='MISSING' WHERE run_id=?", accepted.runId());
+        jdbc.update("UPDATE secret_occurrences SET presence_status='MISSING' WHERE occurrence_id=?", occurrenceId);
+        assertThat(((java.util.Map<?, ?>) readiness.capabilities(principal, caseId, occurrenceId).get("locationAbsenceCheck")).get("status"))
+                .isEqualTo("PASSED");
+        jdbc.update("UPDATE secret_run_scopes SET snapshot_approved_ref=NULL WHERE run_id=?", accepted.runId());
+        var unknown = readiness.capabilities(principal, caseId, occurrenceId);
+        assertThat(((java.util.Map<?, ?>) unknown.get("locationAbsenceCheck")).get("status")).isEqualTo("UNKNOWN");
+        assertThat(unknown.get("canResume")).isEqualTo(false);
+    }
+
+    @Test
     void laterSuccessfulFullScanInvalidatesTheSamePostActionAbsenceProjectionAsClosure() {
         var accepted = service.request(caseId,
                 new SecretRevalidationRequest(occurrenceId, 0L, 0L, "latest-absence"),
@@ -244,6 +352,7 @@ class SecretRevalidationServiceIntegrationTest {
         var principal = new com.logssey.secret.access.SecretPrincipal(actor());
         assertThat(((java.util.Map<?, ?>) readiness.capabilities(principal, caseId, occurrenceId).get("locationAbsenceCheck")).get("status"))
                 .isEqualTo("PASSED");
+        assertThat(workflow.detail(caseId,"revalidation-admin").get("nextActionCode")).isEqualTo("REVIEW_CLOSURE");
 
         long connection = jdbc.queryForObject("SELECT connection_id FROM secret_occurrences WHERE occurrence_id=?", Long.class, occurrenceId);
         long scope = jdbc.queryForObject("SELECT scope_id FROM secret_occurrences WHERE occurrence_id=?", Long.class, occurrenceId);

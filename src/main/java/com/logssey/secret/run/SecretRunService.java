@@ -134,6 +134,33 @@ public class SecretRunService {
         return new SecretRunAcceptedResponse(result.targetId(), result.status().name());
     }
 
+    public SecretRunAcceptedResponse retryFailed(long runId, String idempotencyKey, String loginId) {
+        if (runId <= 0 || idempotencyKey == null || !idempotencyKey.matches("[A-Za-z0-9._:-]{1,120}"))
+            throw new ApiException(ErrorCode.INVALID_INPUT);
+        var actor = access.requirePrincipal(loginId);
+        var source = repository.retryContext(runId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+        var result = commands.execute(actor, SecretCommandExecutor.Kind.MANUAL_SCAN, idempotencyKey,
+                SecretCommandExecutor.digestSafeIds(source.connectionId(),runId),
+                () -> access.requireConnectionRole(actor,source.connectionId(),SecretRole.OPERATIONS),
+                () -> {
+                    var connection = repository.lockConnection(source.connectionId())
+                            .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+                    if (!"ACTIVE".equals(connection.status()) || !"FULL_SCAN".equals(source.kind())
+                            || !Set.of("SUCCEEDED","FAILED","CANCELLED").contains(source.jobStatus())
+                            || connection.scopeVersion()!=source.scopeVersion()
+                            || !supportedProvider(connection.provider()) || !repository.hasSupportedScope(connection)
+                            || repository.activeRun(connection.id()).isPresent()
+                            || repository.hasActiveRevalidation(connection.id()))
+                        throw new ApiException(ErrorCode.CONFLICT);
+                    var scopes = repository.retryScopes(runId);
+                    if (scopes.isEmpty()) throw new ApiException(ErrorCode.CONFLICT);
+                    var reserved = repository.reserve(connection,actor.userId(),null,repository.databaseNow(),scopes);
+                    repository.linkRetry(reserved.runId(),runId);
+                    return new SecretCommandResult(reserved.runId(),0,SecretCommandResult.Status.PENDING);
+                });
+        return new SecretRunAcceptedResponse(result.targetId(),result.status().name());
+    }
+
     private SecretRunAcceptedResponse registerWithinTransaction(SecretRunRequest request, String loginId) {
         try {
             return Objects.requireNonNull(transaction.execute(ignored -> {

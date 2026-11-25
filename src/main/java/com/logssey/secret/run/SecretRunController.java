@@ -36,6 +36,16 @@ public class SecretRunController {
                 .body(accepted);
     }
 
+    public record RetryFailedRequest(String idempotencyKey) { }
+
+    @PostMapping("/{runId}/retry-failed")
+    public ResponseEntity<SecretRunAcceptedResponse> retryFailed(@PathVariable long runId,
+            @RequestBody RetryFailedRequest request, Authentication authentication) {
+        var accepted = service.retryFailed(runId,request == null ? null : request.idempotencyKey(),
+                authentication == null ? null : authentication.getName());
+        return ResponseEntity.accepted().location(URI.create("/api/v1/secrets/runs/"+accepted.runId())).body(accepted);
+    }
+
     @GetMapping("/{runId}")
     public Object status(@PathVariable long runId, Authentication authentication) {
         String login=authentication == null ? null : authentication.getName();

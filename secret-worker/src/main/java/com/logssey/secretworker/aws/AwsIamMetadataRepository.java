@@ -50,7 +50,7 @@ public final class AwsIamMetadataRepository {
                          presence_status, first_seen_at, last_seen_at, last_seen_run_id)
                     VALUES (?, ?, ?, ?, 'iam/access-key', 'UNKNOWN', 'UNKNOWN', 'UNKNOWN',
                             'PRESENT', ?, ?, ?)
-                    ON CONFLICT (credential_set_id, connection_id, source_object_ref, location_key)
+                    ON CONFLICT (credential_set_id, connection_id, scope_id, source_context_key,source_object_ref, location_key)
                     DO UPDATE SET last_seen_at = GREATEST(secret_occurrences.last_seen_at,
                         EXCLUDED.last_seen_at), last_seen_run_id = EXCLUDED.last_seen_run_id,
                         presence_status = 'PRESENT'

@@ -25,6 +25,23 @@ class SecretFindingNormalizerTest {
     private final SecretFindingNormalizer normalizer = new SecretFindingNormalizer(new byte[32], "test-v1");
 
     @Test
+    void incompleteCandidatesAreBranchLocalWhileCompleteCredentialsDeduplicate() {
+        String id=awsId("branch","AKIA");
+        var partial=("AWS_ACCESS_KEY_ID="+id+"\n").getBytes(StandardCharsets.UTF_8);
+        var findings=List.of(new GitleaksFinding("aws-access-token",1,1,19,38));
+        var main=normalizer.inspect(1,"owner/repo/key.env",partial,findings,"github://owner/repo/main/");
+        var feature=normalizer.inspect(1,"owner/repo/key.env",partial,findings,"github://owner/repo/feature/");
+        assertThat(main.credentials().getFirst().candidateLocator())
+                .isNotEqualTo(feature.credentials().getFirst().candidateLocator());
+        var pair=("AWS_ACCESS_KEY_ID="+id+"\nAWS_SECRET_ACCESS_KEY="+awsSecret("branch")+"\n")
+                .getBytes(StandardCharsets.UTF_8);
+        var pairFindings=List.of(findings.getFirst(),new GitleaksFinding("generic-api-key",2,2,1,60));
+        var a=normalizer.inspect(1,"owner/repo/key.env",pair,pairFindings,"github://owner/repo/main/");
+        var b=normalizer.inspect(1,"owner/repo/key.env",pair,pairFindings,"github://owner/repo/feature/");
+        assertThat(a.credentials().getFirst().fingerprint()).isEqualTo(b.credentials().getFirst().fingerprint());
+    }
+
+    @Test
     void fullComponentIdentityDedupesAcrossLocationsButIncompleteCandidatesStayLocal() {
         String id = awsId("long-A", "AKIA");
         String secret = awsSecret("long-A");

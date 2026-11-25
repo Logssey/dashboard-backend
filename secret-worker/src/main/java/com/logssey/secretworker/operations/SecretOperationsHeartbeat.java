@@ -25,6 +25,7 @@ public class SecretOperationsHeartbeat implements InitializingBean, DisposableBe
     private final Duration interval,cleanupInterval;
     private final SecretOperationsStore store;
     private final Map<String,State> states=new ConcurrentHashMap<>();
+    private final List<String> validationIssuers;
     private ScheduledExecutorService thread;
     private Instant lastCleanup=Instant.EPOCH;
     public SecretOperationsHeartbeat(JdbcTemplate jdbc,PlatformTransactionManager manager,Environment env,
@@ -41,6 +42,10 @@ public class SecretOperationsHeartbeat implements InitializingBean, DisposableBe
         this.executionEventsJdbc=jdbc;
         this.store=new SecretOperationsStore(jdbc,manager,grace,queueGrace,expected,deployment);this.enabled=enabled;this.deployment=deployment;
         this.interval=interval;this.cleanupEnabled=cleanupEnabled;this.cleanupInterval=cleanupInterval;
+        this.validationIssuers = List.of("AWS", "GITHUB", "NOTION").stream()
+                .filter(issuer -> env.getProperty("logssey.secret.validation."
+                        + issuer.toLowerCase(Locale.ROOT) + ".enabled", Boolean.class, false))
+                .toList();
         boolean executor=env.getProperty("logssey.secret.executor.enabled",Boolean.class,false);
         boolean sources=env.getProperty("logssey.secret.github.enabled",Boolean.class,false)
             ||env.getProperty("logssey.secret.aws.collection.enabled",Boolean.class,false)
@@ -54,17 +59,53 @@ public class SecretOperationsHeartbeat implements InitializingBean, DisposableBe
     }
     private void register(String component,boolean on,long pollMs){states.put(component,new State(on,pollMs));}
     private static long pollMs(Environment env,String key){return org.springframework.boot.convert.DurationStyle.detectAndParse(env.getProperty(key,"30s")).toMillis();}
-    public void begin(String component){State s=state(component);synchronized(s){s.state="RUNNING";s.pollStarted=now();s.error=null;}}
-    public void success(String component){State s=state(component);synchronized(s){s.state="IDLE";s.finished=now();s.success=s.finished;s.job=null;s.error=null;}}
-    public void failure(String component,String safeCode){State s=state(component);synchronized(s){s.state="FAILED";s.finished=now();s.job=null;s.error=safeCode;}}
-    public void activeJob(String component,long id){State s=state(component);synchronized(s){s.job=id;}}
-    public void clearJob(String component){State s=state(component);synchronized(s){s.job=null;}}
+    public void begin(String component){
+        State s=state(component);
+        synchronized(s){
+            s.state="RUNNING";
+            if (!"EXECUTOR".equals(component) || s.jobs.isEmpty()) s.pollStarted=now();
+            s.error=null;
+        }
+    }
+    public void success(String component){
+        State s=state(component);
+        synchronized(s){
+            if (!"EXECUTOR".equals(component)) s.jobs.clear();
+            s.state=s.jobs.isEmpty()?"IDLE":"RUNNING";
+            s.finished=now();s.success=s.finished;
+            s.job=s.jobs.stream().findFirst().orElse(null);s.error=null;
+        }
+    }
+    public void failure(String component,String safeCode){
+        State s=state(component);
+        synchronized(s){
+            if (!"EXECUTOR".equals(component)) s.jobs.clear();
+            s.state=s.jobs.isEmpty()?"FAILED":"RUNNING";s.finished=now();
+            s.job=s.jobs.stream().findFirst().orElse(null);s.error=safeCode;
+        }
+    }
+    public void activeJob(String component,long id){
+        State s=state(component);
+        synchronized(s){s.jobs.add(id);s.job=s.jobs.iterator().next();s.state="RUNNING";}
+    }
+    public void clearJob(String component){State s=state(component);synchronized(s){s.jobs.clear();s.job=null;}}
+    public void clearJob(String component,long id){
+        State s=state(component);
+        synchronized(s){s.jobs.remove(id);s.job=s.jobs.stream().findFirst().orElse(null);}
+    }
     private State state(String component){var s=states.get(component);if(s==null)throw new IllegalArgumentException("OPERATIONS_COMPONENT_INVALID");return s;}
     private static OffsetDateTime now(){return OffsetDateTime.now(ZoneOffset.UTC);}
     @Override public void afterPropertiesSet(){if(!enabled)return;thread=Executors.newSingleThreadScheduledExecutor(Thread.ofPlatform().daemon(true).name("secret-operations-heartbeat").factory());thread.scheduleWithFixedDelay(this::tick,0,interval.toMillis(),TimeUnit.MILLISECONDS);}
     void tick(){
         try{
-            for(var e:states.entrySet()){State s=e.getValue();synchronized(s){store.heartbeat(new SecretOperationsStore.Beat(instance,deployment,e.getKey(),s.enabled,s.state,s.interval,s.pollStarted,s.finished,s.success,s.job,s.error));}}
+            for(var e:states.entrySet()){
+                State s=e.getValue();
+                synchronized(s){
+                    store.heartbeat(new SecretOperationsStore.Beat(instance,deployment,e.getKey(),s.enabled,s.state,
+                            s.interval,s.pollStarted,s.finished,s.success,s.job,s.error,List.copyOf(s.jobs),
+                            "EXECUTOR".equals(e.getKey())?validationIssuers:null));
+                }
+            }
             store.monitor();
             if(cleanupEnabled&&lastCleanup.plus(cleanupInterval).isBefore(Instant.now())){
                 begin("MAINTENANCE");store.cleanupExpiredSnapshots(500);executionEventsJdbc.queryForObject("SELECT secret_purge_execution_events()",Long.class);success("MAINTENANCE");lastCleanup=Instant.now();
@@ -74,6 +115,7 @@ public class SecretOperationsHeartbeat implements InitializingBean, DisposableBe
     @Override public void destroy(){if(thread!=null)thread.shutdownNow();}
     private static final class State{
         final boolean enabled;final long interval;String state="IDLE",error;OffsetDateTime pollStarted,finished,success;Long job;
+        final Set<Long> jobs=new LinkedHashSet<>();
         State(boolean enabled,long interval){this.enabled=enabled;this.interval=interval;}
     }
 }
