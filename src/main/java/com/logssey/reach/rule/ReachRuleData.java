@@ -10,6 +10,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -42,9 +43,22 @@ public class ReachRuleData {
     /** 명세 0절 식별자 규약: 사실은 F-<사실 이름>. Finding 근거의 factId(API-05)와 같은 값이 되게 응답에서 붙인다 */
     static final String FACT_PREFIX = "F-";
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
+    /** L3 결과가 판정을 올릴 수 있는 한도. 구간 실행은 셋 중 하나, 함수만 실행(구간 확인 못 함)은 둘 중 하나 */
+    static final List<String> L3_REGION_LIMITS = List.of("REACHABLE", "UNKNOWN", "NONE");
+    static final List<String> L3_FUNCTION_LIMITS = List.of("UNKNOWN", "NONE");
+    /** 호출 그래프 판정과 규칙 없는 CVE: 취약 함수 호출 여부가 판정이라 실행되면 그대로 반증이다(FR-14 원래 동작) */
+    static final L3Limit CALLGRAPH_L3 = new L3Limit("REACHABLE", "UNKNOWN");
+
+    /**
+     * L3가 판정을 어디까지 올릴 수 있나 (rules.json 판정 항목의 l3). region은 판정 데이터의 취약 구간이 실행됐을 때,
+     * function은 취약 함수만 실행되고 구간은 확인하지 못했을 때(설치 버전이 데이터 버전과 다름 등)다.
+     * 규칙 판정(method rule)은 규칙의 조건(설정·기능 사용)을 그 실행이 보여 주는지가 CVE마다 달라 반드시 적는다
+     */
+    public record L3Limit(String region, String function) {}
 
     private final String version;
     private final List<ReachRuleResponse> rules;
+    private final Map<String, L3Limit> l3Limits;
 
     @Autowired   // 생성자가 둘이라 Spring이 쓸 쪽을 표시한다
     public ReachRuleData(ReachVulnFunctionData vulnFunctions) {
@@ -65,6 +79,7 @@ public class ReachRuleData {
         }
 
         var parsed = new ArrayList<ReachRuleResponse>();
+        var limits = new HashMap<String, L3Limit>();
         JsonNode verdicts = root.path("verdicts");
         require(verdicts.isObject() && !verdicts.isEmpty(), "rules must contain verdicts");
         for (var entry : verdicts.properties()) {
@@ -75,6 +90,7 @@ public class ReachRuleData {
             require(method.equals("RULE") || method.equals("CALLGRAPH"), "Unknown method for " + cve + ": " + method);
             String otherwise = text(verdict, "otherwise").toUpperCase(Locale.ROOT);
             require(EVALUATION_ORDER.contains(otherwise) && !otherwise.equals("DEFAULT"), "Unknown otherwise for " + cve);
+            limits.put(cve, l3Limit(cve, method, verdict.path("l3")));
 
             var facts = new LinkedHashSet<String>();
             for (String condition : CONDITIONS) {
@@ -112,6 +128,24 @@ public class ReachRuleData {
                     functionIds, definition, version));
         }
         this.rules = List.copyOf(parsed);
+        this.l3Limits = Map.copyOf(limits);
+    }
+
+    private static L3Limit l3Limit(String cve, String method, JsonNode l3) {
+        if (l3.isMissingNode()) {
+            require(method.equals("CALLGRAPH"), "Rule verdict without l3 limits: " + cve);
+            return CALLGRAPH_L3;
+        }
+        String region = text(l3, "region").toUpperCase(Locale.ROOT);
+        String function = text(l3, "function").toUpperCase(Locale.ROOT);
+        require(L3_REGION_LIMITS.contains(region), "Unknown l3.region for " + cve + ": " + region);
+        require(L3_FUNCTION_LIMITS.contains(function), "Unknown l3.function for " + cve + ": " + function);
+        return new L3Limit(region, function);
+    }
+
+    /** 이 CVE의 L3 한도. 규칙이 없는 CVE는 호출 그래프 판정(verdict.py 기본 규칙)과 같다 */
+    public L3Limit l3Limit(String cve) {
+        return l3Limits.getOrDefault(cve, CALLGRAPH_L3);
     }
 
     private static List<String> prefixed(java.util.Collection<String> ids) {

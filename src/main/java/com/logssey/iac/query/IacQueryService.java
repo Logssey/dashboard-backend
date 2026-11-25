@@ -4,9 +4,11 @@ import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
+import com.logssey.iac.auth.IacCiCaller;
 
 import org.springframework.stereotype.Service;
 
@@ -29,8 +31,17 @@ public class IacQueryService {
         boolean stale = graphAsOf == null || graphAsOf.isBefore(OffsetDateTime.now().minus(GRAPH_STALE_AFTER));
         return new IacSummaryResponse(
                 new IacSummaryResponse.Metrics(repository.openPaths(1), repository.openPaths(null),
-                        repository.openDrifts(), null, null),
+                        repository.openDrifts(), null, mainGateViolations()),
                 repository.severityCounts(), repository.lastSucceeded("ENRICH_GRAPH").orElse(null), graphAsOf, stale);
+    }
+
+    /** main 매일 점검(iac-drift)의 열린 plan 전 검사 발견 건 수. 레포가 하나가 아니거나 main 점검 기록이 없으면 null(—) */
+    private Long mainGateViolations() {
+        var repos = repository.enabledRepoIds(null);
+        if (repos.size() != 1 || repository.latestMainRunAt(repos.getFirst()).isEmpty()) {
+            return null;
+        }
+        return repository.mainGateFindings(repos.getFirst()).values().stream().mapToLong(Long::longValue).sum();
     }
 
     public IacPathListResponse paths(String status, Integer tier, Long cursor, int limit, String loginId) {
@@ -55,9 +66,28 @@ public class IacQueryService {
             throw new ApiException(repos.isEmpty() ? ErrorCode.NOT_FOUND : ErrorCode.INVALID_INPUT);
         }
         var run = repository.latestRun(repos.getFirst(), number).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+        return result(number, run);
+    }
+
+    /** run 하나의 결과 (PR 상세와 같은 모양). 관리자 세션용 */
+    public IacPullRequestResponse runResult(long runId, String loginId) {
+        requireAdmin(loginId);
+        var run = repository.run(runId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+        return result(run.prNumber() == null ? 0 : run.prNumber(), run.run());
+    }
+
+    /** CI: 토큰의 레포·실행 종류에 맞는 run 만. 아니면 없는 것처럼 404 */
+    public IacPullRequestResponse runResultByCi(long runId, IacCiCaller caller) {
+        var run = repository.run(runId).filter(r -> r.repo().equals(caller.repository())
+                        && (r.prNumber() == null ? "PUSH" : "PR").equals(caller.trigger()))
+                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+        return result(run.prNumber() == null ? 0 : run.prNumber(), run.run());
+    }
+
+    private IacPullRequestResponse result(int number, IacQueryRepository.RunRow run) {
         var gate = new IacPullRequestResponse.Gate("GATE_FAILED".equals(run.status()) ? "BLOCK" : "PASS",
                 repository.gateFindings(run.runId()));
-        return new IacPullRequestResponse(number, null, run.runId(), run.headSha(), run.status(), run.verdict(),
+        return new IacPullRequestResponse(number, run.title(), run.runId(), run.headSha(), run.status(), run.verdict(),
                 run.highestSeverity(), run.checkedAt(), gate, repository.pathChanges(run.runId()),
                 repository.resourceFindings(run.runId()),
                 repository.analysisStats(run.runId(), "resources"), repository.analysisStats(run.runId(), "state"));
@@ -74,12 +104,15 @@ public class IacQueryService {
     /** S-01 D. PR 별 최신 판정 (최근 run 순, 최대 50). */
     public List<IacPullRequestSummaryResponse> pullRequests(String repo, String loginId) {
         requireAdmin(loginId);
-        long repoId = singleRepo(repo);
-        return repository.latestPullRequestRuns(repoId, 50).stream().map(row -> {
+        var repoId = singleRepo(repo);
+        if (repoId.isEmpty()) {
+            return List.of();
+        }
+        return repository.latestPullRequestRuns(repoId.getAsLong(), 50).stream().map(row -> {
             var stats = row.stats();
             var paths = stats == null ? null : stats.path("paths");
             var state = stats == null ? null : stats.path("state");
-            return new IacPullRequestSummaryResponse(row.number(), row.runId(), row.headSha(), row.status(),
+            return new IacPullRequestSummaryResponse(row.number(), row.title(), row.runId(), row.headSha(), row.status(),
                     row.verdict(), row.highestSeverity(), row.checkedAt(),
                     paths == null ? 0 : paths.path("added").asInt(0), paths == null ? 0 : paths.path("removed").asInt(0),
                     paths == null ? 0 : paths.path("removedRoutes").asInt(0),
@@ -95,7 +128,7 @@ public class IacQueryService {
     }
 
     /** 경로에서 끊을 수 있는 관계와 그 조치 (API 계약 action 값). */
-    static List<IacPathDetailResponse.CutPoint> cutPoints(IacPathResponse path) {
+    public static List<IacPathDetailResponse.CutPoint> cutPoints(IacPathResponse path) {
         List<IacPathDetailResponse.CutPoint> cuts = new java.util.ArrayList<>();
         var hops = path.hops();
         for (int i = 0; i + 1 < hops.size(); i++) {
@@ -112,7 +145,7 @@ public class IacQueryService {
         return cuts;
     }
 
-    /** S-01 G. 열린 경로를 끊는 조치(①)와 State 읽기 주체를 줄이는 조치(③). */
+    /** S-01 G. 열린 경로를 끊는 조치(PATH)와 State 읽기 주체를 줄이는 조치(STATE). */
     public List<IacRemediationResponse> remediations(String loginId) {
         requireAdmin(loginId);
         Map<String, long[]> byAction = new java.util.LinkedHashMap<>();
@@ -125,11 +158,11 @@ public class IacQueryService {
         }
         List<IacRemediationResponse> result = new java.util.ArrayList<>();
         byAction.forEach((action, counts) -> result.add(
-                new IacRemediationResponse(action, "①", counts[0], counts[1], action.toLowerCase())));
+                new IacRemediationResponse(action, "PATH", counts[0], counts[1], action.toLowerCase())));
         boolean tfstateReaders = repository.latestJob("CHECK_STATE")
                 .map(job -> job.stats().path("readerCount").asLong(0) > 0).orElse(false);
         if (tfstateReaders && !byAction.containsKey("TFSTATE_BUCKET_POLICY")) {
-            result.add(new IacRemediationResponse("TFSTATE_BUCKET_POLICY", "③", 0, 0, "tfstate_bucket_policy"));
+            result.add(new IacRemediationResponse("TFSTATE_BUCKET_POLICY", "STATE", 0, 0, "tfstate_bucket_policy"));
         }
         result.sort((a, b) -> Long.compare(b.tier1PathsCut() * 1000 + b.pathsCut(), a.tier1PathsCut() * 1000 + a.pathsCut()));
         return result;
@@ -147,7 +180,12 @@ public class IacQueryService {
     /** S-01 E. */
     public IacGatesResponse gates(String repo, String loginId) {
         requireAdmin(loginId);
-        long repoId = singleRepo(repo);
+        var registered = singleRepo(repo);
+        if (registered.isEmpty()) {
+            // 레포 등록 전: 검사 기록 없음 (화면은 "main 브랜치 검사 기록이 아직 없어요")
+            return new IacGatesResponse(null, STAGES, new IacGatesResponse.SupplyChain(0, 0, 0, 0));
+        }
+        long repoId = registered.getAsLong();
         var main = repository.mainGateFindings(repoId);
         var blocks = repository.recentPullRequestGateBlocks(repoId);
         var stages = STAGES.stream().map(s -> new IacGatesResponse.Stage(s.stage(), s.name(), s.ruleIds(),
@@ -159,11 +197,11 @@ public class IacQueryService {
                         main.getOrDefault("gate.lock_changed", 0L)));
     }
 
-    /** S-01 H. 주기는 gitops CronJob·CI 워크플로가 정한다. */
+    /** S-01 H. 주기는 대시보드 호스트 타이머·CI 워크플로가 정한다. */
     public List<IacJobStatusResponse> jobs(String loginId) {
         requireAdmin(loginId);
         return List.of(
-                job("COLLECT_GRAPH", "매일 03:00 KST (CronJob)", "AWS·Kubernetes (Cartography, scanner-ro)"),
+                job("COLLECT_GRAPH", "매일 03:00 KST (대시보드 호스트)", "AWS (Cartography, 읽기 전용 수집 역할)"),
                 job("ENRICH_GRAPH", "수집 뒤", "자산 그래프"),
                 job("CHECK_STATE", "수집 뒤", "자산 그래프의 tfstate 읽기 권한"),
                 job("CHECK_DRIFT", "매일 main plan (CI)", "refresh plan 의 resource_drift"),
@@ -176,12 +214,16 @@ public class IacQueryService {
                 row.pending());
     }
 
-    private long singleRepo(String repo) {
+    /** 검사 대상 레포. 레포를 지정하지 않았고 등록된 레포가 없으면 비어 있다 (지정한 레포가 없으면 404). */
+    private OptionalLong singleRepo(String repo) {
         var repos = repository.enabledRepoIds(repo);
+        if (repos.isEmpty() && repo == null) {
+            return OptionalLong.empty();
+        }
         if (repos.size() != 1) {
             throw new ApiException(repos.isEmpty() ? ErrorCode.NOT_FOUND : ErrorCode.INVALID_INPUT);
         }
-        return repos.getFirst();
+        return OptionalLong.of(repos.getFirst());
     }
 
     /** S-01 F 의 State 부분. 버킷 정책·State 속 민감값은 아직 확인하지 않아 null. */

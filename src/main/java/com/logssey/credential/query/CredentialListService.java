@@ -40,7 +40,7 @@ public class CredentialListService {
     static final String CREDENTIAL_UNCONFIRMED = "CREDENTIAL_UNCONFIRMED";
     static final String EXPOSURE_UNKNOWN = "EXPOSURE_UNKNOWN";
 
-    private static final Set<String> ISSUERS = Set.of("ALL", "AWS", "GITHUB", "NOTION");
+    private static final Set<String> ISSUERS = Set.of("ALL", "AWS", "GITHUB", "NOTION", "CUSTOM");
 
     private final CredentialQueryRepository repository;
 
@@ -138,7 +138,7 @@ public class CredentialListService {
 
     private static void validateIssuer(String issuer) {
         if (issuer == null || !ISSUERS.contains(issuer)) {
-            throw new ApiException(ErrorCode.INVALID_INPUT, "issuer는 ALL, AWS, GITHUB, NOTION 중 하나여야 합니다.");
+            throw new ApiException(ErrorCode.INVALID_INPUT, "issuer는 ALL, AWS, GITHUB, NOTION, CUSTOM 중 하나여야 합니다.");
         }
     }
 

@@ -9,10 +9,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
+import com.logssey.iac.auth.IacCiCaller;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -20,7 +22,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * CI 가 PR 마다 run 을 등록하고 민감값을 지운 plan 을 올린다 (API 계약 CI API).
- * S3 에서는 로그인한 관리자만 부를 수 있다. GitHub OIDC 검증은 S4 에서 붙인다.
+ * 대시보드 관리자(세션) 또는 infrastructure 의 iac-report 워크플로(GitHub OIDC, IacCiSecurityConfig)가 부른다.
+ * CI 는 토큰의 레포에 속한 run 만 다루고, 기록에는 사용자 없이 CI 로 남는다.
  */
 @Service
 public class IacRunService {
@@ -41,8 +44,20 @@ public class IacRunService {
     }
 
     public IacRunCreatedResponse register(IacRunRequest request, String loginId) {
+        return register(request, () -> requireAdmin(loginId));
+    }
+
+    /** CI: 요청의 레포가 토큰의 레포와 같고, 실행 종류가 그 워크플로의 것이어야 한다 (iac-report → PR, iac-drift → PUSH) */
+    public IacRunCreatedResponse registerByCi(IacRunRequest request, IacCiCaller caller) {
+        if (!request.repo().equals(caller.repository()) || !(request.isPush() ? "PUSH" : "PR").equals(caller.trigger())) {
+            throw new ApiException(ErrorCode.FORBIDDEN);
+        }
+        return register(request, () -> null);
+    }
+
+    private IacRunCreatedResponse register(IacRunRequest request, Supplier<Long> actorOf) {
         return Objects.requireNonNull(transaction.execute(status -> {
-            long actor = requireAdmin(loginId);
+            Long actor = actorOf.get();
             if (request.isPush() == (request.prNumber() != null)) {
                 // PR 은 번호가 있어야 하고, main 점검은 번호가 없어야 한다
                 throw new ApiException(ErrorCode.INVALID_INPUT);
@@ -57,7 +72,8 @@ public class IacRunService {
             repository.lockPullRequest(repo.repoId(), request.prNumber());
             OffsetDateTime now = repository.databaseNow();
             String runStatus = blocked ? "GATE_FAILED" : "PLANNING";
-            long runId = repository.insertRun(repo.repoId(), request.prNumber(), request.headSha(),
+            long runId = repository.insertRun(repo.repoId(), request.prNumber(),
+                    request.isPush() ? null : prTitle(request.prTitle()), request.headSha(),
                     request.isPush() ? "PUSH" : "PR", runStatus, blocked ? "BLOCK" : null, blocked ? highest : null,
                     actor, blocked ? now : null);
             repository.supersede(repo.repoId(), request.prNumber(), runId);
@@ -75,6 +91,15 @@ public class IacRunService {
     }
 
     public IacPlanAcceptedResponse uploadPlan(long runId, byte[] gzip, String loginId) {
+        return uploadPlan(runId, gzip, () -> requireAdmin(loginId));
+    }
+
+    public IacPlanAcceptedResponse uploadPlanByCi(long runId, byte[] gzip, IacCiCaller caller) {
+        requireRunOf(runId, caller);
+        return uploadPlan(runId, gzip, () -> null);
+    }
+
+    private IacPlanAcceptedResponse uploadPlan(long runId, byte[] gzip, Supplier<Long> actorOf) {
         if (gzip.length == 0) {
             throw new ApiException(ErrorCode.INVALID_INPUT);
         }
@@ -84,7 +109,7 @@ public class IacRunService {
         // 압축 해제와 검사는 DB 잠금 밖에서 한다
         inspector.inspect(gzip);
         return Objects.requireNonNull(transaction.execute(status -> {
-            long actor = requireAdmin(loginId);
+            Long actor = actorOf.get();
             var run = repository.lockRun(runId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
             if (!"PLANNING".equals(run.status())) {
                 // SUPERSEDED·GATE_FAILED·이미 분석 중인 run 에는 올릴 수 없다
@@ -101,6 +126,18 @@ public class IacRunService {
     public IacRunStatusResponse status(long runId, String loginId) {
         requireAdmin(loginId);
         return repository.status(runId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+    }
+
+    public IacRunStatusResponse statusByCi(long runId, IacCiCaller caller) {
+        requireRunOf(runId, caller);
+        return repository.status(runId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+    }
+
+    /** 다른 레포·다른 종류의 run 은 없는 것처럼 404 */
+    private void requireRunOf(long runId, IacCiCaller caller) {
+        if (!repository.runOwner(runId).map(caller::equals).orElse(false)) {
+            throw new ApiException(ErrorCode.NOT_FOUND);
+        }
     }
 
     /** 지문 → 발견 건. 지문은 규칙 + 대상 + 레포 + PR 번호, main 점검은 PR 번호 대신 MAIN (설계 지문 규칙). */
@@ -121,6 +158,13 @@ public class IacRunService {
             findings.putIfAbsent(fingerprint, new GateFinding(rule, address));
         }
         return findings;
+    }
+
+    /** PR 제목: 제어 문자(줄바꿈 포함)는 공백으로, 앞뒤 공백은 지우고, 비면 저장하지 않는다 */
+    static String prTitle(String title) {
+        if (title == null) return null;
+        String clean = title.replaceAll("\\p{Cntrl}", " ").strip();
+        return clean.isEmpty() ? null : clean;
     }
 
     private long requireAdmin(String loginId) {

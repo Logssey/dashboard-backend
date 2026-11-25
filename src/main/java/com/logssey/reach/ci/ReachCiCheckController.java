@@ -11,6 +11,7 @@ import com.logssey.reach.ci.dto.ReachCiCheckCreatedResponse;
 import com.logssey.reach.ci.dto.ReachCiCheckPageResponse;
 import com.logssey.reach.ci.dto.ReachCiCheckResponse;
 
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -63,6 +64,30 @@ public class ReachCiCheckController {
         if (ReachCiCaller.from(principal).isPresent()) throw new ApiException(ErrorCode.FORBIDDEN);
         return service.checks(principal == null ? null : principal.getName(),
                 new ReachCiCheckFilter(repository, mode, scanStatus), size, cursor, include);
+    }
+
+    /**
+     * 재대조 입력 SBOM (API-12 보조). 검사가 재대조(rescanOf)면 원래 스캔에 보관한 SBOM을 gzip 그대로 준다.
+     * 재대조가 아니거나 보관한 SBOM이 없으면(보관 전 스캔) 404이고, 러너는 이미지에서 SBOM을 다시 만든다
+     */
+    @GetMapping("/{checkId}/sbom")
+    public ResponseEntity<byte[]> sbom(Principal principal, @PathVariable long checkId) {
+        var ci = ReachCiCaller.from(principal);
+        byte[] gzip = ci.isPresent() ? service.sbomForCi(ci.get(), checkId)
+                : service.sbom(principal == null ? null : principal.getName(), checkId);
+        return ResponseEntity.ok().contentType(MediaType.parseMediaType("application/gzip")).body(gzip);
+    }
+
+    /**
+     * 재대조 입력 L3 실행 기록 (API-12 보조, PRD FR-14). 검사가 재대조면 그 이미지에 보관한 실행 기록을 tar.xz 그대로 준다.
+     * 러너는 앱을 다시 띄우지 않고 이 기록을 오늘의 판정 데이터와 다시 대조한다. 없으면 404이고 러너는 L3 없이 올린다
+     */
+    @GetMapping("/{checkId}/l3-record")
+    public ResponseEntity<byte[]> l3Record(Principal principal, @PathVariable long checkId) {
+        var ci = ReachCiCaller.from(principal);
+        byte[] record = ci.isPresent() ? service.l3RecordForCi(ci.get(), checkId)
+                : service.l3Record(principal == null ? null : principal.getName(), checkId);
+        return ResponseEntity.ok().contentType(MediaType.parseMediaType("application/x-xz")).body(record);
     }
 
     /** API-12 결과 조회 */

@@ -2,6 +2,7 @@ package com.logssey.compliance;
 
 import static com.logssey.compliance.ComplianceDtos.ResultItem;
 import static com.logssey.compliance.ComplianceDtos.RunSummary;
+import static com.logssey.compliance.ComplianceDtos.AssessmentContext;
 
 import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
@@ -37,23 +38,32 @@ public class ComplianceReportService {
 
     private final ComplianceRepository repository;
     private final ComplianceCatalog catalog;
+    private final ComplianceCheckPolicyCatalog checkPolicies;
+    private final ComplianceTargetRepository targets;
     private final String targetKey;
     private final String targetName;
 
     public ComplianceReportService(ComplianceRepository repository, ComplianceCatalog catalog,
+                                   ComplianceCheckPolicyCatalog checkPolicies, ComplianceTargetRepository targets,
                                    @Value("${logssey.compliance.target-key:default}") String targetKey,
                                    @Value("${logssey.compliance.target-name:점검 대상}") String targetName) {
         this.repository = repository;
         this.catalog = catalog;
+        this.checkPolicies = checkPolicies;
+        this.targets = targets;
         this.targetKey = targetKey;
         this.targetName = targetName;
     }
 
     @Transactional(readOnly = true)
-    public ReportDocument report(long runId, String requestedFramework) {
+    public ReportDocument report(String requestedTarget, long runId, String requestedFramework) {
         String scope = normalizeFramework(requestedFramework);
-        RunSummary run = repository.run(targetKey, runId)
+        String selectedTarget = target(requestedTarget);
+        RunSummary run = repository.run(selectedTarget, runId)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+        AssessmentContext assessmentContext = repository.assessmentContext(runId);
+        String selectedTargetName = targets.find(selectedTarget)
+                .map(ComplianceTargetDtos.TargetSummary::displayName).orElse(targetName);
         List<ComplianceCatalog.Framework> frameworks = scope.equals("all")
                 ? catalog.frameworks()
                 : List.of(requiredFramework(scope));
@@ -80,12 +90,16 @@ public class ComplianceReportService {
 
         String filename = "logssey-compliance-run-" + runId + "-" + (scope.equals("all") ? "integrated" : scope) + ".html";
         return new ReportDocument(filename,
-                render(run, frameworks, assessments, selectedResults, truncated, scope).getBytes(StandardCharsets.UTF_8));
+                render(run, assessmentContext, frameworks, assessments, selectedResults, truncated,
+                        scope, selectedTargetName)
+                        .getBytes(StandardCharsets.UTF_8));
     }
 
-    private String render(RunSummary run, List<ComplianceCatalog.Framework> frameworks,
+    private String render(RunSummary run, AssessmentContext assessmentContext,
+                          List<ComplianceCatalog.Framework> frameworks,
                           Map<String, ComplianceRepository.AssessmentRow> assessments,
-                          List<ResultItem> findings, boolean findingsTruncated, String scope) {
+                          List<ResultItem> findings, boolean findingsTruncated, String scope,
+                          String selectedTargetName) {
         String reportLabel = scope.equals("all") ? "통합" : frameworks.getFirst().shortName();
         String reportId = "CMP-" + run.runId() + "-" + scope.toUpperCase(Locale.ROOT);
         var html = new StringBuilder(64_000);
@@ -100,9 +114,10 @@ public class ComplianceReportService {
                 .append(h(reportLabel)).append(" 컴플라이언스<br>감사 결과 보고서</h1>")
                 .append("<p>클라우드 구성 점검 결과를 규제 통제별 기술 근거로 정리한 Run Snapshot 보고서입니다.</p></div>")
                 .append("<dl class=\"cover-meta\">")
-                .append(meta("대상 서비스", targetName))
+                .append(meta("대상 서비스", selectedTargetName))
                 .append(meta("대상 환경", environmentLabel(run.environment())))
-                .append(meta("점검 엔진", run.product() + " " + run.scannerVersion()))
+                .append(meta("점검 방식", "AWS 읽기 전용 자동 점검"))
+                .append(meta("판정 정책", policyVersionLabel(assessmentContext.policyVersion())))
                 .append(meta("점검 완료", REPORT_TIME.format(run.finishedAt())))
                 .append(meta("보고서 생성", REPORT_TIME.format(OffsetDateTime.now())))
                 .append(meta("보고서 ID", reportId))
@@ -118,10 +133,12 @@ public class ComplianceReportService {
                 .append(metric("검토 필요", totals.getOrDefault("NEEDS_REVIEW", 0), "개", "warning"))
                 .append("</div><div class=\"run-panel\"><dl>")
                 .append(meta("Run", "#" + run.runId()))
-                .append(meta("점검 원본", run.source()))
+                .append(meta("점검 원본", sourceLabel(run.source())))
                 .append(meta("정규화 결과", run.counts().total() + "건"))
                 .append(meta("실패 기술 결과", run.counts().fail() + "건"))
                 .append(meta("수집 오류", run.counts().error() + "건"))
+                .append(meta("자동 식별 서비스", inferredServices(assessmentContext.inferredServices())))
+                .append(meta("적용성 프로필", profileSummary(assessmentContext)))
                 .append(meta("가져온 사용자", run.createdBy()))
                 .append("</dl></div><div class=\"disclaimer\"><b>판정 범위</b><p>이 보고서는 자동 수집 가능한 기술 설정 근거를 정리합니다. 조직 운영, 문서, 인터뷰와 수동 증거를 포함한 인증 적합 여부를 확정하지 않습니다.</p></div></section>");
 
@@ -158,13 +175,18 @@ public class ComplianceReportService {
         if (findings.isEmpty()) {
             html.append("<div class=\"empty\">보고서 범위에 포함되는 비통과 기술 결과가 없습니다.</div>");
         } else {
-            html.append("<table><thead><tr><th>Check</th><th>결과</th><th>자산</th><th>Region</th><th>현재 값</th></tr></thead><tbody>");
+            html.append("<table><thead><tr><th>Check</th><th>결과</th><th>자산</th><th>현재 값</th><th>개선 가이드</th></tr></thead><tbody>");
             for (var finding : findings) {
+                var guide = checkPolicies.guide(finding.provider(), finding.checkId(), finding.expectedValue());
                 html.append("<tr><td><b>").append(h(finding.title())).append("</b><small>")
                         .append(h(finding.checkId())).append("</small></td><td><span class=\"pill ")
                         .append(resultClass(finding.result())).append("\">").append(resultLabel(finding.result()))
-                        .append("</span></td><td>").append(h(finding.asset())).append("</td><td>")
-                        .append(h(finding.region())).append("</td><td>").append(h(shorten(finding.currentValue(), 180)))
+                        .append("</span></td><td>").append(h(finding.asset())).append("<small>")
+                        .append(h(finding.region())).append("</small></td><td>").append(h(shorten(finding.currentValue(), 180)))
+                        .append("</td><td><b>").append(h(guide.expectedState())).append("</b><small>적용 조건 · ")
+                        .append(h(guide.applicability())).append("</small><small>검증 · ")
+                        .append(h(guide.verification())).append("</small><small>롤백 · ")
+                        .append(h(guide.rollback())).append("</small>")
                         .append("</td></tr>");
             }
             html.append("</tbody></table>");
@@ -201,6 +223,14 @@ public class ComplianceReportService {
         return normalized;
     }
 
+    private String target(String requestedTarget) {
+        String selected = requestedTarget == null || requestedTarget.isBlank() ? targetKey : requestedTarget.trim();
+        if (!selected.matches("^[a-z0-9][a-z0-9-]{1,98}[a-z0-9]$")) {
+            throw new ApiException(ErrorCode.INVALID_INPUT, "점검 대상 키가 올바르지 않습니다.");
+        }
+        return selected;
+    }
+
     private static String meta(String label, String value) {
         return "<div><dt>" + h(label) + "</dt><dd>" + h(value) + "</dd></div>";
     }
@@ -212,6 +242,27 @@ public class ComplianceReportService {
 
     private static String environmentLabel(String environment) {
         return "prod".equals(environment) ? "운영" : "개발";
+    }
+
+    private static String sourceLabel(String source) {
+        return "PROWLER_OCSF".equals(source) ? "AWS 기술 점검 결과" : "외부 점검 결과";
+    }
+
+    private static String inferredServices(List<String> services) {
+        return services.isEmpty() ? "식별 없음" : String.join(", ", services).toUpperCase(Locale.ROOT);
+    }
+
+    private static String policyVersionLabel(String version) {
+        return "legacy".equals(version) ? "레거시 판정 · 프로필 미적용" : "정책 " + version;
+    }
+
+    private static String profileSummary(AssessmentContext context) {
+        long used = context.profile().serviceUsage().values().stream().filter("USED"::equals).count();
+        long notUsed = context.profile().serviceUsage().values().stream().filter("NOT_USED"::equals).count();
+        long required = context.profile().requirements().values().stream().filter("REQUIRED"::equals).count();
+        long notRequired = context.profile().requirements().values().stream().filter("NOT_REQUIRED"::equals).count();
+        return "서비스 사용 " + used + " · 미사용 " + notUsed
+                + " · 정책 요구 " + required + " · 비요구 " + notRequired;
     }
 
     private static String statusClass(String status) {

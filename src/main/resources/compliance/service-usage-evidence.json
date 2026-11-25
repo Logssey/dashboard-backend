@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "prowlerVersion": "5.46.0",
+  "services": [
+    {
+      "service": "bedrock",
+      "rules": [
+        { "checkId": "bedrock_agent_guardrail_enabled", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "bedrock_agent_role_least_privilege", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "bedrock_agent_role_not_shared_across_agents", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "bedrock_api_key_no_administrative_privileges", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "bedrock_api_key_no_long_term_credentials", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "bedrock_custom_model_encrypted_with_cmk", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "bedrock_guardrail_contextual_grounding_filter_enabled", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "bedrock_guardrail_prompt_attack_filter_enabled", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "bedrock_guardrail_sensitive_information_filter_enabled", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "bedrock_guardrail_sensitive_information_filter_enforced", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "bedrock_knowledge_base_encrypted_with_cmk", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "bedrock_prompt_encrypted_with_cmk", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "bedrock_guardrails_configured", "acceptedResults": ["PASS"] },
+        { "checkId": "bedrock_model_invocation_logging_enabled", "acceptedResults": ["PASS"] },
+        { "checkId": "bedrock_model_invocation_logging_text_data_enabled", "acceptedResults": ["PASS"] },
+        { "checkId": "bedrock_model_invocation_logs_encryption_enabled", "acceptedResults": ["PASS"] },
+        { "checkId": "bedrock_prompt_management_exists", "acceptedResults": ["PASS"] },
+        { "checkId": "bedrock_vpc_endpoints_configured", "acceptedResults": ["PASS"] }
+      ]
+    },
+    {
+      "service": "sagemaker",
+      "rules": [
+        { "checkId": "sagemaker_domain_sso_configured", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "sagemaker_endpoint_config_kms_encryption_enabled", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "sagemaker_endpoint_config_prod_variant_instances", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "sagemaker_models_network_isolation_enabled", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "sagemaker_models_vpc_settings_configured", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "sagemaker_notebook_instance_encryption_enabled", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "sagemaker_notebook_instance_no_secrets", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "sagemaker_notebook_instance_root_access_disabled", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "sagemaker_notebook_instance_vpc_settings_configured", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "sagemaker_notebook_instance_without_direct_internet_access_configured", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "sagemaker_training_jobs_intercontainer_encryption_enabled", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "sagemaker_training_jobs_network_isolation_enabled", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "sagemaker_training_jobs_volume_and_output_encryption_enabled", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "sagemaker_training_jobs_vpc_settings_configured", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "sagemaker_clarify_exists", "acceptedResults": ["PASS"] },
+        { "checkId": "sagemaker_models_monitor_enabled", "acceptedResults": ["PASS"] },
+        { "checkId": "sagemaker_models_registry_in_use", "acceptedResults": ["PASS"] }
+      ]
+    },
+    {
+      "service": "drs",
+      "rules": [
+        { "checkId": "drs_job_exist", "acceptedResults": ["PASS"] }
+      ]
+    },
+    {
+      "service": "ssmincidents",
+      "rules": [
+        { "checkId": "ssmincidents_enabled_with_plans", "acceptedResults": ["PASS"] }
+      ]
+    },
+    {
+      "service": "backup",
+      "rules": [
+        { "checkId": "backup_recovery_point_encrypted", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "backup_vaults_encrypted", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "backup_plans_exist", "acceptedResults": ["PASS"] },
+        { "checkId": "backup_reportplans_exist", "acceptedResults": ["PASS"] },
+        { "checkId": "backup_vaults_exist", "acceptedResults": ["PASS"] }
+      ]
+    },
+    {
+      "service": "macie",
+      "rules": [
+        { "checkId": "macie_automated_sensitive_data_discovery_enabled", "acceptedResults": ["PASS", "FAIL"] },
+        { "checkId": "macie_is_enabled", "acceptedResults": ["PASS"] }
+      ]
+    }
+  ]
+}

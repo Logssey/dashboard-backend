@@ -1,0 +1,195 @@
+{
+  "version": "2.1.0",
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "tool": {
+        "extensions": [
+          {
+            "version": "4.10.5",
+            "name": "edu.umd.cs.findbugs.plugins.core",
+            "shortDescription": {
+              "text": "Core SpotBugs plugin"
+            },
+            "informationUri": "https://github.com/spotbugs",
+            "organization": "SpotBugs project"
+          },
+          {
+            "version": "",
+            "name": "com.h3xstream.findsecbugs",
+            "shortDescription": {
+              "text": "Find Security Bugs"
+            },
+            "informationUri": "https://find-sec-bugs.github.io",
+            "organization": "Find Security Bugs"
+          }
+        ],
+        "driver": {
+          "name": "SpotBugs",
+          "version": "4.10.5",
+          "language": "en",
+          "informationUri": "https://spotbugs.github.io/",
+          "rules": [
+            {
+              "id": "SQL_INJECTION_SPRING_JDBC",
+              "shortDescription": {
+                "text": "Potential JDBC Injection (Spring JDBC)."
+              },
+              "fullDescription": {
+                "text": "trimmed"
+              },
+              "messageStrings": {
+                "default": {
+                  "text": "This use of {0} can be vulnerable to SQL injection (with Spring JDBC)."
+                }
+              },
+              "helpUri": "https://find-sec-bugs.github.io/bugs.htm#SQL_INJECTION_SPRING_JDBC",
+              "properties": {
+                "tags": [
+                  "SECURITY"
+                ]
+              },
+              "relationships": [
+                {
+                  "target": {
+                    "id": "89",
+                    "guid": "ef952f10-a202-504c-8649-9ffcb2291d69",
+                    "toolComponent": {
+                      "name": "CWE",
+                      "guid": "b8c54a32-de19-51d2-9a08-f0abfbaa7310"
+                    }
+                  },
+                  "kinds": [
+                    "superset"
+                  ]
+                }
+              ]
+            }
+          ],
+          "supportedTaxonomies": [
+            {
+              "name": "CWE",
+              "guid": "b8c54a32-de19-51d2-9a08-f0abfbaa7310"
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "SQL_INJECTION_SPRING_JDBC",
+          "ruleIndex": 0,
+          "message": {
+            "id": "default",
+            "text": "Potential JDBC Injection (Spring JDBC)",
+            "arguments": [
+              "org/springframework/jdbc/core/JdbcTemplate.query(Ljava/lang/String;Lorg/springframework/jdbc/core/RowMapper;[Ljava/lang/Object;)Ljava/util/List;"
+            ]
+          },
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "com/reused/chat/ChatRepository.java",
+                  "uriBaseId": "-180849868"
+                },
+                "region": {
+                  "startLine": 20
+                }
+              },
+              "logicalLocations": [
+                {
+                  "name": "listing(long, boolean)",
+                  "kind": "function",
+                  "fullyQualifiedName": "com.reused.chat.ChatRepository.listing(long, boolean)"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "ruleId": "SQL_INJECTION_SPRING_JDBC",
+          "ruleIndex": 0,
+          "message": {
+            "id": "default",
+            "text": "Potential JDBC Injection (Spring JDBC)",
+            "arguments": [
+              "org/springframework/jdbc/core/JdbcTemplate.query(Ljava/lang/String;Lorg/springframework/jdbc/core/RowMapper;[Ljava/lang/Object;)Ljava/util/List;"
+            ]
+          },
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "com/reused/chat/ChatRepository.java",
+                  "uriBaseId": "-180849868"
+                },
+                "region": {
+                  "startLine": 43
+                }
+              },
+              "logicalLocations": [
+                {
+                  "name": "room(long, boolean)",
+                  "kind": "function",
+                  "fullyQualifiedName": "com.reused.chat.ChatRepository.room(long, boolean)"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "originalUriBaseIds": {
+        "-180849868": {
+          "uri": "file:/home/runner/work/service-backend/service-backend/src/main/java/"
+        }
+      },
+      "taxonomies": [
+        {
+          "name": "CWE",
+          "version": "4.10",
+          "minimumRequiredLocalizedDataSemanticVersion": "4.10",
+          "releaseDateUtc": "2023-01-31",
+          "guid": "b8c54a32-de19-51d2-9a08-f0abfbaa7310",
+          "informationUri": "https://cwe.mitre.org/data/published/cwe_v4.10.pdf/",
+          "downloadUri": "https://cwe.mitre.org/data/xml/cwec_v4.10.xml.zip",
+          "isComprehensive": true,
+          "organization": "MITRE",
+          "language": "en",
+          "shortDescription": {
+            "text": "The MITRE Common Weakness Enumeration"
+          },
+          "taxa": [
+            {
+              "id": "400",
+              "guid": "259f1f4f-be62-5d3a-9e6c-f5d036351b72",
+              "shortDescription": {
+                "text": "Uncontrolled Resource Consumption"
+              },
+              "fullDescription": {
+                "text": "The product does not properly control the allocation and maintenance of a limited resource, thereby enabling an actor to influence the amount of resources consumed, eventually leading to the exhaustion of available resources."
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              }
+            },
+            {
+              "id": "89",
+              "guid": "ef952f10-a202-504c-8649-9ffcb2291d69",
+              "shortDescription": {
+                "text": "Improper Neutralization of Special Elements used in an SQL Command ('SQL Injection')"
+              },
+              "fullDescription": {
+                "text": "The product constructs all or part of an SQL command using externally-influenced input from an upstream component, but it does not neutralize or incorrectly neutralizes special elements that could modify the intended SQL command when it is sent to a downstream component."
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

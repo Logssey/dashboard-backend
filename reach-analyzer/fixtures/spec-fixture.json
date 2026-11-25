@@ -36,7 +36,25 @@
         "https://raw.githubusercontent.com/apache/tomcat/2c2c510ab10ae7796de6c6f7b70abae85c99d30d/java/org/apache/catalina/realm/RealmBase.java",
         "https://raw.githubusercontent.com/apache/tomcat/11.0.25/test/org/apache/catalina/realm/TestRealmBase.java",
         "https://raw.githubusercontent.com/apache/tomcat/11.0.25/webapps/docs/changelog.xml"
-      ]
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.catalina.realm.RealmBase",
+            "method": "findSecurityConstraints",
+            "desc": "(Lorg/apache/catalina/connector/Request;Lorg/apache/catalina/Context;)[Lorg/apache/tomcat/util/descriptor/web/SecurityConstraint;",
+            "source": "org/apache/catalina/realm/RealmBase.java",
+            "lines": [
+              [
+                639,
+                639
+              ]
+            ]
+          }
+        ],
+        "note": "Only the /xxx/* pattern comparison, which runs only when security constraints are configured."
+      }
     },
     {
       "cve": "CVE-2026-65905",
@@ -77,7 +95,24 @@
         "https://raw.githubusercontent.com/apache/tomcat/11.0.25/test/org/apache/catalina/authenticator/TestDigestAuthenticatorNonceInfo.java",
         "https://raw.githubusercontent.com/apache/tomcat/11.0.25/webapps/docs/changelog.xml",
         "https://raw.githubusercontent.com/apache/tomcat-site/trunk/xdocs/security-11.xml"
-      ]
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.catalina.authenticator.DigestAuthenticator$NonceInfo",
+            "method": "nonceCountValid",
+            "desc": "(J)Z",
+            "source": "org/apache/catalina/authenticator/DigestAuthenticator.java",
+            "lines": [
+              [
+                806,
+                808
+              ]
+            ]
+          }
+        ]
+      }
     },
     {
       "cve": "CVE-2026-68525",
@@ -118,7 +153,25 @@
         "https://raw.githubusercontent.com/apache/tomcat/11.0.25/java/org/apache/catalina/authenticator/FormAuthenticator.java",
         "https://raw.githubusercontent.com/apache/tomcat/10d048e16034ddf12055e0cede0da05b15c823b8/java/org/apache/catalina/authenticator/AuthenticatorBase.java",
         "https://raw.githubusercontent.com/apache/tomcat/10d048e16034ddf12055e0cede0da05b15c823b8/java/org/apache/catalina/authenticator/FormAuthenticator.java"
-      ]
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.catalina.authenticator.FormAuthenticator",
+            "method": "restoreRequest",
+            "desc": "(Lorg/apache/catalina/connector/Request;Lorg/apache/catalina/Session;)Z",
+            "source": "org/apache/catalina/authenticator/FormAuthenticator.java",
+            "lines": [
+              [
+                641,
+                641
+              ]
+            ]
+          }
+        ],
+        "note": "Restoring the saved request method after FORM login."
+      }
     },
     {
       "cve": "CVE-2025-14813",
@@ -165,7 +218,19 @@
         "https://raw.githubusercontent.com/bcgit/bc-java/r1rv80v2/core/src/main/java/org/bouncycastle/crypto/modes/G3413CTRBlockCipher.java",
         "https://raw.githubusercontent.com/bcgit/bc-java/r1rv59/core/src/main/java/org/bouncycastle/crypto/modes/G3413CTRBlockCipher.java",
         "https://raw.githubusercontent.com/bcgit/bc-java/701686cb0184cd9ae103c801b3581fdf95c6d4f3/core/src/main/java/org/bouncycastle/crypto/modes/G3413CTRBlockCipher.java"
-      ]
+      ],
+      "l3": {
+        "version": "1.81",
+        "regions": [
+          {
+            "class": "org.bouncycastle.crypto.modes.G3413CTRBlockCipher",
+            "method": "generateCRT",
+            "desc": "()V",
+            "source": "org/bouncycastle/crypto/modes/G3413CTRBlockCipher.java"
+          }
+        ],
+        "note": "bcprov jars have no line numbers: whole method."
+      }
     },
     {
       "cve": "CVE-2026-8763",
@@ -254,7 +319,25 @@
         "https://raw.githubusercontent.com/bcgit/bc-java/2c28b253a44681fbbc562561eab6ad383d2ae558/core/src/main/java/org/bouncycastle/asn1/x509/PKIXNameConstraintValidator.java",
         "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81v1/core/src/main/java/org/bouncycastle/asn1/x509/PKIXNameConstraintValidator.java",
         "https://raw.githubusercontent.com/bcgit/bc-java/r1rv81/prov/src/main/java/org/bouncycastle/jce/provider/PKIXNameConstraintValidator.java"
-      ]
+      ],
+      "l3": {
+        "version": "1.81",
+        "regions": [
+          {
+            "class": "org.bouncycastle.asn1.x509.PKIXNameConstraintValidator",
+            "method": "emailIsConstrained",
+            "desc": "(Ljava/lang/String;Ljava/lang/String;)Z",
+            "source": "org/bouncycastle/asn1/x509/PKIXNameConstraintValidator.java"
+          },
+          {
+            "class": "org.bouncycastle.asn1.x509.PKIXNameConstraintValidator",
+            "method": "isUriConstrained",
+            "desc": "(Ljava/lang/String;Ljava/lang/String;)Z",
+            "source": "org/bouncycastle/asn1/x509/PKIXNameConstraintValidator.java"
+          }
+        ],
+        "note": "bcprov jars have no line numbers: whole method. rfc822Name and URI checks only (shared DNS helpers are left out)."
+      }
     },
     {
       "cve": "CVE-2026-13506",
@@ -296,7 +379,31 @@
         "https://github.com/bcgit/bc-java/commit/77454da9b3dcaaa2991412d1c3c1a6e1a338ff84",
         "https://github.com/bcgit/bc-java/wiki/CVE-2026-13506",
         "https://github.com/advisories/GHSA-qp49-qgx5-5m26"
-      ]
+      ],
+      "l3": {
+        "version": "1.81",
+        "regions": [
+          {
+            "class": "org.bouncycastle.asn1.LazyEncodedSequence",
+            "method": "force",
+            "desc": "()V",
+            "source": "org/bouncycastle/asn1/LazyEncodedSequence.java"
+          },
+          {
+            "class": "org.bouncycastle.asn1.LazyEncodedSequence",
+            "method": "getObjects",
+            "desc": "()Ljava/util/Enumeration;",
+            "source": "org/bouncycastle/asn1/LazyEncodedSequence.java"
+          },
+          {
+            "class": "org.bouncycastle.asn1.LazyConstructionEnumeration",
+            "method": "<init>",
+            "desc": "([B)V",
+            "source": "org/bouncycastle/asn1/LazyConstructionEnumeration.java"
+          }
+        ],
+        "note": "bcprov jars have no line numbers: whole method."
+      }
     },
     {
       "cve": "CVE-2026-0636",
@@ -346,7 +453,19 @@
         "https://github.com/bcgit/bc-java/commit/d20cdb8430e09224114fec0179a71859929fcbde",
         "https://github.com/bcgit/bc-java/wiki/CVE%E2%80%902026%E2%80%900636",
         "https://github.com/advisories/GHSA-c3fc-8qff-9hwx"
-      ]
+      ],
+      "l3": {
+        "version": "1.81",
+        "regions": [
+          {
+            "class": "org.bouncycastle.x509.util.LDAPStoreHelper",
+            "method": "parseDN",
+            "desc": "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+            "source": "org/bouncycastle/x509/util/LDAPStoreHelper.java"
+          }
+        ],
+        "note": "bcprov jars have no line numbers: whole method. X509LDAPCertStoreSpi.parseDN already escapes in 1.81."
+      }
     },
     {
       "cve": "CVE-2026-89407",
@@ -398,7 +517,25 @@
         "https://nvd.nist.gov/vuln/detail/CVE-2026-89407",
         "https://www.tenable.com/cve/CVE-2026-89407",
         "https://app.opencve.io/cve/CVE-2026-89407"
-      ]
+      ],
+      "l3": {
+        "version": "3.1.5",
+        "regions": [
+          {
+            "class": "tools.jackson.core.io.NumberInput",
+            "method": "looksLikeValidNumber",
+            "desc": "(Ljava/lang/String;)Z",
+            "source": "tools/jackson/core/io/NumberInput.java",
+            "lines": [
+              [
+                626,
+                627
+              ]
+            ]
+          }
+        ],
+        "note": "The regular expression match only."
+      }
     },
     {
       "cve": "CVE-2026-89425",
@@ -438,7 +575,25 @@
         "GHSA-7hhh-6rmp-j9qf",
         "https://app.opencve.io/cve/CVE-2026-89425",
         "https://www.wiz.io/vulnerability-database/cve/cve-2026-89425"
-      ]
+      ],
+      "l3": {
+        "version": "3.1.5",
+        "regions": [
+          {
+            "class": "tools.jackson.core.json.UTF8DataInputJsonParser",
+            "method": "_reportInvalidToken",
+            "desc": "(ILjava/lang/String;Ljava/lang/String;)V",
+            "source": "tools/jackson/core/json/UTF8DataInputJsonParser.java",
+            "lines": [
+              [
+                2981,
+                2982
+              ]
+            ]
+          }
+        ],
+        "note": "The unbounded token loop."
+      }
     },
     {
       "cve": "CVE-2026-68497",
@@ -478,7 +633,29 @@
         "GHSA-q4xh-88c3-wmh7",
         "https://www.tenable.com/cve/CVE-2026-68497",
         "https://app.opencve.io/cve/CVE-2026-68497"
-      ]
+      ],
+      "l3": {
+        "version": "3.1.5",
+        "regions": [
+          {
+            "class": "tools.jackson.databind.ext.CoreXMLDeserializers$Std",
+            "method": "_deserialize",
+            "desc": "(Ljava/lang/String;Ltools/jackson/databind/DeserializationContext;)Ljava/lang/Object;",
+            "source": "tools/jackson/databind/ext/CoreXMLDeserializers.java",
+            "lines": [
+              [
+                137,
+                137
+              ],
+              [
+                141,
+                141
+              ]
+            ]
+          }
+        ],
+        "note": "Duration and XMLGregorianCalendar values (QName is not affected)."
+      }
     },
     {
       "cve": "CVE-2026-91776",
@@ -518,7 +695,29 @@
         "GHSA-wv8q-qhhj-9h54",
         "https://app.opencve.io/cve/CVE-2026-91776",
         "https://www.wiz.io/vulnerability-database/cve/cve-2026-91776"
-      ]
+      ],
+      "l3": {
+        "version": "3.1.5",
+        "regions": [
+          {
+            "class": "tools.jackson.databind.jsontype.impl.TypeDeserializerBase",
+            "method": "_findDeserializer",
+            "desc": "(Ltools/jackson/databind/DeserializationContext;Ljava/lang/String;)Ltools/jackson/databind/ValueDeserializer;",
+            "source": "tools/jackson/databind/jsontype/impl/TypeDeserializerBase.java",
+            "lines": [
+              [
+                166,
+                166
+              ],
+              [
+                198,
+                198
+              ]
+            ]
+          }
+        ],
+        "note": "Unknown type ids resolved by a problem handler or defaultImpl."
+      }
     },
     {
       "cve": "CVE-2026-91777",
@@ -558,7 +757,37 @@
         "GHSA-cxp5-3px4-pw24",
         "https://app.opencve.io/cve/CVE-2026-91777",
         "https://www.wiz.io/vulnerability-database/cve/cve-2026-91777"
-      ]
+      ],
+      "l3": {
+        "version": "3.1.5",
+        "regions": [
+          {
+            "class": "tools.jackson.databind.deser.jdk.CollectionDeserializer$CollectionReferringAccumulator",
+            "method": "resolveForwardReference",
+            "desc": "(Ltools/jackson/databind/DeserializationContext;Ljava/lang/Object;Ljava/lang/Object;)V",
+            "source": "tools/jackson/databind/deser/jdk/CollectionDeserializer.java",
+            "lines": [
+              [
+                647,
+                656
+              ]
+            ]
+          },
+          {
+            "class": "tools.jackson.databind.deser.jdk.MapDeserializer$MapReferringAccumulator",
+            "method": "resolveForwardReference",
+            "desc": "(Ltools/jackson/databind/DeserializationContext;Ljava/lang/Object;Ljava/lang/Object;)V",
+            "source": "tools/jackson/databind/deser/jdk/MapDeserializer.java",
+            "lines": [
+              [
+                969,
+                978
+              ]
+            ]
+          }
+        ],
+        "note": "The linear scan over pending forward references."
+      }
     },
     {
       "cve": "CVE-2026-19032",
@@ -591,7 +820,25 @@
         "https://github.com/FasterXML/jackson-databind/commit/ce26eda3481cd796f76ba4c53ffe1da23b53f166",
         "https://github.com/FasterXML/jackson-databind/commit/d94bb632becfe0ba96926b9909ab06d1f87aad6d",
         "https://github.com/FasterXML/jackson-databind/commit/cc6756b61ed90b6b9227f670e0408d5d9bd48551"
-      ]
+      ],
+      "l3": {
+        "version": "3.1.5",
+        "regions": [
+          {
+            "class": "tools.jackson.databind.deser.jdk.JDKFromStringDeserializer$NioPathHelper",
+            "method": "deserialize",
+            "desc": "(Ltools/jackson/databind/DeserializationContext;Ljava/lang/String;)Ljava/nio/file/Path;",
+            "source": "tools/jackson/databind/deser/jdk/JDKFromStringDeserializer.java",
+            "lines": [
+              [
+                375,
+                396
+              ]
+            ]
+          }
+        ],
+        "note": "URI-form paths only (plain file paths return earlier)."
+      }
     },
     {
       "cve": "CVE-2026-83557",
@@ -628,7 +875,1408 @@
         "https://github.com/FasterXML/jackson-databind/security/advisories/GHSA-gx83-3vf8-gh7j",
         "https://github.com/FasterXML/jackson-databind/pull/6155",
         "https://github.com/FasterXML/jackson-databind/commit/eb3b7fc0f9c0d27f471550ac3316b17d1987388f"
-      ]
+      ],
+      "l3": {
+        "version": "3.1.5",
+        "regions": [],
+        "note": "The fix changes deny-list data only, so execution alone cannot tell; the sink methods are reported as method evidence."
+      }
+    },
+    {
+      "cve": "CVE-2026-65637",
+      "ghsa": "GHSA-f525-44xv-f2qj",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.25",
+          "10.1.59",
+          "9.0.121"
+        ]
+      },
+      "severity": "CRITICAL",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "Tomcat이 HTTP/2 요청의 헤더를 다 받은 뒤 필수 헤더를 확인할 때 호스트 이름(:authority 또는 host 헤더)이 없는 요청을 거르지 않는다. 호스트 이름과 TLS SNI를 맞춰 보는 검사(strictSni)는 호스트 이름을 읽을 때만 돌기 때문에, TLS 커넥터에서 HTTP/2를 켠 서버에 호스트 이름 없는 요청을 보내면 이 검사를 건너뛰고 요청이 처리된다.",
+      "summary_en": "org.apache.coyote.http2.Stream.receivedEndOfHeaders() accepts an HTTP/2 request (any method except CONNECT) that has :scheme and :path but neither :authority nor a host header. The strict SNI check (checkSni) runs only inside Stream.parseAuthority(), which is called when one of those headers arrives, so such a request skips the SNI/host-name comparison and is processed. The fix makes receivedEndOfHeaders() reject the request when the server name is not set.",
+      "sinks": [
+        {
+          "class": "org.apache.coyote.http2.Stream",
+          "method": "receivedEndOfHeaders",
+          "desc": "()Z",
+          "confidence": "high",
+          "note": "The only method the three fix commits change. It runs for every HTTP/2 request once its headers are complete, so it is reachable whenever HTTP/2 is enabled; nothing narrower exists."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-f525-44xv-f2qj",
+        "https://github.com/apache/tomcat/commit/40012414df828a56126f76a7339669c7c919aae7",
+        "https://github.com/apache/tomcat/commit/8639b20f045c88f356b887204f52e897399f0de7",
+        "https://github.com/apache/tomcat/commit/b823e88da077f5fa973e34d72359bded9f621e3c"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [],
+        "note": "No region: the fix adds one term (serverName().isNull()) to the required-header condition at Stream.java line 604, which every non-CONNECT HTTP/2 request evaluates. Executing that line does not show that a request without a host name was accepted, so the sink method is reported as method evidence only."
+      }
+    },
+    {
+      "cve": "CVE-2026-5598",
+      "ghsa": "GHSA-p93r-85wp-75v3",
+      "package": {
+        "coordinates": "org.bouncycastle:bcprov-jdk18on",
+        "artifact": "bcprov-jdk18on",
+        "installed": "1.81",
+        "fixed": [
+          "1.81.1",
+          "1.84",
+          "1.80.2"
+        ]
+      },
+      "severity": "HIGH",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+      "invocation_kind": "app_calls_library",
+      "summary_ko": "FrodoKEM의 오차 표본 추출 코드(FrodoEngine.sample)가 비밀 값에 따라 분기해서 실행 시간이 달라진다. 공격자가 조작한 캡슐화 값을 여러 번 복호화(decapsulation)시키고 응답 시간을 재면 비밀 정보를 알아낼 수 있다. FrodoKEM을 쓰는 경우에만 해당한다.",
+      "summary_en": "FrodoEngine.sample(short), called for every matrix entry by FrodoEngine.sample_matrix, branches on the pseudo-random value it samples from (CDF table comparison and sign flip), so its running time depends on secret data. During FrodoKEM decapsulation (FrodoEngine.kem_dec) the sampled values derive from the decrypted message, which gives an attacker who submits encapsulations and measures timing a covert timing channel. Only FrodoKEM users are affected.",
+      "sinks": [
+        {
+          "class": "org.bouncycastle.pqc.crypto.frodo.FrodoEngine",
+          "method": "sample",
+          "desc": "(S)S",
+          "confidence": "high",
+          "note": "Private non-constant-time sampler removed by fix commit 94abbd5 (replaced by Noise.sample); this is the vulnerable code itself."
+        },
+        {
+          "class": "org.bouncycastle.pqc.crypto.frodo.FrodoEngine",
+          "method": "sample_matrix",
+          "desc": "([SIII)[S",
+          "confidence": "high",
+          "note": "Only caller of sample; rewritten by fix commit 94abbd5. Called from kem_keypair, kem_enc and kem_dec, not only decapsulation."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-p93r-85wp-75v3",
+        "https://github.com/bcgit/bc-java/commit/8692e6b2b191fc4aafa32545c7a78bdb9bf110c5",
+        "https://github.com/bcgit/bc-java/commit/94abbd56413dfdac651fd878bc60253871ef5e87"
+      ],
+      "l3": {
+        "version": "1.81",
+        "regions": [
+          {
+            "class": "org.bouncycastle.pqc.crypto.frodo.FrodoEngine",
+            "method": "sample",
+            "desc": "(S)S",
+            "source": "org/bouncycastle/pqc/crypto/frodo/FrodoEngine.java"
+          }
+        ],
+        "note": "The 1.81 jar has no line numbers (every row of methods-installed.tsv has lines \"-\"), so the region is the whole method FrodoEngine.sample(short) (source lines 103-120, the secret-dependent branches are at 111-112 and 116-117). sample_matrix is left out because it only loops over sample. The region cannot tell decapsulation from key generation or encapsulation: sample also executes under kem_keypair and kem_enc, while the advisory limits the issue to decapsulation."
+      }
+    },
+    {
+      "cve": "CVE-2026-76183",
+      "ghsa": "GHSA-q4fc-3vv4-fh24",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-websocket",
+        "artifact": "tomcat-embed-websocket",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.26",
+          "10.1.60",
+          "9.0.122"
+        ]
+      },
+      "severity": "CRITICAL",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "Tomcat WebSocket 서버가 요청 경로를 엔드포인트 경로 템플릿({변수})으로 잘못 해석해, 요청 경로에 중괄호를 넣으면 다른 경로의 WebSocket 엔드포인트에 연결되면서 그 경로에 걸린 컨테이너 보안 제약(security-constraint)을 건너뛸 수 있다.",
+      "summary_en": "WsServerContainer.findMapping parses the request path as a URI template (new UriTemplate(path)), so a request path with {…} segments can match a templated WebSocket endpoint and bypass the security constraints on that endpoint.",
+      "sinks": [
+        {
+          "class": "org.apache.tomcat.websocket.server.WsServerContainer",
+          "method": "findMapping",
+          "desc": "(Ljava/lang/String;)Lorg/apache/tomcat/websocket/server/WsMappingResult;",
+          "confidence": "high",
+          "note": "Called by WsFilter only when JSR-356 endpoints are registered in the WsServerContainer and the request is a WebSocket upgrade."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-q4fc-3vv4-fh24",
+        "https://github.com/apache/tomcat/commit/e182d86b7d4cc19ec4c24c38f37acc004404fe8e"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.tomcat.websocket.server.WsServerContainer",
+            "method": "findMapping",
+            "desc": "(Ljava/lang/String;)Lorg/apache/tomcat/websocket/server/WsMappingResult;",
+            "source": "org/apache/tomcat/websocket/server/WsServerContainer.java",
+            "lines": [
+              [
+                290,
+                290
+              ]
+            ]
+          }
+        ],
+        "note": "Line 290 parses the request path as a template; it runs for every WebSocket upgrade request with no exact endpoint match, so its execution does not show a path with {…} or a bypass."
+      }
+    },
+    {
+      "cve": "CVE-2026-86248",
+      "ghsa": "GHSA-c47j-g3rg-hrfq",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.26",
+          "10.1.60",
+          "9.0.122"
+        ]
+      },
+      "severity": "CRITICAL",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "Tomcat이 OpenSSL을 FFM(Java의 외부 함수 호출) 방식으로 쓰면서 클라이언트 인증서 로그인(CLIENT_CERT)에 OCSP 확인을 켜고 soft-fail을 끈 경우, 인증서 상태를 확인하지 못했는데도 로그인이 실패하지 않을 수 있다. 취약한 코드는 tomcat-embed-core가 아니라 별도 jar(org.apache.tomcat:tomcat-coyote-ffm)에 있다.",
+      "summary_en": "With OpenSSL over FFM (org.apache.tomcat.util.net.openssl.panama.OpenSSLEngine.processOCSP, shipped in tomcat-coyote-ffm, not in tomcat-embed-core), an OCSP check that cannot complete does not fail CLIENT_CERT authentication even when soft fail is disabled.",
+      "sinks": [
+        {
+          "class": "org.apache.tomcat.util.net.SSLHostConfig",
+          "method": "getOcspSoftFail",
+          "desc": "()Z",
+          "confidence": "low",
+          "note": "Representative only: the fixed code (panama OpenSSLEngine.processOCSP) is not in tomcat-embed-core; the rule on the tomcat-coyote-ffm jar decides."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-c47j-g3rg-hrfq",
+        "https://github.com/apache/tomcat/commit/9aab76056e7470bcc8ca9a20b33b6558b1046da2"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [],
+        "note": "The fixed code is in tomcat-coyote-ffm, not in this jar; nothing in tomcat-embed-core shows it ran."
+      }
+    },
+    {
+      "cve": "CVE-2026-86350",
+      "ghsa": "GHSA-6ff5-mwrj-376m",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.26",
+          "10.1.60",
+          "9.0.122"
+        ]
+      },
+      "severity": "CRITICAL",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "HTTP/2 요청 헤더를 풀 때(HPACK 허프만 해제) 허용되지 않는 문자를 만나면 예외로 중간에 멈추는데, 이때 헤더 해석 상태가 정리되지 않아 같은 연결의 다른 요청과 헤더가 섞일 수 있다. CVE-2026-41293 수정에서 들어온 회귀다.",
+      "summary_en": "HPackHuffman.decode (with isFieldName) throws IllegalArgumentException in the middle of an HPACK header block for an illegal character, a check added by the fix for CVE-2026-41293, which leaves the decoder state inconsistent and can mix request headers between requests.",
+      "sinks": [
+        {
+          "class": "org.apache.coyote.http2.HPackHuffman",
+          "method": "decode",
+          "desc": "(Ljava/nio/ByteBuffer;ILjava/lang/StringBuilder;Z)V",
+          "confidence": "high",
+          "note": "Runs for every Huffman-encoded HTTP/2 header; the rule on HTTP/2 being enabled decides."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-6ff5-mwrj-376m",
+        "https://github.com/apache/tomcat/commit/192bc74996e1ad35d79118f750574d366bd43cea"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.coyote.http2.HPackHuffman",
+            "method": "decode",
+            "desc": "(Ljava/nio/ByteBuffer;ILjava/lang/StringBuilder;Z)V",
+            "source": "org/apache/coyote/http2/HPackHuffman.java",
+            "lines": [
+              [
+                433,
+                434
+              ],
+              [
+                439,
+                440
+              ],
+              [
+                445,
+                446
+              ],
+              [
+                472,
+                473
+              ],
+              [
+                478,
+                479
+              ],
+              [
+                484,
+                485
+              ]
+            ]
+          }
+        ],
+        "note": "The throw statements for an illegal character in a header name or value (both decoding branches). They run only for such input, so execution here is close to the attack, but it does not show that headers were mixed."
+      }
+    },
+    {
+      "cve": "CVE-2026-101296",
+      "ghsa": "GHSA-5q2g-877c-9cwh",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.27",
+          "10.1.61",
+          "9.0.123"
+        ]
+      },
+      "severity": "CRITICAL",
+      "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:H/VI:H/VA:N/SC:N/SI:N/SA:N/E:X/CR:X/IR:X/AR:X/MAV:X/MAC:X/MAT:X/MPR:X/MUI:X/MVC:X/MVI:X/MVA:X/MSC:X/MSI:X/MSA:X/S:X/AU:X/R:X/V:X/RE:X/U:X",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "Tomcat의 JNDIRealm(LDAP으로 로그인 확인)에 GSSAPI가 아닌 SASL 인증 방식을 설정하면, 사용자 비밀번호로 LDAP에 다시 붙어 확인하는 단계가 설정된 SASL 방식으로 그대로 진행돼 비밀번호가 틀려도 로그인이 통과할 수 있다.",
+      "summary_en": "JNDIRealm.bindAsUser keeps a configured non-GSSAPI SASL mechanism when it binds as the user to check the password, so the bind can succeed without the user's password and authentication fails open.",
+      "sinks": [
+        {
+          "class": "org.apache.catalina.realm.JNDIRealm",
+          "method": "bindAsUser",
+          "desc": "(Ljavax/naming/directory/DirContext;Lorg/apache/catalina/realm/JNDIRealm$User;Ljava/lang/String;)Z",
+          "confidence": "high"
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-5q2g-877c-9cwh",
+        "https://github.com/apache/tomcat/commit/e43453fc04abb44f64faf571ca98af71aa3c20a1"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.catalina.realm.JNDIRealm",
+            "method": "bindAsUser",
+            "desc": "(Ljavax/naming/directory/DirContext;Lorg/apache/catalina/realm/JNDIRealm$User;Ljava/lang/String;)Z",
+            "source": "org/apache/catalina/realm/JNDIRealm.java",
+            "lines": [
+              [
+                1981,
+                1982
+              ]
+            ]
+          }
+        ],
+        "note": "Lines 1981-1982: the check that removes only GSSAPI before the bind; it runs for every bind-mode authentication, so its execution does not show a non-GSSAPI SASL mechanism is configured."
+      }
+    },
+    {
+      "cve": "CVE-2026-101356",
+      "ghsa": "GHSA-w9r8-5j45-v8mg",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.27",
+          "10.1.61",
+          "9.0.123"
+        ]
+      },
+      "severity": "CRITICAL",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:H",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "HTTP/2로 받은 비동기 서블릿 요청(Spring MVC의 DeferredResult·Callable·SseEmitter 등)에서 처리 중 오류가 나면, Tomcat이 그 요청 상태를 오류로 보지 못하고 객체를 다시 써서 다른 사용자의 요청·응답과 섞일 수 있다.",
+      "summary_en": "AsyncStateMachine.isAsyncError ignores the MUST_ERROR state, so after an error during asynchronous processing of an HTTP/2 stream the request and response objects can be recycled and reused while still in use, mixing requests or responses between users.",
+      "sinks": [
+        {
+          "class": "org.apache.coyote.AsyncStateMachine",
+          "method": "isAsyncError",
+          "desc": "()Z",
+          "confidence": "high",
+          "note": "Reached only through AsyncContextImpl (ActionCode.ASYNC_IS_ERROR), i.e. asynchronous servlet requests; HTTP/2 is required but not visible here."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-w9r8-5j45-v8mg",
+        "https://github.com/apache/tomcat/commit/1dc6aa151b3b99b32ac9ae7c60e41c326063321b"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.coyote.AsyncStateMachine",
+            "method": "isAsyncError",
+            "desc": "()Z",
+            "source": "org/apache/coyote/AsyncStateMachine.java",
+            "lines": [
+              [
+                220,
+                220
+              ]
+            ]
+          }
+        ],
+        "note": "Line 220 runs whenever the async state is asked whether it is in error (any async request, HTTP/1.1 or HTTP/2); its execution does not show HTTP/2 or an error."
+      }
+    },
+    {
+      "cve": "CVE-2026-103119",
+      "ghsa": "GHSA-64hx-4gc9-f6v4",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.27"
+        ]
+      },
+      "severity": "CRITICAL",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:H",
+      "invocation_kind": "both",
+      "summary_ko": "응답 길이(Content-Length)를 정한 응답을 비동기(논블로킹) 방식으로 크게 쓰면, Tomcat이 아직 소켓에 다 보내지 못한 상태에서 응답을 닫아 응답 본문 일부가 같은 연결의 다음 요청 응답으로 넘어갈 수 있다. 다음 요청이 실패하거나 앞 응답의 데이터가 다른 사용자에게 보일 수 있다.",
+      "summary_en": "OutputBuffer.updateBytesWritten closes the response as soon as Content-Length bytes are counted, even for a non-blocking write whose bytes are still buffered at the socket, so the rest of the body can be sent as part of the next response on the connection.",
+      "sinks": [
+        {
+          "class": "org.apache.catalina.connector.OutputBuffer",
+          "method": "updateBytesWritten",
+          "desc": "(I)V",
+          "confidence": "high",
+          "note": "Runs for every response write; only the non-blocking case (after setWriteListener) is vulnerable, so a rule decides."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-64hx-4gc9-f6v4",
+        "https://github.com/apache/tomcat/commit/f13748baa17a5e28925be455e0e2832e2032f58c"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.catalina.connector.OutputBuffer",
+            "method": "updateBytesWritten",
+            "desc": "(I)V",
+            "source": "org/apache/catalina/connector/OutputBuffer.java",
+            "lines": [
+              [
+                447,
+                448
+              ]
+            ]
+          }
+        ],
+        "note": "Line 447 is the condition the fix changed; it runs for every response write with a known Content-Length, blocking or not. Its execution does not show a non-blocking write."
+      }
+    },
+    {
+      "cve": "CVE-2026-65183",
+      "ghsa": "GHSA-h3mr-2w3q-jcv9",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.25",
+          "10.1.59",
+          "9.0.121"
+        ]
+      },
+      "severity": "HIGH",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "Tomcat 커넥터를 Unix 도메인 소켓으로 열고 소켓 권한(unixDomainSocketPathPermissions)을 정하면, Tomcat이 소켓 파일을 먼저 만든 뒤에 권한을 바꾸기 때문에 그 사이에 같은 서버의 다른 로컬 사용자가 소켓에 접속할 수 있다.",
+      "summary_en": "NioEndpoint.initServerSocket binds the Unix domain socket first and only then applies the configured unixDomainSocketPathPermissions, so a local user can connect to the socket in the window before the permissions are set.",
+      "sinks": [
+        {
+          "class": "org.apache.tomcat.util.net.NioEndpoint",
+          "method": "initServerSocket",
+          "desc": "()V",
+          "confidence": "high",
+          "note": "Runs at start-up for every NIO connector; only the Unix domain socket branch (lines 314-334) is vulnerable, so a rule decides."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-h3mr-2w3q-jcv9",
+        "https://github.com/apache/tomcat/commit/4fb4523d70258614a00e7501ae0fdf3cdcbc2470"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.tomcat.util.net.NioEndpoint",
+            "method": "initServerSocket",
+            "desc": "()V",
+            "source": "org/apache/tomcat/util/net/NioEndpoint.java",
+            "lines": [
+              [
+                317,
+                321
+              ]
+            ]
+          }
+        ],
+        "note": "Lines 317-321: the bind that creates the socket file and the start of the branch that sets unixDomainSocketPathPermissions afterwards. Line 317 runs for every Unix domain socket connector; lines 319-321 only when permissions are configured. Execution shows the socket was created, not that another local user used the window."
+      }
+    },
+    {
+      "cve": "CVE-2026-65927",
+      "ghsa": "GHSA-g8qj-vp23-742m",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.25",
+          "10.1.59",
+          "9.0.121"
+        ]
+      },
+      "severity": "HIGH",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "Tomcat RewriteValve에서 [N](next) 플래그가 붙은 규칙이 맞으면 규칙 처리를 처음부터 다시 해야 하는데 두 번째 규칙부터 다시 시작한다. 첫 번째 규칙이 접근 제한(예: 특정 경로 차단)이면 그 규칙을 건너뛰어 제한을 우회할 수 있다.",
+      "summary_en": "RewriteValve.invoke restarts rule processing after a matching rule with the [N] (next) flag at index 1 instead of 0 (i = 0 followed by the loop increment), so the first rule is skipped on the second pass and an access-control rule placed first can be bypassed.",
+      "sinks": [
+        {
+          "class": "org.apache.catalina.valves.rewrite.RewriteValve",
+          "method": "invoke",
+          "desc": "(Lorg/apache/catalina/connector/Request;Lorg/apache/catalina/connector/Response;)V",
+          "confidence": "high",
+          "note": "Runs for every request once a RewriteValve is configured; only rules with the [N] flag are affected."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-g8qj-vp23-742m",
+        "https://github.com/apache/tomcat/commit/bce83410ffb1542752d52b536257e81a5c8dfcb8",
+        "https://github.com/apache/tomcat/commit/b80929d65be774dc90e378acdda2d16949d1e5f3"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.catalina.valves.rewrite.RewriteValve",
+            "method": "invoke",
+            "desc": "(Lorg/apache/catalina/connector/Request;Lorg/apache/catalina/connector/Response;)V",
+            "source": "org/apache/catalina/valves/rewrite/RewriteValve.java",
+            "lines": [
+              [
+                555,
+                555
+              ]
+            ]
+          }
+        ],
+        "note": "Line 555 (i = 0) runs only when a rule with the [N] flag matched and processing restarts; the off-by-one skips rule 0 on the next pass. It does not show that the skipped first rule was an access-control rule."
+      }
+    },
+    {
+      "cve": "CVE-2026-66422",
+      "ghsa": "GHSA-w3xg-786f-g788",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.25",
+          "10.1.59",
+          "9.0.121"
+        ]
+      },
+      "severity": "HIGH",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:H",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "Tomcat이 서블릿의 security-role-ref(서블릿 코드에서 쓰는 역할 이름의 별칭)를 선언적 접근 제한(security-constraint의 auth-constraint) 확인에도 적용한다. 별칭 때문에 제한에 적힌 역할이 없는 사용자가 그 URL에 접근할 수 있다.",
+      "summary_en": "RealmBase.hasRole applies the servlet's security-role-ref aliases (Wrapper.findSecurityReference) for every role check, including declarative auth-constraint checks from hasResourcePermission, so a user without the constrained role can pass the constraint through an alias.",
+      "sinks": [
+        {
+          "class": "org.apache.catalina.realm.RealmBase",
+          "method": "hasRole",
+          "desc": "(Lorg/apache/catalina/Wrapper;Ljava/security/Principal;Ljava/lang/String;)Z",
+          "confidence": "high",
+          "note": "Also called by Request.isUserInRole, where the alias is correct; only the hasResourcePermission path (RealmBase line 841) is vulnerable."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-w3xg-786f-g788",
+        "https://github.com/apache/tomcat/commit/2c2c510ab10ae7796de6c6f7b70abae85c99d30d"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.catalina.realm.RealmBase",
+            "method": "hasRole",
+            "desc": "(Lorg/apache/catalina/Wrapper;Ljava/security/Principal;Ljava/lang/String;)Z",
+            "source": "org/apache/catalina/realm/RealmBase.java",
+            "lines": [
+              [
+                907,
+                907
+              ]
+            ]
+          }
+        ],
+        "note": "Line 907 (role = realRole) runs for every role check of a servlet under a Context, also without a role mapping (StandardContext.findRoleMapping returns the role name itself), for both callers (declarative constraint check and Request.isUserInRole). Its execution shows no more than the method ran, not that an alias was applied to a security constraint."
+      }
+    },
+    {
+      "cve": "CVE-2026-68569",
+      "ghsa": "GHSA-5q6q-ffrq-6xfc",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.25",
+          "10.1.59",
+          "9.0.121"
+        ]
+      },
+      "severity": "HIGH",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "Tomcat DataSourceRealm(DB로 사용자 확인)이 CLIENT-CERT·SPNEGO처럼 비밀번호 없이 사용자 이름으로 주체를 찾을 때, DB에 그 사용자가 없거나 DB 연결에 실패해도 로그인한 사용자로 만들어 준다. 인증서나 Kerberos 티켓만 있으면 DB에 없는 사용자도 로그인될 수 있다.",
+      "summary_en": "DataSourceRealm.getPrincipal returns a GenericPrincipal even when the user does not exist in the database or no connection can be opened, so CLIENT-CERT and SPNEGO authentication (which look the user up by name) fails open.",
+      "sinks": [
+        {
+          "class": "org.apache.catalina.realm.DataSourceRealm",
+          "method": "getPrincipal",
+          "desc": "(Ljava/lang/String;)Ljava/security/Principal;",
+          "confidence": "high"
+        },
+        {
+          "class": "org.apache.catalina.realm.DataSourceRealm",
+          "method": "authenticate",
+          "desc": "(Ljava/sql/Connection;Ljava/lang/String;Ljava/lang/String;)Ljava/security/Principal;",
+          "confidence": "high",
+          "note": "Password path: the same commit makes a failed role lookup fail authentication; the advisory names only CLIENT-CERT and SPNEGO."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-5q6q-ffrq-6xfc",
+        "https://github.com/apache/tomcat/commit/790d6e2c3b4cd201a1fa556a23d5b7504dee18ad"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.catalina.realm.DataSourceRealm",
+            "method": "getPrincipal",
+            "desc": "(Ljava/lang/String;)Ljava/security/Principal;",
+            "source": "org/apache/catalina/realm/DataSourceRealm.java",
+            "lines": [
+              [
+                454,
+                454
+              ],
+              [
+                457,
+                457
+              ]
+            ]
+          }
+        ],
+        "note": "Line 454 builds a principal when no DB connection is available; line 457 builds one without checking the user exists. Line 457 runs for every name-only lookup (CLIENT-CERT, SPNEGO), so its execution does not show a missing user. The password path in authenticate(Connection, …) line 333 is left out."
+      }
+    },
+    {
+      "cve": "CVE-2026-68763",
+      "ghsa": "GHSA-82jr-6mfr-9vq5",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.25",
+          "10.1.59",
+          "9.0.121"
+        ]
+      },
+      "severity": "HIGH",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "HTTP/2 연결의 흐름 제어 창이 차서 응답을 보내려는 스트림이 대기열(backlog)에 들어간 뒤 그 스트림이 리셋되면, Tomcat이 대기열에서 스트림과 받아 둔 할당량을 치우지 않는다. 클라이언트가 이를 반복하면 연결의 전송 창이 계속 줄어 응답을 보내지 못하게 되어 서비스가 멈출 수 있다.",
+      "summary_en": "When an HTTP/2 stream that is waiting in the connection flow-control backlog (Http2UpgradeHandler.reserveWindowSize) is reset, Http2UpgradeHandler.replaceStream does not remove it from the backlog or return its unused allocation, so a client can leak connection window and backlog entries and deny service.",
+      "sinks": [
+        {
+          "class": "org.apache.coyote.http2.Http2UpgradeHandler",
+          "method": "reserveWindowSize",
+          "desc": "(Lorg/apache/coyote/http2/Stream;IZ)I",
+          "confidence": "high",
+          "note": "Runs for every HTTP/2 response body write; only the backlog branches (connection window exhausted) lead to the leak."
+        },
+        {
+          "class": "org.apache.coyote.http2.Http2UpgradeHandler",
+          "method": "replaceStream",
+          "desc": "(Lorg/apache/coyote/http2/AbstractNonZeroStream;Lorg/apache/coyote/http2/AbstractNonZeroStream;)V",
+          "confidence": "high",
+          "note": "Called from Stream.recycle for every finished HTTP/2 stream; the fix adds the missing backlog cleanup here."
+        },
+        {
+          "class": "org.apache.coyote.http2.Http2UpgradeHandler",
+          "method": "allocate",
+          "desc": "(Lorg/apache/coyote/http2/AbstractStream;I)I",
+          "confidence": "high",
+          "note": "Private; called from releaseBackLog only when streams are waiting in the backlog."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-82jr-6mfr-9vq5",
+        "https://github.com/apache/tomcat/commit/2a5ec806971627943db18601203129d9c58d959f"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.coyote.http2.Http2UpgradeHandler",
+            "method": "reserveWindowSize",
+            "desc": "(Lorg/apache/coyote/http2/Stream;IZ)I",
+            "source": "org/apache/coyote/http2/Http2UpgradeHandler.java",
+            "lines": [
+              [
+                1088,
+                1090
+              ],
+              [
+                1098,
+                1103
+              ]
+            ]
+          }
+        ],
+        "note": "The two branches of reserveWindowSize that put a stream into the connection backlog (lines 1088-1090 with no window left, 1098-1103 with a partial allocation). They run only when the client's connection window is exhausted, which also happens with large responses to slow clients; their execution does not show that a backlogged stream was reset. replaceStream (line 1974) is left out because it runs for every finished stream."
+      }
+    },
+    {
+      "cve": "CVE-2026-73180",
+      "ghsa": "GHSA-wrvx-pxxf-g8fg",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-websocket",
+        "artifact": "tomcat-embed-websocket",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.25",
+          "10.1.59",
+          "9.0.121"
+        ]
+      },
+      "severity": "MEDIUM",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:H/PR:L/UI:N/S:U/C:H/I:H/A:N",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "로그인한 HTTP 세션에서 연 WebSocket 연결은 그 HTTP 세션이 끝나면 닫혀야 하는데, Tomcat이 연결 당시의 세션 ID로만 기억해 둔다. 그 뒤 세션 ID가 바뀌면(세션 고정 방지 등) 로그아웃이나 세션 만료 뒤에도 WebSocket 연결이 닫히지 않고 계속 쓰인다.",
+      "summary_en": "WsServerContainer.registerAuthenticatedSession records an authenticated WebSocket session under the HTTP session ID taken at handshake time, so if the HTTP session ID changes afterwards the WebSocket session is not closed when the HTTP session ends (logout or expiry).",
+      "sinks": [
+        {
+          "class": "org.apache.tomcat.websocket.server.WsServerContainer",
+          "method": "registerAuthenticatedSession",
+          "desc": "(Lorg/apache/tomcat/websocket/WsSession;Ljava/lang/String;)V",
+          "confidence": "high",
+          "note": "Called from registerSession (WsHttpUpgradeHandler.init) only when the handshake request had a user principal and an HTTP session; JSR-356 endpoints and Spring WebSocket on Tomcat both pass through it."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-wrvx-pxxf-g8fg",
+        "https://github.com/apache/tomcat/commit/e617a5d483b78851d289ca8dc1d68c49b541b419"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.tomcat.websocket.server.WsServerContainer",
+            "method": "registerAuthenticatedSession",
+            "desc": "(Lorg/apache/tomcat/websocket/WsSession;Ljava/lang/String;)V",
+            "source": "org/apache/tomcat/websocket/server/WsServerContainer.java",
+            "lines": [
+              [
+                370,
+                370
+              ]
+            ]
+          }
+        ],
+        "note": "Line 370 looks up the WebSocket session set by the HTTP session ID taken at handshake. Every line of the method runs once per authenticated WebSocket handshake that has an HTTP session, so its execution does not show that the session ID changed later or that a WebSocket session outlived its HTTP session."
+      }
+    },
+    {
+      "cve": "CVE-2026-73581",
+      "ghsa": "GHSA-cf68-55f3-8gfw",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.26",
+          "10.1.60",
+          "9.0.122"
+        ]
+      },
+      "severity": "MEDIUM",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "Tomcat이 TLS를 OpenSSL(tomcat-native 또는 FFM)로 처리하고 서버 인증서를 키스토어로 주면, 설정한 인증서 폐기 목록(CRL)을 OpenSSL에 넣지 않는다. 클라이언트 인증서 확인에서 폐기된 인증서가 통과할 수 있다. FFM 쪽 코드는 tomcat-embed-core가 아니라 별도 jar(org.apache.tomcat:tomcat-coyote-ffm)에 있다.",
+      "summary_en": "OpenSSLContext.addCertificate (tomcat-native OpenSSL) sets the configured CRL file/path only for PEM certificate files, not when the certificate comes from a keystore, so revoked client certificates are accepted; the OpenSSL-FFM copy (openssl.panama.OpenSSLContext, in tomcat-coyote-ffm) has the same flaw.",
+      "sinks": [
+        {
+          "class": "org.apache.tomcat.util.net.openssl.OpenSSLContext",
+          "method": "addCertificate",
+          "desc": "(Lorg/apache/tomcat/util/net/SSLHostConfigCertificate;)V",
+          "confidence": "high",
+          "note": "tomcat-native (JNI) OpenSSL only; the FFM copy is in tomcat-coyote-ffm and needs the jar rule."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-cf68-55f3-8gfw",
+        "https://github.com/apache/tomcat/commit/15a76156ced9f6a6306ef7d6f2e343034231a2de"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.tomcat.util.net.openssl.OpenSSLContext",
+            "method": "addCertificate",
+            "desc": "(Lorg/apache/tomcat/util/net/SSLHostConfigCertificate;)V",
+            "source": "org/apache/tomcat/util/net/openssl/OpenSSLContext.java",
+            "lines": [
+              [
+                545,
+                546
+              ]
+            ]
+          }
+        ],
+        "note": "Lines 545-546 start the keystore branch, which ends without setCARevocation; the fix moved setCARevocation from the PEM branch (lines 541-543, safe) to after the if/else, so the region deliberately does not overlap the changed lines. They run for every keystore certificate under tomcat-native OpenSSL, with or without a CRL configured. The OpenSSL-FFM path is not in this jar and is not covered."
+      }
+    },
+    {
+      "cve": "CVE-2026-74048",
+      "ghsa": "GHSA-38jj-69cp-9wgc",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.27",
+          "10.1.61",
+          "9.0.123"
+        ]
+      },
+      "severity": "MEDIUM",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "Tomcat OpenSSLLifecycleListener에 FIPS 모드를 켰는데 FIPS 활성화가 실패하면, 오류만 기록하고 Tomcat은 계속 시작해 FIPS가 아닌 상태(JSSE)로 TLS를 처리한다. FIPS가 꼭 필요한 환경에서 그렇지 않은 암호 구현으로 서비스가 열린다.",
+      "summary_en": "OpenSSLLifecycleListener.lifecycleEvent only logs a fatal message when the configured FIPS mode fails to activate and does not throw, so Tomcat starts and serves TLS with JSSE in non-FIPS mode.",
+      "sinks": [
+        {
+          "class": "org.apache.catalina.core.OpenSSLLifecycleListener",
+          "method": "lifecycleEvent",
+          "desc": "(Lorg/apache/catalina/LifecycleEvent;)V",
+          "confidence": "high",
+          "note": "Runs only when an OpenSSLLifecycleListener is registered; the FIPS failure branch is lines 142-148."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-38jj-69cp-9wgc",
+        "https://github.com/apache/tomcat/commit/db6d674b40ac572f3b2205a4c4f06836516fd3f5"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.catalina.core.OpenSSLLifecycleListener",
+            "method": "lifecycleEvent",
+            "desc": "(Lorg/apache/catalina/LifecycleEvent;)V",
+            "source": "org/apache/catalina/core/OpenSSLLifecycleListener.java",
+            "lines": [
+              [
+                143,
+                147
+              ]
+            ]
+          }
+        ],
+        "note": "Lines 143-147 run only when FIPSMode is set (not off) and FIPS is not active after init; the fixed release throws there. Their execution means start-up continued after a FIPS failure."
+      }
+    },
+    {
+      "cve": "CVE-2026-75973",
+      "ghsa": "GHSA-q9fp-9gfr-vj9g",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.26",
+          "10.1.60",
+          "9.0.122"
+        ]
+      },
+      "severity": "HIGH",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:L",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "Jakarta Authentication(JASPIC)을 SimpleAuthConfigProvider로 기본 제공자로 등록하고 웹 애플리케이션 여럿이 그것을 같이 쓰면, 처음 인증한 애플리케이션의 설정(Realm)이 모든 애플리케이션에 그대로 쓰인다. 다른 애플리케이션의 사용자 정보로 로그인이 판정될 수 있다.",
+      "summary_en": "SimpleAuthConfigProvider.getServerAuthConfig caches the first ServerAuthConfig it creates and returns it for every later appContext and callback handler, so when several web applications share the provider, all of them authenticate with the first application's realm.",
+      "sinks": [
+        {
+          "class": "org.apache.catalina.authenticator.jaspic.SimpleAuthConfigProvider",
+          "method": "getServerAuthConfig",
+          "desc": "(Ljava/lang/String;Ljava/lang/String;Ljavax/security/auth/callback/CallbackHandler;)Ljakarta/security/auth/message/config/ServerAuthConfig;",
+          "confidence": "high"
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-q9fp-9gfr-vj9g",
+        "https://github.com/apache/tomcat/commit/2585fc798f24f0b8811fd20ad9b4e8affb6f69a6"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.catalina.authenticator.jaspic.SimpleAuthConfigProvider",
+            "method": "getServerAuthConfig",
+            "desc": "(Ljava/lang/String;Ljava/lang/String;Ljavax/security/auth/callback/CallbackHandler;)Ljakarta/security/auth/message/config/ServerAuthConfig;",
+            "source": "org/apache/catalina/authenticator/jaspic/SimpleAuthConfigProvider.java",
+            "lines": [
+              [
+                73,
+                74
+              ]
+            ]
+          }
+        ],
+        "note": "Lines 73-74 read the cached ServerAuthConfig; they run for every JASPIC authentication through SimpleAuthConfigProvider, including a single web application, so their execution does not show a second application received the first one's config."
+      }
+    },
+    {
+      "cve": "CVE-2026-77756",
+      "ghsa": "GHSA-gpfr-7w77-mp48",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.26",
+          "10.1.60",
+          "9.0.122"
+        ]
+      },
+      "severity": "LOW",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:N/A:L",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "Tomcat이 HTTP/1.0 요청에 붙은 Transfer-Encoding 헤더를 HTTP/1.1처럼 받아들여 본문 길이를 정한다. 앞단 리버스 프록시가 같은 요청의 본문 길이를 다르게 해석하면 요청 경계가 어긋나(요청 스머글링) 같은 연결로 들어온 다른 사용자의 요청이 실패할 수 있다.",
+      "summary_en": "Http11Processor.prepareInputFilters applies the Transfer-Encoding header to HTTP/1.0 requests instead of rejecting them, so behind a reverse proxy that frames the request differently an attacker can desynchronise the connection and make another user's request fail.",
+      "sinks": [
+        {
+          "class": "org.apache.coyote.http11.Http11Processor",
+          "method": "prepareInputFilters",
+          "desc": "(Lorg/apache/tomcat/util/http/MimeHeaders;)V",
+          "confidence": "high",
+          "note": "Runs for every HTTP/1.x request on the default connector; only an HTTP/1.0 request with Transfer-Encoding is affected, so a rule decides."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-gpfr-7w77-mp48",
+        "https://github.com/apache/tomcat/commit/1ad63de866a6e7007304ebe5165f72e65ece32b6"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.coyote.http11.Http11Processor",
+            "method": "prepareInputFilters",
+            "desc": "(Lorg/apache/tomcat/util/http/MimeHeaders;)V",
+            "source": "org/apache/coyote/http11/Http11Processor.java",
+            "lines": [
+              [
+                827,
+                831
+              ]
+            ]
+          }
+        ],
+        "note": "Lines 827-831 parse the Transfer-Encoding values and add the input filters. They run for every HTTP/1.x request that carries Transfer-Encoding, including ordinary HTTP/1.1 chunked uploads, so their execution does not show an HTTP/1.0 request."
+      }
+    },
+    {
+      "cve": "CVE-2026-77762",
+      "ghsa": "GHSA-28v4-2v86-58cc",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.26",
+          "10.1.60",
+          "9.0.122"
+        ]
+      },
+      "severity": "HIGH",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "HTTP/2 스트림이 끝나 요청 객체가 재사용 풀로 돌아간 뒤에도 헤더 해석기(HPACK)가 그 스트림을 헤더 받을 곳으로 계속 쥐고 있을 수 있다. 공격자가 이때 트레일러 헤더를 보내면 같은 요청 객체를 새로 받은 다른 사용자의 HTTP/2 요청에 트레일러 필드가 끼어든다.",
+      "summary_en": "Http2UpgradeHandler.replaceStream does not detach the finished Stream from the HpackDecoder header emitter, and HpackDecoder.emitHeader keeps delivering headers to that stale emitter, so trailer fields sent by an attacker can be added to a recycled, pooled Request that now serves another HTTP/2 request.",
+      "sinks": [
+        {
+          "class": "org.apache.coyote.http2.Http2UpgradeHandler",
+          "method": "replaceStream",
+          "desc": "(Lorg/apache/coyote/http2/AbstractNonZeroStream;Lorg/apache/coyote/http2/AbstractNonZeroStream;)V",
+          "confidence": "high",
+          "note": "Called from Stream.recycle for every finished HTTP/2 stream; the fix adds the emitter swap to HEADER_SINK here."
+        },
+        {
+          "class": "org.apache.coyote.http2.HpackDecoder",
+          "method": "emitHeader",
+          "desc": "(Ljava/lang/String;Ljava/lang/String;)V",
+          "confidence": "high",
+          "note": "Runs for every decoded HTTP/2 header; the fix makes the emitter an AtomicReference read at line 461."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-28v4-2v86-58cc",
+        "https://github.com/apache/tomcat/commit/fd309997dfd0d351b26959a8afd7bffec33dd0de"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.coyote.http2.Stream",
+            "method": "emitHeader",
+            "desc": "(Ljava/lang/String;Ljava/lang/String;)V",
+            "source": "org/apache/coyote/http2/Stream.java",
+            "lines": [
+              [
+                508,
+                508
+              ]
+            ]
+          }
+        ],
+        "note": "Stream.emitHeader line 508 adds a trailer field to the stream's coyoteRequest, the statement that writes into the recycled Request when the emitter is stale. It runs for every legitimate HTTP/2 request trailer too, so its execution does not show that the stream had been recycled. The changed lines of replaceStream (1974) and HpackDecoder.emitHeader (461) are left out because they run for every stream and every header."
+      }
+    },
+    {
+      "cve": "CVE-2026-77791",
+      "ghsa": "GHSA-9cg7-2q68-g3mq",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-websocket",
+        "artifact": "tomcat-embed-websocket",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.26",
+          "10.1.60",
+          "9.0.122"
+        ]
+      },
+      "severity": "HIGH",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "WebSocket 서버가 다른 스레드에서 메시지를 보내는 중에 닫기(close) 메시지를 보내야 하면, Tomcat이 앞 메시지가 끝날 때까지 쉬지 않고 반복해서 확인하며 CPU를 계속 쓴다. 앞 전송이 오래 걸리면 기본 20초까지 스레드가 묶여 서비스 거부가 될 수 있다.",
+      "summary_en": "WsRemoteEndpointImplServer.acquireMessagePartInProgressSemaphore busy-waits with Thread.yield() when a close message is sent on the thread that holds the socket lock while another message part is still being written, so server threads can spin until the blocking send timeout (denial of service).",
+      "sinks": [
+        {
+          "class": "org.apache.tomcat.websocket.server.WsRemoteEndpointImplServer",
+          "method": "acquireMessagePartInProgressSemaphore",
+          "desc": "(BJ)Z",
+          "confidence": "high",
+          "note": "Runs for every server-side WebSocket send; the busy-wait loop only for a close message sent while the current thread holds the socket lock and another message part is in progress."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-9cg7-2q68-g3mq",
+        "https://github.com/apache/tomcat/commit/ce291bbc65393e3bfbec2a8d23fcee0106a1ade9"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.tomcat.websocket.server.WsRemoteEndpointImplServer",
+            "method": "acquireMessagePartInProgressSemaphore",
+            "desc": "(BJ)Z",
+            "source": "org/apache/tomcat/websocket/server/WsRemoteEndpointImplServer.java",
+            "lines": [
+              [
+                138,
+                138
+              ]
+            ]
+          }
+        ],
+        "note": "Line 138 is the Thread.yield() inside the busy-wait loop. It runs only when a close message has to wait for another message part in progress, which can also happen briefly without an attack; it does not show how long the loop spun."
+      }
+    },
+    {
+      "cve": "CVE-2026-78383",
+      "ghsa": "GHSA-rpxf-vjhq-9cv9",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.26",
+          "10.1.60",
+          "9.0.122"
+        ]
+      },
+      "severity": "HIGH",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "AJP 커넥터로 받은 요청이 본문이 있다고 해 놓고 본문을 보내지 않으면, Tomcat이 오류로 응답을 끝내는 경우에도 읽지 않은 본문 패킷을 기다리며 처리 스레드를 붙잡는다. 인증 없이 이런 요청을 반복하면 AJP 처리 스레드가 모두 묶여 서비스가 멈춘다.",
+      "summary_en": "AjpProcessor.finishResponse waits to swallow an unread AJP body packet even when the request is already in error, so an unauthenticated AJP request that announces a body but never sends it pins an AJP processing thread, leading to denial of service.",
+      "sinks": [
+        {
+          "class": "org.apache.coyote.ajp.AjpProcessor",
+          "method": "finishResponse",
+          "desc": "()V",
+          "confidence": "high",
+          "note": "Runs at the end of every AJP request; only the error case with a missing body is vulnerable."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-rpxf-vjhq-9cv9",
+        "https://github.com/apache/tomcat/commit/6dabd4303095785183ede57f6d162c542955a5a8"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.coyote.ajp.AjpProcessor",
+            "method": "finishResponse",
+            "desc": "()V",
+            "source": "org/apache/coyote/ajp/AjpProcessor.java",
+            "lines": [
+              [
+                1019,
+                1019
+              ]
+            ]
+          }
+        ],
+        "note": "Line 1019 is the blocking read of the unread body packet (refillReadBuffer(true)). It also runs for ordinary AJP requests whose body the application did not read, so its execution does not show an error response or a client that never sends the body."
+      }
+    },
+    {
+      "cve": "CVE-2026-78437",
+      "ghsa": "GHSA-hvg5-8g86-xm44",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.26",
+          "10.1.60",
+          "9.0.122"
+        ]
+      },
+      "severity": "HIGH",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:L",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "HTTP/2 요청의 :authority·host 헤더 형식이 잘못되면 Tomcat이 요청 객체에 '잘못된 요청' 표시를 남기는데, 그 요청이 검사 단계 전에 끝나면 표시가 지워지지 않은 채 요청 객체가 재사용 풀로 돌아간다. 타이밍에 따라 그 객체를 받은 다른 사용자의 정상 요청이 400으로 실패할 수 있다.",
+      "summary_en": "StreamProcessor.validateRequest clears the Request.NOTE_BAD_REQUEST note set for a malformed :authority or host header only when validation runs, so an HTTP/2 stream that ends before validation returns its pooled Request with the note still set, and a later request from another user that reuses it can fail.",
+      "sinks": [
+        {
+          "class": "org.apache.coyote.http2.StreamProcessor",
+          "method": "validateRequest",
+          "desc": "()Z",
+          "confidence": "high",
+          "note": "Runs for every HTTP/2 request before the servlet; the fix moves the note reset at line 510 out of it."
+        },
+        {
+          "class": "org.apache.coyote.http2.StreamProcessor",
+          "method": "process",
+          "desc": "(Lorg/apache/tomcat/util/net/SocketEvent;)V",
+          "confidence": "high",
+          "note": "Per-stream dispatch; the fix adds the note reset before recycle() at line 156."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-hvg5-8g86-xm44",
+        "https://github.com/apache/tomcat/commit/70579060454a203977b5696ece71e7cbd6ee9bde"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.coyote.http2.Stream",
+            "method": "parseAuthority",
+            "desc": "(Ljava/lang/String;)V",
+            "source": "org/apache/coyote/http2/Stream.java",
+            "lines": [
+              [
+                535,
+                535
+              ]
+            ]
+          },
+          {
+            "class": "org.apache.coyote.http2.Stream",
+            "method": "compareAuthority",
+            "desc": "(Ljava/lang/String;)V",
+            "source": "org/apache/coyote/http2/Stream.java",
+            "lines": [
+              [
+                563,
+                563
+              ]
+            ]
+          }
+        ],
+        "note": "The statements that set NOTE_BAD_REQUEST for a malformed :authority or host header (Stream.parseAuthority line 535, Stream.compareAuthority line 563). They run only for such malformed input, so execution is close to the attack input, but it does not show that the stream ended before validateRequest cleared the note or that another request failed. These methods are not changed by the fix; the changed lines (StreamProcessor.process 156, validateRequest 510) run for every stream or only on the safe path."
+      }
+    },
+    {
+      "cve": "CVE-2026-79677",
+      "ghsa": "GHSA-r5gx-4gq8-822g",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-websocket",
+        "artifact": "tomcat-embed-websocket",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.26",
+          "10.1.60",
+          "9.0.122"
+        ]
+      },
+      "severity": "HIGH",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+      "invocation_kind": "both",
+      "summary_ko": "WebSocket 비동기 전송에 시간 제한을 걸어 두면, Tomcat이 시간 제한을 볼 연결 목록을 만료 시각 순으로 정렬해 두는데 목록 안에 있는 동안 만료 시각이 바뀌어 항목이 빠지거나 검사가 중간에 멈춘다. 그러면 멈춘 전송이 시간 제한으로 정리되지 않고 쌓여 서비스 거부가 될 수 있다.",
+      "summary_en": "WsWriteTimeout.register keeps endpoints in a ConcurrentSkipListSet ordered by timeoutExpiry, which changes while the endpoint is in the set, and WsWriteTimeout.backgroundProcess stops at the first unexpired entry, so asynchronous WebSocket write timeouts can be lost and stalled writes are never cleaned up (denial of service).",
+      "sinks": [
+        {
+          "class": "org.apache.tomcat.websocket.server.WsWriteTimeout",
+          "method": "register",
+          "desc": "(Lorg/apache/tomcat/websocket/server/WsRemoteEndpointImplServer;)V",
+          "confidence": "high",
+          "note": "Called only for non-blocking (RemoteEndpoint.Async) writes when the send timeout is positive; the container default async send timeout is -1."
+        },
+        {
+          "class": "org.apache.tomcat.websocket.server.WsWriteTimeout",
+          "method": "backgroundProcess",
+          "desc": "()V",
+          "confidence": "high",
+          "note": "Runs once a second only while at least one endpoint is registered (register adds it to BackgroundProcessManager)."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-r5gx-4gq8-822g",
+        "https://github.com/apache/tomcat/commit/7ab11d10de79a7a2226f41c8289871db69c6ca9c"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.tomcat.websocket.server.WsWriteTimeout",
+            "method": "register",
+            "desc": "(Lorg/apache/tomcat/websocket/server/WsRemoteEndpointImplServer;)V",
+            "source": "org/apache/tomcat/websocket/server/WsWriteTimeout.java",
+            "lines": [
+              [
+                95,
+                95
+              ]
+            ]
+          }
+        ],
+        "note": "Line 95 adds the endpoint to the set ordered by timeoutExpiry. It runs for every asynchronous write with a positive send timeout, so its execution shows that write timeouts are tracked, not that one was lost. backgroundProcess is left out: it only runs after a register."
+      }
+    },
+    {
+      "cve": "CVE-2026-87022",
+      "ghsa": "GHSA-xwrc-v28h-528j",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-websocket",
+        "artifact": "tomcat-embed-websocket",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.26",
+          "10.1.60",
+          "9.0.122"
+        ]
+      },
+      "severity": "HIGH",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "WebSocket 압축 확장(permessage-deflate)을 쓰는 연결에서, 한 메시지를 여러 압축 블록으로 나누고 중간 블록에 '마지막 블록' 표시(BFINAL)를 붙이면 Tomcat이 거기서 프레임을 끝내고 남은 압축 데이터를 제대로 풀지 않는다. Tomcat이 읽는 메시지 내용·경계가 보낸 쪽이나 중간 검사 장비가 보는 것과 달라져 메시지를 끼워 넣을 수 있다.",
+      "summary_en": "PerMessageDeflate.getMoreData ends the frame (endFrame) when the Inflater has finished on a DEFLATE block with BFINAL=1 that is not the last block of the message, leaving the remaining compressed bytes unprocessed, so the message content and boundaries Tomcat sees differ from what was sent and messages can be smuggled when permessage-deflate is negotiated.",
+      "sinks": [
+        {
+          "class": "org.apache.tomcat.websocket.PerMessageDeflate",
+          "method": "getMoreData",
+          "desc": "(BZILjava/nio/ByteBuffer;)Lorg/apache/tomcat/websocket/TransformationResult;",
+          "confidence": "high",
+          "note": "Runs for every incoming data frame on a connection that negotiated permessage-deflate; Tomcat installs the extension by default and accepts it whenever the client requests it."
+        },
+        {
+          "class": "org.apache.tomcat.websocket.PerMessageDeflate",
+          "method": "endFrame",
+          "desc": "(Z)Lorg/apache/tomcat/websocket/TransformationResult;",
+          "confidence": "high",
+          "note": "Private, called only from getMoreData; the fix also resets a finished Inflater here."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-xwrc-v28h-528j",
+        "https://github.com/apache/tomcat/commit/4fef25fe2ab7509e697af093280b9daadb515615"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.tomcat.websocket.PerMessageDeflate",
+            "method": "getMoreData",
+            "desc": "(BZILjava/nio/ByteBuffer;)Lorg/apache/tomcat/websocket/TransformationResult;",
+            "source": "org/apache/tomcat/websocket/PerMessageDeflate.java",
+            "lines": [
+              [
+                270,
+                270
+              ]
+            ]
+          }
+        ],
+        "note": "Line 270 ends the frame when inflate wrote nothing and the Inflater needs no more input; this is where the fix adds the recovery for a finished Inflater with unconsumed input. It also runs at the normal end of every compressed message (after the EOM bytes are inserted at line 247), so its execution does not show a BFINAL block in the middle of a message."
+      }
+    },
+    {
+      "cve": "CVE-2026-88041",
+      "ghsa": "GHSA-f6r2-3pj4-jmqq",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.27",
+          "10.1.61",
+          "9.0.123"
+        ]
+      },
+      "severity": "HIGH",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "HTTP/2에서 스트림이 끝나 요청 객체가 재사용되는 순간과 같은 스트림의 헤더(트레일러)를 해석하는 순간이 겹치면, 앞 요청에 보낸 트레일러 필드가 그 요청 객체를 다음에 쓰는 요청으로 넘어갈 수 있다. 다른 사용자의 요청에 공격자가 보낸 트레일러가 섞이거나 그 반대가 생긴다.",
+      "summary_en": "Http2UpgradeHandler.headersStart, Http2UpgradeHandler.replaceStream and HpackDecoder.emitHeader do not synchronise selecting, replacing and using the HPACK header emitter, so a narrow race lets trailer fields of one HTTP/2 request be written into a recycled Request used by a later request.",
+      "sinks": [
+        {
+          "class": "org.apache.coyote.http2.HpackDecoder",
+          "method": "emitHeader",
+          "desc": "(Ljava/lang/String;Ljava/lang/String;)V",
+          "confidence": "high",
+          "note": "Runs for every decoded HTTP/2 header; the fix puts the emitter call (line 461) under a new lock."
+        },
+        {
+          "class": "org.apache.coyote.http2.Http2UpgradeHandler",
+          "method": "headersStart",
+          "desc": "(IZ)Lorg/apache/coyote/http2/HpackDecoder$HeaderEmitter;",
+          "confidence": "high",
+          "note": "Runs for every HTTP/2 HEADERS frame; the fixed release changes its signature to void, so it shows as REMOVED in the release diff."
+        },
+        {
+          "class": "org.apache.coyote.http2.Http2UpgradeHandler",
+          "method": "replaceStream",
+          "desc": "(Lorg/apache/coyote/http2/AbstractNonZeroStream;Lorg/apache/coyote/http2/AbstractNonZeroStream;)V",
+          "confidence": "high",
+          "note": "Called from Stream.recycle for every finished HTTP/2 stream; the fix puts the stream replacement under the same lock."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-f6r2-3pj4-jmqq",
+        "https://github.com/apache/tomcat/commit/a276dea827437090498678e09df0539ec397a7b5"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.coyote.http2.Stream",
+            "method": "emitHeader",
+            "desc": "(Ljava/lang/String;Ljava/lang/String;)V",
+            "source": "org/apache/coyote/http2/Stream.java",
+            "lines": [
+              [
+                508,
+                508
+              ]
+            ]
+          }
+        ],
+        "note": "Stream.emitHeader line 508 adds a trailer field to the stream's coyoteRequest, the statement through which trailers reach a recycled Request. It runs for every legitimate HTTP/2 request trailer too, so its execution does not show the race. The changed lines (HpackDecoder.emitHeader 461, headersStart, replaceStream 1974) run for every header or stream and are left out."
+      }
+    },
+    {
+      "cve": "CVE-2026-93446",
+      "ghsa": "GHSA-2w6h-6wr9-m5r8",
+      "package": {
+        "coordinates": "org.apache.tomcat.embed:tomcat-embed-core",
+        "artifact": "tomcat-embed-core",
+        "installed": "11.0.24",
+        "fixed": [
+          "11.0.27",
+          "10.1.61",
+          "9.0.123"
+        ]
+      },
+      "severity": "HIGH",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+      "invocation_kind": "framework_invokes",
+      "summary_ko": "Tomcat NIO 커넥터가 TLS를 직접 처리할 때, '핸드셰이크 데이터를 보내야 함' 표시(needHandshakeWrap)가 여러 버퍼를 한 번에 쓰는 경로와 연결 객체를 다시 쓸 때 지워지지 않는다. 남은 표시 때문에 이후 읽기가 오류로 끝나 TLS 1.3 연결이 간헐적으로 끊길 수 있다(서비스 거부).",
+      "summary_en": "SecureNioChannel.write(ByteBuffer[], int, int) does not clear needHandshakeWrap after wrap() and SecureNioChannel.reset does not clear it when a cached channel is reused, so a stale flag makes a later read throw (channel.nio.ssl.handshakeWrapPending) and TLS 1.3 connections fail intermittently.",
+      "sinks": [
+        {
+          "class": "org.apache.tomcat.util.net.SecureNioChannel",
+          "method": "reset",
+          "desc": "(Ljava/nio/channels/SocketChannel;Lorg/apache/tomcat/util/net/NioEndpoint$NioSocketWrapper;)V",
+          "confidence": "high",
+          "note": "Runs when NioEndpoint reuses a cached SecureNioChannel for a new TLS connection; SecureNioChannel exists only when the NIO connector has TLS enabled."
+        },
+        {
+          "class": "org.apache.tomcat.util.net.SecureNioChannel",
+          "method": "write",
+          "desc": "([Ljava/nio/ByteBuffer;II)J",
+          "confidence": "high",
+          "note": "Gathering write used by NioEndpoint's vectored operations (NioOperationState, e.g. HTTP/2 and WebSocket); the single-buffer write already clears the flag."
+        }
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-2w6h-6wr9-m5r8",
+        "https://github.com/apache/tomcat/commit/e49e0c47ea925ad9442ba933a144ea62433d6a06"
+      ],
+      "l3": {
+        "version": "11.0.24",
+        "regions": [
+          {
+            "class": "org.apache.tomcat.util.net.SecureNioChannel",
+            "method": "reset",
+            "desc": "(Ljava/nio/channels/SocketChannel;Lorg/apache/tomcat/util/net/NioEndpoint$NioSocketWrapper;)V",
+            "source": "org/apache/tomcat/util/net/SecureNioChannel.java",
+            "lines": [
+              [
+                114,
+                114
+              ]
+            ]
+          },
+          {
+            "class": "org.apache.tomcat.util.net.SecureNioChannel",
+            "method": "write",
+            "desc": "([Ljava/nio/ByteBuffer;II)J",
+            "source": "org/apache/tomcat/util/net/SecureNioChannel.java",
+            "lines": [
+              [
+                911,
+                911
+              ]
+            ]
+          }
+        ],
+        "note": "Line 114 (reset of a reused TLS channel, where the fix also clears needHandshakeWrap) and line 911 (wrap() in the gathering write, after which the fix clears the flag). Both run for ordinary TLS traffic on the NIO connector, so their execution shows that Tomcat handles TLS itself, not that the flag was left set or a connection failed. The failure is the throw in read (lines 672 and 768), which the fix did not change."
+      }
     }
   ]
 }

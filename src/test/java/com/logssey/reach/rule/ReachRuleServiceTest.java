@@ -58,7 +58,7 @@ class ReachRuleServiceTest {
     @Test
     void loadsTheShippedRules() {
         assertThat(DATA.version()).isEqualTo("v0");
-        assertThat(DATA.rules()).hasSize(14);
+        assertThat(DATA.rules()).hasSize(40);
 
         var tomcat = DATA.rule("RULE-CVE-2026-65182").orElseThrow();
         assertThat(tomcat.cve()).isEqualTo("CVE-2026-65182");
@@ -80,7 +80,14 @@ class ReachRuleServiceTest {
         assertThat(jackson.facts()).contains("F-dto.floating.tokens")   // Finding 근거 factId와 같은 표기
                 .noneMatch(id -> ReachRuleData.CALLGRAPH_FACTS.contains(id.substring(2)));
         assertThat(DATA.rules()).extracting(ReachRuleResponse::method).contains("RULE", "CALLGRAPH");
-        // 모든 규칙에 취약 함수와 패키지가 있다 (두 데이터 파일이 같은 CVE 14개)
+        // HTTP/2 SNI 검증 우회: 레포 설정 사실과 코드 사실을 함께 본다
+        var http2 = DATA.rule("RULE-CVE-2026-65637").orElseThrow();
+        assertThat(http2.method()).isEqualTo("RULE");
+        assertThat(http2.facts()).containsExactly("F-repo.spring.http2Enabled", "F-repo.spring.serverSsl",
+                "F-repo.spring.http2Yaml", "F-tomcat.http2ProtocolNew", "F-tomcat.addUpgradeProtocol",
+                "F-spring.http2SetEnabled", "F-jar.springBoot4");
+        assertThat(http2.reasons()).containsOnlyKeys("REACHABLE", "UNREACHABLE", "UNKNOWN");
+        // 모든 규칙에 취약 함수와 패키지가 있다 (두 데이터 파일이 같은 CVE 40개)
         assertThat(DATA.rules()).allSatisfy(rule -> {
             assertThat(rule.packages()).isNotEmpty();
             assertThat(rule.vulnFunctionIds()).isNotEmpty();
@@ -104,7 +111,8 @@ class ReachRuleServiceTest {
     void refusesRulesThatUseUndefinedFacts() {
         String base = """
                 {"schema":"reach-rules/v0","facts":[{"id":"a.fact","type":"class-ref"}],"repo_facts":[],
-                 "verdicts":{"CVE-2026-65182":{"method":"rule","unknown_if":[[%s]],"otherwise":"unreachable"}}}""";
+                 "verdicts":{"CVE-2026-65182":{"method":"rule","unknown_if":[[%s]],"otherwise":"unreachable",
+                                               "l3":{"region":"unknown","function":"none"}}}}""";
         assertThat(new ReachRuleData(MAPPER.readTree(base.formatted("\"!a.fact\", \"sink\"")), FUNCTIONS).rules()).hasSize(1);
         assertThatThrownBy(() -> new ReachRuleData(MAPPER.readTree(base.formatted("\"missing.fact\"")), FUNCTIONS))
                 .isInstanceOf(IllegalStateException.class).hasMessageContaining("missing.fact");
@@ -112,6 +120,51 @@ class ReachRuleServiceTest {
                 .isInstanceOf(IllegalStateException.class).hasMessageContaining("schema");
         assertThatThrownBy(() -> new ReachRuleData(MAPPER.readTree(base.replace("\"rule\"", "\"magic\"").formatted("\"a.fact\"")), FUNCTIONS))
                 .isInstanceOf(IllegalStateException.class).hasMessageContaining("method");
+    }
+
+    @Test
+    void ruleVerdictsSayHowFarL3MayRaiseThem() {
+        // 규칙 판정은 실행이 규칙의 조건을 보여 주는지가 CVE마다 달라 반드시 적는다. 호출 그래프 판정은 기본값(도달 가능까지)
+        String base = """
+                {"schema":"reach-rules/v0","facts":[],"repo_facts":[],
+                 "verdicts":{"CVE-2026-65182":{"method":"%s","otherwise":"unreachable"%s}}}""";
+        assertThatThrownBy(() -> new ReachRuleData(MAPPER.readTree(base.formatted("rule", "")), FUNCTIONS))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("l3");
+        assertThatThrownBy(() -> new ReachRuleData(MAPPER.readTree(
+                base.formatted("rule", ",\"l3\":{\"region\":\"maybe\",\"function\":\"none\"}")), FUNCTIONS))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("l3.region");
+        assertThatThrownBy(() -> new ReachRuleData(MAPPER.readTree(
+                base.formatted("rule", ",\"l3\":{\"region\":\"none\",\"function\":\"reachable\"}")), FUNCTIONS))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("l3.function");
+        assertThat(new ReachRuleData(MAPPER.readTree(base.formatted("callgraph", "")), FUNCTIONS).l3Limit("CVE-2026-65182"))
+                .isEqualTo(new ReachRuleData.L3Limit("REACHABLE", "UNKNOWN"));
+
+        // 실제 데이터: 응답마다 실행되는 Tomcat 구간(AJP가 조건)은 올리지 않고, 기능을 쓸 때만 실행되는 구간은 확인 못 함까지,
+        // 취약 조건 자체인 구간(Jackson 실수 문자열 정규식)은 도달 가능까지. 규칙 없는 CVE는 호출 그래프와 같다
+        assertThat(DATA.l3Limit("CVE-2026-103119")).isEqualTo(new ReachRuleData.L3Limit("NONE", "NONE"));
+        assertThat(DATA.l3Limit("CVE-2026-76183")).isEqualTo(new ReachRuleData.L3Limit("UNKNOWN", "UNKNOWN"));
+        assertThat(DATA.l3Limit("CVE-2026-89407")).isEqualTo(new ReachRuleData.L3Limit("REACHABLE", "UNKNOWN"));
+        assertThat(DATA.l3Limit("CVE-2025-14813")).isEqualTo(new ReachRuleData.L3Limit("REACHABLE", "UNKNOWN"));
+        assertThat(DATA.l3Limit("CVE-2099-1")).isEqualTo(new ReachRuleData.L3Limit("REACHABLE", "UNKNOWN"));
+    }
+
+    @Test
+    void theL3RaiseFollowsTheLimitOfTheCve() {
+        var raise = new ReachL3Raise(DATA);
+        // 103119: 구간·함수가 실행돼도 올리지 않는다
+        assertThat(raise.limit("CVE-2026-103119", "REGION", true)).isEqualTo("NONE");
+        assertThat(raise.raise("CVE-2026-103119", "UNREACHABLE", "REGION", true)).isNull();
+        assertThat(raise.raise("CVE-2026-103119", "UNREACHABLE", "FUNCTION", false)).isNull();
+        // 76183: 구간이 실행되면 도달 불가 → 확인 못 함까지만. 이미 확인 못 함이면 그대로
+        assertThat(raise.raise("CVE-2026-76183", "UNREACHABLE", "REGION", true)).isEqualTo("UNKNOWN");
+        assertThat(raise.raise("CVE-2026-76183", "UNKNOWN", "REGION", true)).isNull();
+        // 89407: 구간 실행 = 취약 조건이라 도달 가능까지. 함수만 실행(구간 확인 못 함)은 확인 못 함까지
+        assertThat(raise.raise("CVE-2026-89407", "UNKNOWN", "REGION", true)).isEqualTo("REACHABLE");
+        assertThat(raise.raise("CVE-2026-89407", "UNREACHABLE", "FUNCTION", false)).isEqualTo("UNKNOWN");
+        // 구간을 봤는데 실행 안 됨·실행 없음·기록 안 됨은 올리지도 내리지도 않는다
+        assertThat(raise.limit("CVE-2026-89407", "FUNCTION", true)).isEqualTo("NONE");
+        assertThat(raise.raise("CVE-2026-89407", "UNREACHABLE", "NONE", true)).isNull();
+        assertThat(raise.raise("CVE-2026-89407", "REACHABLE", "REGION", true)).isNull();
     }
 
     // ---- API-09 ----
@@ -127,8 +180,9 @@ class ReachRuleServiceTest {
     @Test
     void listsRulesInCveOrderWithoutDefinitionUnlessAsked() {
         var page = service.rules("admin", ALL, null, null, List.of("total"));
-        assertThat(page.totalCount()).isEqualTo(14);
-        assertThat(page.items()).hasSize(14);
+        assertThat(page.totalCount()).isEqualTo(40);
+        assertThat(page.items()).hasSize(20);   // 기본 크기 20
+        assertThat(page.hasNext()).isTrue();
         assertThat(page.version()).isEqualTo("v0");
         assertThat(page.items()).extracting(ReachRuleResponse::cve).isSortedAccordingTo(ReachVulnFunctionData::compareCve);
         assertThat(page.items()).allSatisfy(rule -> assertThat(rule.definition()).isNull());
@@ -167,15 +221,16 @@ class ReachRuleServiceTest {
 
     @Test
     void pagesWithACursorTiedToTheFilter() {
-        var first = service.rules("admin", ALL, 5, null, null);
-        var second = service.rules("admin", ALL, 5, first.nextCursor(), null);
-        var third = service.rules("admin", ALL, 5, second.nextCursor(), null);
+        // 규칙 40개를 14개씩: 14, 14, 12
+        var first = service.rules("admin", ALL, 14, null, null);
+        var second = service.rules("admin", ALL, 14, first.nextCursor(), null);
+        var third = service.rules("admin", ALL, 14, second.nextCursor(), null);
         assertThat(first.hasNext()).isTrue();
         assertThat(third.hasNext()).isFalse();
         assertThat(third.nextCursor()).isNull();
         var all = new ArrayList<String>();
         for (var page : List.of(first, second, third)) page.items().forEach(rule -> all.add(rule.id()));
-        assertThat(all).hasSize(14).doesNotHaveDuplicates();
+        assertThat(all).hasSize(40).doesNotHaveDuplicates();
         assertError(() -> service.rules("admin", new ReachRuleFilter(null, null, "F-tomcat.addConstraint", null), 5, first.nextCursor(), null),
                 ErrorCode.INVALID_INPUT);
     }

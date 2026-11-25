@@ -3,7 +3,9 @@ package com.logssey.reach.l1;
 import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 import com.logssey.common.error.ApiException;
@@ -23,7 +25,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class ReachL1Service {
 
     /** 이 안의 조회만 믿는다. 하루 한 번 수집이 한 번 빠져도 UNKNOWN이 안 되게 */
-    static final String FRESH = "48 hours";
+    public static final String FRESH = "48 hours";
     /** 명세에 없어 정한 것: 한 번에 받는 컨테이너 수 상한 */
     static final int MAX_CONTAINERS = 1000;
     /** 명세에 없어 정한 것: observedAt이 이만큼까지 미래인 것은 시계 차이로 보고 받는다 */
@@ -39,6 +41,8 @@ public class ReachL1Service {
     private final String cluster;
     private final List<String> namespaces;
     private final String fresh;
+    /** 설정의 이미지 저장소 → 앱 코드. 스캔 전 이미지의 앱을 API-07에 보여 준다 */
+    private final Map<String, String> imageApps;
 
     @Autowired   // 생성자가 둘이라 Spring이 쓸 쪽을 표시한다. 없으면 기동 실패
     public ReachL1Service(ReachL1Repository repository, ReachProperties properties) {
@@ -56,6 +60,11 @@ public class ReachL1Service {
         this.cluster = enabled ? properties.l1().cluster() : null;
         this.namespaces = enabled ? properties.l1().namespaces() : List.of();
         this.fresh = fresh;
+        var images = new LinkedHashMap<String, String>();
+        for (var app : properties.apps()) {
+            if (app.image() != null) images.put(app.image(), app.code());
+        }
+        this.imageApps = Map.copyOf(images);
     }
 
     /** L1 수동 업로드(ADMIN 세션). 그 (cluster, namespace)의 워크로드를 통째로 바꾸고 deployment를 다시 계산한다 */
@@ -118,7 +127,7 @@ public class ReachL1Service {
             return new ReachWorkloadPageResponse(List.of(), List.of(), null, false, total);
         }
 
-        var rows = repository.workloads(cluster, scope, fresh, filter, after, limit + 1);   // 하나 더 가져와 다음 페이지 확인
+        var rows = repository.workloads(cluster, scope, fresh, imageApps, filter, after, limit + 1);   // 하나 더 가져와 다음 페이지 확인
         boolean hasNext = rows.size() > limit;
         var page = hasNext ? rows.subList(0, limit) : rows;
         String nextCursor = null;
@@ -128,7 +137,7 @@ public class ReachL1Service {
                     last.image().digest(), filter.fingerprint()).encode();
         }
         if (total != null) {
-            total = repository.countWorkloads(cluster, scope, fresh, filter);
+            total = repository.countWorkloads(cluster, scope, fresh, imageApps, filter);
         }
         return new ReachWorkloadPageResponse(repository.observations(cluster, scope, fresh), page,
                 nextCursor, hasNext, total);

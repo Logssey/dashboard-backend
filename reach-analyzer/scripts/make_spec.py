@@ -3,6 +3,10 @@
 
 The research files hold the full evidence (diffs, sources). The spec keeps only what the
 reachability tool needs: package, versions, sink methods, and a short Korean summary.
+
+This is how the first 14 CVEs were made. Newer data is added to the spec directly by
+vulndata/vulndata.py, and the L3 regions (`l3`) were written into the spec too. So a re-run keeps
+what is only in the spec: the `l3` of each CVE and the CVEs that are not in research/*.json.
 """
 import json, pathlib
 
@@ -83,6 +87,15 @@ for f in ["tomcat.json", "bouncycastle.json", "jackson.json"]:
             "sinks": sinks,
             "sources": c.get("sources", [])[:6],
         })
+
+# Keep what only the current spec has (see the module docstring)
+current = json.loads(OUT.read_text())["cves"] if OUT.exists() else []
+by_cve = {c["cve"]: c for c in current}
+for c in cves:
+    if "l3" in by_cve.get(c["cve"], {}):
+        c["l3"] = by_cve[c["cve"]]["l3"]
+made = {c["cve"] for c in cves}
+cves += [c for c in current if c["cve"] not in made]
 
 out = {
     "schema": "reach-spec/v0",

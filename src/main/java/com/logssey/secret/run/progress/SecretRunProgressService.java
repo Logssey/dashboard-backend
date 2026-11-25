@@ -71,6 +71,7 @@ public class SecretRunProgressService {
                 ? jdbc.queryForObject("SELECT count(*) FROM secret_findings WHERE run_id=?", Long.class, runId) : null;
         OffsetDateTime finishedAt = run.finishedAt() != null ? run.finishedAt()
                 : TERMINAL.contains(run.status()) ? header.jobFinished() : null;
+        var validation = validationSummary(run);
         return new SecretRunProgress(runId, run.connectionId(), run.provider(), run.status(), run.attemptNo(), run.maxAttempts(),
                 run.requestedAt(), run.startedAt(), finishedAt, run.availableAt(), run.scopeCount(),
                 run.completedScopeCount(),
@@ -79,7 +80,7 @@ public class SecretRunProgressService {
                 header.latest() == null ? run.requestedAt() : header.latest(), 2500, eventStatus,
                 "AVAILABLE".equals(eventStatus) && header.suppressed() == 0,
                 header.suppressed() > 0, header.suppressed(), header.recorded(), header.expired(),
-                stages(run, header.version() != null), events, next, more, validationSummary(run),
+                stages(run, header.version() != null, validation), events, next, more, validation,
                 run.scopeResults().isEmpty()?"UNKNOWN":run.scopeResults().stream()
                     .allMatch(scope -> scope.contentType().endsWith("_METADATA"))?"METADATA":"CONTENT");
     }
@@ -114,12 +115,23 @@ public class SecretRunProgressService {
                 "SELECT count(*) FROM secret_validation_reuses WHERE run_id=? AND attempt_no=?",
                 Long.class, run.runId(), run.attemptNo()) : null;
         boolean truncated = reused.size() > 50;
+        // Use this attempt's persisted decisions, not today's settings or the last event alone.
+        // Reason codes pass through the execution allowlist; no source values leave this API.
+        var uncheckedReasons = jdbc.query("""
+                SELECT COALESCE(secret_execution_safe_reason(reason_code),'UNRECORDED_REASON') AS reason,
+                 count(*) AS count
+                FROM secret_validation_attempts
+                WHERE run_id=? AND attempt_no=? AND evidence_version=1 AND result='UNCHECKED'
+                GROUP BY 1 ORDER BY count(*) DESC,1
+                """, (rs, n) -> new SecretRunProgress.UncheckedReason(rs.getString("reason"), rs.getLong("count")),
+                run.runId(), run.attemptNo());
         return new SecretRunProgress.ValidationSummary(reuseRecorded, counts[0], counts[1],
                 reusedCount, counts[2], counts[3], counts[4],
-                List.copyOf(truncated ? reused.subList(0, 50) : reused), truncated);
+                List.copyOf(truncated ? reused.subList(0, 50) : reused), truncated, List.copyOf(uncheckedReasons));
     }
 
-    private List<SecretRunProgress.Stage> stages(SecretRunStatusResponse run, boolean recorded) {
+    private List<SecretRunProgress.Stage> stages(SecretRunStatusResponse run, boolean recorded,
+                                              SecretRunProgress.ValidationSummary validation) {
         var result = new ArrayList<SecretRunProgress.Stage>();
         String cancellationReason = "CANCELLED".equals(run.status()) ? jdbc.queryForObject("""
                 SELECT COALESCE(secret_execution_safe_reason(j.last_error_code),'CANCELLED')
@@ -163,6 +175,12 @@ public class SecretRunProgressService {
                         """, String.class, key, key, run.runId());
             }
             if (unobservedSuccess) reason = "STAGE_NOT_OBSERVED";
+            if ("VALIDATION".equals(key) && "SKIPPED".equals(state) && !validation.uncheckedReasons().isEmpty()) {
+                // A final scope summary can say NO_CANDIDATES even when another scope was blocked.
+                // Preserve all reasons in the summary instead of choosing a single scope arbitrarily.
+                reason = validation.uncheckedReasons().size() == 1
+                        ? validation.uncheckedReasons().getFirst().reasonCode() : "MULTIPLE_VALIDATION_REASONS";
+            }
             if (cancellationReason != null) {
                 if (Set.of("PENDING", "RUNNING").contains(ledger)) state = "CANCELLED";
                 if ("CANCELLED".equals(state)) reason = cancellationReason;

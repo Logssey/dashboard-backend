@@ -29,6 +29,6 @@ final class SecretSourceSchemaCompatibility implements InitializingBean {
         } catch (RuntimeException failure) {
             throw new IllegalStateException("SECRET_SOURCE_SCHEMA_CHECK_UNAVAILABLE");
         }
-        if (!ready) throw new IllegalStateException("SECRET_SOURCE_SCHEMA_REQUIRES_V55");
+        if (!ready) throw new IllegalStateException("SECRET_SOURCE_SCHEMA_REQUIRES_V65");
     }
 }

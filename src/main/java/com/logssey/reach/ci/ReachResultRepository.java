@@ -23,13 +23,17 @@ public class ReachResultRepository {
         this.jdbcClient = jdbcClient;
     }
 
-    /** 검사를 만든 주체 (USER:<id>, CI:<repository>). 검사가 없으면 빈 값 */
-    /** 검사를 만든 주체와 레포. CI 토큰이 이 검사를 보고 올릴 수 있는지(ReachCiAccess) 정한다 */
+    /**
+     * 검사를 만든 주체(USER:<id>, CI:<repository>)와 레포, PR 번호. 검사가 없으면 빈 값.
+     * CI 토큰이 이 검사를 보고 올릴 수 있는지(ReachCiAccess) 정한다
+     */
     Optional<ReachCiAccess.CheckOwner> checkOwner(long checkId) {
-        return jdbcClient.sql("SELECT idempotency_scope, mode, repository FROM reach_ci_checks WHERE check_id = :checkId")
+        return jdbcClient.sql("""
+                        SELECT idempotency_scope, mode, repository, pr_number FROM reach_ci_checks WHERE check_id = :checkId
+                        """)
                 .param("checkId", checkId)
                 .query((rs, n) -> new ReachCiAccess.CheckOwner(rs.getString("idempotency_scope"), rs.getString("mode"),
-                        rs.getString("repository")))
+                        rs.getString("repository"), rs.getObject("pr_number", Integer.class)))
                 .optional();
     }
 
@@ -120,6 +124,122 @@ public class ReachResultRepository {
     }
 
     /** 같은 검사에 다시 올리면 409 (명세 API-13) */
+    /** 보관할 SBOM. content는 gzip한 CycloneDX JSON, sha256은 푼 JSON의 해시 */
+    record Sbom(byte[] contentGzip, String sha256, int componentCount) {}
+
+    void insertSbom(long scanId, Sbom sbom) {
+        jdbcClient.sql("""
+                        INSERT INTO reach_sboms (scan_id, content_gzip, content_sha256, component_count)
+                        VALUES (:scanId, :content, :sha256, :components)
+                        """)
+                .param("scanId", scanId)
+                .param("content", sbom.contentGzip())
+                .param("sha256", sbom.sha256())
+                .param("components", sbom.componentCount())
+                .update();
+    }
+
+    /** L3 실행 한 번 (V55 reach_l3_runs). 스캔마다 하나 */
+    void insertL3Run(long scanId, ReachL3Input.Run run) {
+        jdbcClient.sql("""
+                        INSERT INTO reach_l3_runs (scan_id, run_status, error, scenario, observation_method, observed_at, counts, detail)
+                        VALUES (:scanId, :status, :error, :scenario, :method, :observedAt, CAST(:counts AS jsonb), CAST(:detail AS jsonb))
+                        """)
+                .param("scanId", scanId)
+                .param("status", run.status())
+                .param("error", run.error())
+                .param("scenario", run.scenario())
+                .param("method", run.observationMethod())
+                .param("observedAt", run.observedAt())
+                .param("counts", run.counts())
+                .param("detail", run.detail())
+                .update();
+    }
+
+    /** L3 실행 기록 묶음(tar.xz) 그대로 (V57 reach_l3_records) */
+    void insertL3Record(long scanId, byte[] content, String sha256) {
+        jdbcClient.sql("""
+                        INSERT INTO reach_l3_records (scan_id, content, content_sha256, byte_size)
+                        VALUES (:scanId, :content, :sha256, :size)
+                        """)
+                .param("scanId", scanId)
+                .param("content", content)
+                .param("sha256", sha256)
+                .param("size", content.length)
+                .update();
+    }
+
+    /**
+     * 이 앱의 실행 기록을 정리한다. 이미지(대상)마다 가장 새 기록 하나만 보고,
+     * 그중 최근 keep개와 지금 실행 중인 이미지(L1 reach_workloads에 있는 digest)의 것만 남긴다
+     */
+    void pruneL3Records(String app, int keep) {
+        jdbcClient.sql("""
+                        WITH latest AS (
+                            SELECT DISTINCT ON (s.target_id) r.scan_id, t.image_digest
+                            FROM reach_l3_records r
+                            JOIN reach_scans s ON s.scan_id = r.scan_id
+                            JOIN reach_targets t ON t.target_id = s.target_id
+                            WHERE t.app = :app
+                            ORDER BY s.target_id, r.scan_id DESC
+                        ), kept AS (
+                            SELECT x.scan_id
+                            FROM (SELECT scan_id, image_digest, row_number() OVER (ORDER BY scan_id DESC) AS n FROM latest) x
+                            WHERE x.n <= :keep
+                               OR EXISTS (SELECT 1 FROM reach_workloads w WHERE w.image_digest = x.image_digest)
+                        )
+                        DELETE FROM reach_l3_records r
+                        USING reach_scans s, reach_targets t
+                        WHERE s.scan_id = r.scan_id AND t.target_id = s.target_id AND t.app = :app
+                          AND r.scan_id NOT IN (SELECT scan_id FROM kept)
+                        """)
+                .param("app", app)
+                .param("keep", keep)
+                .update();
+    }
+
+    /** Finding의 지금 L3 결과. 같은 이미지의 새 실행이 덮어쓴다 */
+    void upsertL3Result(long findingId, long scanId, ReachL3Input.Result result) {
+        jdbcClient.sql("""
+                        INSERT INTO reach_l3_results (finding_id, scan_id, reached, regions_checked, startup_only, detail)
+                        VALUES (:findingId, :scanId, :reached, :regionsChecked, :startupOnly, CAST(:detail AS jsonb))
+                        ON CONFLICT (finding_id) DO UPDATE
+                        SET scan_id = EXCLUDED.scan_id, reached = EXCLUDED.reached, regions_checked = EXCLUDED.regions_checked,
+                            startup_only = EXCLUDED.startup_only, detail = EXCLUDED.detail
+                        """)
+                .param("findingId", findingId)
+                .param("scanId", scanId)
+                .param("reached", result.reached())
+                .param("regionsChecked", result.regionsChecked())
+                .param("startupOnly", result.startupOnly())
+                .param("detail", result.detail())
+                .update();
+    }
+
+    /** Finding의 지금 L3 결과. 앱을 띄우지 않은 스캔(재대조, L3 실패)이 판정을 올릴 때 쓴다 */
+    Optional<ReachL3Input.Result> l3Result(long findingId) {
+        return jdbcClient.sql("""
+                        SELECT reached, regions_checked, startup_only, detail::text AS detail
+                        FROM reach_l3_results WHERE finding_id = :findingId
+                        """)
+                .param("findingId", findingId)
+                .query((rs, i) -> new ReachL3Input.Result(rs.getString("reached"), rs.getBoolean("regions_checked"),
+                        rs.getBoolean("startup_only"), rs.getString("detail")))
+                .optional();
+    }
+
+    /** 이 대상의 Finding 중 이번 실행에 없는 예전 결과를 지운다 (판정 데이터에서 빠진 CVE 등) */
+    void deleteStaleL3Results(long targetId, long scanId) {
+        jdbcClient.sql("""
+                        DELETE FROM reach_l3_results r
+                        USING reach_findings f
+                        WHERE f.finding_id = r.finding_id AND f.target_id = :targetId AND r.scan_id <> :scanId
+                        """)
+                .param("targetId", targetId)
+                .param("scanId", scanId)
+                .update();
+    }
+
     void markUploaded(long checkId) {
         jdbcClient.sql("UPDATE reach_ci_checks SET results_uploaded_at = now() WHERE check_id = :checkId AND results_uploaded_at IS NULL")
                 .param("checkId", checkId)
@@ -164,7 +284,9 @@ public class ReachResultRepository {
     /**
      * (대상, purl, 취약점 ID)로 찾아 있으면 스캐너 값과 마지막 스캔·시각을 바꾸고, 없으면 만든다 (DB 스키마 4절 3단계).
      * first_seen_at은 처음 만들 때만 쓴다. xmax = 0이면 이번에 새로 넣은 행이다(PostgreSQL에서 갱신한 행은 xmax가 채워진다).
-     * deployment도 처음 만들 때만 쓴다. 이미 있는 Finding의 값은 L1 재계산이 정하므로 묶음 값(기본 UNKNOWN)으로 덮지 않는다
+     * deployment도 처음 만들 때만 쓴다. 이미 있는 Finding의 값은 L1 재계산이 정하므로 묶음 값(기본 UNKNOWN)으로 덮지 않는다.
+     * last_seen_at은 뒤로 가지 않는다. now()는 트랜잭션이 시작한 시각이라, 같은 대상의 두 업로드가 겹쳐 먼저 시작한 쪽이
+     * 나중에 반영되면 더 이른 값이 온다(first_seen_at보다 일러 ck_reach_findings_seen에 걸리던 경우)
      */
     UpsertedFinding upsertFinding(FindingInput f) {
         return jdbcClient.sql("""
@@ -188,7 +310,8 @@ public class ReachResultRepository {
                             affected_feature = EXCLUDED.affected_feature, fixed_versions = EXCLUDED.fixed_versions,
                             cwe_ids = EXCLUDED.cwe_ids, reference_urls = EXCLUDED.reference_urls,
                             sources = EXCLUDED.sources, upgrade = EXCLUDED.upgrade,
-                            last_scan_id = EXCLUDED.last_scan_id, last_seen_at = EXCLUDED.last_seen_at
+                            last_scan_id = EXCLUDED.last_scan_id,
+                            last_seen_at = GREATEST(reach_findings.last_seen_at, EXCLUDED.last_seen_at)
                         RETURNING finding_id, xmax = 0 AS inserted
                         """)
                 .paramSource(f)
@@ -321,6 +444,11 @@ public class ReachResultRepository {
     record ReviewState(String reviewState, String status, String note, Long reviewerUserId,
                        String baseStatus, String baseEvidenceHash) {}
 
+    /**
+     * 검토 행을 잠그고 읽는다. 사람이 같은 Finding을 저장하는 중(API-06, 같은 행을 잠근다)이면 끝날 때까지 기다려
+     * 그 판정을 보고 되돌릴지 정한다. 잠그지 않으면 방금 저장한 사람 판정을 모른 채 version 없이 덮어쓸 수 있었다.
+     * 업로드가 먼저 잡으면 사람의 저장은 version이 달라 409로 다시 읽게 된다
+     */
     ReviewState reviewState(long findingId) {
         return jdbcClient.sql("""
                         SELECT r.review_state, r.status, r.note, r.reviewer_user_id, b.status AS base_status,
@@ -328,6 +456,7 @@ public class ReachResultRepository {
                         FROM reach_reviews r
                         LEFT JOIN reach_verdicts b ON b.verdict_id = r.base_verdict_id
                         WHERE r.finding_id = :findingId
+                        FOR UPDATE OF r
                         """)
                 .param("findingId", findingId)
                 .query((rs, i) -> new ReviewState(rs.getString("review_state"), rs.getString("status"),

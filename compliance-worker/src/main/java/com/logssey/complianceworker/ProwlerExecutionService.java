@@ -21,15 +21,31 @@ public class ProwlerExecutionService {
 
     private final ComplianceWorkerProperties properties;
     private final ComplianceWorkerApiClient api;
+    private final AwsTargetIdentityService identities;
 
-    public ProwlerExecutionService(ComplianceWorkerProperties properties, ComplianceWorkerApiClient api) {
+    public ProwlerExecutionService(ComplianceWorkerProperties properties, ComplianceWorkerApiClient api,
+                                   AwsTargetIdentityService identities) {
         this.properties = properties;
         this.api = api;
+        this.identities = identities;
     }
 
     void execute(ClaimedJob job) {
         Path work = null;
         try {
+            var identity = identities.verify(job);
+            if (!job.target().awsAccountId().equals(identity.accountId())) {
+                api.fail(job, "TARGET_ACCOUNT_MISMATCH", false);
+                return;
+            }
+            if ("CONNECTION_TEST".equals(job.jobKind())) {
+                api.completeConnection(job, identity);
+                return;
+            }
+            if (!"ASSESSMENT".equals(job.jobKind())) {
+                api.fail(job, "UNSUPPORTED_JOB_KIND", false);
+                return;
+            }
             work = Files.createTempDirectory("logssey-compliance-" + job.jobId() + "-");
             Process process = new ProcessBuilder(ProwlerCommand.build(properties.prowlerExecutable(), job, work))
                     .redirectOutput(work.resolve("prowler.stdout.log").toFile())
@@ -58,6 +74,8 @@ public class ProwlerExecutionService {
             }
             Path result = findResult(work);
             api.submit(job, result);
+        } catch (AwsTargetIdentityService.TargetIdentityException e) {
+            bestEffortFailure(job, e.code(), e.retryable());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             bestEffortFailure(job, "WORKER_INTERRUPTED", true);

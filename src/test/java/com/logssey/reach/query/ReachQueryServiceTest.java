@@ -2,6 +2,7 @@ package com.logssey.reach.query;
 
 import com.logssey.common.error.ApiException;
 import com.logssey.common.error.ErrorCode;
+import com.logssey.reach.ReachTestProperties;
 import com.logssey.reach.query.dto.ReachFindingDetailResponse;
 import com.logssey.reach.query.dto.ReachFindingPageResponse;
 import com.logssey.reach.query.dto.ReachFindingResponse;
@@ -47,11 +48,12 @@ class ReachQueryServiceTest {
     @BeforeEach
     void reset() {
         jdbc.execute("TRUNCATE reach_review_history, reach_reviews, reach_evidence, reach_verdicts, "
-                + "reach_findings, reach_scans, reach_targets, dashboard_users RESTART IDENTITY CASCADE");
+                + "reach_findings, reach_scans, reach_targets, reach_workloads, reach_workload_observations, "
+                + "dashboard_users RESTART IDENTITY CASCADE");
         jdbc.update("INSERT INTO dashboard_users (login_id, password_hash, display_name, role) "
                 + "VALUES ('admin', 'h', 'Admin', 'ADMIN')");
         scan = scan(target("sha256:a"), "SUCCEEDED", 1);
-        service = new ReachQueryService(new ReachQueryRepository(JdbcClient.create(jdbc)));
+        service = new ReachQueryService(new ReachQueryRepository(JdbcClient.create(jdbc)), ReachTestProperties.REUSED);
     }
 
     @Test
@@ -139,6 +141,42 @@ class ReachQueryServiceTest {
     }
 
     @Test
+    void aPastScanShowsItsOwnToolVerdictsNotTodays() {
+        long a = target("sha256:b");
+        long old = scan(a, "SUCCEEDED", 3);
+        long id = finding(old, "lib", "CVE-2026-1", "HIGH", "UNREACHABLE", "UNREVIEWED");
+        long other = finding(old, "zlib", "CVE-2026-2", "HIGH", "NOT_ANALYZED", "UNREVIEWED");
+        // a later scan of the same image says REACHABLE (today's verdict). A person judged the NOT_ANALYZED one by hand
+        long latest = scan(a, "SUCCEEDED", 1);
+        jdbc.update("UPDATE reach_verdicts SET is_current = false WHERE finding_id IN (?, ?)", id, other);
+        jdbc.update("""
+                INSERT INTO reach_verdicts (finding_id, scan_id, status, method, summary, engine, evidence_hash, is_current, analyzed_at)
+                VALUES (?, ?, 'REACHABLE', 'CALLGRAPH', 'later', '{}', 'h2', true, now())
+                """, id, latest);
+        jdbc.update("""
+                INSERT INTO reach_verdicts (finding_id, scan_id, status, not_analyzed_reason, summary, engine, evidence_hash, is_current, analyzed_at)
+                VALUES (?, ?, 'NOT_ANALYZED', 'OS_PACKAGE', 'later', '{}', 'h', false, now())
+                """, other, latest);
+        jdbc.update("""
+                INSERT INTO reach_verdicts (finding_id, scan_id, status, method, summary, is_current, analyzed_at, created_by_user_id)
+                VALUES (?, ?, 'UNREACHABLE', 'MANUAL', 'by hand', true, now(), 1)
+                """, other, latest);
+
+        // the default scope and target are today: REACHABLE and the human verdict
+        assertThat(service.findings("admin", ALL, null, null, null).items())
+                .extracting(i -> i.vulnerability().id() + ":" + i.verdict().status())
+                .containsExactly("CVE-2026-1:REACHABLE", "CVE-2026-2:UNREACHABLE");
+        // the old scan (e.g. a PR check result, a scan in the history) shows what that scan said
+        var then = service.findings("admin", scope(old, null), null, null, null);
+        assertThat(then.items()).extracting(i -> i.vulnerability().id() + ":" + i.verdict().status())
+                .containsExactly("CVE-2026-1:UNREACHABLE", "CVE-2026-2:NOT_ANALYZED");
+        var summary = service.summary("admin", null, old, null, null);
+        assertThat(summary.totals().findings()).isEqualTo(2);
+        assertThat(service.findings("admin", new ReachFindingFilter(List.of("REACHABLE"), null, null, null, null, old, null, null, null),
+                null, null, null).items()).isEmpty();
+    }
+
+    @Test
     void scopeParametersAreChecked() {
         long a = target("sha256:b");
         long b = target("sha256:c");
@@ -178,6 +216,40 @@ class ReachQueryServiceTest {
     }
 
     @Test
+    void runningImagesComeFirstThenUnknownThenNotRunning() {
+        // 기본 범위의 대상 셋: API 이미지(실행 중), WEB 이미지(실행 안 함), CHAT 레포(확인 못 함)
+        finding(scan, "a", "CVE-2026-1", "LOW", "UNREACHABLE", "UNREVIEWED");
+        long web = scan(target("sha256:b", "WEB"), "SUCCEEDED", 2);
+        finding(web, "b", "CVE-2026-2", "CRITICAL", "REACHABLE", "UNREVIEWED");
+        long chat = scan(repoTarget("CHAT", "1".repeat(40)), "SUCCEEDED", 2);
+        finding(chat, "c", "CVE-2026-3", "CRITICAL", "REACHABLE", "UNREVIEWED");
+        finding(scan, "d", "CVE-2026-4", "HIGH", "REACHABLE", "UNREVIEWED");
+        jdbc.update("UPDATE reach_findings f SET deployment = 'RUNNING' FROM reach_targets t "
+                + "WHERE t.target_id = f.target_id AND t.image_digest = 'sha256:a'");
+        jdbc.update("UPDATE reach_findings f SET deployment = 'NOT_RUNNING' FROM reach_targets t "
+                + "WHERE t.target_id = f.target_id AND t.image_digest = 'sha256:b'");
+
+        // 실행 중 이미지 안에서는 지금처럼 상태 → 심각도. 도달 가능 CRITICAL이어도 실행 중이 아니면 뒤에 온다
+        var expected = List.of("CVE-2026-4", "CVE-2026-1", "CVE-2026-3", "CVE-2026-2");
+        assertThat(cves(service.findings("admin", ALL, null, null, null))).containsExactlyElementsOf(expected);
+
+        // 커서가 배포 경계를 넘어도 빠지거나 겹치지 않는다
+        var seen = new ArrayList<String>();
+        String cursor = null;
+        do {
+            var page = service.findings("admin", ALL, 1, cursor, null);
+            seen.addAll(cves(page));
+            cursor = page.nextCursor();
+        } while (cursor != null);
+        assertThat(seen).containsExactlyElementsOf(expected);
+
+        // 배포 순위가 없던 커서(정렬 키 5개 + 필터)는 400
+        String old = java.util.Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(("0,0,2026,1,1," + ALL.fingerprint()).getBytes());
+        assertError(() -> service.findings("admin", ALL, 1, old, null), ErrorCode.INVALID_INPUT);
+    }
+
+    @Test
     void nullInsideAnArrayColumnIsSkipped() {
         long id = finding(scan, "a", "CVE-2026-1", "HIGH", "REACHABLE", "UNREVIEWED");
         jdbc.update("UPDATE reach_findings SET fixed_versions = ARRAY['1.0.1', NULL] WHERE finding_id = ?", id);
@@ -210,6 +282,61 @@ class ReachQueryServiceTest {
         assertThat(none.vulnerability().cwe()).isEmpty();
         assertThat(none.vulnerability().references()).isEmpty();
         assertThat(none.verdict().vulnFunctionIds()).isEmpty();
+    }
+
+    @Test
+    void listShowsHowFarL3GotNextToTheVerdictAndFiltersByIt() {
+        long region = finding(scan, "a", "CVE-2026-1", "HIGH", "UNREACHABLE", "UNREVIEWED");
+        long function = finding(scan, "b", "CVE-2026-2", "HIGH", "UNREACHABLE", "UNREVIEWED");
+        finding(scan, "c", "CVE-2026-3", "HIGH", "REACHABLE", "UNREVIEWED");          // 띄워 본 결과 없음
+        l3Run(scan);
+        l3Result(region, scan, "REGION", true, false);
+        l3Result(function, scan, "FUNCTION", false, true);
+
+        var items = service.findings("admin", ALL, null, null, null).items();
+        var byCve = items.stream().collect(java.util.stream.Collectors.toMap(i -> i.vulnerability().id(), i -> i));
+        // L2 판정은 그대로이고 L3가 옆에 붙는다 (L2 도달 불가 + L3 구간 실행이 사람이 볼 1순위)
+        assertThat(byCve.get("CVE-2026-1").verdict().status()).isEqualTo("UNREACHABLE");
+        assertThat(byCve.get("CVE-2026-1").l3()).isEqualTo(new ReachFindingResponse.L3("REGION", true, false, "REACHABLE"));
+        assertThat(byCve.get("CVE-2026-2").l3()).isEqualTo(new ReachFindingResponse.L3("FUNCTION", false, true, "UNKNOWN"));
+        assertThat(byCve.get("CVE-2026-3").l3()).isNull();
+
+        var executed = new ReachFindingFilter(null, null, null, null, null, null, null, null, List.of("REGION", "FUNCTION"));
+        assertThat(cves(service.findings("admin", executed, null, null, null))).containsExactly("CVE-2026-1", "CVE-2026-2");
+        var missed = new ReachFindingFilter(List.of("UNREACHABLE"), null, null, null, null, null, null, null, List.of("REGION"));
+        assertThat(cves(service.findings("admin", missed, null, null, null))).containsExactly("CVE-2026-1");
+        assertError(() -> new ReachFindingFilter(null, null, null, null, null, null, null, null, List.of("EXECUTED")),
+                ErrorCode.INVALID_INPUT);
+        // 요약 숫자는 L3와 무관하다
+        assertThat(service.summary("admin", null, null, null, null).totals().findings()).isEqualTo(3);
+    }
+
+    @Test
+    void detailCarriesTheL3EvidenceAndTheRunItCameFrom() {
+        long id = finding(scan, "a", "CVE-2026-1", "HIGH", "UNREACHABLE", "UNREVIEWED");
+        long none = finding(scan, "b", "CVE-2026-2", "HIGH", "UNREACHABLE", "UNREVIEWED");
+        l3Run(scan);
+        l3Result(id, scan, "REGION", true, false);
+
+        var l3 = service.finding("admin", id, null).l3();
+        assertThat(l3.reached()).isEqualTo("REGION");
+        assertThat(l3.regionsChecked()).isTrue();
+        assertThat(l3.startupOnly()).isFalse();
+        assertThat(l3.during().get(0).asString()).isEqualTo("002");
+        assertThat(l3.functions().get(0).get("function").asString()).isEqualTo("org.example.Parser#check");
+        assertThat(l3.regions().get(0).get("executedLines").get(0).asInt()).isEqualTo(626);
+        assertThat(l3.paths().get(0).get("reachedStep").asInt()).isEqualTo(2);
+        assertThat(l3.note()).isEqualTo("checked by hand");
+        assertThat(l3.run().scanId()).isEqualTo(scan);
+        assertThat(l3.run().scenario()).isEqualTo("2026-11-18.1");
+        assertThat(l3.run().observationMethod()).isEqualTo("COVERAGE");
+        assertThat(l3.run().observedAt()).isNotNull();
+        assertThat(l3.run().build().get("imageDigest").asString()).isEqualTo("sha256:a");
+        assertThat(l3.run().configKeys().get(0).get("name").asString()).isEqualTo("KAKAO_STUB");
+        assertThat(l3.run().invocations().get(1).get("request").asString()).isEqualTo("POST /items");
+        // 검토 이력을 붙여도 남는다
+        assertThat(service.finding("admin", id, List.of("reviewHistory")).l3().reached()).isEqualTo("REGION");
+        assertThat(service.finding("admin", none, null).l3()).isNull();
     }
 
     @Test
@@ -363,6 +490,132 @@ class ReachQueryServiceTest {
         return page.items().stream().map(ReachFindingResponse::vulnerability).map(ReachFindingResponse.Vulnerability::id).toList();
     }
 
+    @Test
+    void runningBasisUsesTheRunningImageOfEachAppFirst() {
+        String running = digest('1'), built = digest('2'), chat = digest('3');
+        long runningScan = scan(target(running), "SUCCEEDED", 5);
+        finding(runningScan, "running-lib", "CVE-2026-0001", "HIGH", "REACHABLE", "UNREVIEWED");
+        long builtScan = scan(target(built), "SUCCEEDED", 0);        // 더 최근이지만 배포되지 않은 빌드
+        finding(builtScan, "built-lib", "CVE-2026-0002", "HIGH", "REACHABLE", "UNREVIEWED");
+        long repoScan = scan(repoTarget("API", "c1"), "SUCCEEDED", 0);
+        finding(repoScan, "repo-lib", "CVE-2026-0003", "LOW", "UNKNOWN", "UNREVIEWED");
+        observe(2, new String[] {"reused-api", "logssey/reused-api:1", running},
+                new String[] {"reused-chat", "logssey/reused-chat:9", chat});   // chat은 스캔이 없다
+
+        // 기본(RUNNING): API 이미지는 실행 중 digest의 스캔, 레포는 그대로 최신
+        assertThat(cves(service.findings("admin", ALL, null, null, null)))
+                .containsExactlyInAnyOrder("CVE-2026-0001", "CVE-2026-0003");
+        var summary = service.summary("admin", null, null, null, null, null);
+        assertThat(summary.totals().findings()).isEqualTo(2);
+        assertThat(summary.basis().requested()).isEqualTo("RUNNING");
+        assertThat(summary.basis().applied()).isEqualTo("RUNNING");
+        assertThat(summary.basis().scans())
+                .extracting(s -> s.app() + "/" + s.targetType() + "/" + s.scanId() + "/" + s.running())
+                .containsExactly("API/IMAGE/" + runningScan + "/true", "API/REPO/" + repoScan + "/false");
+        assertThat(summary.basis().unscannedRunning()).singleElement().satisfies(w -> {
+            assertThat(w.app()).isEqualTo("CHAT");   // 설치 설정의 이미지로 앱을 안다
+            assertThat(w.name()).isEqualTo("reused-chat");
+            assertThat(w.imageRepository()).isEqualTo("logssey/reused-chat");
+            assertThat(w.imageDigest()).isEqualTo(chat);
+        });
+        // 하루 1번 재대조 대상: 실행 중인 이미지의 스캔만 (레포·배포 안 된 빌드는 아니다)
+        assertThat(service.runningImageScanIds()).containsExactly(runningScan);
+        // PR 검사의 기준: 그 앱의 실행 중 이미지 스캔. 실행 중이어도 스캔이 없거나(chat) 앱을 모르면 없다
+        assertThat(service.runningImageScan("API")).contains(runningScan);
+        assertThat(service.runningImageScan("CHAT")).isEmpty();
+        assertThat(service.runningImageScan(null)).isEmpty();
+
+        // LATEST: 지금까지처럼 앱·대상 종류마다 최신 스캔
+        var latest = new ReachFindingFilter(null, null, null, null, null, null, null, "LATEST");
+        assertThat(cves(service.findings("admin", latest, null, null, null)))
+                .containsExactlyInAnyOrder("CVE-2026-0002", "CVE-2026-0003");
+        var latestSummary = service.summary("admin", null, null, null, null, "LATEST");
+        assertThat(latestSummary.basis().applied()).isEqualTo("LATEST");
+        assertThat(latestSummary.basis().unscannedRunning()).isEmpty();
+        assertThat(latestSummary.basis().scans()).extracting(s -> s.scanId()).contains(builtScan);
+
+        // 커서는 basis와 묶인다 (명세 2-4)
+        var page = service.findings("admin", ALL, 1, null, null);
+        assertError(() -> service.findings("admin", latest, 1, page.nextCursor(), null), ErrorCode.INVALID_INPUT);
+    }
+
+    @Test
+    void runningBasisFallsBackToTheLatestScanWithoutAFreshObservation() {
+        String running = digest('1');
+        long runningScan = scan(target(running), "SUCCEEDED", 5);
+        finding(runningScan, "running-lib", "CVE-2026-0001", "HIGH", "REACHABLE", "UNREVIEWED");
+        long builtScan = scan(target(digest('2')), "SUCCEEDED", 0);
+        finding(builtScan, "built-lib", "CVE-2026-0002", "HIGH", "REACHABLE", "UNREVIEWED");
+        observe(72, new String[] {"reused-api", "logssey/reused-api:1", running});   // 48시간이 지난 조회
+
+        assertThat(cves(service.findings("admin", ALL, null, null, null))).containsExactly("CVE-2026-0002");
+        var summary = service.summary("admin", null, null, null, null, null);
+        assertThat(summary.basis().requested()).isEqualTo("RUNNING");
+        assertThat(summary.basis().applied()).isEqualTo("LATEST");
+        assertThat(summary.basis().unscannedRunning()).isEmpty();
+        assertThat(service.runningImageScanIds()).isEmpty();   // 실행 중인 이미지를 모르면 재대조하지 않는다
+        assertThat(service.runningImageScan("API")).isEmpty();   // PR 검사도 기준 없이 본다
+
+        // L1이 꺼진 설치도 LATEST와 같다
+        var noL1 = new ReachQueryService(new ReachQueryRepository(JdbcClient.create(jdbc)),
+                ReachTestProperties.withL1(null, List.of()));
+        assertThat(noL1.summary("admin", null, null, null, null, "RUNNING").basis().applied()).isEqualTo("LATEST");
+        assertThat(noL1.runningImageScan("API")).isEmpty();
+    }
+
+    @Test
+    void basisIsCheckedAndOnlyDescribesTheDefaultScope() {
+        assertError(() -> service.summary("admin", null, null, null, null, "OLDEST"), ErrorCode.INVALID_INPUT);
+        assertError(() -> service.findings("admin", new ReachFindingFilter(null, null, null, null, null, null, null, "x"),
+                null, null, null), ErrorCode.INVALID_INPUT);
+        assertThat(service.summary("admin", null, scan, null, null, null).basis()).isNull();   // scanId·target이면 basis 없음
+    }
+
+    @Test
+    void reportScopeIsTheRunningImagesWithTheFirstTimeTheFindingAppearedInAnImage() {
+        // 공통 리포트 취약점 장: 실행 중 이미지의 Finding만, 발견일은 같은 앱·패키지·CVE가 이미지에 처음 나온 때
+        String old = digest('1'), now = digest('2'), pr = digest('3');
+        long oldFinding = finding(scan(target(old), "SUCCEEDED", 240), "lib", "CVE-2026-0001", "HIGH", "REACHABLE", "UNREVIEWED");
+        jdbc.update("UPDATE reach_findings SET first_seen_at = now() - interval '10 days' WHERE finding_id = ?", oldFinding);
+        // PR 검사에서만 본 것은 발견일에 넣지 않는다
+        long prFinding = finding(scan(target(pr), "SUCCEEDED", 480, "PR"), "lib", "CVE-2026-0001", "HIGH", "REACHABLE", "UNREVIEWED");
+        jdbc.update("UPDATE reach_findings SET first_seen_at = now() - interval '20 days' WHERE finding_id = ?", prFinding);
+        long runningScan = scan(target(now), "SUCCEEDED", 1);
+        long current = finding(runningScan, "lib", "CVE-2026-0001", "HIGH", "REACHABLE", "UNREVIEWED");
+        // 레포 대상은 넣지 않는다
+        finding(scan(repoTarget("API", "a".repeat(40)), "SUCCEEDED", 1), "repo-lib", "CVE-2026-0009", "CRITICAL", "REACHABLE", "UNREVIEWED");
+        observe(2, new String[] {"reused-api", "logssey/reused-api:1", now});
+
+        var report = service.reportScope("admin");
+        assertThat(report.appliedBasis()).isEqualTo("RUNNING");
+        assertThat(report.rows()).singleElement().satisfies(row -> {
+            assertThat(row.findingId()).isEqualTo(current);
+            assertThat(row.running()).isTrue();
+            assertThat(row.firstFoundAt()).isBetween(java.time.OffsetDateTime.now().minusDays(11), java.time.OffsetDateTime.now().minusDays(9));
+        });
+        assertThat(report.appsWithoutImage()).isEmpty();
+        assertThat(report.unscannedRunning()).isZero();
+        assertError(() -> service.reportScope("nobody"), ErrorCode.FORBIDDEN);
+    }
+
+    private static String digest(char c) {
+        return "sha256:" + String.valueOf(c).repeat(64);
+    }
+
+    /** reused-prod/reused 조회 한 번과 워크로드들 ({이름, 이미지, digest}) */
+    private static void observe(int hoursAgo, String[]... workloads) {
+        jdbc.update("""
+                INSERT INTO reach_workload_observations (cluster, namespace, observed_at, source, reported_by)
+                VALUES ('reused-prod', 'reused', now() - make_interval(hours => ?), 'CLUSTER_READER', 'test')
+                """, hoursAgo);
+        for (var w : workloads) {
+            jdbc.update("""
+                    INSERT INTO reach_workloads (cluster, namespace, kind, name, container, image, image_digest, ready_replicas)
+                    VALUES ('reused-prod', 'reused', 'Deployment', ?, ?, ?, ?, 1)
+                    """, w[0], w[0], "123.dkr.ecr.ap-northeast-1.amazonaws.com/" + w[1] + "@" + w[2], w[2]);
+        }
+    }
+
     /** 기준 범위만 지정한 필터 */
     private static ReachFindingFilter scope(Long scanId, Long target) {
         return new ReachFindingFilter(null, null, null, null, null, scanId, target);
@@ -397,6 +650,29 @@ class ReachQueryServiceTest {
                 INSERT INTO reach_scans (target_id, scan_status, trigger_type, requested_by_kind, failure_code, finished_at)
                 VALUES (?, ?, ?, 'SYSTEM', ?, now() - make_interval(hours => ?)) RETURNING scan_id
                 """, Long.class, targetId, status, trigger, status.equals("FAILED") ? "TEST" : null, hoursAgo);
+    }
+
+    /** 그 스캔의 L3 실행 (V55). 근거 항목은 러너 run.json 이름 그대로 */
+    private static void l3Run(long scanId) {
+        jdbc.update("""
+                INSERT INTO reach_l3_runs (scan_id, run_status, scenario, observation_method, observed_at, counts, detail)
+                VALUES (?, 'SUCCEEDED', '2026-11-18.1', 'COVERAGE', now(), '{"REGION": 1}',
+                        '{"build": {"imageDigest": "sha256:a"}, "configKeys": [{"name": "KAKAO_STUB", "enabled": true}],
+                          "invocations": [{"segment": "001", "name": "categories", "request": "GET /api/v1/categories"},
+                                          {"segment": "002", "name": "create", "request": "POST /items"}]}'::jsonb)
+                """, scanId);
+    }
+
+    private static void l3Result(long findingId, long scanId, String reached, boolean regionsChecked, boolean startupOnly) {
+        jdbc.update("""
+                INSERT INTO reach_l3_results (finding_id, scan_id, reached, regions_checked, startup_only, detail)
+                VALUES (?, ?, ?, ?, ?,
+                        '{"during": ["002"], "note": "checked by hand",
+                          "functions": [{"function": "org.example.Parser#check", "during": ["001", "002"]}],
+                          "regions": [{"class": "org.example.Parser", "method": "check", "lines": [[626, 627]],
+                                       "executedLines": [626, 627], "executed": true, "during": ["002"]}],
+                          "paths": [{"target": "org.example.Parser#check", "reachedStep": 2, "of": 2}]}'::jsonb)
+                """, findingId, scanId, reached, regionsChecked, startupOnly);
     }
 
     /** Finding + 현재 판정 + 검토 한 벌. NOT_ANALYZED면 방식 없이 사유 OS_PACKAGE, 검토 상태가 UNREVIEWED가 아니면 admin이 같은 판정으로 검토 */

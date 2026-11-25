@@ -270,6 +270,7 @@ public class SecretLocationService {
             "lastMaterialActionAt",operational.get("last_material_action_at"),"actionCycle",operational.get("action_cycle"),"actionsCompletedAt",operational.get("actions_completed_at"),
             "coverage",coverage,
             "fixtureStatus",operational.getOrDefault("fixture_status","NOT_APPLICABLE"),
+            "exposureRange",operational.getOrDefault("exposure_range","UNKNOWN"),
             "fixtureReasonCode",operational.get("fixture_status")==null?"ATTESTATION_EVIDENCE_REQUIRED":null,
             "caseId",row.caseId(),"actionStatus",row.actionStatus(),"assignedUserId",row.assignedUserId(),
             "occurrenceVersion",row.occurrenceVersion(),"caseVersion",row.caseVersion(),"facts",visibleFacts,

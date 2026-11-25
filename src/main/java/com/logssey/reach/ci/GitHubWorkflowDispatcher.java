@@ -13,6 +13,8 @@ import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
+import com.logssey.common.error.ApiException;
+import com.logssey.common.error.ErrorCode;
 import com.logssey.reach.ci.auth.ReachCiProperties;
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.JWSAlgorithm;
@@ -37,7 +39,8 @@ import org.springframework.web.client.RestClientException;
  * 3. 기본 브랜치(logssey.reach.ci.default-branch)의 워크플로를 inputs로 띄운다
  *
  * 토큰은 요청마다 새로 받고 저장하지 않는다(스캔 요청은 사람이 누를 때만이라 드물다).
- * GitHub이 실패하거나 응답이 없으면 ReachUnavailableException(503)이고 오류 본문은 로그에만 남긴다
+ * GitHub이 실패하거나 응답이 없으면 ReachUnavailableException(503)이고 오류 본문은 로그에만 남긴다.
+ * 그 레포에 앱이 설치되지 않았거나 워크플로가 없으면(404) 422 RUNNER_NOT_INSTALLED
  */
 @Component
 class GitHubWorkflowDispatcher implements ReachScanDispatcher {
@@ -110,8 +113,19 @@ class GitHubWorkflowDispatcher implements ReachScanDispatcher {
         Map<?, ?> read();
     }
 
-    /** 2xx가 아니면 503. GitHub 오류 본문은 비밀값이 없지만 길 수 있어 상태 코드만 남긴다 */
+    /**
+     * API-01 422 메시지. 그 레포에 앱이 설치되지 않았거나 기본 브랜치에 워크플로가 없다(GitHub 404).
+     * 다시 시도해도 같아서 503이 아니라 422다. 명세의 사유 코드 RUNNER_NOT_INSTALLED (공통 ErrorCode에 없어 메시지로 준다)
+     */
+    static final String RUNNER_NOT_INSTALLED =
+            "RUNNER_NOT_INSTALLED: 이 레포에는 Reach 실행기가 없습니다(GitHub App 설치, 기본 브랜치의 reach.yml).";
+
+    /** 2xx가 아니면 503(설치·워크플로가 없는 404는 422). GitHub 오류 본문은 비밀값이 없지만 길 수 있어 상태 코드만 남긴다 */
     private static Map<?, ?> body(HttpStatusCode status, String step, Body body) {
+        if (status.value() == 404 && ("installation".equals(step) || "dispatch".equals(step))) {
+            log.warn("Reach scan dispatch: no runner in the repository ({} HTTP 404)", step);
+            throw new ApiException(ErrorCode.UNPROCESSABLE, RUNNER_NOT_INSTALLED);
+        }
         if (!status.is2xxSuccessful()) {
             log.warn("Reach scan dispatch failed at {}: HTTP {}", step, status.value());
             throw new ReachUnavailableException(DEPENDENCY, step + " HTTP " + status.value());

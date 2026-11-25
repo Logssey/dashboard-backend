@@ -7,7 +7,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * 6시간마다 Finding deployment를 다시 계산한다. 수집이 끊기면 조회가 오래돼 UNKNOWN으로 바뀌어야 하기 때문이다(PRD FR-04).
- * 수집은 하루 1번(ARD 7-3 A)이라 6시간이면 신선도(48시간)를 넘긴 조회를 늦어도 6시간 안에 UNKNOWN으로 바꾼다.
+ * 수집은 6시간마다(ARD 7-3 A, gitops reach/l1)이고, 6시간이면 신선도(48시간)를 넘긴 조회를 늦어도 6시간 안에 UNKNOWN으로 바꾼다.
  * 주기 기본값은 식 안에 둔다(공용 application.properties를 고치지 않으려고). 바꾸려면 logssey.reach.l1.recompute-cron
  */
 @Component

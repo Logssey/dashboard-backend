@@ -102,12 +102,25 @@ public class IacQueryRepository {
 
     Optional<RunRow> latestRun(long repoId, int prNumber) {
         return jdbc.query("""
-                SELECT run_id, head_sha, status, verdict, highest_severity, coalesce(finished_at, created_at) AS checked_at
+                SELECT run_id, pr_title, head_sha, status, verdict, highest_severity,
+                       coalesce(finished_at, created_at) AS checked_at
                 FROM iac_runs WHERE repo_id = ? AND pr_number = ?
                 ORDER BY run_id DESC LIMIT 1
-                """, (rs, row) -> new RunRow(rs.getLong("run_id"), rs.getString("head_sha"), rs.getString("status"),
+                """, (rs, row) -> new RunRow(rs.getLong("run_id"), rs.getString("pr_title"), rs.getString("head_sha"), rs.getString("status"),
                 rs.getString("verdict"), rs.getString("highest_severity"),
                 rs.getObject("checked_at", OffsetDateTime.class)), repoId, prNumber).stream().findFirst();
+    }
+
+    /** run 하나 (PR 번호, 레포 이름과 함께). CI 결과 조회용 */
+    Optional<RunOf> run(long runId) {
+        return jdbc.query("""
+                SELECT r.run_id, r.pr_number, r.pr_title, p.full_name, r.head_sha, r.status, r.verdict, r.highest_severity,
+                       coalesce(r.finished_at, r.created_at) AS checked_at
+                FROM iac_runs r JOIN iac_repos p ON p.repo_id = r.repo_id WHERE r.run_id = ?
+                """, (rs, row) -> new RunOf(rs.getObject("pr_number", Integer.class), rs.getString("full_name"),
+                new RunRow(rs.getLong("run_id"), rs.getString("pr_title"), rs.getString("head_sha"), rs.getString("status"),
+                        rs.getString("verdict"), rs.getString("highest_severity"),
+                        rs.getObject("checked_at", OffsetDateTime.class))), runId).stream().findFirst();
     }
 
     List<IacPullRequestResponse.GateFinding> gateFindings(long runId) {
@@ -119,7 +132,7 @@ public class IacQueryRepository {
                 rs.getString("enforcement"), rs.getString("severity"), rs.getString("resource_address")), runId);
     }
 
-    /** 경로 없는 ① 발견 건. 경로 발견 건은 params 에 pathFingerprint 가 있어 빠진다. */
+    /** 경로 없는 경로 분석 발견 건. 경로 발견 건은 params 에 pathFingerprint 가 있어 빠진다. */
     List<IacPullRequestResponse.ResourceFinding> resourceFindings(long runId) {
         return jdbc.query("""
                 SELECT rule_id, enforcement, severity, resource_address, params ->> 'action' AS action FROM iac_findings
@@ -143,13 +156,15 @@ public class IacQueryRepository {
                 json(rs.getString("evidence"))), runId);
     }
 
-    /** 분석 작업이 남긴 결과의 한 부분 (resources: plan 리소스 수, state: ③ State 영향). */
+    /** 분석 작업이 남긴 결과의 한 부분 (resources: plan 리소스 수, state: State 영향). 그 키가 없으면 null. */
     JsonNode analysisStats(long runId, String key) {
-        return json(jdbc.query("""
+        // 키가 없으면 행의 값이 SQL NULL 이라 Optional 로 감싸지 않고 목록에서 꺼낸다 (findFirst 는 null 을 못 받는다)
+        List<String> values = jdbc.query("""
                 SELECT (stats -> ?)::text FROM iac_jobs
                 WHERE run_id = ? AND kind = 'ANALYZE_RUN' AND status = 'SUCCEEDED'
                 ORDER BY job_id DESC LIMIT 1
-                """, (rs, row) -> rs.getString(1), key, runId).stream().findFirst().orElse(null));
+                """, (rs, row) -> rs.getString(1), key, runId);
+        return values.isEmpty() ? null : json(values.getFirst());
     }
 
     /** 가장 최근 CHECK_STATE 결과와 시각. */
@@ -186,14 +201,15 @@ public class IacQueryRepository {
     List<PrRow> latestPullRequestRuns(long repoId, int limit) {
         return jdbc.query("""
                 SELECT * FROM (
-                    SELECT DISTINCT ON (r.pr_number) r.pr_number, r.run_id, r.head_sha, r.status, r.verdict,
+                    SELECT DISTINCT ON (r.pr_number) r.pr_number, r.pr_title, r.run_id, r.head_sha, r.status, r.verdict,
                            r.highest_severity, coalesce(r.finished_at, r.created_at) AS checked_at,
                            (SELECT stats::text FROM iac_jobs j WHERE j.run_id = r.run_id AND j.kind = 'ANALYZE_RUN'
                               AND j.status = 'SUCCEEDED' ORDER BY j.job_id DESC LIMIT 1) AS stats
                     FROM iac_runs r WHERE r.repo_id = ? AND r.trigger_type = 'PR'
                     ORDER BY r.pr_number, r.run_id DESC
                 ) latest ORDER BY checked_at DESC LIMIT ?
-                """, (rs, row) -> new PrRow(rs.getInt("pr_number"), rs.getLong("run_id"), rs.getString("head_sha"),
+                """, (rs, row) -> new PrRow(rs.getInt("pr_number"), rs.getString("pr_title"), rs.getLong("run_id"),
+                rs.getString("head_sha"),
                 rs.getString("status"), rs.getString("verdict"), rs.getString("highest_severity"),
                 rs.getObject("checked_at", OffsetDateTime.class), json(rs.getString("stats"))), repoId, limit);
     }
@@ -209,7 +225,7 @@ public class IacQueryRepository {
                            CASE severity WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 ELSE 2 END
                     FROM iac_run_path_changes WHERE run_id = ?
                     UNION ALL
-                    -- 경로 없는 ① 발견 건 (path.imds_v1_added): 새 경로 다음
+                    -- 경로 없는 경로 분석 발견 건 (path.imds_v1_added): 새 경로 다음
                     SELECT rule_id, 2, CASE severity WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 ELSE 2 END
                     FROM iac_findings WHERE last_run_id = ? AND source = 'PATH' AND status = 'OPEN'
                       AND params ->> 'pathFingerprint' IS NULL
@@ -217,7 +233,7 @@ public class IacQueryRepository {
                 """, String.class, runId, runId, runId).stream().findFirst();
     }
 
-    record PrRow(int number, long runId, String headSha, String status, String verdict, String highestSeverity,
+    record PrRow(int number, String title, long runId, String headSha, String status, String verdict, String highestSeverity,
                  OffsetDateTime checkedAt, JsonNode stats) {
     }
 
@@ -227,7 +243,7 @@ public class IacQueryRepository {
                 """, OffsetDateTime.class, repoId));
     }
 
-    /** 가장 최근 main 점검의 열린 ② 발견 건 수 (규칙별). */
+    /** 가장 최근 main 점검의 열린 plan 전 검사 발견 건 수 (규칙별). */
     Map<String, Long> mainGateFindings(long repoId) {
         Map<String, Long> counts = new LinkedHashMap<>();
         jdbc.query("""
@@ -239,7 +255,7 @@ public class IacQueryRepository {
         return counts;
     }
 
-    /** 최근 7일 PR run 중 ② 에서 차단된 run 수 (규칙별). */
+    /** 최근 7일 PR run 중 plan 전 검사에서 차단된 run 수 (규칙별). */
     Map<String, Long> recentPullRequestGateBlocks(long repoId) {
         Map<String, Long> counts = new LinkedHashMap<>();
         jdbc.query("""
@@ -270,7 +286,10 @@ public class IacQueryRepository {
         return value == null ? null : mapper.readTree(value);
     }
 
-    record RunRow(long runId, String headSha, String status, String verdict, String highestSeverity,
+    record RunRow(long runId, String title, String headSha, String status, String verdict, String highestSeverity,
                   OffsetDateTime checkedAt) {
+    }
+
+    record RunOf(Integer prNumber, String repo, RunRow run) {
     }
 }

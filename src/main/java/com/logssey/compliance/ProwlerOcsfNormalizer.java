@@ -43,7 +43,7 @@ public class ProwlerOcsfNormalizer {
         try {
             root = mapper.readTree(bytes);
         } catch (RuntimeException e) {
-            throw new ApiException(ErrorCode.UNPROCESSABLE, "Prowler JSON 파일을 읽을 수 없습니다.");
+            throw new ApiException(ErrorCode.UNPROCESSABLE, "점검 결과 JSON 파일을 읽을 수 없습니다.");
         }
         JsonNode records = records(root);
         if (records.size() > MAX_RESULTS) {
@@ -62,7 +62,7 @@ public class ProwlerOcsfNormalizer {
             }
         }
         if (unique.isEmpty()) {
-            throw new ApiException(ErrorCode.UNPROCESSABLE, "가져올 수 있는 Prowler 결과가 없습니다.");
+            throw new ApiException(ErrorCode.UNPROCESSABLE, "가져올 수 있는 점검 결과가 없습니다.");
         }
 
         JsonNode first = records.get(0);
@@ -109,7 +109,7 @@ public class ProwlerOcsfNormalizer {
                 bounded(mask(asset), 500),
                 mask(firstText(record.path("status_detail"), record.path("message"), record.path("status_code"))),
                 mask(firstTextOr(record.path("remediation").path("desc"),
-                        record.path("finding_info").path("desc"), "Prowler 점검 기준 충족")),
+                        record.path("finding_info").path("desc"), "기술 점검 기준 충족")),
                 observedAt(record),
                 bounded(firstTextOr(resource.path("region"), record.path("cloud").path("region"), "global"), 100),
                 bounded(text(record.path("severity"), "Unknown"), 30),

@@ -5,6 +5,8 @@ import java.util.UUID;
 import com.logssey.compliance.ComplianceJobDtos.ClaimRequest;
 import com.logssey.compliance.ComplianceJobDtos.ClaimedJob;
 import com.logssey.compliance.ComplianceJobDtos.CompletionResponse;
+import com.logssey.compliance.ComplianceJobDtos.ConnectionCompletionRequest;
+import com.logssey.compliance.ComplianceJobDtos.ConnectionCompletionResponse;
 import com.logssey.compliance.ComplianceJobDtos.FailureRequest;
 import com.logssey.compliance.ComplianceJobDtos.LeaseRequest;
 import com.logssey.compliance.ComplianceJobDtos.LeaseResponse;
@@ -47,6 +49,12 @@ public class ComplianceWorkerController {
                                      @RequestParam long leaseGeneration,
                                      @RequestPart("file") MultipartFile file) {
         return service.complete(jobId, leaseToken, leaseGeneration, file);
+    }
+
+    @PostMapping("/{jobId}/connection-completion")
+    public ConnectionCompletionResponse completeConnection(@PathVariable long jobId,
+                                                            @RequestBody ConnectionCompletionRequest request) {
+        return service.completeConnection(jobId, request);
     }
 
     @PostMapping("/{jobId}/failure")

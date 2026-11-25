@@ -34,9 +34,12 @@ public class ReachScanRepository {
                    s.failure_code, s.failure_stage, s.failure_message, s.created_at, s.started_at, s.finished_at,
                    t.target_id, t.target_type, t.app, t.repo_name, t.repo_path, t.repo_commit,
                    t.image_repository, t.image_digest, t.image_revision, t.image_created_at,
-                   t.source_tree, t.display_name
+                   t.source_tree, t.display_name,
+                   lr.run_status AS l3_status, lr.error AS l3_error, lr.scenario AS l3_scenario,
+                   lr.observed_at AS l3_observed_at, lr.counts::text AS l3_counts
             FROM reach_scans s
             JOIN reach_targets t ON t.target_id = s.target_id
+            LEFT JOIN reach_l3_runs lr ON lr.scan_id = s.scan_id
             """;
 
     private final JdbcClient jdbcClient;
@@ -203,6 +206,9 @@ public class ReachScanRepository {
                 new ReachScanResponse.RequestedBy(rs.getString("requested_by_kind"),
                         rs.getObject("requested_by_user_id", Long.class),
                         rs.getString("requested_by_repository"), rs.getString("requested_by_subject")),
+                rs.getString("l3_status") == null ? null : new ReachScanResponse.L3(rs.getString("l3_status"),
+                        rs.getString("l3_error"), rs.getString("l3_scenario"),
+                        rs.getObject("l3_observed_at", OffsetDateTime.class), json(rs.getString("l3_counts"))),
                 rs.getObject("created_at", OffsetDateTime.class),
                 rs.getObject("started_at", OffsetDateTime.class),
                 rs.getObject("finished_at", OffsetDateTime.class));

@@ -35,7 +35,7 @@ def reach():
             "index": {"app_classes": 3, "library_jars": {"lib.jar": 10}}, "analysis": {"reachable_methods": 42},
             "cves": [
                 {"cve": "CVE-2026-1000", "sink_reachable": True, "sink_reachable_strong": True,
-                 "package": {"reachable": True, "reachable_strong": True},
+                 "package": {"artifact": "lib", "jars": ["lib-1.0.0.jar"], "reachable": True, "reachable_strong": True},
                  "sinks": [{"sink": SINK_A, "present_in_jar": True, "reachable": True, "weak_path_only": False, "path": path},
                            {"sink": SINK_B, "present_in_jar": True, "reachable": False}]},
                 {"cve": "CVE-2026-2000", "sink_reachable": False, "sink_reachable_strong": False,
@@ -72,6 +72,7 @@ def trivy(*vulns):
 LIB = "pkg:maven/org.example/lib@1.0.0"
 OTHER = "pkg:maven/org.example/other@3.0.0"
 COPY = "pkg:maven/com.legacy/lib@0.9"
+SIBLING = "pkg:maven/org.example/lib-extra@1.0.0"   # another jar of the data coordinate's groupId
 
 
 class BundleTest(unittest.TestCase):
@@ -119,6 +120,51 @@ class BundleTest(unittest.TestCase):
                 self.assertNotIn("method", v)
                 self.assertTrue(v["summary"])
                 self.assertNotIn("affectedFeature", i["vulnerability"])
+
+    def test_another_jar_of_the_same_group_gets_the_verdict_of_the_data_coordinate(self):
+        # e.g. Grype puts a Tomcat WebSocket CVE on tomcat-embed-core while the data says tomcat-embed-websocket
+        b = self.run_bundle(trivy(trivy_vuln("CVE-2026-1000", SIBLING), trivy_vuln("CVE-2026-1000", COPY)))
+        v = self.item(b, "CVE-2026-1000", SIBLING)["verdict"]
+        self.assertEqual((v["status"], v["method"], v["ruleId"], v["vulnFunctionIds"]),
+                         ("REACHABLE", "CALLGRAPH", "RULE-CVE-2026-1000", [1, 2]))
+        note = v["evidence"][0]
+        self.assertEqual(note["kind"], "NOTE")
+        self.assertIn("org.example:lib-extra", note["summary"])
+        self.assertIn("org.example:lib 기준", note["summary"])
+        self.assertNotIn("1.0.0", note["summary"])   # no version: the evidence hash takes the text
+        self.assertEqual([e["kind"] for e in v["evidence"][1:]], ["RULE", "PATH"])   # then the data coordinate's evidence
+        self.assertEqual(self.item(b, "CVE-2026-1000", SIBLING)["vulnerability"]["affectedFeature"], "디코더 문제")
+        # another groupId is other code (Jackson 2 for data on Jackson 3): still an unanalysed copy
+        self.assertEqual(self.item(b, "CVE-2026-1000", COPY)["verdict"]["notAnalyzedReason"], "UNANALYZED_COPY")
+        # the data coordinate itself is not changed by the copy
+        b = self.run_bundle(trivy(trivy_vuln("CVE-2026-1000", LIB), trivy_vuln("CVE-2026-1000", SIBLING)))
+        self.assertEqual(self.item(b, "CVE-2026-1000", LIB)["verdict"]["evidence"][0]["kind"], "RULE")
+        self.assertEqual(self.item(b, "CVE-2026-1000", SIBLING)["verdict"]["status"], "REACHABLE")
+
+    def test_another_jar_of_the_same_group_stays_a_copy_without_a_verdict_of_that_version(self):
+        # another version: the analyser read the classes of lib-1.0.0.jar, not of this jar
+        other_version = "pkg:maven/org.example/lib-jdk15@0.9.0"
+        b = self.run_bundle(trivy(trivy_vuln("CVE-2026-1000", other_version)))
+        self.assertEqual(self.item(b, "CVE-2026-1000", other_version)["verdict"]["notAnalyzedReason"], "UNANALYZED_COPY")
+        # no verdict for the data coordinate (the analyser had no result for the CVE): a copy, not a failed bundle
+        data = verdicts()
+        data["verdicts"] = data["verdicts"][1:]
+        b = self.run_bundle(trivy(trivy_vuln("CVE-2026-1000", SIBLING)), verdict_data=data)
+        self.assertEqual(self.item(b, "CVE-2026-1000", SIBLING)["verdict"]["notAnalyzedReason"], "UNANALYZED_COPY")
+
+    def test_data_jar_versions(self):
+        self.assertEqual(bundle.data_jar_versions({"package": {"artifact": "jackson-core",
+                                                               "jars": ["jackson-core-2.21.5.jar", "jackson-core-3.1.5.jar"]}}),
+                         {"2.21.5", "3.1.5"})
+        self.assertEqual(bundle.data_jar_versions({"package": {"artifact": "lib", "jars": []}}), set())
+        self.assertEqual(bundle.data_jar_versions(None), set())
+
+    def test_same_group_needs_a_group(self):
+        self.assertTrue(bundle.same_group("org.apache.tomcat.embed:tomcat-embed-core",
+                                          "org.apache.tomcat.embed:tomcat-embed-websocket"))
+        self.assertFalse(bundle.same_group("com.fasterxml.jackson.core:jackson-core", "tools.jackson.core:jackson-core"))
+        self.assertFalse(bundle.same_group("org.apache.tomcat:tomcat-websocket", "org.apache.tomcat.embed:tomcat-embed-websocket"))
+        self.assertFalse(bundle.same_group("left-pad", "left-pad"))
 
     def test_component_and_vulnerability_fields(self):
         b = self.run_bundle(trivy(trivy_vuln("CVE-2026-1000", LIB)))
@@ -233,9 +279,61 @@ class BundleTest(unittest.TestCase):
         self.assertEqual(bundle.main(self.no_l2_args(trivy(trivy_vuln("CVE-2026-1000", LIB)), out)), 1)
         self.assertFalse(os.path.exists(out))
 
+    def test_no_app_jar_makes_java_packages_not_analyzed(self):
+        out = os.path.join(self.dir.name, "nojar.json")
+        args = self.no_l2_args(trivy(trivy_vuln("CVE-2026-1000", LIB), trivy_vuln("CVE-2026-3000", OTHER),
+                                     trivy_vuln("CVE-2026-5000", "pkg:npm/left-pad@1.0.0")), out) + ["--no-l2"]
+        self.assertEqual(bundle.main(args), 0)
+        with open(out, encoding="utf-8") as f:
+            b = json.load(f)
+        reasons = {(i["vulnerability"]["id"], i["component"]["purl"]): i["verdict"]["notAnalyzedReason"] for i in b["verdicts"]}
+        self.assertEqual(reasons, {
+            ("CVE-2026-1000", LIB): "UNANALYZED_COPY",          # data exists but there was no jar to analyse
+            ("CVE-2026-3000", OTHER): "NO_VULN_FUNCTION_DATA",
+            ("CVE-2026-5000", "pkg:npm/left-pad@1.0.0"): "UNSUPPORTED_ECOSYSTEM",
+        })
+        self.assertTrue(all("앱 jar를 찾지 못해" in i["verdict"]["summary"] for i in b["verdicts"]
+                            if i["component"]["purl"].startswith("pkg:maven/")))
+        self.assertEqual([s["name"] for s in b["stages"]], ["SBOM", "MATCH", "REPORT"])
+
+    def test_no_l2_goes_without_l2_inputs(self):
+        out = os.path.join(self.dir.name, "bad.json")
+        args = self.no_l2_args(trivy(), out) + ["--no-l2", "--reach", self.file("reach.json", reach()),
+                                                "--verdicts", self.file("v.json", verdicts())]
+        self.assertEqual(bundle.main(args), 1)
+        self.assertEqual(bundle.main(self.no_l2_args(trivy(), out) + ["--no-l2", "--jar", self.file("j", {})]), 1)
+
     def test_reach_without_verdicts_fails(self):
         out = os.path.join(self.dir.name, "r.json")
         args = self.no_l2_args(trivy(), out) + ["--reach", self.file("reach.json", reach())]
+        self.assertEqual(bundle.main(args), 1)
+
+    def test_l3_result_is_added_as_is_and_is_not_a_stage(self):
+        l3 = {"tool": "reach-l3 0.1.0", "counts": {"EXECUTED": 1}, "cves": [], "run": {"scenario": "1"}}
+        b = self.run_bundle(trivy(trivy_vuln("CVE-2026-1000", LIB)), extra=["--l3", self.file("l3.json", l3)])
+        self.assertEqual(b["l3"], l3)
+        self.assertNotIn("L3", [s["name"] for s in b["stages"]])
+        failed = self.run_bundle(trivy(trivy_vuln("CVE-2026-1000", LIB)), extra=["--l3-error", "L3 run failed"])
+        self.assertEqual(failed["l3"], {"error": "L3 run failed"})
+        self.assertNotIn("l3", self.run_bundle(trivy(trivy_vuln("CVE-2026-1000", LIB))))
+
+    def test_l3_record_goes_along_with_the_l3_result_only(self):
+        import base64
+        record = os.path.join(self.dir.name, "record.tar.xz")
+        with open(record, "wb") as f:
+            f.write(b"\xfd7zXZ\x00record")
+        l3 = self.file("l3.json", {"counts": {}, "cves": [], "run": {"scenario": "1"}})
+        b = self.run_bundle(trivy(trivy_vuln("CVE-2026-1000", LIB)), extra=["--l3", l3, "--l3-record", record])
+        self.assertEqual(b["l3Record"]["format"], "TAR_XZ")
+        self.assertEqual(base64.b64decode(b["l3Record"]["content"]), b"\xfd7zXZ\x00record")
+        self.assertNotIn("l3Record", self.run_bundle(trivy(trivy_vuln("CVE-2026-1000", LIB)), extra=["--l3", l3]))
+        out = os.path.join(self.dir.name, "r.json")
+        self.assertEqual(bundle.main(self.no_l2_args(trivy(), out) + ["--l3-record", record]), 1)
+        self.assertEqual(bundle.main(self.no_l2_args(trivy(), out) + ["--l3-error", "x", "--l3-record", record]), 1)
+
+    def test_l3_and_l3_error_together_fail(self):
+        out = os.path.join(self.dir.name, "l3.json")
+        args = self.no_l2_args(trivy(), out) + ["--l3", self.file("r.json", {}), "--l3-error", "x"]
         self.assertEqual(bundle.main(args), 1)
 
 if __name__ == "__main__":

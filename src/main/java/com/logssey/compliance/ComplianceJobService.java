@@ -3,6 +3,8 @@ package com.logssey.compliance;
 import static com.logssey.compliance.ComplianceJobDtos.ClaimedJob;
 import static com.logssey.compliance.ComplianceJobDtos.CancelJobResponse;
 import static com.logssey.compliance.ComplianceJobDtos.CompletionResponse;
+import static com.logssey.compliance.ComplianceJobDtos.ConnectionCompletionRequest;
+import static com.logssey.compliance.ComplianceJobDtos.ConnectionCompletionResponse;
 import static com.logssey.compliance.ComplianceJobDtos.CreateJobRequest;
 import static com.logssey.compliance.ComplianceJobDtos.CreateJobResponse;
 import static com.logssey.compliance.ComplianceJobDtos.FailureRequest;
@@ -42,24 +44,31 @@ public class ComplianceJobService {
     private final ComplianceJobRepository repository;
     private final ComplianceRepository complianceRepository;
     private final ComplianceService compliance;
+    private final ComplianceTargetRepository targets;
     private final ProwlerScopeCatalog scopeCatalog;
     private final String targetKey;
     private final boolean executionEnabled;
+    private final boolean connectionTestsEnabled;
     private final int leaseSeconds;
     private final int retryDelaySeconds;
 
     public ComplianceJobService(ComplianceJobRepository repository, ComplianceRepository complianceRepository,
-                                ComplianceService compliance, ProwlerScopeCatalog scopeCatalog,
+                                ComplianceService compliance, ComplianceTargetRepository targets,
+                                ProwlerScopeCatalog scopeCatalog,
                                 @Value("${logssey.compliance.target-key:default}") String targetKey,
                                 @Value("${logssey.compliance.worker-lease-seconds:900}") int leaseSeconds,
                                 @Value("${logssey.compliance.worker-retry-delay-seconds:30}") int retryDelaySeconds,
-                                @Value("${logssey.compliance.execution-enabled:true}") boolean executionEnabled) {
+                                @Value("${logssey.compliance.execution-enabled:true}") boolean executionEnabled,
+                                @Value("${logssey.compliance.connection-tests-enabled:false}")
+                                boolean connectionTestsEnabled) {
         this.repository = repository;
         this.complianceRepository = complianceRepository;
         this.compliance = compliance;
+        this.targets = targets;
         this.scopeCatalog = scopeCatalog;
         this.targetKey = targetKey;
         this.executionEnabled = executionEnabled;
+        this.connectionTestsEnabled = connectionTestsEnabled;
         this.leaseSeconds = Math.max(60, Math.min(3_600, leaseSeconds));
         this.retryDelaySeconds = Math.max(1, Math.min(600, retryDelaySeconds));
     }
@@ -71,43 +80,65 @@ public class ComplianceJobService {
             throw new ApiException(ErrorCode.CONFLICT, "자동 점검 실행은 운영 연결을 완료한 뒤 활성화됩니다.");
         }
         if (request == null) throw new ApiException(ErrorCode.INVALID_INPUT);
+        String requestedTarget = target(request.targetKey());
+        var target = targets.executionSnapshot(requestedTarget)
+                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "등록된 점검 대상을 찾을 수 없습니다."));
+        if (!target.enabled() || !"VERIFIED".equals(target.connectionStatus())) {
+            throw new ApiException(ErrorCode.CONFLICT, "연결 확인을 마치고 활성화한 대상만 점검할 수 있습니다.");
+        }
         String environment = ComplianceService.environment(request.environment(), false);
         ScanScope scope = normalizeScope(request.scope());
-        long jobId = repository.insert(targetKey, environment, scope, loginId);
+        if (scope.regions().isEmpty() && !target.defaultRegions().isEmpty()) {
+            scope = new ScanScope(target.defaultRegions(), scope.services(), scope.checks());
+        }
+        long jobId = repository.insertAssessment(target, environment, scope, loginId);
         return new CreateJobResponse(jobId, "QUEUED");
     }
 
     @Transactional(readOnly = true)
-    public JobListResponse jobs(int limit) {
+    public JobListResponse jobs(String requestedTarget, int limit) {
         if (limit < 1 || limit > MAX_JOBS) throw new ApiException(ErrorCode.INVALID_INPUT);
-        return new JobListResponse(repository.jobs(targetKey, limit));
+        return new JobListResponse(repository.jobs(target(requestedTarget), limit));
     }
 
     @Transactional(readOnly = true)
-    public JobSummary job(long jobId) {
-        return repository.job(targetKey, jobId).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+    public JobSummary job(String requestedTarget, long jobId) {
+        return repository.job(target(requestedTarget), jobId)
+                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
     }
 
     @Transactional
-    public CancelJobResponse cancel(String loginId, long jobId) {
+    public CancelJobResponse cancel(String loginId, String requestedTarget, long jobId) {
         requireAdmin(loginId);
-        if (repository.cancel(targetKey, jobId)) return new CancelJobResponse(jobId, "CANCELLED");
-        var existing = repository.job(targetKey, jobId)
+        String selectedTarget = target(requestedTarget);
+        var existing = repository.job(selectedTarget, jobId)
                 .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
+        if (repository.cancel(selectedTarget, jobId)) {
+            if ("CONNECTION_TEST".equals(existing.jobKind())) {
+                var snapshot = repository.jobTargetSnapshot(jobId);
+                snapshot.ifPresent(value -> targets.markNotTested(value.targetKey(), value.targetVersion()));
+            }
+            return new CancelJobResponse(jobId, "CANCELLED");
+        }
         throw new ApiException(ErrorCode.CONFLICT,
                 "현재 상태(" + existing.status() + ")에서는 점검을 취소할 수 없습니다.");
     }
 
     public ScopeCatalogResponse scopeCatalog() {
-        return new ScopeCatalogResponse("aws", executionEnabled, scopeCatalog.version(), scopeCatalog.commit(),
-                scopeCatalog.services(), scopeCatalog.checkItems());
+        return new ScopeCatalogResponse("aws", executionEnabled, connectionTestsEnabled,
+                scopeCatalog.version(), scopeCatalog.commit(), scopeCatalog.services(), scopeCatalog.checkItems());
     }
 
     @Transactional
     public ClaimedJob claim(String workerId) {
         String normalizedWorker = normalizeWorkerId(workerId);
-        repository.failExhaustedLeases(targetKey);
-        return repository.claim(targetKey, normalizedWorker, UUID.randomUUID(), leaseSeconds, scopeCatalog.version())
+        for (var expired : repository.failExhaustedLeases()) {
+            if ("CONNECTION_TEST".equals(expired.jobKind())) {
+                targets.markFailed(expired.targetKey(), expired.targetVersion(), "LEASE_EXPIRED");
+            }
+        }
+        return repository.claim(normalizedWorker, UUID.randomUUID(), leaseSeconds, scopeCatalog.version(),
+                        executionEnabled, connectionTestsEnabled)
                 .orElse(null);
     }
 
@@ -126,9 +157,34 @@ public class ComplianceJobService {
         if (token == null || generation < 1) throw new ApiException(ErrorCode.INVALID_INPUT);
         var lease = repository.lockLease(jobId, token, generation)
                 .orElseThrow(() -> new ApiException(ErrorCode.CONFLICT, "점검 작업 임대가 만료되었거나 변경되었습니다."));
-        var imported = compliance.importProwlerResult("compliance-worker/job-" + jobId, lease.environment(), file);
+        if (!"ASSESSMENT".equals(lease.jobKind())) throw new ApiException(ErrorCode.CONFLICT);
+        var imported = compliance.importProwlerResult(lease.targetKey(),
+                "compliance-worker/job-" + jobId, lease.environment(), file);
         repository.succeed(jobId, imported.runId());
         return new CompletionResponse(jobId, imported.runId(), "SUCCEEDED");
+    }
+
+    @Transactional
+    public ConnectionCompletionResponse completeConnection(long jobId, ConnectionCompletionRequest request) {
+        if (request == null || request.leaseToken() == null || request.leaseGeneration() < 1
+                || request.accountId() == null || !request.accountId().matches("^[0-9]{12}$")
+                || request.callerArn() == null || request.callerArn().length() > 620) {
+            throw new ApiException(ErrorCode.INVALID_INPUT);
+        }
+        var lease = repository.lockLease(jobId, request.leaseToken(), request.leaseGeneration())
+                .orElseThrow(() -> new ApiException(ErrorCode.CONFLICT, "연결 확인 작업 임대가 만료되었거나 변경되었습니다."));
+        if (!"CONNECTION_TEST".equals(lease.jobKind())) throw new ApiException(ErrorCode.CONFLICT);
+        if (!lease.targetAccountId().equals(request.accountId())) {
+            targets.markFailed(lease.targetKey(), lease.targetVersion(), "TARGET_ACCOUNT_MISMATCH");
+            repository.failOrRetry(jobId, false, "TARGET_ACCOUNT_MISMATCH", retryDelaySeconds);
+            throw new ApiException(ErrorCode.CONFLICT, "연결된 AWS 계정이 등록한 계정과 다릅니다.");
+        }
+        if (!targets.markVerified(lease.targetKey(), lease.targetVersion(), request.accountId())) {
+            repository.failOrRetry(jobId, false, "TARGET_CHANGED", retryDelaySeconds);
+            throw new ApiException(ErrorCode.CONFLICT, "연결 확인 중 대상 정보가 변경되었습니다.");
+        }
+        repository.succeedConnection(jobId, request.accountId());
+        return new ConnectionCompletionResponse(jobId, lease.targetKey(), "SUCCEEDED");
     }
 
     @Transactional
@@ -141,6 +197,9 @@ public class ComplianceJobService {
                 .orElseThrow(() -> new ApiException(ErrorCode.CONFLICT, "점검 작업 임대가 만료되었거나 변경되었습니다."));
         boolean retry = request.retryable() && lease.attemptCount() < lease.maxAttempts();
         repository.failOrRetry(jobId, retry, request.errorCode(), retryDelaySeconds);
+        if (!retry && "CONNECTION_TEST".equals(lease.jobKind())) {
+            targets.markFailed(lease.targetKey(), lease.targetVersion(), request.errorCode());
+        }
     }
 
     private ScanScope normalizeScope(ScanScope input) {
@@ -158,12 +217,12 @@ public class ComplianceJobService {
         }
         for (String service : services) {
             if (!scopeCatalog.supportsService(service)) {
-                throw new ApiException(ErrorCode.INVALID_INPUT, "Prowler 5.46.0에 없는 서비스입니다: " + service);
+                throw new ApiException(ErrorCode.INVALID_INPUT, "지원하지 않는 AWS 서비스입니다: " + service);
             }
         }
         for (String check : checks) {
             if (!scopeCatalog.supportsCheck(check)) {
-                throw new ApiException(ErrorCode.INVALID_INPUT, "Prowler 5.46.0에 없는 Check입니다: " + check);
+                throw new ApiException(ErrorCode.INVALID_INPUT, "지원하지 않는 Check입니다: " + check);
             }
         }
         return new ScanScope(regions, services, checks);
@@ -193,5 +252,13 @@ public class ComplianceJobService {
 
     private void requireAdmin(String loginId) {
         if (!complianceRepository.isAdmin(loginId)) throw new ApiException(ErrorCode.FORBIDDEN);
+    }
+
+    private String target(String requestedTarget) {
+        String value = requestedTarget == null || requestedTarget.isBlank() ? targetKey : requestedTarget.trim();
+        if (!value.matches("^[a-z0-9][a-z0-9-]{1,98}[a-z0-9]$")) {
+            throw new ApiException(ErrorCode.INVALID_INPUT, "점검 대상 키가 올바르지 않습니다.");
+        }
+        return value;
     }
 }

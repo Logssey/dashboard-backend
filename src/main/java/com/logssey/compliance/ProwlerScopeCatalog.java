@@ -48,6 +48,7 @@ public class ProwlerScopeCatalog {
     public List<Check> checkItems() { return file.checks(); }
     public boolean supportsService(String service) { return services.contains(service); }
     public boolean supportsCheck(String check) { return checks.contains(check); }
+    public String serviceForCheck(String check) { return checkServices.get(check); }
 
     public record ScopeCatalog(int schemaVersion, String provider, String version, String commit,
                                int checkCount, int serviceCount, List<String> services, List<Check> checks) {}

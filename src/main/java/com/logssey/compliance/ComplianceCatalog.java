@@ -45,7 +45,8 @@ public class ComplianceCatalog {
                             List<Control> controls) {}
     public record Control(String id, String title, String description, boolean manual, String evaluationMode,
                           boolean manualEvidenceRequired, List<Mapping> mappings) {}
-    public record Mapping(String checkId, String provider, String coverage, String review, String failureEffect) {
+    public record Mapping(String checkId, String provider, String coverage, String review, String failureEffect,
+                          String applicability) {
         String key() { return provider.toLowerCase() + ":" + checkId; }
     }
 }

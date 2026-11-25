@@ -2,6 +2,7 @@ package com.logssey.reach.ci;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -42,17 +43,48 @@ public class ReachCiCheckRepository {
                 .single();
     }
 
-    record KeyedCheck(long checkId, String requestHash) {}
+    record KeyedCheck(long checkId, String requestHash, String scanStatus) {}
 
     Optional<KeyedCheck> checkByKey(String scope, String key) {
         return jdbcClient.sql("""
-                        SELECT check_id, request_hash FROM reach_ci_checks
-                        WHERE idempotency_scope = :scope AND idempotency_key = :key
+                        SELECT c.check_id, c.request_hash, s.scan_status FROM reach_ci_checks c
+                        JOIN reach_scans s ON s.scan_id = c.scan_id
+                        WHERE c.idempotency_scope = :scope AND c.idempotency_key = :key
                         """)
                 .param("scope", scope)
                 .param("key", key)
-                .query((rs, i) -> new KeyedCheck(rs.getLong("check_id"), rs.getString("request_hash")))
+                .query((rs, i) -> new KeyedCheck(rs.getLong("check_id"), rs.getString("request_hash"),
+                        rs.getString("scan_status")))
                 .optional();
+    }
+
+    /**
+     * 실패한 검사의 멱등 키를 놓아 준다. 같은 키로 새 검사를 만들 수 있게 키를 released-<검사 ID>로 바꾼다.
+     * 검사·스캔·실패 사유는 그대로 남는다 (명세 2-7)
+     */
+    void releaseKey(long checkId) {
+        jdbcClient.sql("UPDATE reach_ci_checks SET idempotency_key = 'released-' || check_id WHERE check_id = :checkId")
+                .param("checkId", checkId)
+                .update();
+    }
+
+    /**
+     * 결과가 오지 않은 채 오래된 스캔을 실패로 끝낸다 (러너가 취소·시간 초과로 실패 묶음도 못 올린 경우).
+     * CI 검사가 있는 스캔만 본다. 끝낸 스캔 수를 준다
+     */
+    int failStale(Duration olderThan) {
+        return jdbcClient.sql("""
+                        UPDATE reach_scans s
+                        SET scan_status = 'FAILED', finished_at = now(), failure_code = 'RUNNER_NO_RESULT',
+                            failure_message = :message
+                        FROM reach_ci_checks c
+                        WHERE c.scan_id = s.scan_id AND s.scan_status IN ('QUEUED', 'RUNNING')
+                          AND s.created_at < now() - make_interval(secs => :seconds)
+                        """)
+                .param("message", "No result from the runner within " + olderThan.toMinutes()
+                        + " minutes (cancelled, timed out or never started)")
+                .param("seconds", (double) olderThan.toSeconds())
+                .update();
     }
 
     record TargetRow(long id, String app) {}
@@ -120,11 +152,83 @@ public class ReachCiCheckRepository {
     /** 검사를 만든 주체 (USER:<id>, CI:<repository>). 검사가 없으면 빈 값 */
     /** 검사를 만든 주체와 레포. CI 토큰이 이 검사를 보고 올릴 수 있는지(ReachCiAccess) 정한다 */
     Optional<ReachCiAccess.CheckOwner> checkOwner(long checkId) {
-        return jdbcClient.sql("SELECT idempotency_scope, mode, repository FROM reach_ci_checks WHERE check_id = :checkId")
+        return jdbcClient.sql("""
+                        SELECT idempotency_scope, mode, repository, pr_number FROM reach_ci_checks WHERE check_id = :checkId
+                        """)
                 .param("checkId", checkId)
                 .query((rs, n) -> new ReachCiAccess.CheckOwner(rs.getString("idempotency_scope"), rs.getString("mode"),
-                        rs.getString("repository")))
+                        rs.getString("repository"), rs.getObject("pr_number", Integer.class)))
                 .optional();
+    }
+
+    /** 대시보드 예약 작업이 만든 스캔 (하루 1번 재대조, requested_by_kind SYSTEM) */
+    long insertSystemScan(long targetId, String trigger, long rescanOf) {
+        return jdbcClient.sql("""
+                        INSERT INTO reach_scans (target_id, trigger_type, rescan_of_scan_id, requested_by_kind)
+                        VALUES (:targetId, :trigger, :rescanOf, 'SYSTEM')
+                        RETURNING scan_id
+                        """)
+                .param("targetId", targetId)
+                .param("trigger", trigger)
+                .param("rescanOf", rescanOf)
+                .query(Long.class)
+                .single();
+    }
+
+    /** 재대조할 스캔의 대상. 러너를 띄울 레포와 inputs를 정한다 */
+    Optional<ReachTargets.Resolved> rescanTarget(long scanId) {
+        return jdbcClient.sql("""
+                        SELECT t.target_type, t.app, t.repo_name, t.repo_path, t.repo_commit, t.image_repository,
+                               t.image_digest, t.display_name
+                        FROM reach_scans s JOIN reach_targets t ON t.target_id = s.target_id
+                        WHERE s.scan_id = :scanId
+                        """)
+                .param("scanId", scanId)
+                .query((rs, i) -> new ReachTargets.Resolved(rs.getString("target_type"), rs.getString("app"),
+                        rs.getString("repo_name"), rs.getString("repo_path"), rs.getString("repo_commit"),
+                        rs.getString("image_repository"), rs.getString("image_digest"), rs.getString("display_name")))
+                .optional();
+    }
+
+    /** 검사의 스캔이 재대조면 원래 스캔에 보관한 SBOM(gzip). 재대조가 아니거나 보관한 것이 없으면 빈 값 */
+    Optional<byte[]> rescanSbom(long checkId) {
+        return jdbcClient.sql("""
+                        SELECT b.content_gzip
+                        FROM reach_ci_checks c
+                        JOIN reach_scans s ON s.scan_id = c.scan_id
+                        JOIN reach_sboms b ON b.scan_id = s.rescan_of_scan_id
+                        WHERE c.check_id = :checkId
+                        """)
+                .param("checkId", checkId)
+                .query((rs, i) -> rs.getBytes("content_gzip"))
+                .optional();
+    }
+
+    /**
+     * 검사의 스캔이 재대조면 그 대상(이미지)에 보관한 가장 새 L3 실행 기록(tar.xz).
+     * 재대조가 아니거나 보관한 것이 없으면(앱을 띄워 본 적 없는 이미지, 정리된 기록) 빈 값
+     */
+    Optional<byte[]> rescanL3Record(long checkId) {
+        return jdbcClient.sql("""
+                        SELECT r.content
+                        FROM reach_ci_checks c
+                        JOIN reach_scans s ON s.scan_id = c.scan_id AND s.rescan_of_scan_id IS NOT NULL
+                        JOIN reach_scans o ON o.target_id = s.target_id
+                        JOIN reach_l3_records r ON r.scan_id = o.scan_id
+                        WHERE c.check_id = :checkId
+                        ORDER BY r.scan_id DESC
+                        LIMIT 1
+                        """)
+                .param("checkId", checkId)
+                .query((rs, i) -> rs.getBytes("content"))
+                .optional();
+    }
+
+    boolean checkExists(long checkId) {
+        return jdbcClient.sql("SELECT count(*) FROM reach_ci_checks WHERE check_id = :checkId")
+                .param("checkId", checkId)
+                .query(Long.class)
+                .single() > 0;
     }
 
     long insertScan(long targetId, String trigger, Long rescanOf, long userId) {
@@ -241,8 +345,21 @@ public class ReachCiCheckRepository {
     record NewFindingRow(String status, String severity, long count) {}
 
     /**
-     * 이 스캔의 도구 판정 중 기준 스캔에 없던 purl × CVE를 상태·심각도별로 센다 (명세 6-2 "새 Finding").
-     * 기준 스캔은 다른 대상(예: main 커밋)일 수 있어 Finding id가 아니라 purl과 CVE로 비교한다.
+     * 판정의 위험 순위. REACHABLE > UNKNOWN = NOT_ANALYZED > UNREACHABLE.
+     * UNKNOWN과 NOT_ANALYZED는 둘 다 "안전하다고 확인하지 못함"이라 같은 순위로 본다
+     */
+    private static String rank(String alias) {
+        return "CASE " + alias + ".status WHEN 'REACHABLE' THEN 3 WHEN 'UNREACHABLE' THEN 1 ELSE 2 END";
+    }
+
+    /**
+     * 이 스캔의 도구 판정 중 "새 Finding"을 상태·심각도별로 센다 (명세 6-2).
+     * 새 Finding = 기준 스캔에 없던 purl × CVE, 또는 기준 스캔에서는 판정이 더 낮던 것.
+     * 라이브러리는 그대로인데 코드가 바뀌어 UNREACHABLE → REACHABLE이 된 것을 잡으려는 것이다.
+     * 기준에서 이미 같은 순위 이상이던 것(이미 있던 위험)은 세지 않는다. PR을 막는 이유가 되지 않는다.
+     * 기준 스캔은 다른 대상(예: 운영 이미지)일 수 있어 Finding id가 아니라 purl과 CVE로 비교한다.
+     * purl은 한정자(?…)와 하위 경로(#…)를 떼고 비교한다. 레포 SBOM(cdxgen)은 pkg:maven/g/a@v?type=jar,
+     * 이미지 스캔(Trivy)은 pkg:maven/g/a@v로 같은 패키지를 다르게 적어서다.
      * 기준 스캔이 없으면(NULL) 아래 NOT EXISTS가 늘 참이라 모두 새 것이다. MANUAL(사람 판정)은 스캔 결과가 아니라 뺀다
      */
     List<NewFindingRow> newFindingCounts(long scanId, Long baselineScanId) {
@@ -255,9 +372,12 @@ public class ReachCiCheckRepository {
                               SELECT 1 FROM reach_verdicts bv
                               JOIN reach_findings bf ON bf.finding_id = bv.finding_id
                               WHERE bv.scan_id = :baselineScanId AND bv.method IS DISTINCT FROM 'MANUAL'
-                                AND bf.purl = f.purl AND bf.vulnerability_id = f.vulnerability_id)
+                                AND split_part(split_part(bf.purl, '#', 1), '?', 1)
+                                    = split_part(split_part(f.purl, '#', 1), '?', 1)
+                                AND bf.vulnerability_id = f.vulnerability_id
+                                AND %s >= %s)
                         GROUP BY v.status, f.severity
-                        """)
+                        """.formatted(rank("bv"), rank("v")))
                 .param("scanId", scanId)
                 .param("baselineScanId", baselineScanId)
                 .query((rs, i) -> new NewFindingRow(rs.getString("status"), rs.getString("severity"), rs.getLong("n")))

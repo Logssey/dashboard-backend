@@ -11,6 +11,7 @@ import com.logssey.reach.ReachTestProperties;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterAll;
@@ -54,6 +55,39 @@ class ReachCiCheckServiceTest {
         jdbc.update("INSERT INTO dashboard_users (login_id, password_hash, display_name, role) "
                 + "VALUES ('admin', 'h', 'Admin', 'ADMIN')");
         service = new ReachCiCheckService(new ReachCiCheckRepository(JdbcClient.create(jdbc)), ReachTestProperties.REUSED);
+    }
+
+    @Test
+    void theCodeCommitIsTheOneTheDashboardRuns() {
+        var repository = new ReachCiCheckRepository(JdbcClient.create(jdbc));
+        var access = new com.logssey.reach.ci.auth.ReachCiAccess(ReachTestProperties.REUSED,
+                new com.logssey.reach.ci.auth.ReachCiProperties("Logssey", null, null));
+        var code = new ReachCiCodeService(repository, access, " " + COMMIT + " ");
+        assertThat(code.code("admin").commit()).isEqualTo(COMMIT);
+        assertError(() -> code.code(null), ErrorCode.UNAUTHENTICATED);
+        assertError(() -> code.code("nobody"), ErrorCode.FORBIDDEN);
+
+        // the Reach workflow of a registered repo, on any event (PR, image build, dispatch)
+        var pr = new com.logssey.reach.ci.auth.ReachCiCaller("Logssey/service-backend", "repo:x", "pull_request",
+                "refs/pull/1/merge", "Logssey/service-backend/.github/workflows/reach.yml@refs/pull/1/merge");
+        assertThat(code.codeForCi(pr).commit()).isEqualTo(COMMIT);
+        var otherWorkflow = new com.logssey.reach.ci.auth.ReachCiCaller("Logssey/service-backend", "repo:x", "push",
+                "refs/heads/develop", "Logssey/service-backend/.github/workflows/ci.yml@refs/heads/develop");
+        assertError(() -> code.codeForCi(otherWorkflow), ErrorCode.FORBIDDEN);
+        var otherRepo = new com.logssey.reach.ci.auth.ReachCiCaller("Logssey/unknown", "repo:x", "push",
+                "refs/heads/develop", "Logssey/unknown/.github/workflows/reach.yml@refs/heads/develop");
+        assertError(() -> code.codeForCi(otherRepo), ErrorCode.FORBIDDEN);
+
+        // where the commit comes from: the image's LOGSSEY_BUILD_COMMIT, unless the setting says otherwise
+        var env = new org.springframework.mock.env.MockEnvironment().withProperty("LOGSSEY_BUILD_COMMIT", COMMIT);
+        assertThat(env.resolvePlaceholders(ReachCiCodeService.COMMIT_SOURCE)).isEqualTo(COMMIT);
+        env.setProperty("logssey.reach.ci.code-commit", "c".repeat(40));
+        assertThat(env.resolvePlaceholders(ReachCiCodeService.COMMIT_SOURCE)).isEqualTo("c".repeat(40));
+        assertThat(new org.springframework.mock.env.MockEnvironment().resolvePlaceholders(ReachCiCodeService.COMMIT_SOURCE)).isEmpty();
+
+        // a dashboard that does not know its commit (local run): 404, the runner then needs REACH_REF
+        assertError(() -> new ReachCiCodeService(repository, access, "").code("admin"), ErrorCode.NOT_FOUND);
+        assertError(() -> new ReachCiCodeService(repository, access, "abc").codeForCi(pr), ErrorCode.NOT_FOUND);
     }
 
     @Test
@@ -234,6 +268,94 @@ class ReachCiCheckServiceTest {
     }
 
     @Test
+    void aFindingWhoseVerdictGotWorseThanTheBaselineCountsAsNew() {
+        // 라이브러리는 그대로인데 코드가 바뀌어 판정이 나빠지면 새 것이다. 같거나 나아지면 이미 있던 것이다
+        long baseline = scan(imageTarget(), "SUCCEEDED");
+        finding(baseline, "a", "CRITICAL", "UNREACHABLE");
+        finding(baseline, "b", "LOW", "UNREACHABLE");
+        finding(baseline, "c", "LOW", "UNKNOWN");
+        finding(baseline, "d", "HIGH", "REACHABLE");
+        finding(baseline, "e", "HIGH", "NOT_ANALYZED");
+
+        long checkId = service.create("admin", "w", request("MANUAL", repo(COMMIT), null, baseline, "GATE")).check().id();
+        long scanId = service.check("admin", checkId).scanId();
+        finding(scanId, "a", "CRITICAL", "REACHABLE");      // UNREACHABLE → REACHABLE: REACHABLE_CRITICAL_HIGH
+        finding(scanId, "b", "LOW", "UNKNOWN");             // UNREACHABLE → UNKNOWN: UNKNOWN_ANY
+        finding(scanId, "c", "LOW", "UNKNOWN");             // 그대로 → 새 것 아님
+        finding(scanId, "d", "HIGH", "UNREACHABLE");        // 나아짐 → 새 것 아님
+        finding(scanId, "e", "HIGH", "UNKNOWN");            // NOT_ANALYZED → UNKNOWN은 같은 순위 → 새 것 아님
+        finish(scanId, "SUCCEEDED");
+
+        var gate = service.check("admin", checkId).gate();
+        assertThat(gate.result()).isEqualTo("FAIL");
+        assertThat(gate.reasons()).extracting(ReachCiCheckResponse.Reason::condition)
+                .containsExactly("REACHABLE_CRITICAL_HIGH", "UNKNOWN_ANY");
+        assertThat(gate.newFindings().total()).isEqualTo(2);
+    }
+
+    @Test
+    void aBaselineAnalyzedWithOlderVerdictDataCountsTheNewVerdictAsNew() {
+        // 판정 데이터를 더한 직후: 기준(운영 이미지)은 아직 데이터 없음(NOT_ANALYZED), PR은 새 데이터로 REACHABLE.
+        // 이미 있던 위험이지만 다음 재대조(또는 운영 이미지 스캔 요청)로 기준이 바뀔 때까지 새 것으로 센다 (명세 6-2)
+        long baseline = scan(imageTarget(), "SUCCEEDED");
+        finding(baseline, "a", "HIGH", "NOT_ANALYZED");
+
+        long checkId = service.create("admin", "d", request("MANUAL", repo(COMMIT), null, baseline, "GATE")).check().id();
+        long scanId = service.check("admin", checkId).scanId();
+        finding(scanId, "a", "HIGH", "REACHABLE");
+        finish(scanId, "SUCCEEDED");
+
+        var gate = service.check("admin", checkId).gate();
+        assertThat(gate.result()).isEqualTo("FAIL");
+        assertThat(gate.reasons()).extracting(ReachCiCheckResponse.Reason::condition)
+                .containsExactly("REACHABLE_CRITICAL_HIGH");
+    }
+
+    @Test
+    void pullRequestUsesTheRunningImageAsBaselineAndIgnoresPurlQualifiers() {
+        // 운영에서 실행 중인 API 이미지의 스캔 (Trivy는 한정자 없이 적는다)
+        long running = scan(imageTarget(), "SUCCEEDED");
+        finding(running, "pkg:maven/test/a@1", "a", "CRITICAL", "REACHABLE");
+        service = new ReachCiCheckService(new ReachCiCheckRepository(JdbcClient.create(jdbc)), ReachTestProperties.REUSED,
+                app -> "API".equals(app) ? Optional.of(running) : Optional.empty());
+
+        var check = service.create("admin", "pr", pr("GATE")).check();
+        assertThat(service.check("admin", check.id()).baselineScanId()).isEqualTo(running);
+
+        // 레포 SBOM(cdxgen)은 같은 패키지를 ?type=jar를 붙여 적는다
+        finding(check.scanId(), "pkg:maven/test/a@1?type=jar", "a", "CRITICAL", "REACHABLE");   // 운영에 있다 → 새 것 아님
+        finding(check.scanId(), "pkg:maven/test/b@1?type=jar", "b", "HIGH", "REACHABLE");       // 이 PR로 생겼다
+        finish(check.scanId(), "SUCCEEDED");
+
+        var gate = service.check("admin", check.id()).gate();
+        assertThat(gate.newFindings().total()).isEqualTo(1);
+        assertThat(gate.result()).isEqualTo("FAIL");
+        assertThat(gate.reasons()).singleElement()
+                .satisfies(r -> assertThat(r.summary()).isEqualTo("새 Finding 중 REACHABLE인 CRITICAL·HIGH 1건"));
+    }
+
+    @Test
+    void onlyPullRequestsLookUpTheRunningImageAndAGivenBaselineWins() {
+        long image = imageTarget();
+        long running = scan(image, "SUCCEEDED");
+        long given = scan(image, "SUCCEEDED");
+        service = new ReachCiCheckService(new ReachCiCheckRepository(JdbcClient.create(jdbc)), ReachTestProperties.REUSED,
+                app -> Optional.of(running));
+
+        // 사람이 요청한 스캔·이미지 빌드는 기준을 찾지 않는다
+        long manual = service.create("admin", "m", request("MANUAL", repo(COMMIT), null, null, "GATE")).check().id();
+        assertThat(service.check("admin", manual).baselineScanId()).isNull();
+        long build = service.create("admin", "i", image("IMAGE_BUILD", "logssey/reused-api", DIGEST)).check().id();
+        assertThat(service.check("admin", build).baselineScanId()).isNull();
+
+        // 요청에 기준이 있으면 그것을 쓴다
+        var withBaseline = new ReachCiCheckRequest("PR", "service-backend", COMMIT,
+                new ReachCiCheckRequest.PullRequest(124, "main", "develop"), repo(COMMIT), null, "GATE", given);
+        assertThat(service.check("admin", service.create("admin", "p", withBaseline).check().id()).baselineScanId())
+                .isEqualTo(given);
+    }
+
+    @Test
     void newReachableHighFailsTheGateButReportOnlyAlwaysPasses() {
         long gateCheck = service.create("admin", "g", request("MANUAL", repo(COMMIT), null, null, "GATE")).check().id();
         long reportCheck = service.create("admin", "r", request("MANUAL", repo("d".repeat(40)), null, null, null)).check().id();
@@ -255,6 +377,54 @@ class ReachCiCheckServiceTest {
         assertThat(report.gate().exitCode()).isZero();
         assertThat(report.gate().reasons()).extracting(ReachCiCheckResponse.Reason::condition)
                 .containsExactly("REACHABLE_CRITICAL_HIGH", "UNKNOWN_ANY");
+    }
+
+    @Test
+    void aFailedCheckGivesItsKeyToANewCheckSoARerunScansAgain() {
+        long first = service.create("admin", "pr-1-abc", pr("REPORT_ONLY")).check().id();
+        long firstScan = service.check("admin", first).scanId();
+        finish(firstScan, "FAILED");
+
+        // the same build run again (a re-run, or REACH_POLICY changed in between): a new check, not the FAILED one
+        var again = service.create("admin", "pr-1-abc", pr("GATE"));
+        assertThat(again.replayed()).isFalse();
+        assertThat(again.check().id()).isNotEqualTo(first);
+        assertThat(again.check().scanStatus()).isEqualTo("QUEUED");
+        assertThat(again.check().policy()).isEqualTo("GATE");
+        // the failed check and its scan stay as they were, only the key moved on
+        assertThat(service.check("admin", first).scanStatus()).isEqualTo("FAILED");
+        assertThat(jdbc.queryForObject("SELECT idempotency_key FROM reach_ci_checks WHERE check_id = ?", String.class, first))
+                .isEqualTo("released-" + first);
+
+        // the new one replays as usual while it is not FAILED
+        assertThat(service.create("admin", "pr-1-abc", pr("GATE")).check().id()).isEqualTo(again.check().id());
+        assertError(() -> service.create("admin", "pr-1-abc", pr("REPORT_ONLY")), ErrorCode.CONFLICT);
+        finish(again.check().scanId(), "SUCCEEDED");
+        assertThat(service.create("admin", "pr-1-abc", pr("GATE")).replayed()).isTrue();
+    }
+
+    @Test
+    void scansWithoutAResultForTooLongAreFailed() {
+        long stale = service.create("admin", "old", pr("GATE")).check().id();
+        long fresh = service.create("admin", "new", pr("GATE")).check().id();
+        long done = service.create("admin", "done", pr("GATE")).check().id();
+        long staleScan = service.check("admin", stale).scanId();
+        long doneScan = service.check("admin", done).scanId();
+        jdbc.update("UPDATE reach_scans SET created_at = now() - interval '3 hours' WHERE scan_id IN (?, ?)", staleScan, doneScan);
+        finish(doneScan, "SUCCEEDED");
+        // a scan without a CI check (not from a runner) is not touched
+        long loose = scan(imageTarget(), "QUEUED");
+        jdbc.update("UPDATE reach_scans SET created_at = now() - interval '3 hours' WHERE scan_id = ?", loose);
+
+        assertThat(service.failStaleScans(java.time.Duration.ofHours(2))).isEqualTo(1);
+        assertThat(jdbc.queryForMap("SELECT scan_status, failure_code, finished_at IS NOT NULL AS finished FROM reach_scans WHERE scan_id = ?",
+                staleScan)).containsEntry("scan_status", "FAILED").containsEntry("failure_code", "RUNNER_NO_RESULT")
+                .containsEntry("finished", true);
+        assertThat(service.check("admin", fresh).scanStatus()).isEqualTo("QUEUED");
+        assertThat(service.check("admin", done).scanStatus()).isEqualTo("SUCCEEDED");
+        assertThat(jdbc.queryForObject("SELECT scan_status FROM reach_scans WHERE scan_id = ?", String.class, loose)).isEqualTo("QUEUED");
+        // and a re-run of that build gets a new check
+        assertThat(service.create("admin", "old", pr("GATE")).replayed()).isFalse();
     }
 
     @Test
@@ -352,13 +522,21 @@ class ReachCiCheckServiceTest {
                         "commit", "", "path", "chat-server", "image_repository", "logssey/reused-chat",
                         "image_digest", DIGEST)));
 
-        // 같은 키로 다시 보내면 띄우지 않는다. 재대조는 러너가 아직 못 해 띄우지 않는다(QUEUED로 남는다)
-        service.createScan("admin", "d1", new ReachScanRequest(repo, null, null));
-        long done = scan(scanTarget(service.createScan("admin", "d3", new ReachScanRequest(repo, null, null))
-                .check().scanId()), "SUCCEEDED");
+        // 같은 키로 다시 보내면 띄우지 않는다
         dispatcher.calls.clear();
-        service.createScan("admin", "d4", new ReachScanRequest(null, done, null));
+        service.createScan("admin", "d1", new ReachScanRequest(repo, null, null));
         assertThat(dispatcher.calls).isEmpty();
+
+        // 재대조는 원래 스캔의 대상으로 띄우고 rescan_of를 더한다(러너가 보관한 SBOM으로 대조)
+        long done = scan(scanTarget(imageCheckScan(imageCheck)), "SUCCEEDED");
+        long rescan = service.createScan("admin", "d4", new ReachScanRequest(null, done, null)).check().id();
+        assertThat(dispatcher.calls).containsExactly(
+                new Call("service-backend", Map.of("check_id", Long.toString(rescan), "target_type", "IMAGE",
+                        "commit", "", "path", "chat-server", "image_repository", "logssey/reused-chat",
+                        "image_digest", DIGEST, "rescan_of", Long.toString(done))));
+        assertThat(jdbc.queryForObject("SELECT repository FROM reach_ci_checks WHERE check_id = ?", String.class, rescan))
+                .isEqualTo("service-backend");
+        dispatcher.calls.clear();
 
         // 레포가 없는 이미지 앱은 띄울 워크플로가 없다 → 422 (트랜잭션은 Spring이 되돌린다. 통합 테스트에서 본다)
         var ext = new ReachTargetRequest("IMAGE", null, null, new ReachTargetRequest.Image("vendor/ext", DIGEST));
@@ -369,6 +547,116 @@ class ReachCiCheckServiceTest {
         dispatcher.enabled = false;
         service.createScan("admin", "d6", new ReachScanRequest(ext, null, null));
         assertThat(dispatcher.calls).isEmpty();
+    }
+
+    @Test
+    void scanRequestDispatchesNpmAppsToo() {
+        var dispatcher = new RecordingDispatcher();
+        service = new ReachCiCheckService(new ReachCiCheckRepository(JdbcClient.create(jdbc)),
+                ReachTestProperties.REUSED, dispatcher);   // WEB·CHAT은 npm
+
+        // npm 앱도 띄운다. 러너가 앱 jar가 없으면 L2만 건너뛰고 SBOM·CVE 대조로 올린다(reach-scan.sh, bundle.py --no-l2)
+        var chatImage = new ReachTargetRequest("IMAGE", null, null, new ReachTargetRequest.Image("logssey/reused-chat", DIGEST));
+        long check = service.createScan("admin", "n1", new ReachScanRequest(chatImage, null, null)).check().id();
+        assertThat(dispatcher.calls).containsExactly(new Call("service-backend", Map.of("check_id", Long.toString(check),
+                "target_type", "IMAGE", "commit", "", "path", "chat-server", "image_repository", "logssey/reused-chat",
+                "image_digest", DIGEST)));
+    }
+
+    @Test
+    void dailyRescanCreatesASystemScheduleCheckOncePerDayAndDispatchesIt() {
+        var dispatcher = new RecordingDispatcher();
+        service = new ReachCiCheckService(new ReachCiCheckRepository(JdbcClient.create(jdbc)),
+                ReachTestProperties.REUSED, dispatcher);
+        long target = imageTarget();
+        long done = scan(target, "SUCCEEDED");
+        var day = java.time.LocalDate.of(2026, 11, 18);
+
+        var created = service.createRescan(done, day).orElseThrow();
+        assertThat(created.replayed()).isFalse();
+        var check = service.check("admin", created.check().id());
+        assertThat(check.mode()).isEqualTo("SCHEDULE");
+        assertThat(check.repository()).isEqualTo("service-backend");
+        assertThat(scanTarget(check.scanId())).isEqualTo(target);
+        assertThat(jdbc.queryForMap("SELECT trigger_type, rescan_of_scan_id, requested_by_kind FROM reach_scans "
+                + "WHERE scan_id = ?", check.scanId()))
+                .containsEntry("trigger_type", "SCHEDULE").containsEntry("rescan_of_scan_id", done)
+                .containsEntry("requested_by_kind", "SYSTEM");
+        assertThat(jdbc.queryForObject("SELECT idempotency_scope FROM reach_ci_checks WHERE check_id = ?", String.class,
+                check.id())).isEqualTo("SYSTEM");
+        assertThat(dispatcher.calls).containsExactly(new Call("service-backend", Map.of("check_id",
+                Long.toString(check.id()), "target_type", "IMAGE", "commit", "", "path", "",
+                "image_repository", "logssey/reused-api", "image_digest", "sha256:main", "rescan_of", Long.toString(done))));
+
+        // 같은 날 다시 부르면 그 검사를 주고 띄우지 않는다. 다음 날은 새로
+        dispatcher.calls.clear();
+        assertThat(service.createRescan(done, day).orElseThrow().replayed()).isTrue();
+        assertThat(dispatcher.calls).isEmpty();
+        assertThat(service.createRescan(done, day.plusDays(1)).orElseThrow().replayed()).isFalse();
+        assertThat(dispatcher.calls).hasSize(1);
+
+        // 안 끝난 스캔은 재대조하지 않는다(422). 띄우는 설정이 없으면 만들지 않는다
+        long running = scan(target, "RUNNING");
+        assertError(() -> service.createRescan(running, day), ErrorCode.UNPROCESSABLE);
+        dispatcher.enabled = false;
+        long before = jdbc.queryForObject("SELECT count(*) FROM reach_ci_checks", Long.class);
+        assertThat(service.createRescan(done, day.plusDays(2))).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM reach_ci_checks", Long.class)).isEqualTo(before);
+    }
+
+    @Test
+    void rescanSbomIsTheStoredSbomOfTheOriginalScan() {
+        long target = imageTarget();
+        long done = scan(target, "SUCCEEDED");
+        var plain = service.create("admin", "p", image("MANUAL", "logssey/reused-api", DIGEST)).check();
+        var rescan = service.create("admin", "r", request("SCHEDULE", null, done, null)).check();
+
+        // 원래 스캔에 보관한 SBOM이 없으면(보관 전 스캔) 404, 재대조가 아닌 검사도 404, 없는 검사도 404
+        assertError(() -> service.sbom("admin", rescan.id()), ErrorCode.NOT_FOUND);
+        assertError(() -> service.sbom("admin", plain.id()), ErrorCode.NOT_FOUND);
+        assertError(() -> service.sbom("admin", 999), ErrorCode.NOT_FOUND);
+        assertError(() -> service.sbom(null, rescan.id()), ErrorCode.UNAUTHENTICATED);
+
+        byte[] gzip = {31, -117, 8, 0, 1, 2, 3};
+        jdbc.update("INSERT INTO reach_sboms (scan_id, content_gzip, content_sha256, component_count) VALUES (?, ?, ?, 3)",
+                done, gzip, "0".repeat(64));
+        assertThat(service.sbom("admin", rescan.id())).isEqualTo(gzip);
+    }
+
+    @Test
+    void rescanL3RecordIsTheNewestStoredRecordOfTheSameImage() {
+        long target = imageTarget();
+        long first = scan(target, "SUCCEEDED");
+        long second = scan(target, "SUCCEEDED");
+        var plain = service.create("admin", "p", image("MANUAL", "logssey/reused-api", DIGEST)).check();
+        var rescan = service.create("admin", "r", request("SCHEDULE", null, second, null)).check();
+
+        // 그 이미지를 띄워 본 적이 없으면(또는 기록이 정리됐으면) 404, 재대조가 아닌 검사도 404, 없는 검사도 404
+        assertError(() -> service.l3Record("admin", rescan.id()), ErrorCode.NOT_FOUND);
+        assertError(() -> service.l3Record("admin", plain.id()), ErrorCode.NOT_FOUND);
+        assertError(() -> service.l3Record("admin", 999), ErrorCode.NOT_FOUND);
+        assertError(() -> service.l3Record(null, rescan.id()), ErrorCode.UNAUTHENTICATED);
+
+        // 재대조하는 스캔이 아니라 같은 이미지의 다른 스캔에 보관돼 있어도 준다. 여러 개면 가장 새것
+        byte[] old = {(byte) 0xFD, '7', 'z', 'X', 'Z', 0, 1};
+        byte[] newest = {(byte) 0xFD, '7', 'z', 'X', 'Z', 0, 2};
+        for (var entry : Map.of(first, old, second, newest).entrySet()) {
+            jdbc.update("INSERT INTO reach_l3_runs (scan_id, run_status, scenario, observation_method, observed_at) "
+                    + "VALUES (?, 'SUCCEEDED', 's', 'COVERAGE', now())", entry.getKey());
+            jdbc.update("INSERT INTO reach_l3_records (scan_id, content, content_sha256, byte_size) VALUES (?, ?, ?, 7)",
+                    entry.getKey(), entry.getValue(), "0".repeat(64));
+        }
+        assertThat(service.l3Record("admin", rescan.id())).isEqualTo(newest);
+        // 다른 이미지의 기록은 주지 않는다
+        long other = jdbc.queryForObject("INSERT INTO reach_targets (target_type, app, image_repository, image_digest, display_name) "
+                + "VALUES ('IMAGE', 'API', 'logssey/reused-api', 'sha256:other', 'api') RETURNING target_id", Long.class);
+        long otherScan = scan(other, "SUCCEEDED");
+        var otherRescan = service.create("admin", "o", request("SCHEDULE", null, otherScan, null)).check();
+        assertError(() -> service.l3Record("admin", otherRescan.id()), ErrorCode.NOT_FOUND);
+    }
+
+    private static long imageCheckScan(long checkId) {
+        return jdbc.queryForObject("SELECT scan_id FROM reach_ci_checks WHERE check_id = ?", Long.class, checkId);
     }
 
     private record Call(String repository, Map<String, String> inputs) {}
@@ -511,13 +799,17 @@ class ReachCiCheckServiceTest {
 
     /** 스캔 대상의 Finding + 그 스캔의 도구 판정 + 검토 전 검토 한 벌. purl은 component로 정한다 */
     private static void finding(long scanId, String component, String severity, String status) {
+        finding(scanId, "pkg:maven/test/" + component + "@1", component, severity, status);
+    }
+
+    private static void finding(long scanId, String purl, String component, String severity, String status) {
         long id = jdbc.queryForObject("""
                 INSERT INTO reach_findings (target_id, purl, component_name, component_version, ecosystem,
                                             vulnerability_id, severity, sources, last_scan_id, first_seen_at, last_seen_at)
-                SELECT target_id, 'pkg:maven/test/' || ? || '@1', ?, '1', 'maven', 'CVE-2026-1', ?, ARRAY['TRIVY'],
+                SELECT target_id, ?, ?, '1', 'maven', 'CVE-2026-1', ?, ARRAY['TRIVY'],
                        scan_id, now(), now()
                 FROM reach_scans WHERE scan_id = ? RETURNING finding_id
-                """, Long.class, component, component, severity, scanId);
+                """, Long.class, purl, component, severity, scanId);
         boolean notAnalyzed = status.equals("NOT_ANALYZED");
         jdbc.update("""
                 INSERT INTO reach_verdicts (finding_id, scan_id, status, method, not_analyzed_reason, summary,

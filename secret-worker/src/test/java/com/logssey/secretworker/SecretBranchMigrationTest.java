@@ -14,10 +14,10 @@ class SecretBranchMigrationTest {
         try(var pg=new com.logssey.secret.testing.SecretTestPostgres()) {
             pg.start();
             var source=new DriverManagerDataSource(pg.getJdbcUrl(),pg.getUsername(),pg.getPassword());
-            Flyway.configure().dataSource(source).target("52").load().migrate();
+            Flyway.configure().dataSource(source).target("61").load().migrate();
             var jdbc=new JdbcTemplate(source);
             assertThatThrownBy(() -> new SecretSourceSchemaCompatibility(jdbc).afterPropertiesSet())
-                    .hasMessage("SECRET_SOURCE_SCHEMA_REQUIRES_V55");
+                    .hasMessage("SECRET_SOURCE_SCHEMA_REQUIRES_V65");
             long connection=jdbc.queryForObject("INSERT INTO secret_connections(provider,display_name,auth_ref,status,scope_version) VALUES('GITHUB','Legacy','unused','ACTIVE',1) RETURNING connection_id",Long.class);
             long main=scope(jdbc,connection,"main"),feature=scope(jdbc,connection,"feature");
             long mainRun=run(jdbc,connection),featureRun=run(jdbc,connection);

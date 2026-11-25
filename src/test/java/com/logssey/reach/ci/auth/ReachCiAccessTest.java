@@ -29,8 +29,9 @@ class ReachCiAccessTest {
     void pullRequestCheckFromThePullRequestEvent() {
         allowed(() -> ACCESS.authorizeCreate(PR_123, pr("service-backend", 123)));
         allowed(() -> ACCESS.authorizeCreate(PR_123, pr("Logssey/service-backend", 123)));   // 소유자를 붙여 와도 된다
-        allowed(() -> ACCESS.authorizeCreate(PR_123, pr("SERVICE-BACKEND", null)));          // 대소문자, PR 번호 없음
+        allowed(() -> ACCESS.authorizeCreate(PR_123, pr("SERVICE-BACKEND", 123)));           // 대소문자
 
+        forbidden(() -> ACCESS.authorizeCreate(PR_123, pr("service-backend", null)));         // PR 번호 없음: 어느 PR인지 모른다
         forbidden(() -> ACCESS.authorizeCreate(PR_123, pr("service-backend", 124)));          // 다른 PR 번호
         forbidden(() -> ACCESS.authorizeCreate(caller("Logssey/service-backend", "push", "refs/heads/main"),
                 pr("service-backend", 123)));                                                // PR 이벤트가 아님
@@ -52,6 +53,8 @@ class ReachCiAccessTest {
         forbidden(() -> ACCESS.authorizeCreate(caller("Logssey/service-backend", "push", "refs/heads/develop"),
                 image("logssey/reused-api", null)));
         forbidden(() -> ACCESS.authorizeCreate(PR_123, image("logssey/reused-api", null)));
+        forbidden(() -> ACCESS.authorizeCreate(caller("Logssey/service-backend", "pull_request_target", "refs/heads/main"),
+                image("logssey/reused-api", null)));                                         // ref는 기본 브랜치지만 PR이 계기
         forbidden(() -> ACCESS.authorizeCreate(MAIN, image("logssey/reused-web", null)));     // 다른 레포의 이미지
         forbidden(() -> ACCESS.authorizeCreate(MAIN, image("logssey/unknown", null)));        // 등록 안 된 이미지
         forbidden(() -> ACCESS.authorizeCreate(MAIN, image("logssey/reused-api", "WEB")));    // 다른 레포의 앱
@@ -76,15 +79,54 @@ class ReachCiAccessTest {
 
     @Test
     void resultsOnlyForTheRepositoryThatCreatedTheCheck() {
-        allowed(() -> ACCESS.requireOwner(PR_123, owner("CI:Logssey/service-backend", "PR", "service-backend")));
+        allowed(() -> ACCESS.requireOwner(PR_123, owner("CI:Logssey/service-backend", "PR", "service-backend", 123)));
         allowed(() -> ACCESS.requireOwner(MAIN, owner("CI:logssey/Service-Backend", "IMAGE_BUILD", "service-backend")));
 
-        forbidden(() -> ACCESS.requireOwner(PR_123, owner("CI:Logssey/service-frontend", "PR", "service-frontend")));
+        forbidden(() -> ACCESS.requireOwner(PR_123, owner("CI:Logssey/service-frontend", "PR", "service-frontend", 123)));
         forbidden(() -> ACCESS.requireOwner(PR_123, owner("USER:1", "PR", "service-backend")));   // 사람이 만든 PR 검사
         assertThatThrownBy(() -> ACCESS.requireOwner(PR_123, Optional.empty()))
                 .isInstanceOfSatisfying(ApiException.class, e -> org.assertj.core.api.Assertions
                         .assertThat(e.errorCode()).isEqualTo(ErrorCode.NOT_FOUND));
-        forbidden(() -> ReachCiAccess.closed().requireOwner(PR_123, owner("CI:Logssey/service-backend", "PR", null)));
+        forbidden(() -> ReachCiAccess.closed().requireOwner(PR_123, owner("CI:Logssey/service-backend", "PR", null, 123)));
+    }
+
+    @Test
+    void ciChecksOnlyTakeResultsFromTheSameKindOfRun() {
+        // 같은 레포라도 만들 때와 같은 규칙: PR 토큰은 자기 PR 검사에만, 기본 브랜치 검사는 기본 브랜치 실행만
+        var imageCheck = owner("CI:Logssey/service-backend", "IMAGE_BUILD", "service-backend");
+        forbidden(() -> ACCESS.requireOwner(PR_123, imageCheck));                                 // PR 토큰이 운영 이미지 결과를 올림
+        forbidden(() -> ACCESS.requireOwner(caller("Logssey/service-backend", "pull_request_target", "refs/heads/main"),
+                imageCheck));
+        forbidden(() -> ACCESS.requireOwner(caller("Logssey/service-backend", "workflow_run", "refs/heads/feature"),
+                imageCheck));                                                                     // 기본 브랜치가 아님
+
+        var prCheck = owner("CI:Logssey/service-backend", "PR", "service-backend", 123);
+        forbidden(() -> ACCESS.requireOwner(caller("Logssey/service-backend", "pull_request", "refs/pull/124/merge"),
+                prCheck));                                                                        // 다른 PR의 토큰
+        forbidden(() -> ACCESS.requireOwner(MAIN, prCheck));                                      // PR 검사는 그 PR 실행만
+        forbidden(() -> ACCESS.requireOwner(PR_123, owner("CI:Logssey/service-backend", "PR", "service-backend")));   // 번호 없는 옛 검사
+    }
+
+    @Test
+    void onlyTheReachWorkflowOfTheRepository() {
+        var ciYml = new ReachCiCaller("Logssey/service-backend", "repo:Logssey/service-backend:test", "workflow_run",
+                "refs/heads/main", "Logssey/service-backend/.github/workflows/ci.yml@refs/heads/main");
+        var otherRepo = new ReachCiCaller("Logssey/service-backend", "repo:Logssey/service-backend:test", "workflow_run",
+                "refs/heads/main", "Logssey/service-frontend/.github/workflows/reach.yml@refs/heads/main");
+        var none = new ReachCiCaller("Logssey/service-backend", "repo:Logssey/service-backend:test", "workflow_run",
+                "refs/heads/main", null);
+        var upperCase = new ReachCiCaller("Logssey/service-backend", "repo:Logssey/service-backend:test", "workflow_run",
+                "refs/heads/main", "logssey/Service-Backend/.github/workflows/reach.yml@refs/heads/main");
+        var imageCheck = owner("CI:Logssey/service-backend", "IMAGE_BUILD", "service-backend");
+
+        for (var caller : new ReachCiCaller[] {ciYml, otherRepo, none}) {
+            forbidden(() -> ACCESS.authorizeCreate(caller, image("logssey/reused-api", null)));   // 같은 레포의 다른 워크플로
+            forbidden(() -> ACCESS.requireOwner(caller, imageCheck));
+        }
+        allowed(() -> ACCESS.authorizeCreate(upperCase, image("logssey/reused-api", null)));     // 레포 이름 대소문자
+        forbidden(() -> ACCESS.requireOwner(new ReachCiCaller("Logssey/service-backend", "s", "workflow_dispatch",
+                "refs/heads/main", "Logssey/service-backend/.github/workflows/ci.yml@refs/heads/main"),
+                owner("USER:1", "MANUAL", "service-backend")));                                 // 대시보드 요청도 Reach 워크플로만
     }
 
     @Test
@@ -104,12 +146,29 @@ class ReachCiAccessTest {
                 owner("USER:1", "MANUAL", "dashboard-backend")));                                        // 감시 대상이 아닌 레포
     }
 
-    private static Optional<ReachCiAccess.CheckOwner> owner(String scope, String mode, String repository) {
-        return Optional.of(new ReachCiAccess.CheckOwner(scope, mode, repository));
+    @Test
+    void dailyRescanOfTheDashboardIsUploadedByTheDispatchedRunOfItsRepository() {
+        var dispatched = caller("Logssey/service-backend", "workflow_dispatch", "refs/heads/main");
+        allowed(() -> ACCESS.requireOwner(dispatched, owner("SYSTEM", "SCHEDULE", "service-backend")));
+
+        forbidden(() -> ACCESS.requireOwner(dispatched, owner("SYSTEM", "SCHEDULE", "service-frontend")));   // 다른 레포
+        forbidden(() -> ACCESS.requireOwner(dispatched, owner("SYSTEM", "MANUAL", "service-backend")));      // 예약 작업은 SCHEDULE만
+        forbidden(() -> ACCESS.requireOwner(dispatched, owner("USER:1", "SCHEDULE", "service-backend")));    // 사람이 만든 SCHEDULE 검사
+        forbidden(() -> ACCESS.requireOwner(MAIN, owner("SYSTEM", "SCHEDULE", "service-backend")));          // dispatch가 아님
     }
 
+    private static Optional<ReachCiAccess.CheckOwner> owner(String scope, String mode, String repository) {
+        return owner(scope, mode, repository, null);
+    }
+
+    private static Optional<ReachCiAccess.CheckOwner> owner(String scope, String mode, String repository, Integer prNumber) {
+        return Optional.of(new ReachCiAccess.CheckOwner(scope, mode, repository, prNumber));
+    }
+
+    /** 그 레포의 Reach 워크플로가 받은 토큰 */
     private static ReachCiCaller caller(String repository, String event, String ref) {
-        return new ReachCiCaller(repository, "repo:" + repository + ":test", event, ref);
+        return new ReachCiCaller(repository, "repo:" + repository + ":test", event, ref,
+                repository + "/.github/workflows/reach.yml@" + ref);
     }
 
     private static ReachCiCheckRequest pr(String repository, Integer number) {

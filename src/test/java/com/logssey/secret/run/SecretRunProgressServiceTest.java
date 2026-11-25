@@ -206,6 +206,39 @@ class SecretRunProgressServiceTest {
         assertThat(jdbc.queryForObject("SELECT request_sent_at IS NOT NULL FROM secret_validation_attempts WHERE attempt_id=?", Boolean.class, next)).isTrue();
     }
 
+    @Test void blockedCandidatesOverrideMisleadingNoCandidatesAggregate() {
+        claim();
+        for (int i = 0; i < 4; i++) validationAttempt(i, "UNCHECKED", "VALIDATOR_NOT_ALLOWED");
+        jdbc.queryForObject("SELECT secret_record_execution_event(?,'11111111-1111-1111-1111-111111111111'::uuid,1,?,'VALIDATION','STAGE_SUMMARY','SKIPPED',NULL,'NO_CANDIDATES',NULL,NULL,1,'legacy-summary')", Boolean.class, job, scope);
+        finishWithSkippedValidation();
+        var result = read(0, 100);
+        assertThat(result.validationSummary().uncheckedReasons()).containsExactly(
+                new SecretRunProgress.UncheckedReason("VALIDATOR_NOT_ALLOWED", 4));
+        assertThat(result.stages().stream().filter(s -> s.key().equals("VALIDATION"))).singleElement()
+                .satisfies(s -> assertThat(s.reasonCode()).isEqualTo("VALIDATOR_NOT_ALLOWED"));
+        assertThat(result.validationSummary().newRequestCount()).isZero();
+    }
+
+    @Test void allSkipReasonsRemainVisibleAndPreviousAttemptDoesNotLeakIntoRetry() {
+        claim();
+        validationAttempt(1, "UNCHECKED", "DISABLED");
+        validationAttempt(2, "UNCHECKED", "SOURCE_GUARD_BLOCKED");
+        finishWithSkippedValidation();
+        assertThat(read(0, 100).validationSummary().uncheckedReasons()).containsExactly(
+                new SecretRunProgress.UncheckedReason("DISABLED", 1),
+                new SecretRunProgress.UncheckedReason("SOURCE_GUARD_BLOCKED", 1));
+        assertThat(read(0, 100).stages().stream().filter(s -> s.key().equals("VALIDATION"))).singleElement()
+                .satisfies(s -> assertThat(s.reasonCode()).isEqualTo("MULTIPLE_VALIDATION_REASONS"));
+        jdbc.update("UPDATE secret_jobs SET attempt_no=2,lease_generation=2 WHERE job_id=?", job);
+        assertThat(read(0, 100).validationSummary().uncheckedReasons()).isEmpty();
+    }
+
+    private void finishWithSkippedValidation() {
+        jdbc.update("UPDATE secret_run_scopes SET validation_stage_status='SKIPPED',validation_reason_code='NO_CANDIDATES' WHERE run_id=?", run);
+        jdbc.update("UPDATE secret_jobs SET status='SUCCEEDED',lease_owner=NULL,lease_until=NULL,finished_at=clock_timestamp() WHERE job_id=?", job);
+        jdbc.update("UPDATE secret_scan_runs SET collection_status='SUCCEEDED',detection_status='SUCCEEDED',validation_status='SKIPPED',result_status='SUCCEEDED',finished_at=clock_timestamp() WHERE run_id=?", run);
+    }
+
     private long validationAttempt(int index, String result, String reason) {
         long credential = jdbc.queryForObject("""
                 INSERT INTO secret_credential_sets(issuer,credential_type,component_state,fingerprint,fingerprint_key_version,first_seen_at,last_seen_at)

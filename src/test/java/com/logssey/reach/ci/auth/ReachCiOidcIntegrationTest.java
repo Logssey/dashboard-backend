@@ -193,7 +193,19 @@ class ReachCiOidcIntegrationTest {
 
     @Test
     void imageCheckFromTheDefaultBranch() throws Exception {
-        expect(202, create(this::mainBranch, imageBody("logssey/reused-api")));
+        var created = mvc.perform(create(this::mainBranch, imageBody("logssey/reused-api")))
+                .andExpect(status().isAccepted()).andReturn();
+        long checkId = JSON.readTree(created.getResponse().getContentAsString()).get("id").asLong();
+        // 같은 레포라도 PR 토큰은 기본 브랜치 이미지 검사를 보거나 올리지 못한다 (PR 코드가 운영 이미지 판정을 바꾸지 못하게)
+        expect(403, read(checkId, prClaims()));
+        expect(403, upload(checkId, prClaims()));
+        // 같은 레포의 다른 워크플로가 받은 토큰도 안 된다
+        var ciYml = prClaims();
+        mainBranch(ciYml);
+        ciYml.claim("job_workflow_ref", "Logssey/service-backend/.github/workflows/ci.yml@refs/heads/main");
+        expect(403, upload(checkId, ciYml));
+        expect(403, create(claims -> { mainBranch(claims); claims.claim("job_workflow_ref", null); },
+                imageBody("logssey/reused-api")));
         expect(403, create(claims -> claims.claim("ref", "refs/heads/develop").claim("event_name", "push"),
                 imageBody("logssey/reused-api")));
         expect(403, create(this::mainBranch, imageBody("logssey/reused-web")));   // 다른 레포의 이미지
@@ -256,17 +268,20 @@ class ReachCiOidcIntegrationTest {
                 .claim("repository", "Logssey/service-backend")
                 .claim("repository_owner", "Logssey")
                 .claim("event_name", "pull_request")
-                .claim("ref", "refs/pull/123/merge");
+                .claim("ref", "refs/pull/123/merge")
+                .claim("job_workflow_ref", "Logssey/service-backend/.github/workflows/reach.yml@refs/pull/123/merge");
     }
 
     private JWTClaimsSet.Builder frontendClaims() {
         return prClaims().subject("repo:Logssey/service-frontend:pull_request")
-                .claim("repository", "Logssey/service-frontend");
+                .claim("repository", "Logssey/service-frontend")
+                .claim("job_workflow_ref", "Logssey/service-frontend/.github/workflows/reach.yml@refs/pull/123/merge");
     }
 
     private void mainBranch(JWTClaimsSet.Builder claims) {
         claims.subject("repo:Logssey/service-backend:ref:refs/heads/main")
-                .claim("event_name", "workflow_run").claim("ref", "refs/heads/main");
+                .claim("event_name", "workflow_run").claim("ref", "refs/heads/main")
+                .claim("job_workflow_ref", "Logssey/service-backend/.github/workflows/reach.yml@refs/heads/main");
     }
 
     private static String sign(RSAKey key, JWTClaimsSet.Builder claims) throws JOSEException {

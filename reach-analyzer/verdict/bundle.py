@@ -4,6 +4,7 @@
     python3 bundle.py --sbom sbom.cdx.json --trivy trivy.json [--grype grype.json] \
         --reach reach-result.json --verdicts verdicts.json \
         --spec vuln-functions.json --rules rules.json [--jar app.jar] \
+        [--l3 l3-result.json [--l3-record l3-record.tar.xz] | --l3-error "..."] \
         [--tool name=value ...] [--stage name=status[:seconds] ...] --out bundle.json.gz
 
     # the runner failed before analysis: only tools, stages and failure are sent
@@ -11,15 +12,25 @@
         [--tool name=value ...] [--stage name=status[:seconds] ...] --out bundle.json.gz
 
 A target without Java code (npm, OS packages only) has no L2 run: leave out --reach and --verdicts and
-every match is NOT_ANALYZED. Maven matches without --reach/--verdicts are an error (the L2 step was skipped).
+every match is NOT_ANALYZED. Maven matches without --reach/--verdicts are an error (the L2 step was skipped),
+unless --no-l2 says the runner found no app jar to analyse (an image or repo path without one): then they are
+NOT_ANALYZED too (NO_VULN_FUNCTION_DATA when the CVE has no data, otherwise UNANALYZED_COPY).
 
 One bundle item per scanner match (purl x CVE). Matches that verdict.py analysed get its verdict and
-evidence; the rest are NOT_ANALYZED with the reason (OS package, unsupported ecosystem, another copy of
-an analysed CVE, no vuln function data). Field names follow the API spec 3-3, 3-4, 3-5 (API-13 bundle).
+evidence, and so does a match of the same CVE on another jar of the data coordinate's groupId and of the
+version the analyser read (scanners disagree on which jar of a project a CVE belongs to, see same_group; the
+server links L3 results to such a match only because it has a verdict). The rest are NOT_ANALYZED with the
+reason (OS package, unsupported ecosystem, a copy of an analysed CVE in a package of another groupId or
+version, no vuln function data). Field names follow the API spec 3-3, 3-4, 3-5 (API-13 bundle).
+--l3 adds the L3 run (l3.py result plus the run summary of l3-run.sh) as the bundle's "l3" object, as is;
+--l3-error adds {"error": "..."} when the L3 run failed. Either way the scan itself is not affected.
+--l3-record adds the execution record of that run (l3_runner.py pack) as "l3Record", base64 in JSON; the
+dashboard keeps it so a rescan can match it again without running the app.
 An output path ending in .gz is gzip-compressed (API-13 needs Content-Encoding: gzip).
 No third-party dependencies (Python 3.8+).
 """
 import argparse
+import base64
 import datetime
 import gzip
 import hashlib
@@ -153,8 +164,10 @@ def merge_matches(matches):
 # ---------------------------------------------------------------- verdicts
 
 class Context:
-    def __init__(self, reach, verdicts, spec, rules):
+    def __init__(self, reach, verdicts, spec, rules, no_app_jar=False):
         self.l2 = reach is not None
+        # the runner found no app jar (no /app/app.jar in the image, no Gradle build at the repo path)
+        self.no_app_jar = no_app_jar
         reach = reach or {}
         verdicts = verdicts or {}
         self.reach_by_cve = {c["cve"]: c for c in reach.get("cves", [])}
@@ -200,9 +213,16 @@ def verdict_for(match, ctx, analysed_at):
         return not_analyzed("OS_PACKAGE", "OS 패키지라 Java 호출 그래프로 판정하지 않았다.", ctx, analysed_at)
     if ptype != "maven":
         return not_analyzed("UNSUPPORTED_ECOSYSTEM", f"{ptype} 패키지는 아직 L2 판정을 지원하지 않는다.", ctx, analysed_at)
-    if not ctx.l2:
+    if not ctx.l2 and not ctx.no_app_jar:
         raise BundleError(f"{match['purl']} is a maven package but there is no L2 input (--reach, --verdicts)")
     cve, coords = match["cve"], coordinates(match["purl"])
+    if not ctx.l2:
+        # Java packages in a target whose app jar the runner did not find (e.g. a tool jar in a Node image)
+        if cve not in ctx.spec_by_cve:
+            return not_analyzed("NO_VULN_FUNCTION_DATA", "취약 함수 데이터(vuln-functions.json)가 없어 판정하지 않았다. "
+                                "이 대상에서 앱 jar를 찾지 못해 호출 경로도 분석하지 않았다.", ctx, analysed_at)
+        return not_analyzed("UNANALYZED_COPY", "이 대상에서 앱 jar를 찾지 못해(이미지에 /app/app.jar 없음 등) "
+                            "호출 경로를 분석하지 않았다. 이 패키지 사본은 판정하지 않았다.", ctx, analysed_at)
     v = ctx.analysed.get((cve, coords))
     if v is not None:
         return analysed_verdict(v, ctx, analysed_at)
@@ -214,9 +234,48 @@ def verdict_for(match, ctx, analysed_at):
     if spec_coords == coords:
         # the CVE and package are in the data, so verdict.py must have judged it: the inputs do not belong together
         raise BundleError(f"{cve} {coords} is in vuln-functions.json but not in verdicts.json")
+    v = ctx.analysed.get((cve, spec_coords))
+    if (v is not None and same_group(coords, spec_coords)
+            and (parse_purl(match["purl"])[3] or match.get("version")) in data_jar_versions(ctx.reach_by_cve.get(cve))):
+        return reported_on(coords, spec_coords, analysed_verdict(v, ctx, analysed_at))
     return not_analyzed("UNANALYZED_COPY",
                         f"같은 CVE가 다른 패키지에서도 나왔다. 취약 함수 데이터와 규칙은 {spec_coords} 기준이라 "
                         f"이 패키지 사본은 판정하지 않았다.", ctx, analysed_at)
+
+
+def same_group(a, b):
+    """org.apache.tomcat.embed:tomcat-embed-core and …:tomcat-embed-websocket: one project, released together.
+
+    Scanners do not agree on which jar of such a project a CVE belongs to (GitHub advisories, Anchore's NVD overrides),
+    and the analyser looks the vuln functions up by class name in every jar of the app and the rules look at app code
+    and config, so a match on another jar of the same groupId and the same version as the analysed data jar gets the
+    verdict of the data coordinate. Not for another version (bcprov-jdk15on 1.70 next to bcprov-jdk18on 1.81): the
+    analyser keeps the first class of a name it reads, so that verdict may be about the other jar's code. Not for
+    another groupId (Jackson 2 com.fasterxml.* for data on Jackson 3 tools.jackson.*): other code with other class
+    names. Those stay unanalysed copies.
+    Assumes the data lists the classes of every implementation in the group that an advisory names (a CVE in both
+    spring-webmvc and spring-webflux needs the sinks of both)."""
+    ga, _, _ = a.rpartition(":")
+    gb, _, _ = b.rpartition(":")
+    return bool(ga) and ga == gb
+
+
+def data_jar_versions(r):
+    """versions of the data jar the analyser read: reach-result package.jars (tomcat-embed-websocket-11.0.24.jar).
+    The analyser picks the jars by artifact name only, so data on Jackson 3 jackson-core also lists jackson-core-2.21.5.jar;
+    same_group keeps that Jackson 2 version from being used."""
+    pkg = (r or {}).get("package") or {}
+    artifact = pkg.get("artifact") or ""
+    return {j[len(artifact) + 1:-len(".jar")] for j in pkg.get("jars") or []
+            if artifact and j.startswith(artifact + "-") and j.endswith(".jar")}
+
+
+def reported_on(coords, spec_coords, verdict):
+    # fixed text, coordinates only: the evidence hash takes it, so a run-dependent value would reset reviews every scan
+    note = {"kind": "NOTE", "summary": f"스캐너는 이 CVE를 {coords}에 붙였다. 판정과 근거(패키지 도달 포함)는 같은 그룹·같은 버전의 "
+                                       f"{spec_coords} 기준이다. 취약 함수는 클래스 이름으로 앱의 모든 jar에서 찾고 규칙은 앱 코드·설정을 "
+                                       f"보므로 스캐너가 어느 jar에 붙였는지와 판정은 상관없다."}
+    return {**verdict, "evidence": [note] + verdict["evidence"]}
 
 
 def location(fact, where):
@@ -330,12 +389,17 @@ def analysed_verdict(v, ctx, analysed_at):
     if not paths and pkg.get("reachable") and pkg.get("witness_path"):
         paths.append(path_evidence(pkg["witness_path"], "PACKAGE", f"패키지 {pkg.get('artifact')}", not pkg.get("reachable_strong")))
 
+    if v.get("config_unseen"):
+        # verdict.py turned an unreachable into unknown: the rule needs config files that could not be read
+        notes.append({"kind": "NOTE", "summary": "앱 설정 파일(소스 레포, 앱 jar 안)을 읽지 못해 규칙이 보는 설정을 확인하지 못했다. "
+                                                 "도달 불가가 아니라 미확인으로 둔다"})
     rule_id = f"RULE-{cve}" if cve in ctx.rules else None
     evidence = facts + notes
     if rule_id:
-        matched = CLAUSES.get(decided.get("clause"), "DEFAULT")
+        matched = "UNKNOWN" if v.get("config_unseen") else CLAUSES.get(decided.get("clause"), "DEFAULT")
         evidence.append({"kind": "RULE", "ruleId": rule_id, "matchedCondition": matched,
-                         "summary": (f"기본값({STATUS_KO.get(status, status)})이 적용됨: 어느 조건에도 맞지 않음" if matched == "DEFAULT"
+                         "summary": ("설정 파일을 읽지 못해 미확인으로 둠" if v.get("config_unseen")
+                                     else f"기본값({STATUS_KO.get(status, status)})이 적용됨: 어느 조건에도 맞지 않음" if matched == "DEFAULT"
                                      else f"{STATUS_KO.get(matched, matched)} 조건에 맞음")})
     evidence += paths
 
@@ -431,12 +495,18 @@ def build(a):
             raise BundleError(f"--{name} is required unless --failure-code is given")
     if bool(a.reach) != bool(a.verdicts):
         raise BundleError("--reach and --verdicts go together (both from the L2 step, or neither)")
+    if a.no_l2 and (a.reach or a.jar):
+        raise BundleError("--no-l2 means no app jar was found; leave out --reach, --verdicts and --jar")
+    if a.l3 and a.l3_error:
+        raise BundleError("--l3 or --l3-error, not both")
+    if a.l3_record and not a.l3:
+        raise BundleError("--l3-record goes with --l3")
     sbom, trivy = load(a.sbom), load(a.trivy)
     reach = load(a.reach) if a.reach else None
     verdicts = load(a.verdicts) if a.verdicts else None
     grype = load(a.grype) if a.grype else None
     spec, rules = load(a.spec), load(a.rules)
-    ctx = Context(reach, verdicts, spec, rules)
+    ctx = Context(reach, verdicts, spec, rules, no_app_jar=a.no_l2)
     analysed_at = a.analyzed_at or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     matches = trivy_matches(trivy) + (grype_matches(grype) if grype else [])
@@ -458,9 +528,18 @@ def build(a):
     if grype:
         matches_raw["grype"] = grype
     # API-13 needs reachResult as an object even when L2 did not run
-    return {"sbom": sbom, "matches": matches_raw, "reachResult": reach if reach is not None else {},
-            "tools": {k: v for k, v in tools.items() if v is not None},
-            "analysis": {k: v for k, v in summary.items() if v is not None}, "stages": stages, "verdicts": items}
+    bundle = {"sbom": sbom, "matches": matches_raw, "reachResult": reach if reach is not None else {},
+              "tools": {k: v for k, v in tools.items() if v is not None},
+              "analysis": {k: v for k, v in summary.items() if v is not None}, "stages": stages, "verdicts": items}
+    # L3 (FR-14) is not a stage: API-13 accepts the stage names in STAGES only
+    if a.l3:
+        bundle["l3"] = load(a.l3)
+        if a.l3_record:
+            with open(a.l3_record, "rb") as f:
+                bundle["l3Record"] = {"format": "TAR_XZ", "content": base64.b64encode(f.read()).decode("ascii")}
+    elif a.l3_error:
+        bundle["l3"] = {"error": cut(a.l3_error, 500)}
+    return bundle
 
 
 def write(bundle, out):
@@ -484,6 +563,11 @@ def main(argv=None):
     ap.add_argument("--spec")
     ap.add_argument("--rules")
     ap.add_argument("--jar", help="the analysed bootJar, for analysis.jarSha256")
+    ap.add_argument("--no-l2", action="store_true",
+                    help="the runner found no app jar; Java packages are NOT_ANALYZED instead of an error")
+    ap.add_argument("--l3", help="L3 result (l3.py output with the run summary)")
+    ap.add_argument("--l3-error", help="the L3 run failed: this message instead of --l3")
+    ap.add_argument("--l3-record", help="execution record of the L3 run (tar.xz), kept by the dashboard for rescans")
     ap.add_argument("--tool", action="append", default=[], help="extra or overriding tools entry, name=value")
     ap.add_argument("--stage", action="append", default=[], help="name=status[:seconds]; default: sbom, match, l2, report succeeded")
     ap.add_argument("--analyzed-at", help="ISO-8601 time for every verdict (default: now)")

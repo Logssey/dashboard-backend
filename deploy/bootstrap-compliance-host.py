@@ -35,6 +35,7 @@ COMPOSE_SERVICE = """  # Compliance worker: isolated, no web port, and disabled 
     oom_score_adj: 500
     pids_limit: 192
     depends_on: [api]
+    network_mode: host
     volumes:
       - type: bind
         source: ./compliance-worker.properties
@@ -45,7 +46,6 @@ COMPOSE_SERVICE = """  # Compliance worker: isolated, no web port, and disabled 
         target: /run/secrets
         read_only: true
     tmpfs: ["/tmp:rw,noexec,nosuid,size=192m,uid=1000,gid=1000,mode=0700"]
-    networks: [backend]
     logging:
       driver: json-file
       options: {max-size: 10m, max-file: "3"}
@@ -54,12 +54,13 @@ COMPOSE_SERVICE = """  # Compliance worker: isolated, no web port, and disabled 
 
 WORKER_PROPERTIES = """spring.main.web-application-type=none
 logssey.compliance-worker.enabled=false
-logssey.compliance-worker.api-base-url=http://api:8080
+logssey.compliance-worker.api-base-url=http://127.0.0.1:8080
 logssey.compliance-worker.worker-id=dashboard-compliance-worker-1
 logssey.compliance-worker.poll-delay=10s
 logssey.compliance-worker.heartbeat-delay=60s
 logssey.compliance-worker.scan-timeout=45m
 logssey.compliance-worker.prowler-executable=prowler
+logssey.compliance-worker.aws-region=ap-northeast-1
 logging.level.software.amazon.awssdk=OFF
 logging.level.org.apache.hc.client5.http.wire=OFF
 """
@@ -109,10 +110,53 @@ def install_token(root: Path) -> None:
     atomic_write(worker_token, token, 0o400, 1000, 1000)
 
 
+def service_range(lines: list[str], service: str) -> tuple[int, int]:
+    marker = f"  {service}:"
+    start = next((index for index, line in enumerate(lines) if line == marker), None)
+    if start is None:
+        raise RuntimeError(f"compose: {service} service was not found")
+    end = next(
+        (
+            index
+            for index in range(start + 1, len(lines))
+            if lines[index].startswith("  ")
+            and not lines[index].startswith("    ")
+            and lines[index].strip()
+            and not lines[index].lstrip().startswith("#")
+        ),
+        len(lines),
+    )
+    return start, end
+
+
 def patch_compose(text: str) -> str:
-    if "\n  compliance-worker:\n" in text:
-        return text
-    return replace_once(text, "\nnetworks:\n", f"\n{COMPOSE_SERVICE}networks:\n", "compose")
+    lines = text.splitlines()
+    api_start, api_end = service_range(lines, "api")
+    if not any(line.strip().startswith("ports:") for line in lines[api_start:api_end]):
+        insert_at = next((index for index in range(api_start + 1, api_end)
+                          if lines[index].strip().startswith("volumes:")), api_end)
+        lines.insert(insert_at, '    ports: ["127.0.0.1:8080:8080"]')
+    try:
+        worker_start, worker_end = service_range(lines, "compliance-worker")
+    except RuntimeError:
+        insertion = COMPOSE_SERVICE.rstrip().splitlines()
+        top_level = next(
+            (index for index in range(1, len(lines)) if lines[index] and not lines[index].startswith(" ")),
+            len(lines),
+        )
+        lines[top_level:top_level] = [""] + insertion
+        return "\n".join(lines).rstrip() + "\n"
+
+    worker = lines[worker_start:worker_end]
+    worker = [line for line in worker if line.strip() != "networks: [backend]"]
+    if not any(line.strip().startswith("network_mode:") for line in worker):
+        depends_on = next(
+            (index for index, line in enumerate(worker) if line.strip().startswith("depends_on:")),
+            0,
+        )
+        worker.insert(depends_on + 1, "    network_mode: host")
+    lines[worker_start:worker_end] = worker
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def patch_deploy_script(text: str) -> str:
@@ -186,6 +230,7 @@ def main() -> None:
     api_text = set_property(api_text, "logssey.compliance.target-key", "reused")
     api_text = set_property(api_text, "logssey.compliance.target-name", "Re:Used")
     api_text = set_property(api_text, "logssey.compliance.execution-enabled", "false")
+    api_text = set_property(api_text, "logssey.compliance.connection-tests-enabled", "false")
     api_text = set_property(api_text, "logssey.compliance.worker-lease-seconds", "900")
     api_text = set_property(api_text, "logssey.compliance.worker-retry-delay-seconds", "30")
     atomic_write(api_properties, api_text, 0o644, 0, 0)

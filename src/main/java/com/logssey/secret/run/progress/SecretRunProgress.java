@@ -23,7 +23,9 @@ public record SecretRunProgress(
     public record ValidationSummary(boolean reuseRecorded, long newRequestCount,
                                     long completedRequestCount, Long reusedResultCount,
                                     long uncheckedCount, long incompleteCount, long unknownCount,
-                                    List<ReusedResult> reusedResults, boolean reusedResultsTruncated) {}
+                                    List<ReusedResult> reusedResults, boolean reusedResultsTruncated,
+                                    List<UncheckedReason> uncheckedReasons) {}
+    public record UncheckedReason(String reasonCode, long count) {}
     public record ReusedResult(String issuer, String result, String reasonCode,
                                OffsetDateTime providerCheckedAt, long sourceRunId, long count) {}
 }

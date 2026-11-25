@@ -15,7 +15,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** S-01 C·D·E·G·H 조회: PR 목록, 경로 상세의 끊을 지점, 제안 조치, ② 관문, 검사 주기. */
+/** S-01 C·D·E·G·H 조회: PR 목록, 경로 상세의 끊을 지점, 제안 조치, plan 전 검사 관문, 검사 주기. */
 class IacQueryOverviewTest {
 
     private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:18.6");
@@ -81,13 +81,14 @@ class IacQueryOverviewTest {
 
         var remediations = service.remediations("admin");
         assertThat(remediations).extracting(r -> r.action() + "|" + r.source() + "|" + r.pathsCut() + "|" + r.tier1PathsCut())
-                .containsExactly("IMDSV2_REQUIRED|①|3|2", "SECRETS_READ_SCOPE|①|2|2", "TFSTATE_BUCKET_POLICY|③|0|0");
+                .containsExactly("IMDSV2_REQUIRED|PATH|3|2", "SECRETS_READ_SCOPE|PATH|2|2", "TFSTATE_BUCKET_POLICY|STATE|0|0");
     }
 
     @Test
     void listsTheLatestRunOfEachPullRequest() {
         long old = run(58, "PR", "SUPERSEDED", null, null);
         long latest = run(58, "PR", "DONE", "BLOCK", "CRITICAL");
+        jdbc.update("UPDATE iac_runs SET pr_title = '중복된 정책 정리' WHERE run_id = ?", latest);
         run(60, "PR", "DONE", "INFO", null);
         long imds = run(62, "PR", "DONE", "WARN", "MEDIUM");
         jdbc.update("INSERT INTO iac_findings (rule_id, source, enforcement, severity, environment, resource_address, params, "
@@ -95,19 +96,22 @@ class IacQueryOverviewTest {
                 + "'MEDIUM', 'PROD', 'aws_instance.b', '{\"action\":\"CREATE\"}', 'fp-imds', ?, now(), now())", imds);
         jdbc.update("INSERT INTO iac_jobs (kind, trigger_type, run_id, status, finished_at, stats) VALUES ('ANALYZE_RUN', 'PR', ?, "
                 + "'SUCCEEDED', now(), '{\"paths\":{\"added\":6,\"removed\":0,\"removedRoutes\":0},"
-                + "\"state\":{\"ruleId\":\"state.reader_increase\"}}')", latest);
+                + "\"state\":{\"ruleId\":\"state.reader_increase\"},\"resources\":{\"add\":0,\"change\":0,\"delete\":1}}')", latest);
         jdbc.update("INSERT INTO iac_run_path_changes (run_id, change, rule_id, path_fingerprint, tier, severity, hops) "
                 + "VALUES (?, 'ADDED', 'path.tier1.added', 'f', 1, 'CRITICAL', '[]')", latest);
 
         var prs = service.pullRequests(null, "admin");
         assertThat(prs).extracting(IacPullRequestSummaryResponse::number).containsExactlyInAnyOrder(58, 60, 62);
         assertThat(prs.stream().filter(p -> p.number() == 62).findFirst().orElseThrow().reason())
-                .as("경로 없는 ① 발견 건도 대표 규칙이 된다").isEqualTo("path.imds_v1_added");
+                .as("경로 없는 경로 분석 발견 건도 대표 규칙이 된다").isEqualTo("path.imds_v1_added");
         var pr58 = prs.stream().filter(p -> p.number() == 58).findFirst().orElseThrow();
         assertThat(pr58.runId()).isEqualTo(latest).isNotEqualTo(old);
         assertThat(pr58.pathsAdded()).isEqualTo(6);
         assertThat(pr58.stateReaderIncrease()).isTrue();
         assertThat(pr58.reason()).isEqualTo("path.tier1.added");
+        assertThat(pr58.title()).isEqualTo("중복된 정책 정리");
+        assertThat(service.pullRequest(58, null, "admin").title()).isEqualTo("중복된 정책 정리");
+        assertThat(prs.stream().filter(p -> p.number() == 60).findFirst().orElseThrow().title()).isNull();
         assertThat(prs).noneMatch(p -> p.number() == 0);
     }
 
@@ -124,6 +128,30 @@ class IacQueryOverviewTest {
         assertThat(staticCheck.prBlocked7d()).isEqualTo(1);
         assertThat(gates.supplyChain().unpinnedProviders()).isEqualTo(1);
         assertThat(gates.mainCheckedAt()).isNotNull();
+    }
+
+    @Test
+    void pullRequestDetailToleratesAnalysisStatsWithoutResourcesOrState() {
+        long run = run(70, "PR", "DONE", "PASS", null);
+        jdbc.update("INSERT INTO iac_jobs (kind, trigger_type, run_id, status, finished_at, stats) VALUES ('ANALYZE_RUN', 'PR', ?, "
+                + "'SUCCEEDED', now(), '{\"paths\":{\"added\":0}}')", run);
+        var detail = service.pullRequest(70, null, "admin");
+        assertThat(detail.resources()).isNull();
+        assertThat(detail.state()).isNull();
+    }
+
+    @Test
+    void beforeAnyRepoIsRegisteredGatesAndPullRequestsAreEmptyNotMissing() {
+        jdbc.execute("TRUNCATE iac_repos RESTART IDENTITY CASCADE");
+
+        var gates = service.gates(null, "admin");
+        assertThat(gates.mainCheckedAt()).isNull();
+        assertThat(gates.stages()).isNotEmpty().allMatch(s -> s.mainOpen() == 0 && s.prBlocked7d() == 0);
+        assertThat(gates.supplyChain().unpinnedProviders()).isZero();
+        assertThat(service.pullRequests(null, "admin")).isEmpty();
+        // 지정한 레포가 없으면 여전히 404
+        assertThatThrownBy(() -> service.gates("Logssey/unknown", "admin"))
+                .satisfies(e -> assertThat(((ApiException) e).errorCode()).isEqualTo(ErrorCode.NOT_FOUND));
     }
 
     @Test

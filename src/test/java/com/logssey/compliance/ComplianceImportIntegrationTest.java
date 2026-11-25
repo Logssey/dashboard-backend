@@ -36,9 +36,14 @@ class ComplianceImportIntegrationTest {
                 """);
         var repository = new ComplianceRepository(JdbcClient.create(dataSource), jdbc);
         var catalog = new ComplianceCatalog();
-        service = new ComplianceService(repository, catalog, new ProwlerOcsfNormalizer(),
+        var checkPolicies = new ComplianceCheckPolicyCatalog();
+        var targetRepository = new ComplianceTargetRepository(JdbcClient.create(dataSource));
+        var scopeCatalog = new ProwlerScopeCatalog();
+        service = new ComplianceService(repository, catalog, new ProwlerOcsfNormalizer(), checkPolicies,
+                targetRepository, scopeCatalog, new ComplianceServiceUsageEvidenceCatalog(scopeCatalog),
                 "reused", 8 * 1024 * 1024);
-        reports = new ComplianceReportService(repository, catalog, "reused", "Re:Used");
+        reports = new ComplianceReportService(repository, catalog, checkPolicies,
+                targetRepository, "reused", "Re:Used");
     }
 
     @AfterAll
@@ -62,9 +67,9 @@ class ComplianceImportIntegrationTest {
         var file = new MockMultipartFile("file", "prowler.json", "application/json",
                 payload.getBytes(StandardCharsets.UTF_8));
 
-        var imported = service.importProwler("admin", "prod", file);
-        var overview = service.overview("PROD");
-        var detail = service.run(imported.runId());
+        var imported = service.importProwler("admin", "reused", "prod", file);
+        var overview = service.overview("reused", "PROD");
+        var detail = service.run("reused", imported.runId());
 
         assertThat(imported.importedCount()).isEqualTo(1);
         assertThat(overview.latestRun()).isNotNull();
@@ -73,14 +78,28 @@ class ComplianceImportIntegrationTest {
         assertThat(detail.results()).singleElement().satisfies(result -> {
             assertThat(result.checkId()).isEqualTo("securityhub_enabled");
             assertThat(result.asset()).isEqualTo("1234****9012");
+            assertThat(result.guide()).isNotNull();
+            assertThat(result.guide().applicability()).isNotBlank();
+            assertThat(result.guide().verification()).isNotBlank();
+            assertThat(result.guide().rollback()).isNotBlank();
         });
+        assertThat(detail.assessmentContext().policyVersion()).isEqualTo("2026-11-18.2");
+        assertThat(detail.assessmentContext().profile().schemaVersion()).isEqualTo(1);
+        assertThat(detail.assessmentContext().inferredServices()).isEmpty();
         assertThat(jdbc.queryForObject("SELECT length(artifact_sha256) FROM compliance_runs", Integer.class))
                 .isEqualTo(64);
+        assertThat(jdbc.queryForObject("SELECT assessment_policy_version FROM compliance_runs", String.class))
+                .isEqualTo("2026-11-18.2");
+        assertThat(jdbc.queryForObject("SELECT assessment_profile->>'schemaVersion' FROM compliance_runs", String.class))
+                .isEqualTo("1");
 
-        String integrated = new String(reports.report(imported.runId(), "all").content(), StandardCharsets.UTF_8);
-        String iso = new String(reports.report(imported.runId(), "iso").content(), StandardCharsets.UTF_8);
-        assertThat(integrated).contains("통합 컴플라이언스", "Security Hub is disabled", "인증 적합 판정이 아닙니다", "&lt;script&gt;")
-                .doesNotContain("123456789012", "<script>");
+        String integrated = new String(reports.report("reused", imported.runId(), "all").content(), StandardCharsets.UTF_8);
+        String iso = new String(reports.report("reused", imported.runId(), "iso").content(), StandardCharsets.UTF_8);
+        assertThat(integrated).contains("통합 컴플라이언스", "Security Hub is disabled", "인증 적합 판정이 아닙니다",
+                        "판정 정책", "정책 2026-11-18.2", "자동 식별 서비스", "적용성 프로필",
+                        "점검 방식", "AWS 읽기 전용 자동 점검", "AWS 기술 점검 결과",
+                        "개선 가이드", "적용 조건", "검증", "롤백", "&lt;script&gt;")
+                .doesNotContain("123456789012", "<script>", "점검 엔진", "Prowler", "PROWLER_OCSF");
         assertThat(iso).contains("ISO/IEC 27001:2022").doesNotContain("ISMS-P 2023", "CSAP SaaS 표준등급");
     }
 }

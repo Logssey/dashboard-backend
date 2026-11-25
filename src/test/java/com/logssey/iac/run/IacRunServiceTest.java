@@ -72,6 +72,18 @@ class IacRunServiceTest {
     }
 
     @Test
+    void storesTheCleanedPullRequestTitleButNotForMainBranchChecks() {
+        var gate = new IacRunRequest.Gate("PASSED", List.of());
+        var pr = service.register(new IacRunRequest(REPO, 1, SHA_1, gate, "PR", "  Grafana 내 IP 로만\n열기\t "), "admin");
+        var push = service.register(new IacRunRequest(REPO, null, SHA_2, gate, "PUSH", "무시됨"), "admin");
+        assertThat(jdbc.queryForObject("SELECT pr_title FROM iac_runs WHERE run_id = ?", String.class, pr.runId()))
+                .isEqualTo("Grafana 내 IP 로만 열기");
+        assertThat(jdbc.queryForObject("SELECT pr_title FROM iac_runs WHERE run_id = ?", String.class, push.runId()))
+                .isNull();
+        assertThat(IacRunService.prTitle(" \n ")).isNull();
+    }
+
+    @Test
     void passedGateWaitsForThePlan() {
         var created = service.register(request(1, SHA_1, "PASSED", UNPINNED), "admin");
         assertThat(created.status()).isEqualTo("PLANNING");

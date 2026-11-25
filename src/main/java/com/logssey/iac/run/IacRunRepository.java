@@ -5,6 +5,8 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
+import com.logssey.iac.auth.IacCiCaller;
+
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
@@ -40,15 +42,15 @@ public class IacRunRepository {
         jdbc.query("SELECT pg_advisory_xact_lock(?, ?)", rs -> null, (int) repoId, prNumber == null ? 0 : prNumber);
     }
 
-    long insertRun(long repoId, Integer prNumber, String headSha, String trigger, String status, String verdict,
-                   String highestSeverity, long requestedBy, OffsetDateTime finishedAt) {
+    long insertRun(long repoId, Integer prNumber, String prTitle, String headSha, String trigger, String status,
+                   String verdict, String highestSeverity, Long requestedBy, OffsetDateTime finishedAt) {
         return jdbc.queryForObject("""
-                INSERT INTO iac_runs (repo_id, pr_number, head_sha, trigger_type, status, verdict,
+                INSERT INTO iac_runs (repo_id, pr_number, pr_title, head_sha, trigger_type, status, verdict,
                                       highest_severity, requested_by_user_id, finished_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING run_id
-                """, Long.class, repoId, prNumber, headSha, trigger, status, verdict, highestSeverity, requestedBy,
-                finishedAt);
+                """, Long.class, repoId, prNumber, prTitle, headSha, trigger, status, verdict, highestSeverity,
+                requestedBy, finishedAt);
     }
 
     /** 같은 PR(또는 main 점검)의 이전 run 을 SUPERSEDED 로 바꾸고, 그 run 의 대기 작업과 남은 plan 을 정리한다. */
@@ -117,8 +119,8 @@ public class IacRunRepository {
         jdbc.update("UPDATE iac_runs SET status = 'ANALYZING' WHERE run_id = ?", runId);
     }
 
-    /** PR run 은 ① 경로 분석(ANALYZE_RUN), main 점검 run 은 ③ 드리프트 점검(CHECK_DRIFT). */
-    void enqueueAnalysis(long runId, boolean push, long requestedBy) {
+    /** PR run 은 경로 분석(ANALYZE_RUN), main 점검 run 은 드리프트 점검(CHECK_DRIFT). */
+    void enqueueAnalysis(long runId, boolean push, Long requestedBy) {
         jdbc.update("""
                 INSERT INTO iac_jobs (kind, trigger_type, run_id, requested_by_user_id)
                 VALUES (?, ?, ?, ?)
@@ -138,11 +140,21 @@ public class IacRunRepository {
                 rs.getObject("finished_at", OffsetDateTime.class)), runId).stream().findFirst();
     }
 
-    void audit(long actorUserId, String entityType, long entityId, String eventType, String afterSafeJson) {
+    /** 사용자가 없으면(GitHub Actions OIDC) CI 로 남긴다 */
+    void audit(Long actorUserId, String entityType, long entityId, String eventType, String afterSafeJson) {
         jdbc.update("""
                 INSERT INTO iac_audit_events (actor_kind, actor_user_id, entity_type, entity_id, event_type, after_safe)
-                VALUES ('USER', ?, ?, ?, ?, ?::jsonb)
-                """, actorUserId, entityType, entityId, eventType, afterSafeJson);
+                VALUES (?, ?, ?, ?, ?, ?::jsonb)
+                """, actorUserId == null ? "CI" : "USER", actorUserId, entityType, entityId, eventType, afterSafeJson);
+    }
+
+    /** run 이 속한 레포 이름과 실행 종류 (CI 토큰이 다룰 수 있는 run 인지 볼 때) */
+    Optional<IacCiCaller> runOwner(long runId) {
+        return jdbc.query("""
+                SELECT r.full_name, run.trigger_type FROM iac_runs run JOIN iac_repos r ON r.repo_id = run.repo_id
+                WHERE run.run_id = ?
+                """, (rs, row) -> new IacCiCaller(rs.getString("full_name"), rs.getString("trigger_type")), runId)
+                .stream().findFirst();
     }
 
     OffsetDateTime databaseNow() {

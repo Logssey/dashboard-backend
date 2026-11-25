@@ -6,11 +6,13 @@ import org.objectweb.asm.signature.SignatureVisitor;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.regex.Pattern;
 
 /**
@@ -282,16 +284,32 @@ final class Facts {
             boolean clientIface = c.isInterface() && c.anns.stream().anyMatch(a -> clientAnns.contains(a.desc));
             for (MethodInfo m : c.methods.values()) {
                 Type[] args = Type.getArgumentTypes(m.desc);
-                List<List<String>> paramTypes = paramTypes(m, args.length);
+                Params params = paramTypes(m, args.length);
                 boolean listener = m.anns.stream().anyMatch(a -> listenerAnns.contains(a.desc));
                 for (int i = 0; i < args.length; i++) {
                     boolean annotated = m.annsOfParam(i).stream().anyMatch(a -> paramAnns.contains(a.desc));
-                    List<String> pts = paramTypes.get(i);
+                    List<String> pts = params.classes().get(i);
+                    if (pts.isEmpty() && !params.vars().get(i).isEmpty()) {
+                        pts = new ArrayList<>(); // a bare type variable: keep its erasure (Object or the bound)
+                        addType(pts, args[i]);
+                    }
                     boolean body = !pts.isEmpty() && bodyTypes.contains(pts.get(0));
                     if (annotated || listener || body) {
-                        String label = simple(c.name) + "." + m.name + "(" + (annotated ? "@body " : listener ? "@listener " : "") + "param " + i + ")";
+                        String kind = annotated ? "@body " : listener ? "@listener " : "";
+                        String label = simple(c.name) + "." + m.name + "(" + kind + "param " + i + ")";
                         roots.add(Map.of("root", label, "types", pts));
                         for (String t : pts) root(label, t);
+                        // create(@RequestBody T body) in CrudController<T>: the framework reads the body as the
+                        // type argument each subtype gives (ItemController extends CrudController<ItemRequest>)
+                        for (String var : params.vars().get(i)) {
+                            if (params.methodVars().contains(var)) continue;
+                            for (Map.Entry<String, List<String>> b : boundTypes(c, var).entrySet()) {
+                                String sub = simple(b.getKey()) + "." + m.name + "(" + kind + "param " + i + ", "
+                                        + var + " of " + simple(c.name) + ")";
+                                roots.add(Map.of("root", sub, "types", b.getValue()));
+                                for (String t : b.getValue()) root(sub, t);
+                            }
+                        }
                     }
                 }
                 boolean clientMethod = clientIface || m.anns.stream().anyMatch(a -> clientAnns.contains(a.desc));
@@ -413,15 +431,29 @@ final class Facts {
         }
     }
 
-    /** Class types used by each parameter (generic signature when available). */
-    private static List<List<String>> paramTypes(MethodInfo m, int argc) {
+    /**
+     * Types of each parameter, from the generic signature when there is one: the class names used, the type
+     * variables used, and the type variables the method itself declares (&lt;T&gt; void m(T body)).
+     */
+    private record Params(List<List<String>> classes, List<List<String>> vars, Set<String> methodVars) {}
+
+    private static Params paramTypes(MethodInfo m, int argc) {
         List<List<String>> out = new ArrayList<>();
-        for (int i = 0; i < argc; i++) out.add(new ArrayList<>());
+        List<List<String>> vars = new ArrayList<>();
+        Set<String> methodVars = new HashSet<>();
+        for (int i = 0; i < argc; i++) {
+            out.add(new ArrayList<>());
+            vars.add(new ArrayList<>());
+        }
         if (m.signature != null) {
             try {
                 int[] cur = {-1};
-                int[] depth = {0};
                 new SignatureReader(m.signature).accept(new SignatureVisitor(org.objectweb.asm.Opcodes.ASM9) {
+                    @Override
+                    public void visitFormalTypeParameter(String name) {
+                        methodVars.add(name);
+                    }
+
                     @Override
                     public SignatureVisitor visitParameterType() {
                         cur[0]++;
@@ -444,16 +476,170 @@ final class Facts {
                     public void visitClassType(String name) {
                         if (cur[0] >= 0 && cur[0] < argc) out.get(cur[0]).add(name);
                     }
+
+                    @Override
+                    public void visitTypeVariable(String name) {
+                        if (cur[0] >= 0 && cur[0] < argc) vars.get(cur[0]).add(name);
+                    }
                 });
-                boolean any = out.stream().anyMatch(l -> !l.isEmpty());
-                if (any && out.size() == argc) return out;
+                boolean any = out.stream().anyMatch(l -> !l.isEmpty()) || vars.stream().anyMatch(l -> !l.isEmpty());
+                if (any) return new Params(out, vars, methodVars);
             } catch (RuntimeException ignored) {
                 // fall through
             }
             for (List<String> l : out) l.clear();
+            for (List<String> l : vars) l.clear();
+            methodVars.clear();
         }
         Type[] args = Type.getArgumentTypes(m.desc);
         for (int i = 0; i < argc; i++) addType(out.get(i), args[i]);
+        return new Params(out, vars, methodVars);
+    }
+
+    // ------------------------------------------------------------------ type arguments given by subtypes
+
+    /** One type argument as written in a signature: the class names in it and the type variables in it. */
+    private record Arg(List<String> classes, List<String> vars) {}
+
+    /** A supertype as written in a class signature (extends CrudController&lt;ItemRequest&gt;). */
+    private record Super(String name, List<Arg> args) {}
+
+    private static final class ClassSig {
+        final List<String> formals = new ArrayList<>(); // type parameter names, in order
+        final List<Super> supers = new ArrayList<>();
+    }
+
+    private final Map<String, ClassSig> classSigs = new HashMap<>();
+
+    private ClassSig classSig(ClassInfo c) {
+        ClassSig cached = classSigs.get(c.name);
+        if (cached != null) return cached;
+        ClassSig out = new ClassSig();
+        boolean parsed = false;
+        if (c.signature != null) {
+            try {
+                new SignatureReader(c.signature).accept(new SignatureVisitor(org.objectweb.asm.Opcodes.ASM9) {
+                    @Override
+                    public void visitFormalTypeParameter(String name) {
+                        out.formals.add(name);
+                    }
+
+                    @Override
+                    public SignatureVisitor visitSuperclass() {
+                        return superType(out);
+                    }
+
+                    @Override
+                    public SignatureVisitor visitInterface() {
+                        return superType(out);
+                    }
+                });
+                parsed = true;
+            } catch (RuntimeException ignored) {
+                out.formals.clear();
+                out.supers.clear();
+            }
+        }
+        if (!parsed) { // no generic signature: the supertypes carry no type arguments
+            if (c.superName != null) out.supers.add(new Super(c.superName, List.of()));
+            for (String i : c.interfaces) out.supers.add(new Super(i, List.of()));
+        }
+        classSigs.put(c.name, out);
+        return out;
+    }
+
+    private static SignatureVisitor superType(ClassSig out) {
+        String[] name = {null};
+        List<Arg> args = new ArrayList<>();
+        return new SignatureVisitor(org.objectweb.asm.Opcodes.ASM9) {
+            @Override
+            public void visitClassType(String n) {
+                name[0] = n;
+            }
+
+            @Override
+            public void visitInnerClassType(String n) {
+                name[0] = name[0] + "$" + n;
+                args.clear();
+            }
+
+            @Override
+            public void visitTypeArgument() {
+                args.add(new Arg(List.of(), List.of())); // unbounded wildcard
+            }
+
+            @Override
+            public SignatureVisitor visitTypeArgument(char wildcard) {
+                Arg arg = new Arg(new ArrayList<>(), new ArrayList<>());
+                args.add(arg);
+                return new SignatureVisitor(org.objectweb.asm.Opcodes.ASM9) { // nested arguments land in the same Arg
+                    @Override
+                    public void visitClassType(String n) {
+                        arg.classes().add(n);
+                    }
+
+                    @Override
+                    public void visitTypeVariable(String n) {
+                        arg.vars().add(n);
+                    }
+                };
+            }
+
+            @Override
+            public void visitEnd() {
+                if (name[0] != null) out.supers.add(new Super(name[0], args));
+            }
+        };
+    }
+
+    /**
+     * How sub fills the type parameters of target (parameter name to argument), following extends and implements
+     * through intermediate generic types. Null when sub is not a subtype of target.
+     */
+    private Map<String, Arg> bind(ClassInfo sub, String target, Set<String> seen) {
+        if (!seen.add(sub.name)) return null;
+        for (Super s : classSig(sub).supers) {
+            ClassInfo sc = idx.get(s.name());
+            if (sc == null) continue;
+            Map<String, Arg> inner; // target's parameters written with sc's own parameters
+            if (s.name().equals(target)) {
+                inner = new LinkedHashMap<>();
+                for (String f : classSig(sc).formals) inner.put(f, new Arg(List.of(), List.of(f)));
+            } else {
+                inner = bind(sc, target, seen);
+                if (inner == null) continue;
+            }
+            List<String> formals = classSig(sc).formals;
+            Map<String, Arg> given = new HashMap<>(); // sc's parameters as sub fills them
+            for (int i = 0; i < formals.size() && i < s.args().size(); i++) given.put(formals.get(i), s.args().get(i));
+            Map<String, Arg> result = new LinkedHashMap<>();
+            for (Map.Entry<String, Arg> e : inner.entrySet()) {
+                List<String> classes = new ArrayList<>(e.getValue().classes());
+                List<String> vars = new ArrayList<>();
+                for (String v : e.getValue().vars()) {
+                    Arg a = given.get(v);
+                    if (a == null) continue; // raw supertype: nothing is known
+                    classes.addAll(a.classes());
+                    vars.addAll(a.vars());
+                }
+                result.put(e.getKey(), new Arg(classes, vars));
+            }
+            return result;
+        }
+        return null;
+    }
+
+    /** App subtype name to the class types it gives for the type parameter var of generic. Subtypes that leave it open are left out. */
+    private Map<String, List<String>> boundTypes(ClassInfo generic, String var) {
+        Map<String, List<String>> out = new TreeMap<>();
+        if (!classSig(generic).formals.contains(var)) return out;
+        for (ClassInfo sub : idx.classes.values()) {
+            if (!sub.app || sub == generic) continue;
+            Map<String, Arg> bound = bind(sub, generic.name, new HashSet<>());
+            if (bound == null) continue;
+            Arg a = bound.get(var);
+            if (a != null && !a.classes().isEmpty()) out.put(sub.name, a.classes());
+        }
         return out;
     }
 

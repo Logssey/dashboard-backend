@@ -18,6 +18,8 @@ class ComplianceCatalogTest {
         assertThat(mappingCount(catalog.framework("isms"))).isEqualTo(1259);
         assertThat(mappingCount(catalog.framework("iso"))).isEqualTo(867);
         assertThat(mappingCount(catalog.framework("csap"))).isEqualTo(734);
+        assertThat(catalog.framework("csap").controls()).flatExtracting(ComplianceCatalog.Control::mappings)
+                .allMatch(mapping -> mapping.applicability() != null && !mapping.applicability().isBlank());
         assertThat(catalog.source().prowlerVersion()).isEqualTo("5.46.0");
     }
 

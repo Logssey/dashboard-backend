@@ -2,11 +2,13 @@ package com.logssey.reach;
 
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.regex.Pattern;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 
 /**
  * 감시 대상 서비스 설정 (PRD FR-15 MVP: 설정 파일로 등록).
@@ -16,6 +18,10 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  */
 @ConfigurationProperties("logssey.reach")
 public record ReachProperties(List<App> apps, L1 l1) {
+
+    /** 앱의 생태계(purl type). Reach 스캔(분석기·CI 스크립트)은 maven만 한다. npm은 등록만(PRD 확장 단계, NFR-07) */
+    public static final String MAVEN = "maven";
+    private static final List<String> ECOSYSTEMS = List.of(MAVEN, "npm");
 
     /** reach_targets.app 칸 (V47 ck_reach_targets_app) */
     private static final Pattern CODE = Pattern.compile("^[A-Z][A-Z0-9_]{0,9}$");
@@ -42,14 +48,29 @@ public record ReachProperties(List<App> apps, L1 l1) {
             if (app.image() != null && !images.add(app.image())) {
                 throw new IllegalStateException("logssey.reach.apps: duplicate image for " + app.code());
             }
+            if (!ECOSYSTEMS.contains(app.ecosystem())) {
+                throw new IllegalStateException("logssey.reach.apps: " + app.code() + " ecosystem must be one of " + ECOSYSTEMS);
+            }
         }
     }
 
     /**
      * 서비스 안의 앱 하나. repo는 레포 이름(소유자를 붙여도 이름만 본다), path는 레포 안 하위 경로(없으면 레포 전체),
-     * image는 이미지 저장소(태그·digest 없이). repo와 image 중 하나는 있어야 한다
+     * image는 이미지 저장소(태그·digest 없이). repo와 image 중 하나는 있어야 한다.
+     * ecosystem은 maven(기본) 또는 npm. 화면 표시용이다(스캔은 러너가 앱 jar 유무로 L2를 정한다)
      */
-    public record App(String code, String repo, String path, String image) {}
+    public record App(String code, String repo, String path, String image, String ecosystem) {
+
+        @ConstructorBinding   // 생성자가 둘이라 설정 값을 넣을 쪽을 표시한다
+        public App {
+            ecosystem = ecosystem == null || ecosystem.isBlank() ? MAVEN : ecosystem.trim().toLowerCase(Locale.ROOT);
+        }
+
+        /** ecosystem 없이(maven) */
+        public App(String code, String repo, String path, String image) {
+            this(code, repo, path, image, null);
+        }
+    }
 
     /** L1 수집 범위. cluster가 없거나 namespaces가 비면 L1이 꺼진다 */
     public record L1(String cluster, List<String> namespaces) {
