@@ -104,7 +104,7 @@ public class SecretScheduleRepository {
                 + "/ssm/parameter/" + exactSegment + "$')"
                 + " OR (" + alias + ".content_type = 'AWS_S3_OBJECT_CONTENT' AND " + alias
                 + ".approved_ref ~ '^aws://[0-9]{12}/" + region
-                + "/s3/object/[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/" + exactSegment + "$')"
+                + "/s3/(object|prefix)/[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/" + exactSegment + "$')"
                 + ")))";
     }
 

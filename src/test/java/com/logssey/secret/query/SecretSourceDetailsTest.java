@@ -4,6 +4,13 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SecretSourceDetailsTest {
+    @Test void s3PrefixDisplaysTheObservedFileInsteadOfOnlyTheFolder() {
+        String prefix="aws://123456789012/ap-northeast-1/s3/prefix/demo-bucket/demo%2F";
+        assertThat(SecretSourceDetails.describe("AWS",prefix,"aws-content-scope:14:demo%2Fsub%2Fa.env","L1"))
+                .containsEntry("status","AVAILABLE").containsEntry("resource","s3/demo-bucket/demo/sub/a.env");
+        assertThat(SecretSourceDetails.describe("AWS",prefix,"aws-content-scope:14:demo2%2Fa.env","L1"))
+                .containsEntry("status","UNAVAILABLE");
+    }
     @Test void structuredGitHubTargetsDecodeApprovedBranchesAndPathsWithoutTheApprovalUri() {
         assertThat(SecretSourceDetails.githubTarget("GITHUB","GITHUB_REPOSITORY_FILES",
                 "github://Logssey/project/feature%2Fsecret/src/config%20files/"))

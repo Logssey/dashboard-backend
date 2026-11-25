@@ -15,14 +15,15 @@ public final class AwsContentCollector {
     public static final int DEFAULT_MAX_BYTES = 256 * 1024;
     public static final int ABSOLUTE_MAX_BYTES = 1024 * 1024;
 
-    public enum Status { SUCCEEDED, FAILED }
+    public enum Status { SUCCEEDED, PARTIAL, FAILED }
     public enum GapCode {
         CONTENT_READ_DISABLED, ACCESS_DENIED, NOT_FOUND, RATE_LIMITED, SOURCE_UNAVAILABLE,
-        OBJECT_TOO_LARGE, NON_TEXT, CONSUMER_FAILED
+        OBJECT_TOO_LARGE, NON_TEXT, CONSUMER_FAILED, OBJECT_LIMIT, TOTAL_BYTES_LIMIT,
+        PAGINATION_LOOP, INVALID_OBJECT_KEY
     }
 
     /** No ARN, parameter name, bucket, object key, or value is present in this record. */
-    public record Source(AwsContentScope.Kind kind, int byteCount) { }
+    public record Source(AwsContentScope.Kind kind, int byteCount, String objectKey) { }
     public record Result(Status status, int objectCount, long byteCount, List<GapCode> gaps) { }
 
     public AwsContentCollector observed(com.logssey.secret.run.progress.core.ScanExecutionObserver observer) {
@@ -49,6 +50,8 @@ public final class AwsContentCollector {
             throw new IllegalArgumentException("Invalid AWS content byte limit");
         }
         if (!valueReadEnabled) return failed(GapCode.CONTENT_READ_DISABLED);
+        if (scope.kind() == AwsContentScope.Kind.S3_PREFIX)
+            return collectPrefix(scope, maxBytes, sink);
 
         byte[] content;
         try {
@@ -63,7 +66,7 @@ public final class AwsContentCollector {
             if (content.length > maxBytes) return failed(GapCode.OBJECT_TOO_LARGE);
             if (!isText(content)) return failed(GapCode.NON_TEXT);
             try {
-                sink.accept(new Source(scope.kind(), content.length), content);
+                sink.accept(new Source(scope.kind(), content.length, scope.objectKey()), content);
             } catch (SecretJobFailure error) {
                 // A lost lease is a worker ownership failure, never an ordinary scope gap.
                 throw error;
@@ -74,6 +77,40 @@ public final class AwsContentCollector {
         } finally {
             Arrays.fill(content, (byte) 0);
         }
+    }
+
+    private Result collectPrefix(AwsContentScope prefix, int maxBytes, ContentSink sink) {
+        var gaps = new java.util.LinkedHashSet<GapCode>();
+        var tokens = new java.util.HashSet<String>();
+        var keys = new java.util.HashSet<String>();
+        String token = null;
+        int objects = 0, entries = 0;
+        long bytes = 0;
+        boolean listed = false;
+        outer: for (int page = 0; page < 100; page++) {
+            AwsContentReader.ObjectPage batch;
+            try { batch = reader.list(prefix, token); listed = true; }
+            catch (AwsContentReader.ReadFailure error) { gaps.add(map(error.code())); break; }
+            catch (RuntimeException error) { gaps.add(GapCode.SOURCE_UNAVAILABLE); break; }
+            for (String key : batch.keys()) {
+                if (++entries > 10000) { gaps.add(GapCode.OBJECT_LIMIT); break outer; }
+                if (key != null && key.startsWith(prefix.objectKey()) && key.endsWith("/")) continue;
+                AwsContentScope child;
+                try { child = prefix.child(key); prefix.childSourceRef(1L, key); }
+                catch (IllegalArgumentException error) { gaps.add(GapCode.INVALID_OBJECT_KEY); continue; }
+                if (!keys.add(key)) continue;
+                int remaining = (int) Math.min(maxBytes, 16L * 1024 * 1024 - bytes);
+                if (remaining < 1) { gaps.add(GapCode.TOTAL_BYTES_LIMIT); break outer; }
+                Result item = collect(child, true, remaining, sink);
+                objects += item.objectCount(); bytes += item.byteCount(); gaps.addAll(item.gaps());
+            }
+            token = batch.nextToken();
+            if (token == null) break;
+            if (!tokens.add(token)) { gaps.add(GapCode.PAGINATION_LOOP); break; }
+            if (page == 99) gaps.add(GapCode.OBJECT_LIMIT);
+        }
+        return new Result(gaps.isEmpty() ? Status.SUCCEEDED : listed ? Status.PARTIAL : Status.FAILED,
+                objects, bytes, List.copyOf(gaps));
     }
 
     private static boolean isText(byte[] content) {

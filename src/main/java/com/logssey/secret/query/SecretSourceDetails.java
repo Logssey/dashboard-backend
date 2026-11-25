@@ -135,6 +135,13 @@ public final class SecretSourceDetails {
                 String[] parts=uri.getRawPath().split("/",-1);
                 if(parts.length<3||!parts[1].matches("[a-z]{2}(?:-gov)?-[a-z0-9-]+-[0-9]+"))return unavailable;
                 String resource=safe(String.join("/",Arrays.stream(parts).skip(2).map(SecretSourceDetails::decode).toList()));
+                if(parts.length==6 && "s3".equals(parts[2]) && "prefix".equals(parts[3])) {
+                    if(sourceRef==null || !sourceRef.matches("aws-content-scope:[0-9]+:.+")) return unavailable;
+                    String key=decode(sourceRef.substring(sourceRef.indexOf(':',18)+1));
+                    String prefix=decode(parts[5]);
+                    if(!prefix.endsWith("/") || !key.startsWith(prefix) || key.endsWith("/")) return unavailable;
+                    resource=safe("s3/"+parts[4]+"/"+key);
+                }
                 if(resource==null)return unavailable;
                 return facts("status","AVAILABLE","kind","AWS_RESOURCE","label",parts[1]+" · "+resource,"region",parts[1],"resource",resource,"line",lineRef!=null&&lineRef.matches("L[1-9][0-9]{0,8}(?:-L?[1-9][0-9]{0,8})?")?lineRef:null,"sourceUrl",null);
             }

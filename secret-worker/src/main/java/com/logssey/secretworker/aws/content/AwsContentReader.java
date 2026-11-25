@@ -6,6 +6,11 @@ public interface AwsContentReader {
 
     byte[] read(AwsContentScope scope, int maxBytes);
 
+    record ObjectPage(java.util.List<String> keys, String nextToken) { }
+    default ObjectPage list(AwsContentScope prefix, String token) {
+        throw new ReadFailure(FailureCode.UNAVAILABLE);
+    }
+
     enum FailureCode { ACCESS_DENIED, NOT_FOUND, RATE_LIMITED, UNAVAILABLE, TOO_LARGE, NON_TEXT }
 
     /** Deliberately has no provider exception cause or message. */
