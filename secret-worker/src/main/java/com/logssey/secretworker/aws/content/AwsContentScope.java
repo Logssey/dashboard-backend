@@ -7,7 +7,7 @@ import java.util.regex.Pattern;
 
 /** One explicitly approved AWS value. Metadata-only scopes cannot be parsed here. */
 public final class AwsContentScope {
-    public enum Kind { SECRETS_MANAGER, SSM_PARAMETER, S3_OBJECT }
+    public enum Kind { SECRETS_MANAGER, SSM_PARAMETER, S3_OBJECT, S3_PREFIX }
 
     private static final Pattern ACCOUNT = Pattern.compile("[0-9]{12}");
     private static final Pattern REGION = Pattern.compile("[a-z]{2}(?:-gov)?-[a-z0-9-]+-[0-9]+");
@@ -83,12 +83,16 @@ public final class AwsContentScope {
                 }
             }
             case S3_OBJECT -> {
-                if (!"s3".equals(parts[2]) || !"object".equals(parts[3])
+                if (!"s3".equals(parts[2]) || !("object".equals(parts[3]) || "prefix".equals(parts[3]))
                         || !BUCKET.matcher(parts[4]).matches() || parts[4].contains("..")) throw invalid();
                 resource = parts[4];
                 key = decode(parts[5]);
                 if (key.getBytes(StandardCharsets.UTF_8).length > 1024 || key.indexOf('*') >= 0) {
                     throw invalid();
+                }
+                if ("prefix".equals(parts[3])) {
+                    if (!key.endsWith("/") || key.equals("/") || !encode(key).equals(parts[5])) throw invalid();
+                    kind = Kind.S3_PREFIX;
                 }
             }
             default -> throw invalid();
@@ -101,6 +105,40 @@ public final class AwsContentScope {
     public String region() { return region; }
     public String resource() { return resource; }
     public String objectKey() { return objectKey; }
+
+    public AwsContentScope child(String key) {
+        if (kind != Kind.S3_PREFIX || key == null || !key.startsWith(objectKey)
+                || key.endsWith("/") || key.getBytes(StandardCharsets.UTF_8).length > 1024
+                || key.chars().anyMatch(c -> c < 32 || c == 127 || c == '\\')) throw invalid();
+        return new AwsContentScope(Kind.S3_OBJECT, accountId, region, resource, key);
+    }
+
+    public static String encode(String key) {
+        return java.net.URLEncoder.encode(key, StandardCharsets.UTF_8).replace("+", "%20");
+    }
+
+    public String sourceRef(long scopeId) {
+        return "aws-content-scope:" + scopeId;
+    }
+
+    public String childSourceRef(long scopeId, String key) {
+        child(key);
+        String ref = sourceRef(scopeId) + ":" + encode(key);
+        if (ref.length() > 500) throw invalid();
+        return ref;
+    }
+
+    public AwsContentScope resolveSource(long scopeId, String ref) {
+        if (kind != Kind.S3_PREFIX) {
+            if (!sourceRef(scopeId).equals(ref)) throw invalid();
+            return this;
+        }
+        String start = sourceRef(scopeId) + ":";
+        if (ref == null || !ref.startsWith(start) || ref.length() > 500) throw invalid();
+        String key = decode(ref.substring(start.length()));
+        if (!childSourceRef(scopeId, key).equals(ref)) throw invalid();
+        return child(key);
+    }
     @Override public String toString() {
         return "AwsContentScope[kind=" + kind + "]";
     }

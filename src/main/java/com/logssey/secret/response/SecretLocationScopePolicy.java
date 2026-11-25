@@ -11,7 +11,7 @@ public final class SecretLocationScopePolicy {
     private static final Pattern PARAMETER = Pattern.compile("^aws://[0-9]{12}/" + REGION
             + "/ssm/parameter/" + EXACT_SEGMENT + "$", Pattern.UNICODE_CHARACTER_CLASS);
     private static final Pattern OBJECT = Pattern.compile("^aws://[0-9]{12}/" + REGION
-            + "/s3/object/[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/" + EXACT_SEGMENT + "$",
+            + "/s3/(object|prefix)/[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/" + EXACT_SEGMENT + "$",
             Pattern.UNICODE_CHARACTER_CLASS);
 
     private SecretLocationScopePolicy() { }

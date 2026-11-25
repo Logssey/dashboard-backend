@@ -575,6 +575,20 @@ class SecretStoragePolicyIntegrationTest {
         assertThat((List<?>)settings.get("items")).isEmpty();
     }
 
+    @Test void s3PrefixPolicyAppliesOnlyToObjectsWithinTheApprovedFolder() {
+        jdbc.update("UPDATE secret_connections SET provider='AWS' WHERE connection_id=?",connection);
+        jdbc.update("UPDATE secret_connection_scopes SET content_type='AWS_S3_OBJECT_CONTENT',history_limit='CURRENT_VALUE_ONLY',approved_ref='aws://123456789012/ap-northeast-1/s3/prefix/demo-bucket/demo%2F' WHERE scope_id=?",scope);
+        jdbc.update("UPDATE secret_occurrences SET source_object_ref=? WHERE occurrence_id=?","aws-content-scope:"+scope+":demo%2Fsub%2Fa.env",occurrence);
+        var drafted=service.draft(new DraftRequest(null,null,"AUTHORIZED_STORAGE","TICKET:SEC-123",now().minusHours(1),null,
+                List.of(new RuleRequest(connection,scope,"AWS_S3_OBJECT_CONTENT","ALLOW","SCOPE",null,null))),"policy-creator");
+        bind(service.approvePolicy(drafted.policyId(),drafted.version(),new VersionRequest(drafted.version()),"policy-reviewer"));
+        assertThat(jdbc.queryForObject("SELECT reason_code FROM secret_occurrence_policy_results WHERE occurrence_id=?",String.class,occurrence)).isEqualTo("EXPLICIT_ALLOW");
+        jdbc.update("UPDATE secret_occurrences SET source_object_ref=? WHERE occurrence_id=?","aws-content-scope:"+scope+":demo2%2Fa.env",occurrence);
+        assertThat(jdbc.queryForObject("SELECT reason_code FROM secret_occurrence_policy_results WHERE occurrence_id=?",String.class,occurrence)).isNotEqualTo("EXPLICIT_ALLOW");
+        jdbc.update("UPDATE secret_occurrences SET source_object_ref=? WHERE occurrence_id=?","aws-content-scope:"+(scope+1)+":demo%2Fa.env",occurrence);
+        assertThat(jdbc.queryForObject("SELECT reason_code FROM secret_occurrence_policy_results WHERE occurrence_id=?",String.class,occurrence)).isNotEqualTo("EXPLICIT_ALLOW");
+    }
+
     private PolicySummary activate(String effect) {
         var draft=service.draft(draft(effect),"policy-creator");
         return service.approvePolicy(draft.policyId(),draft.version(),new VersionRequest(draft.version()),"policy-reviewer");
