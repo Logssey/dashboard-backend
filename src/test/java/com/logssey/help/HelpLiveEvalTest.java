@@ -74,7 +74,11 @@ class HelpLiveEvalTest {
         }
 
         String label() {
-            if (notTested()) return "NOT_TESTED(" + (code.startsWith("PROVIDER_") ? "HTTP " + (status == 0 ? "응답 없음" : status) : "빈 답") + ")";
+            if (notTested()) {
+                if (!code.startsWith("PROVIDER_")) return "NOT_TESTED(빈 답)";
+                if (status != 0) return "NOT_TESTED(HTTP " + status + ")";
+                return "NOT_TESTED(HTTP 응답 없음" + (detail == null ? "" : ": " + detail) + ")";
+            }
             return detail == null ? code : code + "(" + detail + ")";
         }
     }
@@ -198,13 +202,13 @@ class HelpLiveEvalTest {
         }
         if (prepared.checklist()) {
             var reply = provider.send(provider.checklistRequestBody(playbook, prepared.page(), prepared.question(), prepared.signals()));
-            if (reply.reasonCode() != null) return new Outcome("", "", true, reply.reasonCode(), reply.status(), null);
+            if (reply.reasonCode() != null) return new Outcome("", "", true, reply.reasonCode(), reply.status(), reply.failure());
             var result = HelpChecklist.parse(reply.body(), playbook);
             return new Outcome(result.text(), rawText(reply.body()), true, result.fallback() ? "FALLBACK" : "CARDS", reply.status(),
                     result.fallback() ? result.reasonCode() : null);
         }
         var reply = provider.send(provider.requestBody(docs, prepared.page(), prepared.history(), prepared.question(), prepared.signals()));
-        if (reply.reasonCode() != null) return new Outcome("", "", true, reply.reasonCode(), reply.status(), null);
+        if (reply.reasonCode() != null) return new Outcome("", "", true, reply.reasonCode(), reply.status(), reply.failure());
         var result = HelpAnswerFilter.parse(reply.body(), docs);
         String raw = rawText(reply.body());
         if (result.ok()) return new Outcome(result.answer(), raw, true, "ANSWERED");

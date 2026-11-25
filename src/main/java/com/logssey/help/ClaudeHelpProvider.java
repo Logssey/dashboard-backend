@@ -258,27 +258,38 @@ class ClaudeHelpProvider {
                 default -> Reply.failed("PROVIDER_UNAVAILABLE", status);
             };
         } catch (HttpTimeoutException timeout) {
-            return Reply.failed("PROVIDER_TIMEOUT");
+            return Reply.noResponse("PROVIDER_TIMEOUT", timeout);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
-            return Reply.failed("PROVIDER_UNAVAILABLE");
+            return Reply.noResponse("PROVIDER_UNAVAILABLE", interrupted);
         } catch (IOException | RuntimeException unavailable) {
-            return Reply.failed("PROVIDER_UNAVAILABLE");
+            return Reply.noResponse("PROVIDER_UNAVAILABLE", unavailable);
         }
     }
 
-    /** {@code status} is the HTTP status of the provider reply, or 0 when there was none (timeout, connection). */
-    record Reply(byte[] body, String reasonCode, int status) {
+    /**
+     * {@code status} is the HTTP status of the provider reply, or 0 when there was none (timeout, connection).
+     * {@code failure} is only the exception's class name when there was no reply (never its message or a body).
+     */
+    record Reply(byte[] body, String reasonCode, int status, String failure) {
+        Reply(byte[] body, String reasonCode, int status) {
+            this(body, reasonCode, status, null);
+        }
+
         Reply(byte[] body, String reasonCode) {
-            this(body, reasonCode, 0);
+            this(body, reasonCode, 0, null);
         }
 
         static Reply failed(String reasonCode) {
-            return new Reply(null, reasonCode, 0);
+            return new Reply(null, reasonCode, 0, null);
         }
 
         static Reply failed(String reasonCode, int status) {
-            return new Reply(null, reasonCode, status);
+            return new Reply(null, reasonCode, status, null);
+        }
+
+        static Reply noResponse(String reasonCode, Throwable cause) {
+            return new Reply(null, reasonCode, 0, cause.getClass().getSimpleName());
         }
     }
 
