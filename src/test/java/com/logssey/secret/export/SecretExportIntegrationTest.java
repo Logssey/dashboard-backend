@@ -185,6 +185,8 @@ class SecretExportIntegrationTest {
         // 원본 경로에 가짜 키를 섞어도 SecretSourceDetails가 마스킹해야 한다.
         long githubOccurrence = occurrence(key, github, githubScope,
                 "Logssey/test-find-key/fixtures/config/" + fakeAwsKey + "-" + fakeGithubToken + ".env", "L4-L6", "UNKNOWN");
+        // Export the observed branch coordinates, rather than borrowing the mutable scope target.
+        jdbc.update("UPDATE secret_occurrences SET source_context_ref='github://Logssey/test-find-key/main/fixtures/',source_context_status='OBSERVED' WHERE occurrence_id=?", githubOccurrence);
         long notionOccurrence = occurrence(key, notion, notionScope, "notion/pages/" + page + "/blocks/" + block, "L1", "BROAD");
         return new Fixture(key, github, notion, githubOccurrence, notionOccurrence);
     }
