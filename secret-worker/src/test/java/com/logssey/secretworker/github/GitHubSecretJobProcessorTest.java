@@ -303,7 +303,9 @@ class GitHubSecretJobProcessorTest {
         var observed = new java.util.concurrent.atomic.AtomicReference<GitHubRepositoryAccessObservation>();
         processor = new GitHubSecretJobProcessor(jdbc, collector, detector, findings, normalizer,
                 new com.logssey.secretworker.validation.AwsCredentialValidator(false), attempts, jobs,
-                new com.logssey.secretworker.validation.GitHubPatValidator(false), List.of(observed::set));
+                new com.logssey.secretworker.validation.GitHubPatValidator(false),
+                List.of(observed::set,
+                        new com.logssey.secretworker.assessment.GitHubRiskObservationSink(jdbc)));
         insertRun();
         var job = execution.claimNextJob("GITHUB").orElseThrow();
         processor.process(job, execution);
@@ -313,10 +315,34 @@ class GitHubSecretJobProcessorTest {
         assertThat(observed.get().publicRepository()).isTrue();
         assertThat(observed.get().metadataComplete()).isTrue();
         assertThat(observed.get().occurrenceIds()).hasSize(1);
+        assertThat(jdbc.queryForMap("SELECT kind,verification_level,applicability_basis,"
+                + " safe_payload->>'publicAccessConfirmed' AS public_access"
+                + " FROM secret_risk_evidence"))
+                .containsEntry("kind", "ACCESS_SCOPE")
+                .containsEntry("verification_level", "PROVIDER_OBSERVED")
+                .containsEntry("applicability_basis", "OBSERVATION_ONLY")
+                .containsEntry("public_access", "true");
         var reasons = tools.jackson.databind.json.JsonMapper.builder().build().readTree(
                 jdbc.queryForObject("SELECT exclusion_reasons::text FROM secret_run_scopes", String.class));
         assertThat(reasons.size()).isEqualTo(2);
         assertThat(reasons.path("GITHUB_UNSUPPORTED_OBJECT").asLong()).isEqualTo(1L);
+
+        // The partial-parent exception must not authorize unrelated evidence or writers.
+        for (String changes : List.of(
+                "{\"writer_service_id\":\"OTHER_COLLECTOR\"}",
+                "{\"kind\":\"PERMISSION_MAPPING\"}",
+                "{\"applicability_basis\":\"DECLARED_PERIOD\"}")) {
+            assertThatThrownBy(() -> jdbc.update("""
+                    INSERT INTO secret_risk_evidence OVERRIDING SYSTEM VALUE
+                    SELECT (jsonb_populate_record(NULL::secret_risk_evidence,
+                        to_jsonb(e) || ?::jsonb || jsonb_build_object(
+                            'evidence_id',nextval(pg_get_serial_sequence('secret_risk_evidence','evidence_id')),
+                            'ingestion_key','rejected-partial-evidence'))).*
+                    FROM secret_risk_evidence e
+                    """, changes))
+                    .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class)
+                    .hasStackTraceContaining("RISK_REFERENCE_PARENT");
+        }
     }
 
     @org.junit.jupiter.params.ParameterizedTest
