@@ -1,4 +1,5 @@
 package com.logssey.secret.investigation;
+import com.logssey.secret.evidence.SecretInternalRecord;
 
 import java.time.*;
 import java.util.*;
@@ -111,13 +112,14 @@ public class SecretInvestigationService {
  }
  @Transactional
  public Map<String,Object> evidence(String login,long id,SecretInvestigationRequests.Evidence r){
-  if(r==null)throw new ApiException(ErrorCode.INVALID_INPUT);reference(r.evidenceRef(),true);code(r.evidenceKind(),EVIDENCE_KINDS);observed(r.observedAt());
+  if(r==null)throw new ApiException(ErrorCode.INVALID_INPUT);reference(r.evidenceRef(),false);code(r.evidenceKind(),EVIDENCE_KINDS);observed(r.observedAt());
   var actor=access.requirePrincipal(login);requireRead(actor,read(id,false));
   var result=commands.execute(actor,SecretCommandExecutor.Kind.INVESTIGATION_EVIDENCE,r.idempotencyKey(),
    digest(id,r.evidenceRef(),r.evidenceKind(),r.observedAt(),r.expectedVersion()),()->requireRead(actor,read(id,false)),()->{
     var task=read(id,true);requireOpen(task);SecretCommandExecutor.requireExpectedVersion(r.expectedVersion(),number(task,"version"));
-    jdbc.update("UPDATE secret_investigation_tasks SET evidence_ref=?,version=version+1 WHERE task_id=?",r.evidenceRef(),id);
-    historyChanges(id,"EVIDENCE_ADDED",actor.userId(),number(task,"version")+1,r.evidenceRef(),Map.of("evidenceKind",r.evidenceKind(),"observedAt",r.observedAt()));
+    String reference=SecretInternalRecord.reference(jdbc,r.evidenceRef(),actor.userId(),"INVESTIGATION",id,number(task,"version")+1,"EVIDENCE_ADDED");
+    jdbc.update("UPDATE secret_investigation_tasks SET evidence_ref=?,version=version+1 WHERE task_id=?",reference,id);
+    historyChanges(id,"EVIDENCE_ADDED",actor.userId(),number(task,"version")+1,reference,Map.of("evidenceKind",r.evidenceKind(),"observedAt",r.observedAt()));
     return new SecretCommandResult(id,number(task,"version")+1,SecretCommandResult.Status.OPEN);
    });return mutation("taskId",result);
  }

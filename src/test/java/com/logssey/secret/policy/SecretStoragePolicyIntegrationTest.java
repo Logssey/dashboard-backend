@@ -56,6 +56,20 @@ class SecretStoragePolicyIntegrationTest {
     @Autowired com.logssey.secret.investigation.SecretInvestigationService investigations;
     long creator,reviewer,operator,connection,scope,occurrence;
 
+    @Test void ticketlessPolicyStillRequiresIndependentApprovalAndRecordsRetirement() {
+        var request=new DraftRequest(null,null,"AUTHORIZED_STORAGE",null,now().minusHours(1),null,
+            List.of(new RuleRequest(connection,scope,"GITHUB_REPOSITORY_FILES","ALLOW","SCOPE",null,null)));
+        var draft=service.draft(request,"policy-creator");
+        assertThat(draft.evidenceRef()).startsWith("CHANGE:RECORD-");
+        assertCode(ErrorCode.FORBIDDEN,()->service.approvePolicy(draft.policyId(),draft.version(),new VersionRequest(draft.version()),"policy-creator"));
+        var active=service.approvePolicy(draft.policyId(),draft.version(),new VersionRequest(draft.version()),"policy-reviewer");
+        var proposed=service.propose(scope,new ProposalRequest("PRODUCTION",active.policyId(),active.version(),"SOURCE_CLASSIFICATION",null,0L),"policy-operator");
+        assertThat(proposed.pendingProposal()).isNotNull();
+        assertCode(ErrorCode.FORBIDDEN,()->service.approveProposal(scope,proposed.pendingProposal().proposalId(),new ApproveProposalRequest(0L,1L),"policy-operator"));
+        service.approveProposal(scope,proposed.pendingProposal().proposalId(),new ApproveProposalRequest(0L,1L),"policy-reviewer");
+        service.retire(active.policyId(),new RetireRequest(active.version(),"POLICY_WITHDRAWN",null),"policy-reviewer");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_internal_records WHERE target_type='POLICY' AND target_id=?",Long.class,active.policyId())).isEqualTo(2);
+    }
     @Test void springProxyDecisionAndInvestigationCommandsUseWritableAtomicTransactions() {
         var result=decisions.decide("policy-creator",occurrence,new com.logssey.secret.decision.SecretDecisionContracts.DecisionRequest(
             "NEEDS_MORE_INFO","INSUFFICIENT_EVIDENCE",null,List.of(),0L,0L,null,"proxy-decision",
@@ -71,6 +85,7 @@ class SecretStoragePolicyIntegrationTest {
     }
 
     @BeforeEach void fixture() {
+        jdbc.execute("TRUNCATE secret_internal_records RESTART IDENTITY");
         jdbc.execute("TRUNCATE secret_connections,secret_storage_policies RESTART IDENTITY CASCADE");
         jdbc.execute("TRUNCATE secret_audit_events,secret_command_idempotency RESTART IDENTITY CASCADE");
         jdbc.execute("TRUNCATE secret_role_grants,secret_team_memberships RESTART IDENTITY");

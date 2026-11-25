@@ -42,6 +42,16 @@ class SecretDecisionIntegrationTest {
         service=new SecretDecisionService(jdbc,access,snapshots,tasks,new SecretLocationRepository(jdbc),
             JsonMapper.builder().findAndAddModules().build(),manager);
     }
+    @Test void ticketlessReviewLinksCurrentFindingAndPreservesFindingRequirement() {
+        var f=fixture("CONFIRMED","UNCLASSIFIED");
+        var old=request(f,"ABNORMAL","UNAPPROVED_SOURCE_LOCATION","internal-triage");
+        var r=new DecisionRequest(old.decision(),old.reasonCode(),old.findingId(),List.of(),old.expectedOccurrenceVersion(),old.expectedScopeVersion(),old.expectedPolicyVersion(),old.idempotencyKey(),null,null,null,null);
+        var saved=service.decide("security",f.occurrence,r);
+        assertThat(service.decide("security",f.occurrence,r)).isEqualTo(saved);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_internal_records",Long.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT evidence_refs::text FROM secret_exposure_assessments WHERE assessment_id=?",String.class,saved.decisionId())).contains("CHANGE:RECORD-");
+    }
+
     @Test void successfulFileEvidenceSurvivesOtherObjectsMissingFromTheSameScope() {
         var f=fixture("CONFIRMED","UNCLASSIFIED");
         jdbc.update("UPDATE secret_run_scopes SET collection_status='PARTIAL',failure_code='GITHUB_BINARY_FILE' WHERE run_scope_id=?",f.runScope);

@@ -110,7 +110,7 @@ public class SecretClosureService {
                 var eligible=inspection.dismissalEvidence().getOrDefault(request.reasonCode(),List.of()).stream().map(EvidenceReference::evidenceId).toList();
                 if(eligible.isEmpty()||!evidence.containsAll(eligible)||!eligible.containsAll(evidence))throw new ApiException(ErrorCode.EVIDENCE_REQUIRED);
                 String transfer=null;
-                if("OUT_OF_SCOPE".equals(request.reasonCode()))transfer=repository.jdbc().queryForObject("SELECT accepted_transfer_ref FROM secret_case_transfer_evidence WHERE evidence_id=? AND case_id=?",String.class,evidence.getFirst(),id);
+                if("OUT_OF_SCOPE".equals(request.reasonCode()))transfer=repository.jdbc().queryForObject("SELECT coalesce((SELECT acceptance_ref FROM secret_case_transfer_reviews r WHERE r.evidence_id=e.evidence_id ORDER BY review_id DESC LIMIT 1),e.accepted_transfer_ref) FROM secret_case_transfer_evidence e WHERE evidence_id=? AND case_id=?",String.class,evidence.getFirst(),id);
                 long version=number(c,"version")+1;
                 long dismissal=repository.jdbc().queryForObject("""
                     INSERT INTO secret_case_dismissals(case_id,reason_code,evidence_snapshot,accepted_transfer_ref,approved_by_user_id,case_version)

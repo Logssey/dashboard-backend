@@ -26,6 +26,17 @@ class SecretInvestigationEvidenceIntegrationTest {
   jdbc.update("INSERT INTO secret_role_grants(user_id,role,granted_by_user_id,grant_source) VALUES(1,'SECURITY',1,'MANUAL')");
   access=new SecretAccessService(jdbc);var command=new SecretCommandExecutor(jdbc,tx);tasks=new SecretInvestigationService(jdbc,access,command);fixtures=new SecretFixtureService(jdbc,access,command);alerts=new SecretCrossEnvironmentAlertService(jdbc,access,command);
  }
+ @Test void ticketlessEvidenceHasOneImmutableRecordAndDoesNotCloseInvestigation() {
+  var f=fixture("CONFIRMED",true);long task=new TransactionTemplate(tx).execute(s->tasks.createHumanTaskTx(new SecretPrincipal(1),f.occurrence,"POLICY_UNKNOWN",1,OffsetDateTime.now().plusDays(1),null));
+  var request=new SecretInvestigationRequests.Evidence(null,"POLICY_REFERENCE",OffsetDateTime.now(),0L,"internal-evidence");
+  tasks.evidence("security",task,request);tasks.evidence("security",task,request);
+  assertThat(one("SELECT count(*) FROM secret_internal_records")).isEqualTo(1);
+  assertThat(tasks.detail("security",task).get("status")).isEqualTo("OPEN");
+  assertThat(jdbc.queryForObject("SELECT evidence_ref FROM secret_investigation_tasks WHERE task_id=?",String.class,task)).startsWith("CHANGE:RECORD-");
+  assertCode(ErrorCode.INVALID_INPUT,()->tasks.evidence("security",task,new SecretInvestigationRequests.Evidence("CHANGE:RECORD-1","OWNER_CONFIRMATION",OffsetDateTime.now(),1L,"forged")));
+  assertThatThrownBy(()->jdbc.update("DELETE FROM secret_internal_records")).isInstanceOf(org.springframework.dao.DataAccessException.class);
+ }
+
  @Test void completeCurrentTestValuesCreateExactlyOneUnassignedAlertAndTask(){
   var f=fixture("CONFIRMED",true);reconcile(f.run);reconcile(f.run);
   assertThat(count("secret_cross_environment_alerts")).isEqualTo(1);assertThat(count("secret_investigation_tasks")).isEqualTo(1);
