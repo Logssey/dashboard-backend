@@ -148,6 +148,36 @@ class HelpLiveEvalTest {
         System.out.println(report);
     }
 
+    /**
+     * Only the CVE card question, three times (design doc 18.8.1). Run on its own:
+     * HELP_LIVE_EVAL=true ./gradlew :test --tests "com.logssey.help.HelpLiveEvalTest.cveCardQuestionOnly"
+     */
+    @Test
+    void cveCardQuestionOnly() throws IOException {
+        String key = key();
+        Assumptions.assumeTrue(key != null && !key.isBlank(), "no Claude key in the environment or .env");
+        var provider = new ClaudeHelpProvider(true, key, "", "https://api.anthropic.com/v1/messages", 60_000,
+                HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).followRedirects(HttpClient.Redirect.NEVER).build(),
+                false);
+        var docs = new HelpDocumentLibrary().documents();
+        var playbook = docs.stream().filter(d -> d.file().equals(HelpChecklist.PLAYBOOK_FILE)).findFirst().orElseThrow();
+        String question = "CVE-2021-44228 검색은 어디서 해요?";
+        var labels = new ArrayList<String>();
+        int cards = 0, untested = 0;
+        for (int run = 0; run < RUNS; run++) {
+            Outcome outcome = ask(provider, docs, playbook, new ChatRequest(question, "요약", List.of()));
+            if (outcome.notTested()) untested++;
+            else if ("CARDS".equals(outcome.code())) cards++;
+            labels.add(outcome.label());
+        }
+        String report = "# CVE 카드 질문만 실제 모델로 확인\n\n- 질문: " + question + "\n- 카드가 나온 횟수: **" + cards + "/" + (RUNS - untested)
+                + "** (NOT_TESTED " + untested + ")\n- 회차별: " + String.join(", ", labels) + "\n";
+        Path out = Path.of("build/reports/help-live-eval-cve.md");
+        Files.createDirectories(out.getParent());
+        Files.writeString(out, report, StandardCharsets.UTF_8);
+        System.out.println(report);
+    }
+
     /** The same input and output path as HelpChatService.chat, without the call budget or cache. */
     static Outcome ask(ClaudeHelpProvider provider, List<HelpDocument> docs, HelpDocument playbook, ChatRequest request) {
         Prepared prepared;

@@ -24,7 +24,6 @@ final class HelpChecklist {
     static final String MODE = "checklist";
     static final int CHECK_COUNT = 10;
     static final int MAX_FOCUS_CHARS = 120;
-    static final int MAX_CLOSING_CHARS = 200;
     static final String OUTSIDE = "OUTSIDE";
     static final String CLOSING = "화면에서 직접 확인해 주세요. 저는 실제 탐지 결과를 볼 수 없어요.";
     static final String FALLBACK_INTRO = "체크리스트 카드를 만들지 못해 대응 절차 문서의 확인 순서를 그대로 보여 드려요.";
@@ -63,8 +62,7 @@ final class HelpChecklist {
             VULN_SUMMARY 2; VULN_FINDINGS 1,2,4,9,10; VULN_WORKLOADS 3; VULN_SCANS 3,9; RUNTIME 5;
             IAC 4,6,7,8; SECRET_FINDINGS 7; SECRET_CASES 7,10; COMPLIANCE 8,10; OUTSIDE 5,6,8,10.
             "focus" says in Korean, in at most 120 characters, what to look at on that screen,
-            using only names written in the playbook. "closing" is one short Korean sentence saying that
-            the user must check the screens themselves because you cannot see real detection results.
+            using only names written in the playbook.
             A "Logssey 환경 신호" block, when present, is written by the server with yes/no values only; you may
             mention a relevant "있음" signal in that card's focus (for example sensors down on check 5), never counts.
             You cannot see the user's data. Never say whether the user is or is not affected.
@@ -103,10 +101,9 @@ final class HelpChecklist {
 
         var root = new LinkedHashMap<String, Object>();
         root.put("type", "object");
-        root.put("properties", Map.of(
-                "cards", Map.of("type", "array", "items", card),
-                "closing", Map.of("type", "string")));
-        root.put("required", List.of("cards", "closing"));
+        // The closing sentence is the fixed CLOSING text, not written by the model (design doc 18.8.1).
+        root.put("properties", Map.of("cards", Map.of("type", "array", "items", card)));
+        root.put("required", List.of("cards"));
         root.put("additionalProperties", false);
         return root;
     }
@@ -154,7 +151,7 @@ final class HelpChecklist {
             Checked checked = check(root, titles(playbook));
             if (checked.cards() == null) return fallback(playbook, "CHECKLIST_INVALID_FORMAT:" + checked.problem(), usage);
             List<Card> cards = checked.cards();
-            return new Result(cards, asText(cards, root.path("closing").asText()), sources(playbook, cards), null, usage);
+            return new Result(cards, asText(cards), sources(playbook, cards), null, usage);
         } catch (RuntimeException invalid) {
             return fallback(playbook, "CHECKLIST_INVALID_FORMAT", usage);
         }
@@ -173,12 +170,7 @@ final class HelpChecklist {
     }
 
     static Checked check(JsonNode root, Map<Integer, String> titles) {
-        if (root == null || !root.isObject() || root.size() != 2
-                || !root.path("cards").isArray() || !root.path("closing").isTextual()) return Checked.failed("ROOT_SHAPE");
-        String closing = HelpAnswerFilter.withoutMarkdownMarks(root.path("closing").asText()).strip();
-        if (closing.isEmpty() || closing.length() > MAX_CLOSING_CHARS || !HelpAnswerFilter.safe(closing)) {
-            return Checked.failed("CLOSING_INVALID");
-        }
+        if (root == null || !root.isObject() || root.size() != 1 || !root.path("cards").isArray()) return Checked.failed("ROOT_SHAPE");
 
         JsonNode items = root.path("cards");
         if (items.isEmpty() || items.size() > CHECK_COUNT) return Checked.failed("CARD_COUNT");
@@ -224,14 +216,13 @@ final class HelpChecklist {
     }
 
     /** Plain-text form of the cards; also what is kept as conversation history. */
-    static String asText(List<Card> cards, String closing) {
+    static String asText(List<Card> cards) {
         var text = new StringBuilder();
         for (Card card : cards) {
             text.append(String.join(" · ", card.titles())).append(" (").append(SCREEN_LABELS.get(card.screen())).append(")\n")
                     .append("   ").append(card.focus()).append('\n');
         }
-        String end = HelpAnswerFilter.withoutMarkdownMarks(closing == null ? "" : closing).strip();
-        return text.append('\n').append(end.isEmpty() ? CLOSING : end).toString();
+        return text.append('\n').append(CLOSING).toString();
     }
 
     /** Fallback without another model call: the playbook's own lines for every check. */

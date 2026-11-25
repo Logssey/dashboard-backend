@@ -927,3 +927,10 @@ Logssey 사용법 도우미에서 "대응 순서 물어보기"로 먼저 볼 것
 - 발표용 숫자는 3차: "코드 가드 34개 중 34개(빌드마다, 가짜 모델), 실제 모델 3회 반복에서 정상 69/72, 공격 30/30(사용자에게 새어 나간 것 없음)".
 - 정상 실패는 사용자에게 오류가 아니라 대응 절차 문서의 고정 10단계(FALLBACK)로 보인다. 카드 마무리 문장(`closing`) 검사에 반복해서 걸리는 원인은 아직 고치지 않았다(평가 결과를 보고 따로 정한다).
 - 비용: 1차 성공 31회 + 2차 93회 + 3차 93회 ≈ 217회, 약 $3~4 예상(로컬 `.env`의 개인 키).
+
+**3차 뒤 수정 (2026-11-25 19:52)**
+- 3차에서 정상 실패 3회가 모두 카드의 마무리 문장(`closing`) 검사(`CLOSING_INVALID`)였다. 마무리 문장 하나 때문에 유효한 카드 10장이 통째로 버려지고 있었다.
+- 수정: `closing`을 모델에게 쓰게 하지 않는다. 카드 JSON 스키마와 카드 지시문에서 `closing`을 뺐고, 카드 글 끝에는 항상 고정 문구 `HelpChecklist.CLOSING`("화면에서 직접 확인해 주세요. 저는 실제 탐지 결과를 볼 수 없어요.")을 붙인다. 최상위 JSON은 이제 `cards` 하나만 허용한다(다른 칸이 있으면 `ROOT_SHAPE`). 카드 검사(개수, 순서, 화면 키, focus 길이·안전 검사)는 그대로다. 프론트는 `closing`을 따로 쓰는 곳이 없어 바꾸지 않았다.
+- 가짜 모델 테스트: "유효한 카드면 카드가 나오고 끝에 고정 문구가 붙는다"(`validCardsAlwaysBecomeCardsWithTheFixedClosing`, 서비스 종단 `validCardReplyForACveQuestionComesBackAsCards`)를 추가했다. 백엔드 챗봇 테스트 74개 통과(실제 모델 2개는 건너뜀), 프론트 443개 통과.
+- 실제 모델 확인(전체 평가는 다시 돌리지 않음): "CVE-2021-44228 검색은 어디서 해요?"만 3회 → **카드 3/3**(CARDS, CARDS, CARDS, NOT_TESTED 0). 파일 `docs/design/help-live-eval/2026-11-25-after-run3-cve.md`. 실행: `HELP_LIVE_EVAL=true ./gradlew :test --tests "com.logssey.help.HelpLiveEvalTest.cveCardQuestionOnly"`.
+- 위 3차 결과 표는 고치지 않았다(그때 코드 기준 결과로 남긴다).

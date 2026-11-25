@@ -52,7 +52,7 @@ class HelpChecklistTest {
     }
 
     static Map<String, Object> answer(List<Map<String, Object>> cards) {
-        return Map.of("cards", cards, "closing", "화면에서 직접 확인해 주세요. 저는 실제 탐지 결과를 볼 수 없어요.");
+        return Map.of("cards", cards);
     }
 
     private static HelpChecklist.Result parse(String reply) {
@@ -93,7 +93,7 @@ class HelpChecklistTest {
     void malformedJsonFallsBack() {
         assertFallback(parse(modelReply("{\"cards\": [ {\"checks\": [1], \"screen\": ")));
         assertFallback(parse(modelReply("체크리스트입니다: 1. CVE 검색")));
-        assertFallback(parse(modelReply(Map.of("cards", validCards()))));                       // closing missing
+        assertFallback(parse(modelReply(Map.of("cards", validCards(), "closing", "x"))));          // closing is not the model's
         assertFallback(parseWith(cards -> cards.get(0).put("extra", "x")));                     // unknown field
         assertFallback(parseWith(cards -> cards.get(0).put("checks", List.of("1"))));           // not a number
         assertFallback(parse(HelpAnswerFilterTest.message("max_tokens", "[]")));               // cut off
@@ -125,7 +125,7 @@ class HelpChecklistTest {
         assertFallback(parseWith(cards -> cards.get(0).put("focus", "<a href=x>여기</a>를 누릅니다.")));
         assertFallback(parseWith(cards -> cards.get(0).put("focus", "키 " + HelpTestKeys.githubLike())));
         assertFallback(parseWith(cards -> cards.get(0).put("focus", "가".repeat(HelpChecklist.MAX_FOCUS_CHARS + 1))));
-        assertFallback(parse(modelReply(Map.of("cards", validCards(), "closing", "https://example.invalid"))));
+        assertFallback(parse(modelReply(Map.of("cards", validCards(), "closing", "https://example.invalid"))));  // extra field
     }
 
     @Test
@@ -173,10 +173,27 @@ class HelpChecklistTest {
         assertThat(parseWith(cards -> cards.get(0).put("focus", "https://example.invalid")).reasonCode())
                 .isEqualTo("CHECKLIST_INVALID_FORMAT:FOCUS_INVALID");
         assertThat(parseWith(cards -> cards.get(0).put("extra", "x")).reasonCode()).isEqualTo("CHECKLIST_INVALID_FORMAT:CARD_SHAPE");
-        assertThat(parse(modelReply(Map.of("cards", validCards()))).reasonCode()).isEqualTo("CHECKLIST_INVALID_FORMAT:ROOT_SHAPE");
+        assertThat(parse(modelReply(Map.of("cards", validCards(), "closing", "x"))).reasonCode())
+                .isEqualTo("CHECKLIST_INVALID_FORMAT:ROOT_SHAPE");
         assertThat(parse(modelReply("체크리스트입니다")).reasonCode()).isEqualTo("CHECKLIST_INVALID_FORMAT:NOT_JSON");
         assertThat(parse(HelpAnswerFilterTest.message("max_tokens", "[]")).reasonCode())
                 .isEqualTo("CHECKLIST_INVALID_RESPONSE:STOP_max_tokens");
         assertThat(parse(modelReply(answer(validCards()))).fallback()).isFalse();
+    }
+
+    /** Design doc 18.8.1: valid cards always come back as cards, ending with the fixed closing sentence. */
+    @Test
+    void validCardsAlwaysBecomeCardsWithTheFixedClosing() {
+        var result = parse(modelReply(answer(validCards())));
+        assertThat(result.fallback()).isFalse();
+        assertThat(result.cards()).hasSize(9);
+        assertThat(result.text()).endsWith(HelpChecklist.CLOSING);
+        // The model is no longer asked for a closing sentence at all.
+        String schema = JSON.writeValueAsString(HelpChecklist.schema());
+        assertThat(schema).doesNotContain("closing");
+        assertThat(HelpChecklist.SYSTEM_PROMPT).doesNotContain("closing");
+        // Card checks are unchanged: a bad screen key or an unsafe focus still falls back.
+        assertFallback(parseWith(cards -> cards.get(0).put("screen", "RUNTIME")));
+        assertFallback(parseWith(cards -> cards.get(0).put("focus", "가".repeat(HelpChecklist.MAX_FOCUS_CHARS + 1))));
     }
 }

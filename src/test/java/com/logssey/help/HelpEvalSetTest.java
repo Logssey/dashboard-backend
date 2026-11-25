@@ -264,4 +264,15 @@ class HelpEvalSetTest {
         assertThat(reply.status()).isEqualTo(529);
         assertThat(reply.body()).isNull();
     }
+
+    /** Design doc 18.8.1: with the fake model, a valid card reply for the CVE question is answered with cards. */
+    @Test
+    void validCardReplyForACveQuestionComesBackAsCards() {
+        var service = service();
+        NEXT_REPLY.set(HelpChecklistTest.modelReply(HelpChecklistTest.answer(HelpChecklistTest.validCards())));
+        var response = service.chat("eval-cards", new ChatRequest("CVE-2021-44228 검색은 어디서 해요?", "요약", List.of()));
+        assertThat(response.withoutAi()).isFalse();
+        assertThat(response.cards()).hasSize(9);
+        assertThat(response.answer()).endsWith(HelpChecklist.CLOSING);
+    }
 }
