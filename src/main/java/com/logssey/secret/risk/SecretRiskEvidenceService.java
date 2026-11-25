@@ -1,4 +1,5 @@
 package com.logssey.secret.risk;
+import com.logssey.secret.evidence.SecretInternalRecord;
 
 import com.logssey.common.error.*;
 import com.logssey.secret.access.*;
@@ -85,7 +86,7 @@ public class SecretRiskEvidenceService {
             || r.applicableFrom().isAfter(r.observedAt())
             || (r.validUntil() != null && r.applicableUntil().isAfter(r.validUntil()))))
       throw SecretRiskFacts.invalid();
-    SecretEvidenceRules.reference(r.evidenceRef(), true);
+    SecretEvidenceRules.reference(r.evidenceRef(), false);
     if (r.assetId() != null
         && (r.assetId() <= 0 || !"ASSET_CLASSIFICATION".equals(r.evidenceType())))
       throw SecretRiskFacts.invalid();
@@ -171,6 +172,7 @@ public class SecretRiskEvidenceService {
             throw new ApiException(ErrorCode.EVIDENCE_REQUIRED);
           }
           String payload = commands.json.writeValueAsString(facts);
+          String reference=SecretInternalRecord.reference(jdbc,r.evidenceRef(),actor.userId(),"OCCURRENCE",occurrence,r.expectedEvidenceRevision(),"EVIDENCE_SUBMITTED");
           long id =
               jdbc.queryForObject(
                   """
@@ -193,7 +195,7 @@ VALUES('ASSERTION',?,?,?,?,'MANUAL',?,?::jsonb,?::jsonb,?,?,?,?,?,'EVIDENCE_SUBM
                   r.validUntil(),
                   actor.userId(),
                   accepted ? actor.userId() : null,
-                  r.evidenceRef(),
+                  reference,
                   SecretRiskCommands.digest(payload),
                   HexFormat.of()
                       .formatHex(

@@ -1,4 +1,5 @@
 package com.logssey.secret.decision;
+import com.logssey.secret.evidence.SecretInternalRecord;
 
 import java.nio.ByteBuffer;
 import java.security.MessageDigest;
@@ -55,7 +56,7 @@ public class SecretDecisionService {
         expected(request.expectedOccurrenceVersion());expected(request.expectedScopeVersion());
         if(request.expectedPolicyVersion()!=null)expected(request.expectedPolicyVersion());
         if("NEEDS_MORE_INFO".equals(request.decision())) {
-            code(request.missingReasonCode(),MISSING_REASONS);reference(request.evidenceRef(),true);
+            code(request.missingReasonCode(),MISSING_REASONS);reference(request.evidenceRef(),false);
             future(request.dueAt(),true);if(request.followUpOwnerUserId()==null)invalid();
         } else if(request.missingReasonCode()!=null||request.followUpOwnerUserId()!=null||request.dueAt()!=null||request.evidenceRef()!=null)invalid();
         var actor=access.requirePrincipal(login);
@@ -73,9 +74,10 @@ public class SecretDecisionService {
             Map<String,Object> finding=null;
             if(request.findingId()!=null)finding=currentFinding(id,request.findingId());
             if(!"NEEDS_MORE_INFO".equals(request.decision())&&finding==null)throw new SecretReviewConflict("finding");
-            if(evidence.isEmpty()&&!"NEEDS_MORE_INFO".equals(request.decision()))throw new ApiException(ErrorCode.EVIDENCE_REQUIRED);
+
             long version=number(row,"exposure_assessment_version")+1;
-            long decision=recordDecision(actor,row,finding,request.decision(),request.reasonCode(),evidence,version);
+            var recordedEvidence=evidence.isEmpty()?List.of(SecretInternalRecord.reference(jdbc,null,actor.userId(),"OCCURRENCE",id,version,"TRIAGE_DECISION")):evidence;
+            long decision=recordDecision(actor,row,finding,request.decision(),request.reasonCode(),recordedEvidence,version);
             String exposure=Set.of("NORMAL","ABNORMAL").contains(request.decision())?request.decision():text(row,"exposure_status");
             // FP changes Finding truth only. It never asserts a NORMAL location or INVALID credential.
             if(Set.of("NORMAL","ABNORMAL").contains(request.decision()))jdbc.update("""

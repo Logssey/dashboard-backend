@@ -1,4 +1,5 @@
 package com.logssey.secret.closure;
+import com.logssey.secret.evidence.SecretInternalRecord;
 
 import java.util.*;
 import java.time.OffsetDateTime;
@@ -75,14 +76,14 @@ public class SecretGovernanceService {
         var visibleIds=new HashSet<>(visible.stream().map(row->number(row,"occurrence_id")).toList());
         for(var e:repository.jdbc().queryForList("""
             SELECT e.*,1+(SELECT count(*) FROM secret_case_transfer_reviews WHERE evidence_id=e.evidence_id) AS version,
-              review.decision,review.reviewed_by_user_id FROM secret_case_transfer_evidence e
-            LEFT JOIN LATERAL(SELECT decision,reviewed_by_user_id FROM secret_case_transfer_reviews r WHERE r.evidence_id=e.evidence_id
+              review.decision,review.reviewed_by_user_id,coalesce(review.acceptance_ref,e.accepted_transfer_ref) AS actual_acceptance_ref FROM secret_case_transfer_evidence e
+            LEFT JOIN LATERAL(SELECT decision,reviewed_by_user_id,acceptance_ref FROM secret_case_transfer_reviews r WHERE r.evidence_id=e.evidence_id
               ORDER BY review_id DESC LIMIT 1)review ON true WHERE e.case_id=? ORDER BY e.evidence_id DESC
             """,id)) {
             var covered=repository.jdbc().query("SELECT occurrence_id FROM secret_case_transfer_locations WHERE evidence_id=? ORDER BY occurrence_id",(rs,n)->rs.getLong(1),e.get("evidence_id"))
                 .stream().filter(visibleIds::contains).toList();if(covered.isEmpty())continue;
             items.add(new TransferEvidence(number(e,"evidence_id"),number(e,"version"),text(e,"reason_code"),full?text(e,"evidence_ref"):null,
-                full?text(e,"accepted_transfer_ref"):null,covered,number(e,"submitted_by_user_id"),time(e,"submitted_at"),
+                full?text(e,"actual_acceptance_ref"):null,covered,number(e,"submitted_by_user_id"),time(e,"submitted_at"),
                 e.get("decision")==null?"PENDING":"APPROVE".equals(e.get("decision"))?"APPROVED":"REJECTED",nullable(e,"reviewed_by_user_id"),
                 full&&active&&actor.userId()!=number(e,"submitted_by_user_id")&&!staleTransfer(number(e,"evidence_id"))));
         }
@@ -90,7 +91,8 @@ public class SecretGovernanceService {
     }
     public Mutation transfer(String login,long id,TransferRequest request) {
         if(request==null)invalid();code(request.reasonCode(),TRANSFER_REASONS);
-        if(!transferReference(request.evidenceRef())||!transferReference(request.acceptedTransferRef()))invalid();
+        SecretInternalRecord.rejectReserved(request.acceptedTransferRef());
+        if(request.evidenceRef()!=null&&!transferReference(request.evidenceRef())||request.acceptedTransferRef()!=null&&!transferReference(request.acceptedTransferRef()))invalid();
         var occurrences=ids(request.occurrenceIds());if(occurrences.isEmpty())invalid();var actor=closure.access().requirePrincipal(login);
         var result=closure.commands().execute(actor,SecretCommandExecutor.Kind.TRANSFER_SUBMIT,request.idempotencyKey(),
             digest(id,occurrences,request.reasonCode(),request.evidenceRef(),request.acceptedTransferRef(),request.expectedCaseVersion()),()->closure.requireFull(actor,id),()->{
@@ -102,7 +104,7 @@ public class SecretGovernanceService {
                 long evidence=repository.jdbc().queryForObject("""
                     INSERT INTO secret_case_transfer_evidence(case_id,reason_code,evidence_ref,accepted_transfer_ref,submitted_by_user_id,case_version)
                     VALUES(?,?,?,?,?,?) RETURNING evidence_id
-                    """,Long.class,id,request.reasonCode(),request.evidenceRef(),request.acceptedTransferRef(),actor.userId(),version);
+                    """,Long.class,id,request.reasonCode(),SecretInternalRecord.reference(repository.jdbc(),request.evidenceRef(),actor.userId(),"CASE",id,version,"TRANSFER_SUBMITTED"),request.acceptedTransferRef(),actor.userId(),version);
                 for(Long occurrence:occurrences)repository.jdbc().update("""
                     INSERT INTO secret_case_transfer_locations(evidence_id,occurrence_id,scope_id,scope_revision,scope_origin_version,assessment_version)
                     SELECT ?,o.occurrence_id,s.scope_id,s.revision,s.response_origin_version,o.exposure_assessment_version
@@ -128,9 +130,9 @@ public class SecretGovernanceService {
                 if(staleTransfer(evidence))throw new ApiException(ErrorCode.CONFLICT);
                 long version=number(c,"version")+1;
                 repository.jdbc().update("""
-                    INSERT INTO secret_case_transfer_reviews(evidence_id,decision,reason_code,expected_evidence_version,case_version,reviewed_by_user_id)
-                    VALUES(?,?,?,?,?,?)
-                    """,evidence,request.decision(),request.reasonCode(),evidenceVersion,version,actor.userId());
+                    INSERT INTO secret_case_transfer_reviews(evidence_id,decision,reason_code,expected_evidence_version,case_version,reviewed_by_user_id,acceptance_ref)
+                    VALUES(?,?,?,?,?,?,?)
+                    """,evidence,request.decision(),request.reasonCode(),evidenceVersion,version,actor.userId(),"APPROVE".equals(request.decision())?SecretInternalRecord.reference(repository.jdbc(),null,actor.userId(),"CASE",id,version,"TRANSFER_ACCEPTANCE_CONFIRMED"):null);
                 bump(id,version);closure.activity(id,"TRANSFER_REVIEWED",actor,version,evidence);closure.invalidate(closure.evaluator().inspect(id,actor));
                 return new SecretCommandResult(evidence,version,"APPROVE".equals(request.decision())?SecretCommandResult.Status.APPROVED:SecretCommandResult.Status.REJECTED);
             });

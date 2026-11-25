@@ -229,7 +229,7 @@ SELECT clock_timestamp() AS db_now,
         return new SecretPermissionAssistanceService.Confirm(
                 (String)preview.get("contextVersion"),
                 ((Number)preview.get("evidenceRevision")).longValue(),
-                key, true, "TICKET:SEC-123", observedAt, observedAt.plusMinutes(30),
+                key, true, null, observedAt, observedAt.plusMinutes(30),
                 Map.of("capability","RESOURCE_ADMINISTRATION","targetScope","ACCOUNT",
                         "permissionCoverage","COMPLETE","targetCoverage","COMPLETE",
                         "restrictionCoverage","COMPLETE","classificationCoverage","COMPLETE"),
