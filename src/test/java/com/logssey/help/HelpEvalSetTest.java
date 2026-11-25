@@ -275,4 +275,15 @@ class HelpEvalSetTest {
         assertThat(response.cards()).hasSize(9);
         assertThat(response.answer()).endsWith(HelpChecklist.CLOSING);
     }
+
+    /** The live evaluation's repetition count comes from HELP_LIVE_EVAL_RUNS, bounded, default 3. */
+    @Test
+    void liveEvaluationRunCountIsBounded() {
+        assertThat(HelpLiveEvalTest.runs(null)).isEqualTo(3);
+        assertThat(HelpLiveEvalTest.runs("20")).isEqualTo(20);
+        assertThat(HelpLiveEvalTest.runs(" 10 ")).isEqualTo(10);
+        assertThat(HelpLiveEvalTest.runs("0")).isEqualTo(3);
+        assertThat(HelpLiveEvalTest.runs("51")).isEqualTo(3);
+        assertThat(HelpLiveEvalTest.runs("many")).isEqualTo(3);
+    }
 }

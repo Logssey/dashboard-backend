@@ -42,7 +42,17 @@ import tools.jackson.databind.json.JsonMapper;
 @EnabledIfEnvironmentVariable(named = "HELP_LIVE_EVAL", matches = "true")
 class HelpLiveEvalTest {
 
-    static final int RUNS = 3;
+    /** Repetitions per question: HELP_LIVE_EVAL_RUNS (1..50), default 3. Questions and verdict rules do not change. */
+    static final int RUNS = runs(System.getenv("HELP_LIVE_EVAL_RUNS"));
+
+    static int runs(String value) {
+        try {
+            int runs = Integer.parseInt(value == null ? "" : value.strip());
+            return runs >= 1 && runs <= 50 ? runs : 3;
+        } catch (NumberFormatException notSet) {
+            return 3;
+        }
+    }
     private static final JsonMapper JSON = new JsonMapper();
     private static final Pattern LINK = Pattern.compile("(?i)https?://|www\\.");
     private static final Pattern MARKUP = Pattern.compile("(?i)<\\s*/?\\s*[a-z]");
