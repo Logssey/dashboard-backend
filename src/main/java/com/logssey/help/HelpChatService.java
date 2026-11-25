@@ -55,36 +55,16 @@ class HelpChatService {
     }
 
     ChatResponse chat(String principal, ChatRequest request) {
-        if (request == null || request.question() == null) throw new HelpChatException("INVALID_INPUT");
-        String question = request.question().strip();
-        if (question.isEmpty() || question.length() > MAX_QUESTION_CHARS) throw new HelpChatException("INVALID_INPUT");
-        String page = cleanPage(request.page());
-        List<HelpTurn> rawHistory = cleanHistory(request.history());
-        // Check the original text too: masking a digit run inside a key could shorten what is left below the
-        // long-token threshold (design doc 18.7).
-        if (HelpQuestionGuard.containsSecretLikeValue(question)
-                || rawHistory.stream().anyMatch(turn -> HelpQuestionGuard.containsSecretLikeValue(turn.text()))) {
-            log.info("Help chat rejected a secret-like question before dispatch");
-            throw new HelpChatException("QUESTION_REJECTED");
-        }
-        // Customer data (e-mail, IP, phone, ...) is masked in the question and in every earlier turn (design doc 18.1).
-        question = HelpPrivacyMask.mask(question);
-        List<HelpTurn> history = rawHistory.stream()
-                .map(turn -> new HelpTurn(turn.role(), HelpPrivacyMask.mask(turn.text()))).toList();
-
-        // Never send credential-looking text to the provider, even from earlier turns.
-        if (HelpQuestionGuard.containsSecretLikeValue(question)
-                || history.stream().anyMatch(turn -> HelpQuestionGuard.containsSecretLikeValue(turn.text()))) {
-            log.info("Help chat rejected a secret-like question before dispatch");
-            throw new HelpChatException("QUESTION_REJECTED");
-        }
+        Prepared prepared = prepare(request);
+        String question = prepared.question();
+        String page = prepared.page();
+        List<HelpTurn> history = prepared.history();
+        Map<String, Boolean> signals = prepared.signals();
 
         String reason = readiness();
         if (!"READY".equals(reason)) throw new HelpChatException("NOT_CONFIGURED");
 
-        HelpDocument playbook = HelpChecklist.wanted(request.mode(), question) ? playbook() : null;
-        // Yes/no environment signals only (design doc 18.3); unknown keys and non-booleans are dropped.
-        Map<String, Boolean> signals = HelpSignals.clean(request.signals());
+        HelpDocument playbook = prepared.checklist() ? playbook() : null;
         String normalized = question.replaceAll("\\s+", " ") + "\n" + signals;
         // Checklist answers ignore history, so they can always be cached.
         String cacheKey = playbook != null ? "checklist\n" + page + "\n" + normalized
@@ -134,6 +114,43 @@ class HelpChatService {
         }
         if (cacheKey != null) remember(cacheKey, response);
         return response;
+    }
+
+    /** What is sent to the model after every input check (design doc 18.1, 18.3, 18.7). */
+    record Prepared(String question, String page, List<HelpTurn> history, Map<String, Boolean> signals, boolean checklist) {
+    }
+
+    /**
+     * The input path shared by {@link #chat} and the live model evaluation (design doc 18.8): length check, key check on
+     * the original text, customer-data masking of the question and every earlier turn, key check again, page and
+     * history cleaning, yes/no signals, and the card-mode decision. Throws INVALID_INPUT or QUESTION_REJECTED.
+     */
+    static Prepared prepare(ChatRequest request) {
+        if (request == null || request.question() == null) throw new HelpChatException("INVALID_INPUT");
+        String question = request.question().strip();
+        if (question.isEmpty() || question.length() > MAX_QUESTION_CHARS) throw new HelpChatException("INVALID_INPUT");
+        String page = cleanPage(request.page());
+        List<HelpTurn> rawHistory = cleanHistory(request.history());
+        // Check the original text too: masking a digit run inside a key could shorten what is left below the
+        // long-token threshold (design doc 18.7).
+        if (HelpQuestionGuard.containsSecretLikeValue(question)
+                || rawHistory.stream().anyMatch(turn -> HelpQuestionGuard.containsSecretLikeValue(turn.text()))) {
+            log.info("Help chat rejected a secret-like question before dispatch");
+            throw new HelpChatException("QUESTION_REJECTED");
+        }
+        // Customer data (e-mail, IP, phone, ...) is masked in the question and in every earlier turn (design doc 18.1).
+        question = HelpPrivacyMask.mask(question);
+        List<HelpTurn> history = rawHistory.stream()
+                .map(turn -> new HelpTurn(turn.role(), HelpPrivacyMask.mask(turn.text()))).toList();
+        // Never send credential-looking text to the provider, even from earlier turns.
+        if (HelpQuestionGuard.containsSecretLikeValue(question)
+                || history.stream().anyMatch(turn -> HelpQuestionGuard.containsSecretLikeValue(turn.text()))) {
+            log.info("Help chat rejected a secret-like question before dispatch");
+            throw new HelpChatException("QUESTION_REJECTED");
+        }
+        // Yes/no environment signals only (design doc 18.3); unknown keys and non-booleans are dropped.
+        Map<String, Boolean> signals = HelpSignals.clean(request.signals());
+        return new Prepared(question, page, history, signals, HelpChecklist.wanted(request.mode(), question));
     }
 
     /** Cards when the model JSON passes every check; otherwise the playbook text, without a second call. */
