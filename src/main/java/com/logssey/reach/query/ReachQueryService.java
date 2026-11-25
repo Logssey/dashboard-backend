@@ -184,6 +184,29 @@ public class ReachQueryService {
     public record ReportScope(String appliedBasis, List<ReachQueryRepository.ReportRow> rows, int unscannedRunning,
                               List<String> appsWithoutImage) {}
 
+    /**
+     * 통합 현황 보안 점수용 이미지 범위 (dashboard-design-docs ADR-D012). L1 조회가 신선하면 실행 중 이미지만, 아니면 마지막으로 알던
+     * 범위(LATEST)다. observedAt은 가장 최근 L1 조회(L1이 꺼져 있으면 null). 사람 권한과 관계없는 시스템 값이라 로그인을 보지 않는다
+     */
+    public record ScoreScope(boolean running, java.time.OffsetDateTime observedAt, Map<String, OffsetDateTime> scannedApps,
+                             List<ReachQueryRepository.ScoreRow> rows) {}
+
+    public ScoreScope scoreScope() {
+        var basis = basis("RUNNING");
+        boolean running = repository.hasFreshObservation(basis);
+        var applied = running ? basis : ReachQueryRepository.Basis.LATEST;
+        var rows = repository.scoreRows(applied).stream().filter(r -> !running || r.running()).toList();
+        // 범위에 든 이미지 스캔이 있는 앱 (Finding이 0건이어도 검사한 앱이다). 값은 그 앱의 가장 최근 스캔 시각
+        Map<String, OffsetDateTime> apps = new LinkedHashMap<>();
+        var scans = repository.scopeScanList(applied).stream()
+                .filter(s -> "IMAGE".equals(s.targetType()) && (!running || s.running())).toList();
+        for (var scan : scans) {
+            var finished = repository.scanFinishedAt(scan.scanId());
+            apps.merge(scan.app(), finished, (a, b) -> a == null ? b : b == null ? a : a.isAfter(b) ? a : b);
+        }
+        return new ScoreScope(running, repository.latestObservation(basis), apps, rows);
+    }
+
     public ReportScope reportScope(String loginId) {
         requireAdmin(loginId);
         var basis = basis("RUNNING");

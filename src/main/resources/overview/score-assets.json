@@ -1,0 +1,27 @@
+{
+  "version": "2026-11-26.1",
+  "note": "ADR-D012 결정 2·4의 Re:Used 초기 설정값. 데이터 자산(RDS·TFSTATE·SECRET·S3)의 ARN은 iac_data_assets에서 kind로 찾는다",
+  "assets": [
+    {"id": "rds", "name": "회원·거래 DB(RDS)", "tier": 1, "area": "DATA",
+     "dataAssetKind": "RDS", "sources": ["IAC", "COMPLIANCE"]},
+    {"id": "tfstate", "name": "tfstate", "tier": 1, "area": "DATA",
+     "dataAssetKind": "TFSTATE", "sources": ["IAC", "COMPLIANCE"]},
+    {"id": "secrets", "name": "시크릿(Secrets Manager)", "tier": 1, "area": "CREDENTIAL",
+     "dataAssetKind": "SECRET", "sources": ["IAC", "COMPLIANCE"]},
+    {"id": "deploy-path", "name": "배포 경로", "tier": 1, "area": "DEPLOY",
+     "repoPaths": [{"repository": "*", "pathPrefix": ".github/"}], "sources": ["CODE"]},
+    {"id": "node-role", "name": "Node Role", "tier": 1, "area": "CREDENTIAL",
+     "arns": ["arn:aws:iam::794386801311:role/logssey-prod-role-node"], "sources": ["COMPLIANCE"]},
+    {"id": "api", "name": "API 워크로드", "tier": 1, "area": "WORKLOAD",
+     "apps": ["API"], "repoPaths": [{"repository": "service-backend", "pathPrefix": ""}],
+     "sources": ["VULNERABILITY", "CODE"]},
+    {"id": "chat", "name": "CHAT 워크로드", "tier": 1, "area": "WORKLOAD",
+     "apps": ["CHAT"], "repoPaths": [{"repository": "service-backend", "pathPrefix": "chat-server/"}],
+     "sources": ["VULNERABILITY", "CODE"]},
+    {"id": "s3", "name": "S3(이미지, loki-chunks, loki-ruler)", "tier": 2, "area": "DATA",
+     "dataAssetKind": "S3", "sources": ["IAC", "COMPLIANCE"]},
+    {"id": "web", "name": "WEB 워크로드", "tier": 3, "area": "WORKLOAD",
+     "apps": ["WEB"], "repoPaths": [{"repository": "service-frontend", "pathPrefix": ""}],
+     "sources": ["VULNERABILITY", "CODE"]}
+  ]
+}

@@ -240,6 +240,71 @@ public class ReachQueryRepository {
                 .list();
     }
 
+    /**
+     * 통합 현황 보안 점수의 이미지 위험 한 줄 (dashboard-design-docs ADR-D012). 기본 범위의 이미지 대상 Finding과 지금 판정,
+     * 점수용 등급에 필요한 실행 여부·CVSS. firstFoundAt은 같은 앱 × 패키지 이름 × CVE의 가장 이른 발견(리포트 장과 같은 식)
+     */
+    public record ScoreRow(long findingId, String app, boolean running, OffsetDateTime scannedAt, String vulnerabilityId,
+                           String componentName, String severity, String status, String deployment,
+                           java.math.BigDecimal cvssScore, OffsetDateTime firstFoundAt) {}
+
+    private static final String SCORE_ROWS = """
+            WITH scope AS (
+                %s
+            )
+            SELECT f.finding_id, t.app, sc.running, s.finished_at AS scanned_at, f.vulnerability_id, f.component_name,
+                   f.severity, v.status, f.deployment, f.cvss_score,
+                   (SELECT MIN(f2.first_seen_at) FROM reach_findings f2
+                    JOIN reach_targets t2 ON t2.target_id = f2.target_id
+                    WHERE t2.target_type = 'IMAGE' AND t2.app = t.app
+                      AND f2.component_name = f.component_name AND f2.vulnerability_id = f.vulnerability_id
+                      AND EXISTS (SELECT 1 FROM reach_verdicts v2 JOIN reach_scans s2 ON s2.scan_id = v2.scan_id
+                                  WHERE v2.finding_id = f2.finding_id AND s2.trigger_type <> 'PR'
+                                    AND v2.method IS DISTINCT FROM 'MANUAL')) AS first_found_at
+            FROM scope sc
+            JOIN reach_targets t ON t.target_id = sc.target_id
+            JOIN reach_scans s ON s.scan_id = sc.scan_id
+            JOIN reach_findings f ON f.target_id = sc.target_id
+             AND EXISTS (SELECT 1 FROM reach_verdicts lv
+                         WHERE lv.finding_id = f.finding_id AND lv.scan_id = sc.scan_id
+                           AND lv.method IS DISTINCT FROM 'MANUAL')
+            JOIN reach_verdicts v ON v.finding_id = f.finding_id AND v.is_current
+            WHERE sc.target_type = 'IMAGE'
+            ORDER BY t.app, f.finding_id""";
+
+    List<ScoreRow> scoreRows(Basis basis) {
+        var params = new HashMap<String, Object>();
+        basisParams(params, basis);
+        return jdbcClient.sql(SCORE_ROWS.formatted(scopeScans(basis)))
+                .params(params)
+                .query((rs, i) -> new ScoreRow(rs.getLong("finding_id"), rs.getString("app"), rs.getBoolean("running"),
+                        rs.getObject("scanned_at", OffsetDateTime.class), rs.getString("vulnerability_id"),
+                        rs.getString("component_name"), rs.getString("severity"), rs.getString("status"),
+                        rs.getString("deployment"), rs.getBigDecimal("cvss_score"),
+                        rs.getObject("first_found_at", OffsetDateTime.class)))
+                .list();
+    }
+
+    OffsetDateTime scanFinishedAt(long scanId) {
+        return jdbcClient.sql("SELECT finished_at FROM reach_scans WHERE scan_id = :scanId")
+                .param("scanId", scanId)
+                .query((rs, i) -> rs.getObject(1, OffsetDateTime.class))
+                .optional().orElse(null);
+    }
+
+    /** 허용한 (클러스터, 네임스페이스)의 가장 최근 L1 조회 시각. 조회가 없거나 L1이 꺼져 있으면 null */
+    OffsetDateTime latestObservation(Basis basis) {
+        if (!basis.running()) return null;
+        var params = new HashMap<String, Object>();
+        basisParams(params, basis);
+        return jdbcClient.sql("""
+                        SELECT max(o.observed_at) FROM reach_workload_observations o
+                        WHERE o.cluster = :basisCluster AND o.namespace IN (:basisNamespaces)""")
+                .params(params)
+                .query((rs, i) -> rs.getObject(1, OffsetDateTime.class))
+                .list().getFirst();
+    }
+
     /** 실행 중인데 PR이 아닌 성공 스캔이 없는 워크로드 (API-08 basis.unscannedRunning). repository는 API-07과 같은 식 */
     record UnscannedWorkload(String namespace, String name, String container, String imageRepository, String imageDigest) {}
 
