@@ -60,7 +60,7 @@ class HelpBoundaryTest {
     }
 
     @Test
-    void requestDeclaresNoToolsAndCarriesOnlyGuidesAndQuestion() {
+    void noRequestKindDeclaresTools() {
         var provider = new ClaudeHelpProvider(true, "unused", "", "https://api.anthropic.com/v1/messages", 30_000,
                 java.net.http.HttpClient.newBuilder().followRedirects(java.net.http.HttpClient.Redirect.NEVER).build(), false);
         var docs = List.of(new HelpDocument("a.md", "가이드", "# 가이드\n본문"));
@@ -84,5 +84,22 @@ class HelpBoundaryTest {
                     .filter(name -> !name.equals("manifest.txt")).collect(Collectors.toSet());
             assertThat(onDisk).containsExactlyInAnyOrderElementsOf(entries);
         }
+    }
+
+    /** Item 4 (design doc 18.7): plain questions with signals, checklist cards and report drafts all go without tools. */
+    @Test
+    void questionWithSignalsChecklistAndReportRequestsCarryNoTools() {
+        var provider = new ClaudeHelpProvider(true, "unused", "", "https://api.anthropic.com/v1/messages", 30_000,
+                java.net.http.HttpClient.newBuilder().followRedirects(java.net.http.HttpClient.Redirect.NEVER).build(), false);
+        var docs = new HelpDocumentLibrary().documents();
+        var playbook = docs.stream().filter(d -> d.file().equals(HelpChecklist.PLAYBOOK_FILE)).findFirst().orElseThrow();
+        var bodies = java.util.Map.of(
+                "question with signals", provider.requestBody(docs, "요약", List.of(), "서버 뚫린 것 같아",
+                        HelpSignals.clean(java.util.Map.of("sensorsDown", true))),
+                "checklist", provider.checklistRequestBody(playbook, "요약", "CVE-2021-44228 터졌어",
+                        HelpSignals.clean(java.util.Map.of("liveKeys", false))),
+                "report", provider.reportRequestBody("14시 서버 격리"));
+        bodies.forEach((kind, body) -> assertThat(body).as(kind)
+                .doesNotContain("\"tools\"", "tool_choice", "mcp_servers", "unused"));
     }
 }

@@ -21,6 +21,9 @@ final class HelpQuestionGuard {
                     + "|\\bAIza[0-9A-Za-z_-]{35}"
                     + "|\\beyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.");
     private static final Pattern LONG_TOKEN = Pattern.compile("[A-Za-z0-9+/_=-]{32,}");
+    /** Image digests (sha256: + 64 hex) and commit hashes (40 hex) are public identifiers, not keys (design doc 18.7). */
+    private static final Pattern PUBLIC_HASHES = Pattern.compile(
+            "(?<![A-Za-z0-9+/_=-])(?:sha256:[0-9a-fA-F]{64}|[0-9a-fA-F]{40})(?![A-Za-z0-9+/_=-])");
     private static final double ENTROPY_THRESHOLD = 3.5;
 
     private HelpQuestionGuard() {
@@ -29,7 +32,7 @@ final class HelpQuestionGuard {
     static boolean containsSecretLikeValue(String text) {
         if (text == null || text.isEmpty()) return false;
         if (KNOWN_FORMATS.matcher(text).find()) return true;
-        Matcher matcher = LONG_TOKEN.matcher(text);
+        Matcher matcher = LONG_TOKEN.matcher(PUBLIC_HASHES.matcher(text).replaceAll(" "));
         while (matcher.find()) {
             String token = matcher.group();
             boolean hasDigit = token.chars().anyMatch(Character::isDigit);

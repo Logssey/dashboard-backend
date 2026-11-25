@@ -54,6 +54,13 @@ class HelpCallBudget {
         this.day = LocalDate.now(clock);
     }
 
+    /** How many calls this user has left today, without using one (for answers served from the cache). */
+    synchronized int remainingToday(String principal) {
+        if (principal == null || principal.isBlank()) return 0;
+        rollDay(clock.instant());
+        return Math.max(0, limits.userPerDay() - userDay.getOrDefault(principal, 0));
+    }
+
     synchronized Permit acquire(String principal) {
         if (principal == null || principal.isBlank() || principal.length() > 100) {
             return Permit.denied("CONFIGURATION_INVALID", 0, 0);
