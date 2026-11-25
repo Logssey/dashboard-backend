@@ -24,7 +24,8 @@ class SecretRevalidationRepository {
                        o.occurrence_id, co.response_status, o.connection_id, o.scope_id,
                        o.presence_status, s.fingerprint_key_version,
                        conn.provider, conn.status AS connection_status, conn.scope_version,
-                       scope.enabled, scope.content_type, scope.history_limit,
+                       (scope.enabled AND (scope.content_type<>'GITHUB_REPOSITORY_FILES'
+                         OR o.source_context_ref=scope.approved_ref)) AS enabled, scope.content_type, scope.history_limit,
                        scope.approved_ref, scope.response_origin, scope.revision,scope.response_origin_version, co.version AS occurrence_version, co.action_cycle,
                        co.last_material_action_at, co.actions_completed_at
                 FROM secret_response_cases c
@@ -83,6 +84,7 @@ class SecretRevalidationRepository {
                   AND o.presence_status = 'PRESENT'
                   AND conn.provider IN ('GITHUB','AWS') AND conn.status = 'ACTIVE'
                   AND scope.enabled AND scope.response_origin = c.case_origin
+                  AND (scope.content_type<>'GITHUB_REPOSITORY_FILES' OR o.source_context_ref=scope.approved_ref)
                   AND EXISTS (SELECT 1 FROM secret_action_records a
                       WHERE a.case_id = c.case_id AND a.occurrence_id = o.occurrence_id)
                 """, (rs, row) -> new RequestCandidate(rs.getLong("occurrence_id"),
@@ -135,11 +137,19 @@ class SecretRevalidationRepository {
                 JOIN secret_findings f ON f.occurrence_id = o.occurrence_id
                     AND f.run_id = o.last_seen_run_id
                 JOIN secret_tool_runs tr ON tr.tool_run_id = f.tool_run_id
-                    AND tr.status = 'SUCCEEDED' AND tr.engine = 'GITLEAKS'
+                    AND tr.status IN ('SUCCEEDED','PARTIAL') AND tr.engine = 'GITLEAKS'
                 JOIN secret_run_scopes rs ON rs.run_scope_id = tr.run_scope_id
-                    AND rs.scope_id = o.scope_id AND rs.collection_status = 'SUCCEEDED'
+                    AND rs.scope_id = o.scope_id AND rs.run_id=f.run_id
+                    AND ((rs.collection_status='SUCCEEDED' AND tr.status='SUCCEEDED') OR
+                      (rs.collection_status IN ('SUCCEEDED','PARTIAL') AND o.latest_object_version IS NOT NULL))
                 JOIN secret_connection_scopes current_scope ON current_scope.scope_id=o.scope_id AND current_scope.revision=rs.scope_revision
-                WHERE o.occurrence_id = ?
+                JOIN secret_scan_runs source_run ON source_run.run_id=f.run_id
+                JOIN secret_connections connection ON connection.connection_id=o.connection_id
+                    AND source_run.connection_id=connection.connection_id AND source_run.scope_version=connection.scope_version
+                JOIN secret_jobs source_job ON source_job.job_id=source_run.job_id AND source_job.status='SUCCEEDED'
+                WHERE o.occurrence_id = ? AND current_scope.enabled
+                  AND (current_scope.content_type<>'GITHUB_REPOSITORY_FILES'
+                    OR(o.source_context_ref=current_scope.approved_ref AND rs.snapshot_approved_ref=o.source_context_ref))
                 ORDER BY f.detected_at DESC, f.finding_id DESC LIMIT 1
                 """, (rs, row) -> new Baseline(rs.getString("config_hash"),
                 rs.getString("engine_version")), occurrenceId).stream().findFirst();
@@ -147,6 +157,11 @@ class SecretRevalidationRepository {
 
     SecretRevalidationResult reserve(Target target, Action action, Baseline baseline,
                                       long actorId, String digest) {
+        return reserve(target,action,baseline,actorId,digest,target.version());
+    }
+
+    SecretRevalidationResult reserve(Target target,Action action,Baseline baseline,
+                                    long actorId,String digest,long caseVersion) {
         OffsetDateTime now = jdbc.queryForObject("SELECT clock_timestamp()", OffsetDateTime.class);
         long jobId = jdbc.queryForObject("""
                 INSERT INTO secret_jobs
@@ -169,7 +184,7 @@ class SecretRevalidationRepository {
                 INSERT INTO secret_run_scopes (run_id, scope_id, collection_status)
                 VALUES (?, ?, 'PENDING')
                 """, runId, target.scopeId());
-        long version = target.version() + 1;
+        long version = caseVersion + 1;
         long id = jdbc.queryForObject("""
                 INSERT INTO secret_case_revalidations
                     (case_id, occurrence_id, action_id, connection_id, scope_id,
@@ -190,7 +205,7 @@ class SecretRevalidationRepository {
         jdbc.update("""
                 UPDATE secret_response_cases SET version = ?, updated_at = ?
                 WHERE case_id = ? AND version = ?
-                """, version, now, target.caseId(), target.version());
+                """, version, now, target.caseId(), caseVersion);
         jdbc.update("""
                 INSERT INTO secret_audit_events (case_id, event_type, actor_user_id, case_version)
                 VALUES (?, 'REVALIDATION_REQUESTED', ?, ?)

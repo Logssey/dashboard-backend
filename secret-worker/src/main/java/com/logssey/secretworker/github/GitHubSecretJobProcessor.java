@@ -298,7 +298,7 @@ WHERE job_id = ?
                         jdbc.update(
                                 """
 UPDATE secret_run_scopes SET collection_status = 'RUNNING', started_at = COALESCE(started_at, ?),
-    finished_at = NULL, object_count = NULL, failure_code = NULL
+    finished_at = NULL, object_count = 0, failure_code = NULL, exclusion_reasons = NULL
 WHERE run_scope_id = ?
 """,
                                 utcNow(),
@@ -332,18 +332,21 @@ WHERE run_scope_id = ?
                                                 job.connectionId(),
                                                 sourceRef,
                                                 bytes,
-                                                scan.findings()));
+                                                scan.findings(),scope.approvedRef()));
                                 withLease(
                                         job,
                                         execution,
-                                        () ->
-                                                findings.recordInspection(
+                                        () -> {
+                                            findings.recordInspection(
                                                         toolRunId.get(),
                                                         sourceRef,
                                                         source.blobSha(),
                                                         inspection,
                                                         scan,
-                                                        Instant.now(), execution.observer(job, scope.id())));
+                                                        Instant.now(), execution.observer(job, scope.id()));
+                                            jdbc.update("UPDATE secret_run_scopes SET object_count=COALESCE(object_count,0)+1 WHERE run_scope_id=?",
+                                                    scope.id());
+                                        });
                                 for (var candidate : inspection.awsCandidates()) {
                                     if (!validation.firstEncounter(
                                             candidate.credential(), scope.id())) continue;
@@ -426,21 +429,28 @@ WHERE run_scope_id = ?
                                 : "GITHUB_" + result.gaps().getFirst().code().name();
         withLease(job, execution, () -> findings.finishToolRun(toolRunId.get(), status, code, Instant.now()));
         GitHubCollector.RepositoryAccess access =
-                result.status() == GitHubCollector.Status.SUCCEEDED && !accessSinks.isEmpty()
+                !accessSinks.isEmpty()
                         ? collectorFor(job).observed(execution.observer(job, scope.id())).repositoryAccess(approved)
                         : null;
+        var exclusionCounts = new java.util.TreeMap<String, Long>();
+        for (var gap : result.gaps()) {
+            exclusionCounts.merge("GITHUB_" + gap.code().name(), 1L, Long::sum);
+        }
+        String exclusionJson = tools.jackson.databind.json.JsonMapper.builder().build()
+                .writeValueAsString(exclusionCounts);
         withLease(
                 job,
                 execution,
                 () -> {
                     jdbc.update(
                             "UPDATE secret_run_scopes SET"
-                                + " collection_status=?,object_count=?,failure_code=?,finished_at=?"
+                                + " collection_status=?,object_count=?,failure_code=?,finished_at=?,exclusion_reasons=?::jsonb"
                                 + " WHERE run_scope_id=?",
                             status,
                             result.objectCount(),
                             code,
                             utcNow(),
+                            exclusionJson,
                             scope.id());
                     if (access != null) {
                         List<Long> occurrenceIds =

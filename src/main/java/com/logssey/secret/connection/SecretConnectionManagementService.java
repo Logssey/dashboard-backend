@@ -65,6 +65,13 @@ public class SecretConnectionManagementService {
                 org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
+    private org.springframework.core.env.Environment environment;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void configureEnvironment(org.springframework.core.env.Environment environment) {
+        this.environment = environment;
+    }
+
     public Map<String, Object> options(String login) {
         var actor = access.requirePrincipal(login);
         access.requireAnyRole(actor);
@@ -144,6 +151,7 @@ public class SecretConnectionManagementService {
         result.put("displayName", row.get("display_name"));
         result.put("status", row.get("status"));
         result.put("scopeVersion", row.get("scope_version"));
+        result.put("settingsVersion", row.get("settings_version"));
         result.put("credentialConfigured", configured(row));
         result.put("credentialVersion", version == 0 ? null : version);
         result.put("canManage", true);
@@ -207,6 +215,13 @@ public class SecretConnectionManagementService {
         }
         result.put("githubTargets", githubTargets);
         result.put("awsTargets", awsTargets);
+        result.put("capabilities", Map.of("activateTargets", true, "retryFailedScopes", true,
+                "validationReadiness", true, "scanLimits", true));
+        result.put("scanLimits", Map.of("maxFiles", GitHubContentLimits.MAX_FILES, "maxFileBytes", GitHubContentLimits.MAX_FILE_BYTES,
+                "maxTotalBytes", GitHubContentLimits.MAX_TOTAL_BYTES, "maxTreeEntries", GitHubContentLimits.MAX_TREE_ENTRIES,
+                "maxDepth", GitHubContentLimits.MAX_DEPTH));
+        result.put("validationReadiness", validationReadiness(id, row, scopes.size()));
+        result.put("defaultStoragePolicy",com.logssey.secret.policy.SecretConnectionPolicyDefaults.summary(jdbc,id));
         return result;
     }
 
@@ -226,6 +241,8 @@ public class SecretConnectionManagementService {
                 SecretCommandExecutor.Kind.SOURCE_CONNECTION_CHANGE,
                 () -> {
                     var row = connection(id, true);
+                    if(request.expectedSettingsVersion()!=null)
+                        SecretCommandExecutor.requireExpectedVersion(request.expectedSettingsVersion(),number(row,"settings_version"));
                     if (secret != null && !row.get("provider").equals("GITHUB")) invalid();
                     if (secret != null) {
                         boolean deleted =
@@ -262,6 +279,7 @@ public class SecretConnectionManagementService {
                                             request.status(), row.get("status").toString());
                     var current = connection(id, false);
                     if (status.equals("ACTIVE")
+                            && !status.equals(row.get("status"))
                             && (!configured(current)
                                     || jdbc.queryForObject(
                                                     "SELECT count(*) FROM secret_connection_scopes"
@@ -291,6 +309,8 @@ public class SecretConnectionManagementService {
                 request.expectedScopeVersion(),
                 SecretCommandExecutor.Kind.SOURCE_CONNECTION_TARGETS,
                 () -> {
+                    if(request.expectedSettingsVersion()!=null)
+                        SecretCommandExecutor.requireExpectedVersion(request.expectedSettingsVersion(),number(connection(id,false),"settings_version"));
                     var existing =
                             jdbc.queryForList(
                                     "SELECT scope_id,content_type,approved_ref FROM"
@@ -330,9 +350,11 @@ public class SecretConnectionManagementService {
                                 id,
                                 key);
                     }
-                    jdbc.update(
-                            "UPDATE secret_connections SET status='PAUSED' WHERE connection_id=?",
-                            id);
+                    boolean activate = Boolean.TRUE.equals(request.activate());
+                    if (activate && (!configured(connection(id, false)) || targets.isEmpty()))
+                        throw new ApiException(ErrorCode.CONFLICT, "인증과 검사 대상을 먼저 설정해 주세요.");
+                    jdbc.update("UPDATE secret_connections SET status=? WHERE connection_id=?",
+                            activate ? "ACTIVE" : "PAUSED", id);
                 });
         return settings(login, id);
     }
@@ -519,17 +541,75 @@ public class SecretConnectionManagementService {
                     var row = connection(id, true);
                     SecretCommandExecutor.requireExpectedVersion(
                             expected, number(row, "scope_version"));
-                    cancelWork(id);
+                    var beforeScopes = enabledScopes(id);
                     operation.run();
-                    jdbc.update(
-                            "UPDATE secret_connections SET"
-                                + " scope_version=scope_version+1,updated_at=clock_timestamp(),next_due_at=CASE"
-                                + " WHEN status='ACTIVE' THEN clock_timestamp()+interval '6 hours'"
-                                + " ELSE NULL END WHERE connection_id=?",
-                            id);
-                    return new SecretCommandResult(
-                            id, expected + 1, SecretCommandResult.Status.SUCCEEDED);
+                    var current = connection(id, false);
+                    boolean executionChanged = !Objects.equals(row.get("status"), current.get("status"))
+                            || !Objects.equals(row.get("auth_ref"), current.get("auth_ref"))
+                            || !Objects.equals(row.get("source_credential_version"), current.get("source_credential_version"))
+                            || !Objects.equals(row.get("source_credential_enabled"), current.get("source_credential_enabled"))
+                            || !beforeScopes.equals(enabledScopes(id));
+                    if (executionChanged) {
+                        cancelWork(id);
+                        jdbc.update("UPDATE secret_connections SET scope_version=scope_version+1,"
+                                + "updated_at=clock_timestamp(),next_due_at=CASE WHEN status='ACTIVE' "
+                                + "THEN COALESCE(next_due_at,clock_timestamp()+interval '6 hours') ELSE NULL END "
+                                + "WHERE connection_id=?", id);
+                    } else {
+                        jdbc.update("UPDATE secret_connections SET updated_at=clock_timestamp() WHERE connection_id=?", id);
+                    }
+                    jdbc.update("UPDATE secret_connections SET settings_version=settings_version+1 WHERE connection_id=?",id);
+                    return new SecretCommandResult(id, expected + (executionChanged ? 1 : 0),
+                            SecretCommandResult.Status.SUCCEEDED);
                 });
+    }
+
+    private List<Map<String, Object>> enabledScopes(long id) {
+        return jdbc.queryForList("SELECT scope_id,revision,approved_ref,history_limit FROM secret_connection_scopes "
+                + "WHERE connection_id=? AND enabled ORDER BY scope_id", id);
+    }
+
+    private Map<String, Object> validationReadiness(long id, Map<String, Object> connection, int scopeCount) {
+        var reasons = new ArrayList<String>();
+        if (!"ACTIVE".equals(connection.get("status"))) reasons.add("ACTIVE_REQUIRED");
+        if (!configured(connection)) reasons.add("CREDENTIAL_REQUIRED");
+        if (scopeCount == 0) reasons.add("SCOPES_REQUIRED");
+        boolean connectionEnabled = Boolean.TRUE.equals(connection.get("validation_enabled"));
+        if (!connectionEnabled) reasons.add("VALIDATION_DISABLED");
+        Long approved = jdbc.queryForObject("SELECT count(*) FROM secret_connection_scopes "
+                + "WHERE connection_id=? AND enabled AND validation_approved", Long.class, id);
+        var issuers = jdbc.queryForList("SELECT unnest(validation_allowed_issuers) FROM secret_connections "
+                + "WHERE connection_id=?", String.class, id);
+        String deployment = environment == null ? "secret-worker" : environment.getProperty(
+                "logssey.secret.operations.deployment-key", "secret-worker");
+        var workerCapabilities = jdbc.queryForList("""
+                SELECT issuer FROM secret_worker_heartbeats h
+                LEFT JOIN LATERAL unnest(h.validation_issuers) issuer ON TRUE
+                WHERE deployment_key=? AND component='EXECUTOR' AND enabled
+                  AND last_heartbeat_at>clock_timestamp()-interval '2 minutes'
+                  AND validation_issuers IS NOT NULL
+                """, String.class, deployment);
+        long observedWorkers = jdbc.queryForObject("""
+                SELECT count(*) FROM secret_worker_heartbeats WHERE deployment_key=? AND component='EXECUTOR'
+                  AND enabled AND last_heartbeat_at>clock_timestamp()-interval '2 minutes'
+                  AND validation_issuers IS NOT NULL
+                """,Long.class,deployment);
+        if(observedWorkers==0) reasons.add("WORKER_CAPABILITIES_UNKNOWN");
+        var validators = new ArrayList<Map<String, Object>>();
+        boolean available = false;
+        for (String issuer : List.of("AWS", "GITHUB", "NOTION")) {
+            long enabledWorkers = workerCapabilities.stream().filter(issuer::equals).count();
+            boolean serverEnabled = observedWorkers>0 && enabledWorkers==observedWorkers;
+            if(enabledWorkers>0 && enabledWorkers!=observedWorkers && !reasons.contains("WORKER_CONFIGURATION_MISMATCH"))
+                reasons.add("WORKER_CONFIGURATION_MISMATCH");
+            boolean allowed = connectionEnabled && issuers.contains(issuer);
+            validators.add(Map.of("issuer", issuer, "serverEnabled", serverEnabled,
+                    "connectionAllowed", allowed, "scopeCount", scopeCount, "allowedScopeCount", approved));
+            available |= allowed && serverEnabled;
+        }
+        if (connectionEnabled && observedWorkers>0 && !available) reasons.add("VALIDATOR_DISABLED");
+        if (scopeCount > 0 && approved == 0) reasons.add("SCOPES_NOT_APPROVED");
+        return Map.of("ready", reasons.isEmpty(), "reasonCodes", reasons, "validators", validators);
     }
 
     private void cancelWork(long id) {
@@ -670,17 +750,17 @@ public class SecretConnectionManagementService {
                             "CURRENT_STATE_ONLY",
                             target.region() + " · " + target.kind()));
         }
-        // Occurrence identity contains repository/path. Overlapping branches need separate
-        // connections.
+        // Each branch has its own location identity. Overlaps within one branch remain ambiguous.
         for (int i = 0; i < githubTargets.size(); i++) {
             for (int j = i + 1; j < githubTargets.size(); j++) {
                 var first = githubTargets.get(i);
                 var second = githubTargets.get(j);
                 if (first.repository().equalsIgnoreCase(second.repository())
+                        && first.branch().equals(second.branch())
                         && (path(first.path()).startsWith(path(second.path()))
                                 || path(second.path()).startsWith(path(first.path()))))
                     throw new ApiException(
-                            ErrorCode.INVALID_INPUT, "같은 저장소에서 겹치는 검사 경로는 연결을 나눠 등록해 주세요.");
+                            ErrorCode.INVALID_INPUT, "같은 저장소·브랜치의 겹치는 경로는 하나로 합쳐 주세요.");
             }
         }
         if (result.stream().map(Target::ref).distinct().count() != result.size()) invalid();

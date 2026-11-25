@@ -89,10 +89,17 @@ public final class SecretFindingNormalizer {
     /** One parse gives persistence metadata and temporary AWS material for the validator. */
     public Inspection inspect(long connectionId, String sourceObjectRef, byte[] utf8Content,
                               List<GitleaksFinding> findings) {
+        return inspect(connectionId,sourceObjectRef,utf8Content,findings,null);
+    }
+
+    public Inspection inspect(long connectionId, String sourceObjectRef, byte[] utf8Content,
+                              List<GitleaksFinding> findings,String sourceContext) {
         if (connectionId <= 0 || sourceObjectRef == null || sourceObjectRef.isBlank()
-                || sourceObjectRef.length() > 500 || utf8Content == null || findings == null) {
+                || sourceObjectRef.length() > 500 || utf8Content == null || findings == null
+                || sourceContext!=null&&sourceContext.length()>500) {
             throw new IllegalArgumentException("INVALID_NORMALIZATION_INPUT");
         }
+        String identitySource=sourceContext==null?sourceObjectRef:sourceContext+"\n"+sourceObjectRef;
         String content;
         try {
             content = StandardCharsets.UTF_8.newDecoder()
@@ -166,7 +173,7 @@ public final class SecretFindingNormalizer {
             Credential normalized =
                     credential(
                             connectionId,
-                            sourceObjectRef,
+                            identitySource,
                             "AWS",
                             type,
                             complete,
@@ -182,7 +189,7 @@ public final class SecretFindingNormalizer {
                 Credential normalized =
                         credential(
                                 connectionId,
-                                sourceObjectRef,
+                                identitySource,
                                 "AWS",
                                 "AWS_ACCESS_KEY_PAIR",
                                 false,
@@ -204,7 +211,7 @@ public final class SecretFindingNormalizer {
             Credential normalized =
                     credential(
                             connectionId,
-                            sourceObjectRef,
+                            identitySource,
                             issuer,
                             type,
                             true,

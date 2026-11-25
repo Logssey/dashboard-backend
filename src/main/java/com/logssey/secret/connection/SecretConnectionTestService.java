@@ -62,7 +62,7 @@ public class SecretConnectionTestService {
         access.requireConnectionRole(principal, id, SecretRole.OPERATIONS);
         if (id <= 0) throw new ApiException(ErrorCode.NOT_FOUND);
         var connection = repository.connection(id).orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND));
-        if (!"ACTIVE".equals(connection.status())) throw new ApiException(ErrorCode.CONFLICT);
+        if (!java.util.Set.of("ACTIVE","PAUSED").contains(connection.status())) throw new ApiException(ErrorCode.CONFLICT);
 
         ConnectionProbeResult result = switch (connection.provider()) {
             case "AWS" -> testAws(connection);

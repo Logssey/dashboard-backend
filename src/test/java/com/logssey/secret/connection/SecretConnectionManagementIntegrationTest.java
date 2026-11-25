@@ -236,15 +236,13 @@ class SecretConnectionManagementIntegrationTest {
     }
 
     @Test
-    void overlappingRepositoryPathsRequireSeparateConnections() {
+    void differentBranchesShareOneConnectionWhileSameBranchOverlapsAreRejected() {
         long id =
                 id(
                         service.create(
                                 "operator",
                                 new Create("GITHUB", "Overlap", "overlap", credential())));
-        assertThatThrownBy(
-                        () ->
-                                service.targets(
+        service.targets(
                                         "operator",
                                         id,
                                         new TargetsChange(
@@ -256,15 +254,21 @@ class SecretConnectionManagementIntegrationTest {
                                                                 "Logssey/project",
                                                                 "feature/secret",
                                                                 "config/")),
-                                                List.of())))
-                .isInstanceOf(ApiException.class);
+                                                List.of()));
         assertThat(
                         jdbc.queryForObject(
                                 "SELECT count(*) FROM secret_connection_scopes WHERE"
                                     + " connection_id=?",
                                 Long.class,
                                 id))
-                .isZero();
+                .isEqualTo(2);
+        assertThatThrownBy(() -> service.targets("operator",id,new TargetsChange(2L,
+                List.of(new GitHubTarget("Logssey/project","main",""),
+                        new GitHubTarget("logssey/PROJECT","main","config/")),List.of())))
+                .isInstanceOf(ApiException.class);
+        service.targets("operator",id,new TargetsChange(2L,
+                List.of(new GitHubTarget("Logssey/project","main",""),
+                        new GitHubTarget("Logssey/project","Main","")),List.of()));
     }
 
     @Test
@@ -411,19 +415,43 @@ class SecretConnectionManagementIntegrationTest {
     }
 
     @Test
+    void renamingPreservesScopeVersionScheduleAndPendingWork() {
+        long id = id(service.create("operator", new Create("AWS", "Account", "rename", null)));
+        jdbc.update("UPDATE secret_connections SET status='ACTIVE',next_due_at=clock_timestamp()+interval '1 hour' WHERE connection_id=?",id);
+        var due=jdbc.queryForObject("SELECT next_due_at FROM secret_connections WHERE connection_id=?",OffsetDateTime.class,id);
+        long job=jdbc.queryForObject("INSERT INTO secret_jobs(kind,connection_id,requested_by_user_id,scheduled_at,available_at,attempt_no,max_attempts,status) "
+                + "VALUES('FULL_SCAN',?,1,now(),now(),0,3,'PENDING') RETURNING job_id",Long.class,id);
+        var result=service.change("operator",id,new SettingsChange(1L,"Renamed",null,null,1L));
+        assertThat(result).containsEntry("scopeVersion",1L).containsEntry("settingsVersion",2L);
+        assertThat(jdbc.queryForObject("SELECT status FROM secret_jobs WHERE job_id=?",String.class,job)).isEqualTo("PENDING");
+        assertThat(jdbc.queryForObject("SELECT next_due_at FROM secret_connections WHERE connection_id=?",OffsetDateTime.class,id)).isEqualTo(due);
+        assertThatThrownBy(() -> service.change("operator",id,new SettingsChange(1L,"Stale",null,null,1L))).isInstanceOf(ApiException.class);
+    }
+
+    @Test
+    void targetSaveCanActivateAndUnknownWorkerCapabilitiesRemainExplicit() {
+        long id=id(service.create("operator",new Create("AWS","Account","activate",null)));
+        var result=service.targets("operator",id,new TargetsChange(1L,List.of(),
+                List.of(new AwsTarget("IAM_ACCESS_KEY_METADATA","global")),true,1L));
+        assertThat(result).containsEntry("status","ACTIVE");
+        assertThat(((Map<?,?>)result.get("validationReadiness")).get("ready")).isEqualTo(false);
+        assertThat((List<String>)((Map<?,?>)result.get("validationReadiness")).get("reasonCodes")).contains("WORKER_CAPABILITIES_UNKNOWN");
+    }
+
+    @Test
     void requiresLiveOperationsRoleAndOptimisticVersionForEveryMutation() {
         long id = id(service.create("operator", new Create("AWS", "Account", "roles", null)));
         assertThatThrownBy(() -> service.settings("stranger", id)).isInstanceOf(ApiException.class);
         assertThatThrownBy(
                         () -> service.create("stranger", new Create("AWS", "Other", "other", null)))
                 .isInstanceOf(ApiException.class);
-        service.change("operator", id, new SettingsChange(1L, "Renamed", null, null));
+        service.change("operator", id, new SettingsChange(1L, "Renamed", null, null, 1L));
         assertThatThrownBy(
                         () ->
                                 service.change(
                                         "operator",
                                         id,
-                                        new SettingsChange(1L, "Stale", null, null)))
+                                        new SettingsChange(1L, "Stale", null, null, 1L)))
                 .isInstanceOf(ApiException.class);
         jdbc.update("UPDATE secret_role_grants SET revoked_at=clock_timestamp() WHERE user_id=1");
         assertThatThrownBy(() -> service.settings("operator", id)).isInstanceOf(ApiException.class);
@@ -731,6 +759,31 @@ class SecretConnectionManagementIntegrationTest {
             logger.detachAppender(events);
             events.stop();
         }
+    }
+
+    @Test void newlyRegisteredTargetsReturnOnePinnedPolicySetupSummary() {
+        long connection=id(service.create("operator",new Create("GITHUB","Pinned target policy","pin-create",credential())));
+        service.targets("operator",connection,new TargetsChange(1L,List.of(new GitHubTarget("Logssey/service-design-docs","main","")),List.of()));
+        long scope=jdbc.queryForObject("SELECT scope_id FROM secret_connection_scopes WHERE connection_id=?",Long.class,connection);
+        long policy=jdbc.queryForObject("""
+            INSERT INTO secret_storage_policies(version,status,reason_code,evidence_ref,created_by_user_id,
+              approved_by_user_id,approved_at,valid_from)
+            VALUES(1,'ACTIVE','AUTHORIZED_STORAGE','TICKET:SEC-1',1,2,now(),now()-interval '1 hour') RETURNING policy_id
+            """,Long.class);
+        jdbc.update("""
+            INSERT INTO secret_storage_policy_rules(policy_id,policy_version,effect,connection_id,scope_id,
+              scope_revision,scope_fingerprint,content_type,path_match)
+            SELECT ?,1,'ALLOW',connection_id,scope_id,revision,
+              md5(jsonb_build_array(content_type,approved_ref,history_limit)::text),content_type,'SCOPE'
+            FROM secret_connection_scopes WHERE scope_id=?
+            """,policy,scope);
+        jdbc.update("INSERT INTO secret_connection_policy_defaults(connection_id,policy_id,policy_version,selected_by_user_id) VALUES(?,?,1,1)",connection,policy);
+        var changed=service.targets("operator",connection,new TargetsChange(2L,List.of(
+            new GitHubTarget("Logssey/service-design-docs","main",""),new GitHubTarget("Logssey/dashboard-backend","main","")),List.of()));
+        var summary=(Map<String,Object>)changed.get("defaultStoragePolicy");
+        assertThat(summary).containsEntry("selectedPolicyId",policy).containsEntry("status","RULE_UPDATE_REQUIRED")
+            .containsEntry("ruleUpdateRequiredScopeCount",1L);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_scope_policy_bindings WHERE scope_id<>?",Long.class,scope)).isZero();
     }
 
     private GitHubCredential credential() {

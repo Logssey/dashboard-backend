@@ -185,6 +185,8 @@ class SecretExportIntegrationTest {
         // 원본 경로에 가짜 키를 섞어도 SecretSourceDetails가 마스킹해야 한다.
         long githubOccurrence = occurrence(key, github, githubScope,
                 "Logssey/test-find-key/fixtures/config/" + fakeAwsKey + "-" + fakeGithubToken + ".env", "L4-L6", "UNKNOWN");
+        // Export the observed branch coordinates, rather than borrowing the mutable scope target.
+        jdbc.update("UPDATE secret_occurrences SET source_context_ref='github://Logssey/test-find-key/main/fixtures/',source_context_status='OBSERVED' WHERE occurrence_id=?", githubOccurrence);
         long notionOccurrence = occurrence(key, notion, notionScope, "notion/pages/" + page + "/blocks/" + block, "L1", "BROAD");
         return new Fixture(key, github, notion, githubOccurrence, notionOccurrence);
     }
@@ -222,8 +224,10 @@ class SecretExportIntegrationTest {
         long scope = jdbc.queryForObject("""
             INSERT INTO secret_connection_scopes(connection_id,scope_key,revision,content_type,approved_ref,enabled,
                 response_origin,response_origin_set_by_user_id,response_origin_set_at)
-            VALUES (?,?,1,'TEXT',?,true,'PRODUCTION',?,now()) RETURNING scope_id
-            """, Long.class, connection, "scope-" + connection, approvedRef, security);
+            VALUES (?,?,1,?,?,true,'PRODUCTION',?,now()) RETURNING scope_id
+            """, Long.class, connection, "scope-" + connection,
+                approvedRef.startsWith("github://") ? "GITHUB_REPOSITORY_FILES" : "NOTION_PAGE_CONTENT",
+                approvedRef, security);
         // 노션 본문 대신 쓰는 표식: 화면에 보이지 않는 칸에 넣고 결과에 없는지 확인한다.
         jdbc.update("UPDATE secret_connections SET display_name=? WHERE connection_id=? AND provider='NOTION'", notionBodyMarker, connection);
         return scope;

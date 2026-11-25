@@ -27,7 +27,10 @@ public final class SecretOperationsHealth {
         var fresh=freshAll.stream().filter(r->Boolean.TRUE.equals(r.get("enabled"))).toList();
         out.put("pollIntervalMs",fresh.stream().mapToLong(r->((Number)r.get("poll_interval_ms")).longValue()).max().orElse(0));
         out.put("liveInstances",fresh.size());
-        out.put("activeJobs",fresh.stream().filter(r->r.get("active_job_id")!=null&&Boolean.TRUE.equals(r.get("active_lease_valid"))).count());
+        out.put("activeJobs",fresh.stream().mapToLong(row -> {
+            if(row.get("active_job_count") instanceof Number count)return count.longValue();
+            return row.get("active_job_id")!=null&&Boolean.TRUE.equals(row.get("active_lease_valid"))?1L:0L;
+        }).sum());
         if(fresh.size()<expected){out.put("status","STALE");return out;}
         boolean failed=false;int progressed=0;
         for(var row:fresh){

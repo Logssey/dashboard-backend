@@ -116,7 +116,8 @@ public final class CredentialRevalidationProcessor {
                                 var scan = detector.scan(bytes);
                                 var inspected =
                                         normalizer.inspect(
-                                                job.connectionId(), source, bytes, scan.findings());
+                                                job.connectionId(), source, bytes, scan.findings(),
+                                                (String)current.get("source_context_ref"));
                                 for (var candidate : inspected.awsCandidates())
                                     if (attempts.matchesTarget(target, candidate.credential())) {
                                         var checked =

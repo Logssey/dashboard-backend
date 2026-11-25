@@ -42,6 +42,16 @@ class SecretDecisionIntegrationTest {
         service=new SecretDecisionService(jdbc,access,snapshots,tasks,new SecretLocationRepository(jdbc),
             JsonMapper.builder().findAndAddModules().build(),manager);
     }
+    @Test void successfulFileEvidenceSurvivesOtherObjectsMissingFromTheSameScope() {
+        var f=fixture("CONFIRMED","UNCLASSIFIED");
+        jdbc.update("UPDATE secret_run_scopes SET collection_status='PARTIAL',failure_code='GITHUB_BINARY_FILE' WHERE run_scope_id=?",f.runScope);
+        jdbc.update("UPDATE secret_tool_runs SET status='PARTIAL' WHERE tool_run_id=?",f.tool);
+        jdbc.update("UPDATE secret_scan_runs SET collection_status='PARTIAL',result_status='PARTIAL' WHERE run_id=?",f.run);
+        assertThat(service.context("security",f.occurrence).allowedDecisions()).contains("ABNORMAL");
+        jdbc.update("UPDATE secret_tool_runs SET status='FAILED' WHERE tool_run_id=?",f.tool);
+        assertThat(service.context("security",f.occurrence).allowedDecisions()).doesNotContain("ABNORMAL");
+    }
+
     @Test void collectedUnclassifiedLocationCanCreateCaseWithoutInventedClassificationOrPolicy() {
         var f=fixture("CONFIRMED","UNCLASSIFIED");
         assertThat(service.context("security",f.occurrence).allowedDecisions()).contains("ABNORMAL").doesNotContain("NORMAL");

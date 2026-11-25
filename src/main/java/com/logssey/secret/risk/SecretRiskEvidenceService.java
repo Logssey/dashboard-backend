@@ -65,6 +65,14 @@ public class SecretRiskEvidenceService {
   }
 
   public Map<String, Object> submit(String login, long occurrence, Submission r) {
+    return submit(login,occurrence,r,false);
+  }
+
+  public Map<String, Object> submitDraft(String login,long occurrence,Submission r) {
+    return submit(login,occurrence,r,true);
+  }
+
+  private Map<String,Object> submit(String login,long occurrence,Submission r,boolean draft) {
     if (r == null || r.expectedEvidenceRevision() == null) throw SecretRiskFacts.invalid();
     var actor = access.requirePrincipal(login);
     access.requireOccurrenceRead(actor, occurrence);
@@ -114,6 +122,7 @@ public class SecretRiskEvidenceService {
                 normalizedRefs,
                 r.applicableFrom(), r.applicableUntil()));
     if (r.assetId() != null) safe.add(r.assetId());
+    if (draft) safe.add("DRAFT_SUBMISSION");
     return commands.execute(
         actor,
         "RISK_EVIDENCE_SUBMITTED",
@@ -130,9 +139,9 @@ public class SecretRiskEvidenceService {
           if (r.applicableFrom() != null && (sourceSeenAt == null
               || sourceSeenAt.isBefore(r.applicableFrom()) || !sourceSeenAt.isBefore(r.applicableUntil())))
             throw new ApiException(ErrorCode.EVIDENCE_REQUIRED);
-          boolean accepted =
-              access.hasConnectionRole(actor, number(o, "connection_id"), SecretRole.SECURITY);
-          if (!accepted
+          boolean security = access.hasConnectionRole(actor, number(o,"connection_id"), SecretRole.SECURITY);
+          boolean accepted = security && !draft;
+          if (!security
               && !access.hasConnectionRole(
                   actor, number(o, "connection_id"), SecretRole.REMEDIATOR))
             throw new ApiException(ErrorCode.FORBIDDEN);

@@ -26,6 +26,7 @@ class SecretClosureRepository {
         return jdbc.queryForList("""
             SELECT o.occurrence_id,o.connection_id,o.scope_id,o.exposure_status,o.presence_status,o.last_seen_at,o.last_seen_run_id,
               o.last_complete_coverage_at,o.exposure_assessment_version,s.revision,s.response_origin,s.response_origin_version,s.enabled,
+              (s.content_type<>'GITHUB_REPOSITORY_FILES' OR o.source_context_ref=s.approved_ref) AS source_context_current,
               cn.status AS connection_status,cn.scope_version AS connection_version,cn.next_due_at,
               k.component_state,p.policy_result,p.reason_code AS policy_reason,p.binding_id,p.policy_id,p.policy_version,p.requires_reassessment,
               co.case_id AS linked_case_id,co.version AS location_version,co.response_status,co.action_cycle,co.last_material_action_at,co.actions_completed_at,
@@ -42,6 +43,9 @@ class SecretClosureRepository {
               (o.presence_status='MISSING' AND cn.status='ACTIVE' AND s.enabled AND c.case_origin=s.response_origin
                 AND co.response_status='REVALIDATION_PENDING' AND v.status='MISSING'
                 AND v.connection_id=o.connection_id AND v.scope_id=o.scope_id
+                AND (s.content_type<>'GITHUB_REPOSITORY_FILES' OR(o.source_context_ref=s.approved_ref
+                  AND EXISTS(SELECT 1 FROM secret_run_scopes context WHERE context.run_id=v.run_id
+                    AND context.scope_id=o.scope_id AND context.snapshot_approved_ref=o.source_context_ref)))
                 AND v.scope_revision=s.revision AND v.scope_origin_version=s.response_origin_version
                 AND v.action_cycle=co.action_cycle AND v.occurrence_version=co.version
                 AND v.action_id=material.action_id AND v.last_material_action_at=co.last_material_action_at
@@ -76,6 +80,9 @@ class SecretClosureRepository {
               JOIN secret_scope_outcomes hs ON hs.run_id=h.run_id AND hs.scope_id=o.scope_id
               JOIN secret_tool_runs ht ON ht.run_scope_id=hs.run_scope_id AND ht.engine='GITLEAKS'
               WHERE h.occurrence_id=o.occurrence_id AND h.status='MISSING' AND h.scope_revision=s.revision
+               AND (s.content_type<>'GITHUB_REPOSITORY_FILES' OR(o.source_context_ref=s.approved_ref
+                 AND EXISTS(SELECT 1 FROM secret_run_scopes context WHERE context.run_id=h.run_id
+                   AND context.scope_id=o.scope_id AND context.snapshot_approved_ref=o.source_context_ref)))
                AND h.scope_origin_version=s.response_origin_version AND o.presence_status='MISSING'
                AND h.baseline_identity=k.fingerprint AND h.baseline_fingerprint_version=k.fingerprint_key_version
                AND h.runtime_fingerprint_version=h.baseline_fingerprint_version AND hr.scope_version=cn.scope_version

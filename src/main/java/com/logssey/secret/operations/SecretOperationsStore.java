@@ -24,20 +24,43 @@ public final class SecretOperationsStore {
         catch(java.security.NoSuchAlgorithmException impossible){throw new IllegalStateException(impossible);}
     }
     public record Beat(UUID instanceId,String deploymentKey,String component,boolean enabled,String state,long intervalMs,
-                       OffsetDateTime pollStarted,OffsetDateTime pollFinished,OffsetDateTime success,Long activeJob,String errorCode){}
+                       OffsetDateTime pollStarted,OffsetDateTime pollFinished,OffsetDateTime success,Long activeJob,String errorCode,
+                       List<Long> activeJobs,List<String> validationIssuers){
+        public Beat {
+            activeJobs=List.copyOf(activeJobs);
+            if(activeJobs.stream().anyMatch(id -> id<=0))throw new IllegalArgumentException("OPERATIONS_JOB_INVALID");
+            if(validationIssuers!=null){
+                validationIssuers=List.copyOf(validationIssuers);
+                if(!Set.of("AWS","GITHUB","NOTION").containsAll(validationIssuers))
+                    throw new IllegalArgumentException("OPERATIONS_CAPABILITIES_INVALID");
+            }
+        }
+        public Beat(UUID instanceId,String deploymentKey,String component,boolean enabled,String state,long intervalMs,
+                    OffsetDateTime pollStarted,OffsetDateTime pollFinished,OffsetDateTime success,Long activeJob,String errorCode){
+            this(instanceId,deploymentKey,component,enabled,state,intervalMs,pollStarted,pollFinished,success,
+                    activeJob,errorCode,activeJob==null?List.of():List.of(activeJob),null);
+        }
+    }
     public void heartbeat(Beat b){
         jdbc.update("""
-          INSERT INTO secret_worker_heartbeats(instance_id,deployment_key,component,enabled,state,poll_interval_ms,started_at,last_heartbeat_at,last_poll_started_at,last_poll_finished_at,last_success_at,active_job_id,error_code)
-          VALUES(?,?,?,?,?,?,clock_timestamp(),clock_timestamp(),?,?,?,?,?)
+          INSERT INTO secret_worker_heartbeats(instance_id,deployment_key,component,enabled,state,poll_interval_ms,started_at,last_heartbeat_at,last_poll_started_at,last_poll_finished_at,last_success_at,active_job_id,error_code,active_job_ids,validation_issuers)
+          VALUES(?,?,?,?,?,?,clock_timestamp(),clock_timestamp(),?,?,?,?,?,?::bigint[],?::text[])
           ON CONFLICT(instance_id,component) DO UPDATE SET enabled=excluded.enabled,state=excluded.state,poll_interval_ms=excluded.poll_interval_ms,
           last_heartbeat_at=clock_timestamp(),last_poll_started_at=excluded.last_poll_started_at,last_poll_finished_at=excluded.last_poll_finished_at,
-          last_success_at=excluded.last_success_at,active_job_id=excluded.active_job_id,error_code=excluded.error_code
-          """,b.instanceId(),b.deploymentKey(),b.component(),b.enabled(),b.state(),b.intervalMs(),b.pollStarted(),b.pollFinished(),b.success(),b.activeJob(),safeCode(b.errorCode()));
+          last_success_at=excluded.last_success_at,active_job_id=excluded.active_job_id,error_code=excluded.error_code,
+          active_job_ids=excluded.active_job_ids,validation_issuers=excluded.validation_issuers
+          """,b.instanceId(),b.deploymentKey(),b.component(),b.enabled(),b.state(),b.intervalMs(),b.pollStarted(),b.pollFinished(),b.success(),b.activeJob(),safeCode(b.errorCode()),
+                "{"+String.join(",",b.activeJobs().stream().map(String::valueOf).toList())+"}",
+                b.validationIssuers()==null?null:"{"+String.join(",",b.validationIssuers())+"}");
     }
     public Map<String,Object> health(){
         var now=jdbc.queryForObject("SELECT clock_timestamp()",OffsetDateTime.class);
         var rows=jdbc.queryForList("""
-          SELECT h.*,EXISTS(SELECT 1 FROM secret_jobs j WHERE j.job_id=h.active_job_id AND j.status='LEASED' AND j.lease_until>clock_timestamp()) AS active_lease_valid
+          SELECT h.*,
+            EXISTS(SELECT 1 FROM secret_jobs j WHERE (j.job_id=h.active_job_id OR j.job_id=ANY(h.active_job_ids))
+              AND j.status='LEASED' AND j.lease_until>clock_timestamp()) AS active_lease_valid,
+            (SELECT count(*) FROM secret_jobs j WHERE (j.job_id=h.active_job_id OR j.job_id=ANY(h.active_job_ids))
+              AND j.status='LEASED' AND j.lease_until>clock_timestamp()) AS active_job_count
           FROM secret_worker_heartbeats h WHERE h.deployment_key=?
           """,deployment);
         var components=COMPONENTS.stream().map(c->component(c,rows,now,expected,grace)).toList();

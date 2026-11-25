@@ -30,6 +30,16 @@ class SecretFindingRepositoryTest {
     private SecretFindingRepository repository;
     private long runScopeId;
 
+    @Test
+    void missingGitHubApprovalSnapshotCannotProduceAFreshLocation() {
+        jdbc.update("UPDATE secret_connection_scopes SET content_type='GITHUB_REPOSITORY_FILES',approved_ref='github://owner/project/main/',history_limit='CURRENT_COMMIT_ONLY'");
+        long tool=repository.beginGitleaksRun(runScopeId,"8.30.1",CONFIG_HASH,Instant.now());
+        assertThatThrownBy(() -> repository.recordObject(tool,"owner/project/key.env","blob",
+                new byte[0],new GitleaksScanResult("8.30.1",CONFIG_HASH,List.of()),Instant.now()))
+                .hasMessage("TOOL_RUN_SOURCE_CONTEXT_MISMATCH");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_occurrences",Long.class)).isZero();
+    }
+
     @BeforeAll
     static void startDatabase() {
         POSTGRES.start();
