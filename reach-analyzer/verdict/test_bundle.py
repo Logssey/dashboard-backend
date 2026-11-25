@@ -59,10 +59,10 @@ def verdicts():
     ]}
 
 
-def trivy_vuln(cve, purl, severity="HIGH", path="app.jar/BOOT-INF/lib/x.jar", fixed="1.2.0, 2.0.1"):
+def trivy_vuln(cve, purl, severity="HIGH", path="app.jar/BOOT-INF/lib/x.jar", fixed="1.2.0, 2.0.1", **extra):
     return {"VulnerabilityID": cve, "PkgName": "x", "InstalledVersion": purl.rsplit("@", 1)[-1], "PkgPath": path,
             "PkgIdentifier": {"PURL": purl}, "Severity": severity, "Title": f"{cve} title", "Description": "desc",
-            "FixedVersion": fixed, "CweIDs": ["CWE-400"], "References": ["https://example.com/a"]}
+            "FixedVersion": fixed, "CweIDs": ["CWE-400"], "References": ["https://example.com/a"], **extra}
 
 
 def trivy(*vulns):
@@ -194,6 +194,59 @@ class BundleTest(unittest.TestCase):
         self.assertEqual(i["vulnerability"]["severityNote"], "Trivy HIGH, Grype MEDIUM")
         self.assertEqual(i["vulnerability"]["cwe"], ["CWE-400", "CWE-20"])
         self.assertEqual(b["tools"]["grype"], "0.121.2")
+
+    def test_cvss_comes_from_the_source_of_the_trivy_severity(self):
+        v = trivy_vuln("CVE-2026-1000", LIB, SeveritySource="ghsa",
+                       CVSS={"nvd": {"V3Score": 9.8}, "ghsa": {"V3Score": 7.5}})
+        i = self.item(self.run_bundle(trivy(v)), "CVE-2026-1000", LIB)
+        self.assertEqual(i["vulnerability"]["cvss"], {"score": 7.5, "source": "ghsa"})
+
+    def test_cvss_falls_back_to_nvd_then_any_v3_score(self):
+        v = trivy_vuln("CVE-2026-1000", LIB, SeveritySource="redhat",
+                       CVSS={"redhat": {"V2Score": 5.0}, "nvd": {"V3Score": 9.8}})
+        i = self.item(self.run_bundle(trivy(v)), "CVE-2026-1000", LIB)
+        self.assertEqual(i["vulnerability"]["cvss"], {"score": 9.8, "source": "nvd"})
+        self.assertIsNone(bundle.trivy_cvss({"CVSS": {"nvd": {"V3Score": 11}}}))
+
+    def test_cvss_from_grype_only_when_trivy_has_none(self):
+        grype = {"descriptor": {"version": "0.121.2"}, "matches": [{
+            "vulnerability": {"id": "GHSA-xxxx-yyyy-zzzz", "severity": "High",
+                              "cvss": [{"source": "security-advisories@github.com", "version": "2.0",
+                                        "metrics": {"baseScore": 6.0}},
+                                       {"source": "security-advisories@github.com", "version": "3.1",
+                                        "metrics": {"baseScore": 8.1}}]},
+            "relatedVulnerabilities": [{"id": "CVE-2026-1000", "cvss": [
+                {"source": "nvd@nist.gov", "version": "3.1", "metrics": {"baseScore": 9.1}}]}],
+            "artifact": {"purl": LIB, "version": "1.0.0"}}]}
+        no_cvss = self.run_bundle(trivy(trivy_vuln("CVE-2026-1000", LIB)), grype)
+        self.assertEqual(no_cvss["verdicts"][0]["vulnerability"]["cvss"], {"score": 8.1, "source": "ghsa"})
+        with_cvss = self.run_bundle(trivy(trivy_vuln("CVE-2026-1000", LIB, CVSS={"nvd": {"V3Score": 9.8}})), grype)
+        self.assertEqual(with_cvss["verdicts"][0]["vulnerability"]["cvss"], {"score": 9.8, "source": "nvd"})
+
+    def test_grype_cvss_source_follows_the_record_when_the_entry_has_none(self):
+        # Grype 0.122 output: a GHSA record's cvss[] has no source; a CVE record's Secondary score is a CNA UUID
+        ghsa = {"vulnerability": {"id": "GHSA-xxxx-yyyy-zzzz", "namespace": "github:language:java",
+                                  "cvss": [{"version": "3.1", "metrics": {"baseScore": 7.5}}]}}
+        self.assertEqual(bundle.grype_cvss(ghsa), {"score": 7.5, "source": "ghsa"})
+        cve = {"vulnerability": {"id": "CVE-2026-1000", "namespace": "nvd:cpe", "cvss": [
+                   {"source": "134c704f-9b21-4f2e-91b3-4a467353bcc0", "type": "Secondary", "version": "3.1",
+                    "metrics": {"baseScore": 6.5}},
+                   {"source": "nvd@nist.gov", "type": "Primary", "version": "3.1", "metrics": {"baseScore": 9.8}}]}}
+        self.assertEqual(bundle.grype_cvss(cve), {"score": 9.8, "source": "nvd"})
+        cna_only = {"vulnerability": {"id": "CVE-2026-1000", "namespace": "nvd:cpe", "cvss": [
+                   {"source": "134c704f-9b21-4f2e-91b3-4a467353bcc0", "type": "Secondary", "version": "3.1",
+                    "metrics": {"baseScore": 6.5}}]}}
+        self.assertEqual(bundle.grype_cvss(cna_only), {"score": 6.5, "source": "cna"})
+        # related records: NVD before others
+        related = {"vulnerability": {"id": "GHSA-xxxx-yyyy-zzzz", "namespace": "github:language:java"},
+                   "relatedVulnerabilities": [
+                       {"id": "CVE-2026-1000", "namespace": "other:db", "cvss": [{"version": "3.1", "metrics": {"baseScore": 5.0}}]},
+                       {"id": "CVE-2026-1000", "namespace": "nvd:cpe", "cvss": [{"version": "3.1", "metrics": {"baseScore": 8.8}}]}]}
+        self.assertEqual(bundle.grype_cvss(related), {"score": 8.8, "source": "nvd"})
+
+    def test_no_cvss_leaves_the_field_out(self):
+        i = self.item(self.run_bundle(trivy(trivy_vuln("CVE-2026-1000", LIB))), "CVE-2026-1000", LIB)
+        self.assertNotIn("cvss", i["vulnerability"])
 
     def test_callgraph_verdict(self):
         b = self.run_bundle(trivy(trivy_vuln("CVE-2026-1000", LIB)))
