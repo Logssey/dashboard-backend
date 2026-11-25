@@ -22,14 +22,15 @@ final class HelpPrivacyMask {
     // Order matters: longer, more specific numbers first so a card number is not half-read as a phone number.
     private static final List<Rule> RULES = List.of(
             new Rule(Pattern.compile("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"), EMAIL),
-            new Rule(Pattern.compile("(?<![0-9])\\d{6}\\s?-\\s?[1-8]\\d{6}(?![0-9])"), RRN),
-            new Rule(Pattern.compile("(?<![0-9])(?:\\d{4}[ -]?){3}\\d{4}(?![0-9])"), CARD),
+            // Digits glued to letters (hashes, tokens, digests) are left alone.
+            new Rule(Pattern.compile("(?<![0-9A-Za-z])\\d{6}\\s?-\\s?[1-8]\\d{6}(?![0-9A-Za-z])"), RRN),
+            new Rule(Pattern.compile("(?<![0-9A-Za-z])(?:\\d{4}[ -]?){3}\\d{4}(?![0-9A-Za-z])"), CARD),
             new Rule(Pattern.compile("(?<![0-9.])(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}"
                     + "(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)(?:/\\d{1,2})?(?![0-9.])"), IP),
             // IPv6: full form (8 groups) or compressed with "::". Times such as 10:30:00 are left alone.
             new Rule(Pattern.compile("(?i)(?<![0-9a-z:])(?:(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}"
                     + "|(?:[0-9a-f]{1,4}:){1,6}:(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,5})?)(?![0-9a-z:])"), IP),
-            new Rule(Pattern.compile("(?<![0-9])(?:\\+82[ -]?1\\d|0\\d{1,2})[ .-]?\\d{3,4}[ .-]?\\d{4}(?![0-9])"), PHONE));
+            new Rule(Pattern.compile("(?<![0-9A-Za-z])(?:\\+82[ -]?1\\d|0\\d{1,2})[ .-]?\\d{3,4}[ .-]?\\d{4}(?![0-9A-Za-z])"), PHONE));
 
     private HelpPrivacyMask() {
     }

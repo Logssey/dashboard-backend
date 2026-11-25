@@ -93,4 +93,42 @@ class HelpPrivacyAndSignalsTest {
                 {"summary":"키 %s 를 교체","checked":[],"actions":[],"remaining":[]}""".formatted(HelpTestKeys.githubLike())), memo))
                 .as("key-looking values").isNull();
     }
+
+    /** Item 1 (design doc 18.7): numbers are compared as whole digit runs, not substrings. */
+    @Test
+    void reportNumbersMustMatchWholeDigitRunsFromTheNotes() {
+        String memo = "14:30 서버 2대 격리";
+        assertThat(HelpReport.numbers(memo)).containsExactlyInAnyOrder("14", "30", "2");
+        assertThat(HelpReport.draft(JSON.readTree("""
+                {"summary":"서버 3대를 격리했습니다.","checked":[],"actions":[],"remaining":[]}"""), memo))
+                .as("3 is inside 30 but is not one of the note's numbers").isNull();
+        assertThat(HelpReport.draft(JSON.readTree("""
+                {"summary":"14:30에 서버 2대를 격리했습니다.","checked":[],"actions":[],"remaining":[]}"""), memo))
+                .isNotNull();
+    }
+
+    /** Item 2: image digests and commit hashes are public identifiers; other long tokens are still blocked. */
+    @Test
+    void digestsAndCommitHashesAreNotKeys() {
+        String digest = "sha256:" + "4f9e2c1a7b3d5e6f".repeat(4);
+        String commit = "9c1e4b7a2d5f8e3c6b9a1d4e7f2a5c8b3e6d9f1a";
+        assertThat(commit).hasSize(40);
+        assertThat(HelpQuestionGuard.containsSecretLikeValue("이미지 " + digest + " 스캔 결과는 어디서 봐요?")).isFalse();
+        assertThat(HelpQuestionGuard.containsSecretLikeValue("커밋 " + commit + " 기준으로 스캔하려면?")).isFalse();
+        assertThat(HelpPrivacyMask.mask(digest)).isEqualTo(digest);
+        assertThat(HelpPrivacyMask.mask(commit)).isEqualTo(commit);
+        // A bare 64-hex value without the sha256: prefix, 41 hex, or a mixed random token is still treated as a key.
+        assertThat(HelpQuestionGuard.containsSecretLikeValue("값 " + "4f9e2c1a7b3d5e6f".repeat(4))).isTrue();
+        assertThat(HelpQuestionGuard.containsSecretLikeValue("값 " + commit + "a")).isTrue();
+        assertThat(HelpQuestionGuard.containsSecretLikeValue("값 " + HelpTestKeys.opaqueToken())).isTrue();
+        assertThat(HelpQuestionGuard.containsSecretLikeValue("sha256:" + HelpTestKeys.opaqueToken())).isTrue();
+    }
+
+    /** Digits glued to letters are not masked as phone or card numbers (keeps hashes and tokens intact). */
+    @Test
+    void digitsInsideTokensAreNotMasked() {
+        assertThat(HelpPrivacyMask.mask("build a01012345678b")).isEqualTo("build a01012345678b");
+        assertThat(HelpPrivacyMask.mask("id x4111111111111111y")).isEqualTo("id x4111111111111111y");
+        assertThat(HelpPrivacyMask.mask("전화 010-1234-5678로")).isEqualTo("전화 [전화번호]로");
+    }
 }

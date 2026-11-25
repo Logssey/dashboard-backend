@@ -59,9 +59,17 @@ class HelpChatService {
         String question = request.question().strip();
         if (question.isEmpty() || question.length() > MAX_QUESTION_CHARS) throw new HelpChatException("INVALID_INPUT");
         String page = cleanPage(request.page());
+        List<HelpTurn> rawHistory = cleanHistory(request.history());
+        // Check the original text too: masking a digit run inside a key could shorten what is left below the
+        // long-token threshold (design doc 18.7).
+        if (HelpQuestionGuard.containsSecretLikeValue(question)
+                || rawHistory.stream().anyMatch(turn -> HelpQuestionGuard.containsSecretLikeValue(turn.text()))) {
+            log.info("Help chat rejected a secret-like question before dispatch");
+            throw new HelpChatException("QUESTION_REJECTED");
+        }
         // Customer data (e-mail, IP, phone, ...) is masked in the question and in every earlier turn (design doc 18.1).
         question = HelpPrivacyMask.mask(question);
-        List<HelpTurn> history = cleanHistory(request.history()).stream()
+        List<HelpTurn> history = rawHistory.stream()
                 .map(turn -> new HelpTurn(turn.role(), HelpPrivacyMask.mask(turn.text()))).toList();
 
         // Never send credential-looking text to the provider, even from earlier turns.
@@ -82,7 +90,7 @@ class HelpChatService {
         String cacheKey = playbook != null ? "checklist\n" + page + "\n" + normalized
                 : history.isEmpty() ? page + "\n" + normalized : null;
         if (cacheKey != null) {
-            var hit = cachedAnswer(cacheKey);
+            var hit = cachedAnswer(cacheKey, budget.remainingToday(principal));
             if (hit != null) return hit;
         }
 
@@ -93,7 +101,8 @@ class HelpChatService {
 
         if (playbook != null) {
             ChatResponse response = checklist(playbook, page, question, signals, permit);
-            remember(cacheKey, response);
+            // A playbook-only answer after a provider failure is not cached, so the next ask tries the model again.
+            if (!response.withoutAi()) remember(cacheKey, response);
             return response;
         }
 
@@ -133,16 +142,12 @@ class HelpChatService {
         HelpChecklist.Result result;
         try {
             var reply = provider.send(provider.checklistRequestBody(playbook, page, question, signals));
-            if (reply.reasonCode() != null) {
-                log.info("Help chat result={} mode=checklist", reply.reasonCode());
-                throw new HelpChatException("PROVIDER_UNAVAILABLE");
-            }
-            result = HelpChecklist.parse(reply.body(), playbook);
-        } catch (HelpChatException failed) {
-            throw failed;
+            // A provider failure (timeout, 429, 5xx) still answers with the playbook's fixed ten checks (design doc 18.7).
+            result = reply.reasonCode() != null
+                    ? HelpChecklist.fallback(playbook, reply.reasonCode(), HelpAnswerFilter.Usage.EMPTY)
+                    : HelpChecklist.parse(reply.body(), playbook);
         } catch (RuntimeException unexpected) {
-            log.info("Help chat result=PROVIDER_UNAVAILABLE mode=checklist");
-            throw new HelpChatException("PROVIDER_UNAVAILABLE");
+            result = HelpChecklist.fallback(playbook, "PROVIDER_UNAVAILABLE", HelpAnswerFilter.Usage.EMPTY);
         } finally {
             permit.complete();
         }
@@ -152,7 +157,8 @@ class HelpChatService {
         var sources = result.sources().stream().map(s -> new SourceView(s.doc(), s.title(), s.section())).toList();
         var cards = result.fallback() ? null : result.cards().stream()
                 .map(c -> new CardView(c.checks(), c.titles(), c.screen(), c.focus())).toList();
-        return new ChatResponse(result.text(), true, sources, permit.remainingToday(), false, cards);
+        // withoutAi: the text is the playbook itself, not the model's wording.
+        return new ChatResponse(result.text(), true, sources, permit.remainingToday(), false, cards, result.fallback());
     }
 
     private HelpDocument playbook() {
@@ -168,8 +174,9 @@ class HelpChatService {
         if (request == null || request.memo() == null) throw new HelpChatException("MEMO_INVALID");
         String memo = request.memo().strip();
         if (memo.isEmpty() || memo.length() > HelpReport.MAX_MEMO_CHARS) throw new HelpChatException("MEMO_INVALID");
+        boolean rawSecret = HelpQuestionGuard.containsSecretLikeValue(memo);
         memo = HelpPrivacyMask.mask(memo);
-        if (HelpQuestionGuard.containsSecretLikeValue(memo)) {
+        if (rawSecret || HelpQuestionGuard.containsSecretLikeValue(memo)) {
             log.info("Help report rejected secret-like notes before dispatch");
             throw new HelpChatException("QUESTION_REJECTED");
         }
@@ -230,14 +237,15 @@ class HelpChatService {
         return List.copyOf(recent);
     }
 
-    private synchronized ChatResponse cachedAnswer(String key) {
+    /** A cached answer, with the asking user's own remaining count rather than the first asker's. */
+    private synchronized ChatResponse cachedAnswer(String key, int remainingToday) {
         long now = System.nanoTime();
         cache.values().removeIf(entry -> now - entry.expiresAt() >= 0);
         var entry = cache.get(key);
         if (entry == null) return null;
         var value = entry.response();
-        return new ChatResponse(value.answer(), value.grounded(), value.sources(), value.remainingToday(), true,
-                value.cards());
+        return new ChatResponse(value.answer(), value.grounded(), value.sources(), remainingToday, true,
+                value.cards(), value.withoutAi());
     }
 
     private synchronized void remember(String key, ChatResponse response) {

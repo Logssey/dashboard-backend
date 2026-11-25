@@ -1,9 +1,11 @@
 package com.logssey.help;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -86,8 +88,9 @@ final class HelpReport {
     /** Validates shape, lengths, safety and that every number already appears in the notes. Null when off. */
     static Draft draft(JsonNode root, String memo) {
         if (root == null || !root.isObject() || root.size() != 4 || !root.path("summary").isTextual()) return null;
+        Set<String> memoNumbers = numbers(memo);
         String summary = root.path("summary").asText().strip();
-        if (summary.isEmpty() || summary.length() > MAX_SUMMARY_CHARS || !allowed(summary, memo)) return null;
+        if (summary.isEmpty() || summary.length() > MAX_SUMMARY_CHARS || !allowed(summary, memoNumbers)) return null;
         var lists = new ArrayList<List<String>>();
         for (String name : LISTS) {
             JsonNode node = root.path(name);
@@ -97,7 +100,7 @@ final class HelpReport {
                 if (!item.isTextual()) return null;
                 String value = item.asText().strip();
                 if (value.isEmpty()) continue;
-                if (value.length() > MAX_ITEM_CHARS || !allowed(value, memo)) return null;
+                if (value.length() > MAX_ITEM_CHARS || !allowed(value, memoNumbers)) return null;
                 items.add(value);
             }
             lists.add(List.copyOf(items));
@@ -105,12 +108,16 @@ final class HelpReport {
         return new Draft(summary, lists.get(0), lists.get(1), lists.get(2));
     }
 
-    private static boolean allowed(String value, String memo) {
+    /** Whole digit runs, so "14:30" gives {14, 30} and a "3" in the draft is not accepted because of "30". */
+    static Set<String> numbers(String text) {
+        var found = new HashSet<String>();
+        Matcher numbers = NUMBER.matcher(text);
+        while (numbers.find()) found.add(numbers.group());
+        return found;
+    }
+
+    private static boolean allowed(String value, Set<String> memoNumbers) {
         if (value.contains("\n") || !HelpAnswerFilter.safe(value)) return false;
-        Matcher numbers = NUMBER.matcher(value);
-        while (numbers.find()) {
-            if (!memo.contains(numbers.group())) return false;
-        }
-        return true;
+        return memoNumbers.containsAll(numbers(value));
     }
 }

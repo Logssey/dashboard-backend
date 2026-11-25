@@ -28,10 +28,16 @@ final class HelpChatDtos {
     }
 
     /** {@code cards} is null for text answers and for checklist fallbacks; {@code answer} is always set. */
+    /** {@code withoutAi} is true when the answer is the playbook's own text because the model failed or was invalid. */
     record ChatResponse(String answer, boolean grounded, List<SourceView> sources, int remainingToday,
-                        boolean cached, List<CardView> cards) {
+                        boolean cached, List<CardView> cards, boolean withoutAi) {
+        ChatResponse(String answer, boolean grounded, List<SourceView> sources, int remainingToday, boolean cached,
+                     List<CardView> cards) {
+            this(answer, grounded, sources, remainingToday, cached, cards, false);
+        }
+
         ChatResponse(String answer, boolean grounded, List<SourceView> sources, int remainingToday, boolean cached) {
-            this(answer, grounded, sources, remainingToday, cached, null);
+            this(answer, grounded, sources, remainingToday, cached, null, false);
         }
     }
 
