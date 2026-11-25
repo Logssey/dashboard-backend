@@ -112,8 +112,9 @@ public final class AwsContentPipeline {
                                             (String) target.get("approved_ref"),
                                             (String) target.get("history_limit"));
                             if (!accountAllowed.test(approved)) return false;
-                            String ref = "aws-content-scope:" + target.get("scope_id");
-                            if (!ref.equals(target.get("source_object_ref"))) return false;
+                            String ref = (String) target.get("source_object_ref");
+                            try { approved = approved.resolveSource(((Number) target.get("scope_id")).longValue(), ref); }
+                            catch (IllegalArgumentException error) { return false; }
                             return collector
                                             .collect(
                                                     approved,
@@ -180,17 +181,31 @@ public final class AwsContentPipeline {
     public Result process(ClaimedSecretJob job, SecretJobExecutionService execution,
                           long scopeId, long runScopeId, AwsContentScope approved,
                           RunValidation validation) {
-        String sourceRef = "aws-content-scope:" + scopeId;
+        AwsContentScope readScope = approved;
+        String recheckRef = null;
+        if (approved.kind() == AwsContentScope.Kind.S3_PREFIX && Boolean.TRUE.equals(attempts.jdbcTemplate().queryForObject(
+                "SELECT purpose='LOCATION_RECHECK' FROM secret_jobs WHERE job_id=?", Boolean.class, job.jobId()))) {
+            recheckRef = attempts.jdbcTemplate().queryForObject("""
+                    SELECT o.source_object_ref FROM secret_case_revalidations v
+                    JOIN secret_occurrences o USING(occurrence_id)
+                    WHERE v.job_id=? AND v.status='PENDING'
+                    """, String.class, job.jobId());
+            readScope = approved.resolveSource(scopeId, recheckRef);
+        }
+        final String exactRecheckRef = recheckRef;
         AtomicLong toolRunId = new AtomicLong();
         withLease(job, execution, () -> toolRunId.set(findings.beginGitleaksRun(runScopeId,
                 detector.engineVersion(), detector.configHash(), Instant.now())));
         AtomicReference<String> consumerGap = new AtomicReference<>();
         AwsContentCollector.Result result =
                 collector.observed(execution.observer(job, runScopeId)).collect(
-                        approved,
+                        readScope,
                         true,
                         AwsContentCollector.DEFAULT_MAX_BYTES,
                         (source, bytes) -> {
+                            String sourceRef = exactRecheckRef != null ? exactRecheckRef
+                                    : approved.kind() == AwsContentScope.Kind.S3_PREFIX
+                                      ? approved.childSourceRef(scopeId, source.objectKey()) : approved.sourceRef(scopeId);
                             if (!execution.renewLease(job.jobId(), job.leaseToken())) {
                                 consumerGap.set("LEASE_EXPIRED");
                                 throw new SecretJobFailure(

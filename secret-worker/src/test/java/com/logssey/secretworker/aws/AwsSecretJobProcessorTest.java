@@ -694,7 +694,35 @@ class AwsSecretJobProcessorTest {
                 properties, "test", content);
     }
 
+    @Test void prefixFindingsRetainEachFileAndDiscoverFilesAddedBeforeNextScan() {
+        long connection=connection();
+        long scopeId=contentScope(connection,"AWS_S3_OBJECT_CONTENT",
+                "aws://"+ACCOUNT+"/ap-northeast-2/s3/prefix/demo-bucket/demo%2F",1);
+        var reader=new FakeContentReader();
+        reader.objects=new java.util.LinkedHashMap<>();
+        byte[] content=("AWS_ACCESS_KEY_ID="+ACCESS_KEY_ID+"\nAWS_SECRET_ACCESS_KEY="+"aB3/".repeat(10)+"\n")
+                .getBytes(StandardCharsets.UTF_8);
+        reader.objects.put("demo/a.env",content);
+        long first=run(connection,scopeId);
+        executeContent(first,new FakeGateway(),reader);
+        reader.objects.put("demo/sub/new.env",content);
+        long second=run(connection,scopeId);
+        executeContent(second,new FakeGateway(),reader);
+        assertThat(jdbc.queryForObject("SELECT collection_status FROM secret_scan_runs WHERE run_id=?",String.class,second))
+                .isEqualTo("SUCCEEDED");
+        assertThat(jdbc.queryForObject("SELECT object_count FROM secret_run_scopes WHERE run_id=?",Integer.class,second)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT count(DISTINCT source_object_ref) FROM secret_occurrences",Integer.class)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT count(DISTINCT occurrence_id) FROM secret_findings WHERE run_id=?",Integer.class,second)).isEqualTo(2);
+        assertThat(jdbc.queryForList("SELECT source_object_ref FROM secret_occurrences",String.class))
+                .containsExactlyInAnyOrder("aws-content-scope:"+scopeId+":demo%2Fa.env","aws-content-scope:"+scopeId+":demo%2Fsub%2Fnew.env");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_credential_sets",Integer.class)).isEqualTo(1);
+    }
+
     private static final class FakeContentReader implements AwsContentReader {
+        private java.util.Map<String,byte[]> objects;
+        @Override public ObjectPage list(AwsContentScope scope,String token) {
+            return new ObjectPage(List.copyOf(objects.keySet()),null);
+        }
         private int calls;
         private byte[] bytes = new byte[0];
         private FailureCode failure;
@@ -703,6 +731,7 @@ class AwsSecretJobProcessorTest {
             calls++;
             if (onRead != null) onRead.run();
             if (failure != null) throw new ReadFailure(failure);
+            if (objects != null) return objects.get(scope.objectKey()).clone();
             return bytes;
         }
     }

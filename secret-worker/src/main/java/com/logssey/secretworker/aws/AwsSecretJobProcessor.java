@@ -211,7 +211,9 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
                 WHERE v.job_id=? AND v.run_id=? AND v.connection_id=? AND v.scope_id=? AND v.status='PENDING'
                   AND o.connection_id=v.connection_id AND o.scope_id=v.scope_id
                   AND o.credential_set_id=c.credential_set_id
-                  AND o.source_object_ref='aws-content-scope:' || v.scope_id::text
+                  AND (o.source_object_ref='aws-content-scope:' || v.scope_id::text
+                       OR (s.content_type='AWS_S3_OBJECT_CONTENT' AND s.approved_ref LIKE '%/s3/prefix/%'
+                           AND starts_with(o.source_object_ref,'aws-content-scope:' || v.scope_id::text || ':')))
                   AND c.is_current AND c.disposition='IN_SCOPE' AND c.case_origin=s.response_origin
                   AND co.response_status='REVALIDATION_PENDING' AND co.action_cycle=v.action_cycle
                   AND co.version=v.occurrence_version AND co.last_material_action_at=v.last_material_action_at
@@ -334,7 +336,8 @@ public final class AwsSecretJobProcessor implements SecretJobProcessor {
         if (success) progress.scanned(); else progress.failed();
         finishScope(job, execution, scope.runScopeId(), result.status().name(),
                 result.objectCount(), result.gapCode(), null);
-        return new ScopeResult(success, success, result.gapCode());
+        return new ScopeResult(success || result.status() == AwsContentCollector.Status.PARTIAL,
+                success, result.gapCode());
     }
 
     private ScopeResult processAdditionalScope(ClaimedSecretJob job, Scope scope,

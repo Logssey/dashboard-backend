@@ -103,6 +103,24 @@ class AwsSdkContentReaderTest {
         assertNull(failure.getCause());
     }
 
+    @Test void prefixListingUsesOwnerPrefixAndContinuationWithoutDelimiter() {
+        var s3=mock(S3Client.class);
+        var reader=reader(mock(SecretsManagerClient.class),mock(SsmClient.class),s3);
+        when(s3.listObjectsV2(any(software.amazon.awssdk.services.s3.model.ListObjectsV2Request.class)))
+                .thenReturn(software.amazon.awssdk.services.s3.model.ListObjectsV2Response.builder()
+                        .isTruncated(true).nextContinuationToken("next")
+                        .contents(software.amazon.awssdk.services.s3.model.S3Object.builder().key("cfg/sub/a.env").build()).build());
+        var page=reader.list(scope("AWS_S3_OBJECT_CONTENT","s3/prefix/fixture-bucket/cfg%2F"),"previous");
+        assertEquals("next",page.nextToken());
+        assertEquals(java.util.List.of("cfg/sub/a.env"),page.keys());
+        var capture=org.mockito.ArgumentCaptor.forClass(software.amazon.awssdk.services.s3.model.ListObjectsV2Request.class);
+        verify(s3).listObjectsV2(capture.capture());
+        assertEquals("cfg/",capture.getValue().prefix());
+        assertEquals(ACCOUNT,capture.getValue().expectedBucketOwner());
+        assertEquals("previous",capture.getValue().continuationToken());
+        assertNull(capture.getValue().delimiter());
+    }
+
     private static AwsSdkContentReader reader(SecretsManagerClient secrets, SsmClient ssm, S3Client s3) {
         return new AwsSdkContentReader(new AwsSdkContentReader.ClientFactory() {
             @Override public SecretsManagerClient secretsManager(String region) {

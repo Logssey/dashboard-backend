@@ -47,6 +47,8 @@ public class SecretRunService {
             "AWS_CONTENT_ACCESS_DENIED", "AWS_CONTENT_NOT_FOUND",
             "AWS_CONTENT_RATE_LIMITED", "AWS_CONTENT_SOURCE_UNAVAILABLE",
             "AWS_CONTENT_OBJECT_TOO_LARGE", "AWS_CONTENT_NON_TEXT",
+            "AWS_CONTENT_OBJECT_LIMIT", "AWS_CONTENT_TOTAL_BYTES_LIMIT",
+            "AWS_CONTENT_PAGINATION_LOOP", "AWS_CONTENT_INVALID_OBJECT_KEY",
             "AWS_CONTENT_CONSUMER_FAILED", "AWS_CONTENT_PROCESSING_FAILED",
             "DETECTOR_INPUT_TOO_LARGE", "DETECTOR_OUTPUT_TOO_LARGE",
             "DETECTOR_TOOL_UNAVAILABLE", "DETECTOR_UNSUPPORTED_VERSION",
@@ -82,7 +84,7 @@ public class SecretRunService {
     private static final Pattern PARAMETER_VALUE_REF = Pattern.compile(
             "^aws://[0-9]{12}/(" + REGION + ")/ssm/parameter/" + EXACT_SEGMENT + "$");
     private static final Pattern OBJECT_CONTENT_REF = Pattern.compile(
-            "^aws://[0-9]{12}/(" + REGION + ")/s3/object/"
+            "^aws://[0-9]{12}/(" + REGION + ")/s3/(object|prefix)/"
                     + "[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/" + EXACT_SEGMENT + "$");
 
     private final SecretRunRepository repository;

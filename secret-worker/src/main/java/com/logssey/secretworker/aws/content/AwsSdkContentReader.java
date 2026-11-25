@@ -84,6 +84,7 @@ public final class AwsSdkContentReader implements AwsContentReader {
                 case SECRETS_MANAGER -> readSecret(scope, maxBytes);
                 case SSM_PARAMETER -> readParameter(scope, maxBytes);
                 case S3_OBJECT -> readObject(scope, maxBytes);
+                case S3_PREFIX -> throw new IllegalArgumentException("List a prefix before reading objects");
             };
         } catch (ReadFailure error) {
             throw error;
@@ -92,6 +93,25 @@ public final class AwsSdkContentReader implements AwsContentReader {
         } catch (SdkClientException error) {
             throw new ReadFailure(FailureCode.UNAVAILABLE);
         } catch (IOException error) {
+            throw new ReadFailure(FailureCode.UNAVAILABLE);
+        }
+    }
+
+    @Override public ObjectPage list(AwsContentScope scope, String token) {
+        if (scope.kind() != AwsContentScope.Kind.S3_PREFIX) throw new IllegalArgumentException("Prefix required");
+        try (var client = clients.s3(scope.region())) {
+            var request = software.amazon.awssdk.services.s3.model.ListObjectsV2Request.builder()
+                    .bucket(scope.resource()).prefix(scope.objectKey()).expectedBucketOwner(scope.accountId())
+                    .maxKeys(1000).continuationToken(token).build();
+            var response = AwsScanObservation.call(observer, Operation.SCOPE_COLLECTION,
+                    () -> client.listObjectsV2(request));
+            String next = Boolean.TRUE.equals(response.isTruncated()) ? response.nextContinuationToken() : null;
+            if (Boolean.TRUE.equals(response.isTruncated()) && (next == null || next.isBlank()))
+                throw new ReadFailure(FailureCode.UNAVAILABLE);
+            return new ObjectPage(response.contents().stream().map(o -> o.key()).toList(), next);
+        } catch (AwsServiceException error) {
+            throw new ReadFailure(serviceCode(error.statusCode()));
+        } catch (SdkClientException error) {
             throw new ReadFailure(FailureCode.UNAVAILABLE);
         }
     }
