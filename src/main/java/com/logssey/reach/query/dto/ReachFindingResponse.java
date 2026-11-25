@@ -16,7 +16,8 @@ public record ReachFindingResponse(
         Verdict verdict,
         Review review,
         L3 l3,
-        OffsetDateTime firstSeenAt) {
+        OffsetDateTime firstSeenAt,
+        ReachFindingRisk risk) {                            // 보안 점수용 이미지 등급 (ADR-D012)
 
     /**
      * L3 능동 관측이 닿은 곳 (FR-14). 판정(verdict)과 따로인 근거다. 이 이미지를 띄워 본 결과가 없으면 null.

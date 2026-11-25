@@ -39,7 +39,7 @@ public class ReachQueryRepository {
                 %s
             )
             SELECT f.finding_id, l.scan_id AS last_scan_id, f.target_id, f.purl, f.component_name, f.component_version,
-                   f.vulnerability_id, f.severity, f.fixed_versions, f.deployment, f.first_seen_at,
+                   f.vulnerability_id, f.severity, f.fixed_versions, f.deployment, f.first_seen_at, f.cvss_score,
                    v.status, v.method, v.summary, v.not_analyzed_reason,
                    r.review_state, r.status AS review_status, r.proposal::text AS proposal, r.reset_reason,
                    x.reached AS l3_reached, x.regions_checked AS l3_regions_checked, x.startup_only AS l3_startup_only,
@@ -346,7 +346,9 @@ public class ReachQueryRepository {
                         rs.getBoolean("l3_regions_checked"), rs.getBoolean("l3_startup_only"),
                         l3Raise.limit(rs.getString("vulnerability_id"), rs.getString("l3_reached"),
                                 rs.getBoolean("l3_regions_checked"))),
-                rs.getObject("first_seen_at", OffsetDateTime.class));
+                rs.getObject("first_seen_at", OffsetDateTime.class),
+                ReachRiskGrade.of(rs.getString("severity"), status, rs.getString("deployment"),
+                        rs.getBigDecimal("cvss_score")));
     }
 
     /** 배열 안의 NULL은 버린다. List.of는 null 원소에서 NPE를 내서 그 행이 든 목록·상세가 500이 된다 */
@@ -465,6 +467,7 @@ public class ReachQueryRepository {
                f.vulnerability_id, f.severity, f.severity_note, f.vuln_title, f.vuln_description, f.affected_feature,
                f.fixed_versions, f.cwe_ids, f.reference_urls,
                f.deployment, f.sources, f.upgrade::text AS upgrade, f.first_seen_at, f.last_seen_at,
+               f.cvss_score, f.cvss_source,
                v.status, v.method, v.summary, v.not_analyzed_reason, v.rule_id, v.vuln_function_ids,
                v.callgraph::text AS callgraph, v.engine::text AS engine, v.analyzed_at,
                (SELECT COALESCE(jsonb_agg(
@@ -517,7 +520,9 @@ public class ReachQueryRepository {
                 new ReachFindingDetailResponse.Vulnerability(rs.getString("vulnerability_id"), rs.getString("severity"),
                         rs.getString("severity_note"), rs.getString("vuln_title"), rs.getString("vuln_description"),
                         rs.getString("affected_feature"), strings(rs.getArray("fixed_versions")),
-                        strings(rs.getArray("cwe_ids")), strings(rs.getArray("reference_urls"))),
+                        strings(rs.getArray("cwe_ids")), strings(rs.getArray("reference_urls")),
+                        rs.getBigDecimal("cvss_score") == null ? null : new ReachFindingDetailResponse.Cvss(
+                                rs.getBigDecimal("cvss_score"), rs.getString("cvss_source"))),
                 rs.getString("deployment"),
                 strings(rs.getArray("sources")),
                 new ReachFindingDetailResponse.Verdict(status, rs.getString("method"), rs.getString("summary"),
@@ -536,7 +541,9 @@ public class ReachQueryRepository {
                 // ARRAY(SELECT ...)는 결과가 없어도 NULL이 아니라 빈 배열이다. BIGINT 배열이라 Long[]
                 List.of((Long[]) rs.getArray("same_cve").getArray()),
                 rs.getObject("first_seen_at", OffsetDateTime.class),
-                rs.getObject("last_seen_at", OffsetDateTime.class));
+                rs.getObject("last_seen_at", OffsetDateTime.class),
+                ReachRiskGrade.of(rs.getString("severity"), status, rs.getString("deployment"),
+                        rs.getBigDecimal("cvss_score")));
     }
 
     /** API-05 include=reviewHistory. 새것부터. version은 Finding마다 겹치지 않는다 (uq_reach_review_history_version) */

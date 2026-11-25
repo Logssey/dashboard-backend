@@ -1,5 +1,6 @@
 package com.logssey.reach.query.dto;
 
+import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.List;
 
@@ -15,15 +16,19 @@ public record ReachFindingDetailResponse(
         Verdict verdict, Review review,
         L3 l3,                                              // L3 능동 관측. 띄워 본 결과가 없으면 null
         JsonNode upgrade, List<Long> sameCveFindings,       // 같은 스캔에서 CVE가 같은 다른 Finding id
-        OffsetDateTime firstSeenAt, OffsetDateTime lastSeenAt) {
+        OffsetDateTime firstSeenAt, OffsetDateTime lastSeenAt,
+        ReachFindingRisk risk) {                            // 보안 점수용 이미지 등급 (ADR-D012)
 
     /** path는 이미지 안 위치 (예: app.jar 안의 BOOT-INF/lib/…). 모르면 null */
     public record Component(String purl, String name, String version, String ecosystem, String path) {}
 
-    /** description은 스캐너 설명 원문. cwe·references는 없으면 빈 배열 */
+    /** description은 스캐너 설명 원문. cwe·references는 없으면 빈 배열. cvss는 없으면 null */
     public record Vulnerability(String id, String severity, String severityNote, String title, String description,
                                 String affectedFeature, List<String> fixedVersions,
-                                List<String> cwe, List<String> references) {}
+                                List<String> cwe, List<String> references, Cvss cvss) {}
+
+    /** CVSS v3 기본 점수와 출처(nvd, ghsa 등). 스캐너 심각도를 정한 출처의 값이다 */
+    public record Cvss(BigDecimal score, String source) {}
 
     /** 현재 판정. callgraph·engine은 DB의 JSONB를 그대로, evidence는 ord 순서 배열.
      * vulnFunctionIds는 판정에 쓴 취약 함수(API-10 id), 없으면 빈 배열 */
@@ -65,6 +70,6 @@ public record ReachFindingDetailResponse(
         return new ReachFindingDetailResponse(id, scanId, targetId, component, vulnerability, deployment, sources,
                 verdict, new Review(r.reviewState(), r.status(), r.note(), r.reviewer(), r.reviewedAt(), r.version(),
                         r.disagreesWithTool(), r.proposal(), r.carriedFrom(), r.resetReason(), history),
-                l3, upgrade, sameCveFindings, firstSeenAt, lastSeenAt);
+                l3, upgrade, sameCveFindings, firstSeenAt, lastSeenAt, risk);
     }
 }

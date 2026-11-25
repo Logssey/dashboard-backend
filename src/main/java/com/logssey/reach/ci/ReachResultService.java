@@ -367,7 +367,7 @@ public class ReachResultService {
                     || blank(vuln.id()) || tooLong(vuln.id(), 40) || tooLong(vuln.severityNote(), 500)
                     || tooLong(vuln.title(), 500) || tooLong(vuln.affectedFeature(), 500)
                     || hasBlank(vuln.fixedVersions()) || hasBlank(vuln.cwe()) || hasBlank(vuln.references())
-                    || (item.upgrade() != null && !item.upgrade().isObject())) {
+                    || (item.upgrade() != null && !item.upgrade().isObject()) || badCvss(vuln.cvss())) {
                 throw invalid();
             }
             if (!seen.add(c.purl() + "\n" + vuln.id())) throw invalid();
@@ -383,12 +383,21 @@ public class ReachResultService {
                     c.path(), vuln.id(), upper(vuln.severity(), ReachCodes.SEVERITIES), vuln.severityNote(),
                     vuln.title(), vuln.description(), vuln.affectedFeature(), json(vuln.fixedVersions()),
                     json(vuln.cwe()), json(vuln.references()), json(sources), deployment,
-                    item.upgrade() == null ? null : mapper.writeValueAsString(item.upgrade()));
+                    item.upgrade() == null ? null : mapper.writeValueAsString(item.upgrade()),
+                    vuln.cvss() == null ? null : vuln.cvss().score(), vuln.cvss() == null ? null : vuln.cvss().source());
             var evidence = evidence(item.verdict());
             var verdict = verdict(item.verdict(), evidence);
             rows.add(new Row(c.purl(), vuln.id(), verdict.status(), finding, verdict, evidence, proposal(item.proposal())));
         }
         return rows;
+    }
+
+    /** CVSS는 점수가 있어야 하고 0~10, 소수 한 자리까지다. 출처는 40자까지 (V66) */
+    private static boolean badCvss(ReachResultBundle.Cvss cvss) {
+        if (cvss == null) return false;
+        var score = cvss.score();
+        return score == null || score.signum() < 0 || score.compareTo(java.math.BigDecimal.TEN) > 0 || score.scale() > 1
+                || tooLong(cvss.source(), 40);
     }
 
     /**
