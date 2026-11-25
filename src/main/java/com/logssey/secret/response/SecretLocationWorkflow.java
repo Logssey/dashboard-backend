@@ -1,4 +1,5 @@
 package com.logssey.secret.response;
+import com.logssey.secret.evidence.SecretInternalRecord;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -295,6 +296,7 @@ public class SecretLocationWorkflow {
 
     public SecretCommandResult action(long caseId,Action request,String login) {
         SecretPrincipal actor=access.requirePrincipal(login);
+        if(request!=null)SecretInternalRecord.rejectReserved(request.evidenceRef());
         if(request==null||request.occurrenceId()==null||!ACTIONS.contains(request.actionType()==null?"":request.actionType())
             ||request.performedAt()==null||(request.evidenceRef()!=null&&!request.evidenceRef().isBlank()&&!evidence(request.evidenceRef())))invalid();
         long occurrence=request.occurrenceId();
@@ -351,8 +353,9 @@ public class SecretLocationWorkflow {
     @Transactional
     public Map<String,Object> checklist(long caseId,long item,Checklist request,String login) {
         SecretPrincipal actor=access.requirePrincipal(login);
+        if(request!=null)SecretInternalRecord.rejectReserved(request.evidenceRef());
         if(request==null||request.completed()==null||!"S2_V1".equals(request.guideVersion())
-            ||(request.completed()&&!evidence(request.evidenceRef()))||(!request.completed()&&request.evidenceRef()!=null))invalid();
+            ||(request.completed()&&request.evidenceRef()!=null&&!evidence(request.evidenceRef()))||(!request.completed()&&request.evidenceRef()!=null))invalid();
         var c=lockCase(caseId);requireExpectedVersion(request.expectedCaseVersion(),num(c,"version"));active(c);
         var before=jdbc.queryForList("SELECT * FROM secret_checklist_items WHERE case_id=? AND item_id=? FOR UPDATE",caseId,item);
         if(before.isEmpty())throw new ApiException(ErrorCode.NOT_FOUND);
@@ -360,13 +363,14 @@ public class SecretLocationWorkflow {
         if(occurrence==null) {if(!hasAllSecurity(actor,caseId))throw new ApiException(ErrorCode.FORBIDDEN);}
         else if(!assignedRemediator(actor,caseId,occurrence))requireSecurity(actor,caseId,occurrence);
         String status=request.completed()?"DONE":"TODO";
+        String reference=request.completed()?SecretInternalRecord.reference(jdbc,request.evidenceRef(),actor.userId(),"CASE",caseId,num(c,"version")+1,"CHECKLIST_CONFIRMED"):null;
         jdbc.update("""
             UPDATE secret_checklist_items SET status=?,evidence_ref=?,completed_at=CASE WHEN ? THEN now() ELSE NULL END,
               completed_by_user_id=CASE WHEN ? THEN ?::bigint ELSE NULL END,updated_at=now() WHERE item_id=?
-            """,status,request.evidenceRef(),request.completed(),request.completed(),actor.userId(),item);
+            """,status,reference,request.completed(),request.completed(),actor.userId(),item);
         bumpCase(caseId,null);
         jdbc.update("INSERT INTO secret_checklist_history(case_id,item_id,from_status,to_status,evidence_ref,changed_by_user_id,case_version) VALUES (?,?,?,?,?,?,?)",
-            caseId,item,before.getFirst().get("status"),status,request.evidenceRef(),actor.userId(),num(c,"version")+1);
+            caseId,item,before.getFirst().get("status"),status,reference,actor.userId(),num(c,"version")+1);
         event(caseId,occurrence,"CHECKLIST_CHANGED",actor.userId(),num(c,"version")+1,null,item,status);
         jdbc.update("INSERT INTO secret_audit_events(case_id,event_type,actor_user_id,case_version) VALUES (?,'CHECKLIST_CHANGED',?,?)",caseId,actor.userId(),num(c,"version")+1);
         return detail(caseId,login);

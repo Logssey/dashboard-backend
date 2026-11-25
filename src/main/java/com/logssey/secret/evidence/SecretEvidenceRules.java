@@ -14,6 +14,7 @@ public final class SecretEvidenceRules {
     public static final Set<String> EVIDENCE_KINDS=Set.of("OWNER_CONFIRMATION","POLICY_REFERENCE","SOURCE_ACCESS_RESTORED","PROVIDER_REFERENCE","FIXTURE_REFERENCE");
     public static void code(String code,Set<String> allowed){if(code==null||!allowed.contains(code))throw new ApiException(ErrorCode.INVALID_INPUT);}
     public static void reference(String value,boolean required){
+        SecretInternalRecord.rejectReserved(value);
         if(value==null&&!required)return;
         if(value==null||!value.matches("(TICKET|CHANGE|POLICY):[A-Z][A-Z0-9]{0,15}-[1-9][0-9]{0,12}"))throw new ApiException(ErrorCode.INVALID_INPUT);
     }

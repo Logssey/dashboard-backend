@@ -1,4 +1,6 @@
 package com.logssey.secret.lifecycle;
+import com.logssey.secret.evidence.SecretInternalRecord;
+
 import java.time.OffsetDateTime;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -62,8 +64,9 @@ public class SecretLifecycleService {
  public Map<String,Object> submit(long caseId,Submission r,String login){
   var actor=access.requirePrincipal(login);
   if(r==null)invalid();
+  SecretInternalRecord.rejectReserved(r.evidenceRef());
   if(r.sourceActionId()==null){
-   if(!KINDS.contains(r.kind()==null?"":r.kind())||r.performedAt()==null||!safeRef(r.evidenceRef()))invalid();
+   if(!KINDS.contains(r.kind()==null?"":r.kind())||r.performedAt()==null||(r.evidenceRef()!=null&&!safeRef(r.evidenceRef())))invalid();
   }else if(r.sourceActionId()<=0)invalid();
   var result=commands.execute(actor,SecretCommandExecutor.Kind.LIFECYCLE_SUBMIT,r.idempotencyKey(),digest(caseId,r),()->requireSubmit(actor,caseId),()->{
    var c=workflow.lockCase(caseId);requireExpectedVersion(r.expectedCaseVersion(),num(c,"version"));if(!active(c))conflict();
@@ -72,7 +75,7 @@ public class SecretLifecycleService {
    var action=r.sourceActionId()==null?matchingAction(caseId,sources.getFirst(),r):reusableAction(caseId,r.sourceActionId(),actor);
    String kind=action==null?r.kind():synthetic(caseId)?"FIXTURE_RETIRED":action.get("action_type").toString();
    OffsetDateTime performed=action==null?r.performedAt():actionTime(action);
-   String reference=action==null?r.evidenceRef():action.get("evidence_ref").toString();
+   String reference=action==null?SecretInternalRecord.reference(jdbc,r.evidenceRef(),actor.userId(),"CASE",caseId,num(c,"version")+1,"LIFECYCLE_SUBMITTED"):action.get("evidence_ref").toString();
    if(action!=null&&r.kind()!=null&&!r.kind().equals(kind))invalid();
    if(action!=null){
     var existing=jdbc.queryForList("SELECT evidence_id,1+(SELECT count(*) FROM secret_lifecycle_evidence_reviews WHERE evidence_id=e.evidence_id) AS evidence_version,(SELECT decision FROM secret_lifecycle_evidence_reviews WHERE evidence_id=e.evidence_id ORDER BY review_id DESC LIMIT 1) AS review_decision FROM secret_credential_lifecycle_evidence e WHERE case_id=? AND source_action_id=?",caseId,action.get("action_id"));

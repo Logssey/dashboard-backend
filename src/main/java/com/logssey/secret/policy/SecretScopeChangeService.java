@@ -1,4 +1,5 @@
 package com.logssey.secret.policy;
+import com.logssey.secret.evidence.SecretInternalRecord;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -106,7 +107,7 @@ public class SecretScopeChangeService {
                 if(approved!=null && approved.proposalId()!=null && scope.origin().equals(request.origin())
                         && Objects.equals(binding==null?null:binding.policyId(),request.storagePolicyId())
                         && Objects.equals(binding==null?null:binding.policyVersion(),request.storagePolicyVersion())
-                        && Objects.equals(approved.evidenceRef(),request.evidenceRef())) {
+                        && (request.evidenceRef()==null || Objects.equals(approved.evidenceRef(),request.evidenceRef()))) {
                     var previous=repository.proposal(scopeId,approved.proposalId(),false).orElseThrow();
                     return new SecretCommandResult(previous.id(),previous.version(),SecretCommandResult.Status.UNCHANGED);
                 }
@@ -116,7 +117,7 @@ public class SecretScopeChangeService {
                         approval_mode,approval_rule_version,reviewer_user_id)
                     VALUES(?,?,?,?,?,?,?,?,?,?,'PENDING_APPROVAL',?,?,?) RETURNING proposal_id
                     """,Long.class,scopeId,scope.originVersion(),scope.revision(),scope.fingerprint(),request.origin(),
-                    request.storagePolicyId(),request.storagePolicyVersion(),request.reasonCode(),request.evidenceRef(),
+                    request.storagePolicyId(),request.storagePolicyVersion(),request.reasonCode(),SecretInternalRecord.reference(jdbc,request.evidenceRef(),actor.userId(),"SCOPE",scopeId,scope.originVersion(),"CLASSIFICATION_PROPOSED"),
                     actor.userId(),preview.approvalMode(),RULE,request.reviewerUserId());
                 var proposal=repository.proposal(scopeId,id,true).orElseThrow();
                 if(preview.approvalMode().equals("DIRECT")) {
@@ -227,8 +228,8 @@ public class SecretScopeChangeService {
     }
     private static boolean matches(ProposalState p,ProposalRequest r) { return p.origin().equals(r.origin()) && Objects.equals(p.policyId(),r.storagePolicyId())
         && Objects.equals(p.policyVersion(),r.storagePolicyVersion()) && p.reason().equals(r.reasonCode()) && p.approvalMode().equals(r.expectedApprovalMode())
-        && p.evidence().equals(r.evidenceRef()) && Objects.equals(p.reviewerUserId(),r.reviewerUserId()); }
-    private static void reference(String s) { if(s==null || !s.matches("^((TICKET|CHANGE):[A-Z]{2,10}-[1-9][0-9]{0,9}|POLICY:SECRET-[1-9][0-9]{0,9})$"))invalid(); }
+        && (r.evidenceRef()==null || p.evidence().equals(r.evidenceRef())) && Objects.equals(p.reviewerUserId(),r.reviewerUserId()); }
+    private static void reference(String s) { SecretInternalRecord.rejectReserved(s); if(s!=null && !s.matches("^((TICKET|CHANGE):[A-Z]{2,10}-[1-9][0-9]{0,9}|POLICY:SECRET-[1-9][0-9]{0,9})$"))invalid(); }
     private static byte[] digest(Object... values) { try{return MessageDigest.getInstance("SHA-256").digest(java.util.Arrays.toString(values).getBytes(StandardCharsets.UTF_8));}
         catch(java.security.NoSuchAlgorithmException e){throw new IllegalStateException(e);} }
     private static void invalid(){throw new ApiException(ErrorCode.INVALID_INPUT);}

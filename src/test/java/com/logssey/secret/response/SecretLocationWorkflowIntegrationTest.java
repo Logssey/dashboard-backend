@@ -39,6 +39,22 @@ class SecretLocationWorkflowIntegrationTest {
         jdbc.update("INSERT INTO secret_case_occurrences(case_id,occurrence_id,credential_set_id) VALUES(?,?,?),(?,?,?)",caseId,occ1,key,caseId,occ2,key);
         access=new SecretAccessService(jdbc);service=new SecretLocationWorkflow(jdbc,access,new SecretCommandExecutor(jdbc,tm),new SecretReadSnapshots(jdbc,JsonMapper.builder().build()));
     }
+    @Test void ticketlessChecklistRecordsWhoConfirmedWithoutCompletingLocation() {
+        assign(occ1,alice,0,0);
+        var detail=service.detail(caseId,"alice");
+        var item=((java.util.List<java.util.Map<String,Object>>)detail.get("checklist")).getFirst();
+        long itemId=((Number)item.get("itemId")).longValue();
+        tx.execute(s->service.checklist(caseId,itemId,new SecretLocationWorkflow.Checklist(true,"S2_V1",null,1L),"alice"));
+        assertThat(jdbc.queryForObject("SELECT evidence_ref FROM secret_checklist_items WHERE item_id=?",String.class,itemId)).startsWith("CHANGE:RECORD-");
+        assertThat(jdbc.queryForObject("SELECT actor_user_id FROM secret_internal_records",Long.class)).isEqualTo(alice);
+        var reader=new com.logssey.secret.evidence.SecretInternalRecordController(jdbc,access,service,null,null);
+        long record=jdbc.queryForObject("SELECT record_id FROM secret_internal_records",Long.class);
+        assertThat(reader.detail(record,new org.springframework.security.authentication.UsernamePasswordAuthenticationToken("alice","unused")).get("actorDisplayName")).isNotNull();
+        code(ErrorCode.NOT_FOUND,()->reader.detail(record,new org.springframework.security.authentication.UsernamePasswordAuthenticationToken("bob","unused")));
+
+        assertThat(jdbc.queryForObject("SELECT response_status FROM secret_case_occurrences WHERE occurrence_id=?",String.class,occ1)).isEqualTo("OPEN");
+    }
+
     @Test void historyAllSearchUsesOnlyReadablePublicCaseAndLocationFacts() {
         jdbc.update("UPDATE secret_response_cases SET is_current=false,closed_at=now(),action_status='RESOLVED',resolved_at=now(),case_origin='UNCLASSIFIED' WHERE case_id=?",caseId);
         jdbc.update("UPDATE secret_connection_scopes SET response_origin='UNCLASSIFIED',response_origin_set_by_user_id=NULL,response_origin_set_at=NULL,safe_display_alias='결제 서비스'");

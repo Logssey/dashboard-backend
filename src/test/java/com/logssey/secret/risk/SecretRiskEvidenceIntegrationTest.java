@@ -88,7 +88,18 @@ class SecretRiskEvidenceIntegrationTest {
             0));
   }
 
-  @Test
+   @Test void internalEvidenceReferenceKeepsFactsAndProvenanceChecks() {
+    var original=request(0,"internal-risk");
+    var r=new SecretRiskEvidenceService.Submission(0L,"internal-risk",original.evidenceType(),original.subject(),original.observedAt(),original.validUntil(),null,original.facts());
+    var saved=service.submit("security",occurrence,r);
+    assertThat(service.submit("security",occurrence,r)).isEqualTo(saved);
+    assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_internal_records",Long.class)).isEqualTo(1);
+    assertThat(jdbc.queryForObject("SELECT evidence_ref FROM secret_risk_evidence WHERE evidence_id=?",String.class,saved.get("evidenceId"))).startsWith("CHANGE:RECORD-");
+    assertThatThrownBy(()->service.submit("outsider",occurrence,r)).isInstanceOf(ApiException.class);
+    assertThatThrownBy(()->service.submit("security",occurrence,new SecretRiskEvidenceService.Submission(1L,"bad-facts","ACCESS_SCOPE","OCCURRENCE",original.observedAt(),original.validUntil(),null,Map.of()))).isInstanceOf(ApiException.class);
+  }
+
+ @Test
   void ordinarySecurityAcceptsDirectlyAndIdempotencyDoesNotBypassAcl() {
     var r = request(0, "safe");
     var a = service.submit("security", occurrence, r);

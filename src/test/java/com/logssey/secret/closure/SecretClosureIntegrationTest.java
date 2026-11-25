@@ -46,6 +46,19 @@ class SecretClosureIntegrationTest {
             """,Long.class,key,first.occurrence);
         link(first);first=missing(first);
     }
+    @Test void ticketlessTransferRecordsAcceptanceOnlyAfterIndependentReview() {
+        var request=new TransferRequest(List.of(first.occurrence),"OWNER_TRANSFER",null,null,version(),"internal-transfer");
+        var saved=governance.transfer("security",caseId,request);
+        assertThat(governance.transfer("security",caseId,request)).isEqualTo(saved);
+        assertThat(governance.transfers("reviewer",caseId).items().getFirst().acceptedTransferRef()).isNull();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_internal_records",Long.class)).isEqualTo(1);
+        code(ErrorCode.FORBIDDEN,()->governance.reviewTransfer("security",caseId,saved.evidenceId(),new TransferReview("APPROVE","TRANSFER_AND_ACCEPTANCE_CONFIRMED",1L,version(),"internal-self")));
+        governance.reviewTransfer("reviewer",caseId,saved.evidenceId(),new TransferReview("APPROVE","TRANSFER_AND_ACCEPTANCE_CONFIRMED",1L,version(),"internal-review"));
+        assertThat(governance.transfers("security",caseId).items().getFirst().acceptedTransferRef()).startsWith("CHANGE:RECORD-");
+        assertThat(jdbc.queryForObject("SELECT actor_user_id FROM secret_internal_records WHERE event_code='TRANSFER_ACCEPTANCE_CONFIRMED'",Long.class)).isEqualTo(2);
+        code(ErrorCode.EVIDENCE_REQUIRED,()->service.dismiss("security",caseId,new DismissalRequest("OUT_OF_SCOPE",List.of(saved.evidenceId()),version(),"internal-not-resolved")));
+    }
+
     @Test void soleQualifiedReviewerCanRecordOnlyLimitedSelfAttestation() {
         jdbc.update("UPDATE secret_role_grants SET revoked_at=now() WHERE user_id=2");
         var lifecycle=lifecycleService();
@@ -69,7 +82,7 @@ class SecretClosureIntegrationTest {
     @Test void aSecondQualifiedReviewerKeepsIndependentReviewAvailable() {
         var lifecycle=lifecycleService();
         var submitted=lifecycle.submit(caseId,new com.logssey.secret.lifecycle.SecretLifecycleService.Submission(
-                "REVOKED",OffsetDateTime.now().minusMinutes(20),"CHANGE:SEC-2",version(),"multiple-submit"),"security");
+                "REVOKED",OffsetDateTime.now().minusMinutes(20),null,version(),"multiple-submit"),"security");
         long evidence=((Number)submitted.get("evidenceId")).longValue();
         code(ErrorCode.FORBIDDEN,()->lifecycle.review(caseId,evidence,
                 new com.logssey.secret.lifecycle.SecretLifecycleService.Review("APPROVE","SELF_ATTESTATION_LIMITED",1L,version(),"multiple-self"),"security"));

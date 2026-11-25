@@ -1,4 +1,5 @@
 package com.logssey.secret.policy;
+import com.logssey.secret.evidence.SecretInternalRecord;
 
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
@@ -141,7 +142,7 @@ public class SecretStoragePolicyService {
                 INSERT INTO secret_storage_policies(policy_id,version,status,reason_code,evidence_ref,
                     created_by_user_id,valid_from,valid_until)
                 VALUES (?,?,'DRAFT',?,?,?,?,?)
-                """,id,version,request.reasonCode(),request.evidenceRef(),actor.userId(),request.validFrom(),request.validUntil());
+                """,id,version,request.reasonCode(),SecretInternalRecord.reference(jdbc,request.evidenceRef(),actor.userId(),"POLICY",id,version,"POLICY_DRAFTED"),actor.userId(),request.validFrom(),request.validUntil());
         for (var item:prepared) {
             var r=item.request(); var s=item.scope();
             jdbc.update("""
@@ -202,7 +203,7 @@ public class SecretStoragePolicyService {
         jdbc.update("""
                 INSERT INTO secret_audit_events(event_type,actor_user_id,target_type,target_id,target_version,safe_changes)
                 VALUES ('POLICY_RETIRED',?,'POLICY',?,?,jsonb_build_object('reasonCode',?::text,'evidenceRef',?::text))
-                """,actor.userId(),policyId,policy.version(),request.reasonCode(),request.evidenceRef());
+                """,actor.userId(),policyId,policy.version(),request.reasonCode(),SecretInternalRecord.reference(jdbc,request.evidenceRef(),actor.userId(),"POLICY",policyId,policy.version(),"POLICY_RETIRED"));
         return summary(policy(policyId,policy.version(),false),actor,true);
     }
 
@@ -231,7 +232,7 @@ public class SecretStoragePolicyService {
                     proposed_by_user_id,status)
                 VALUES (?,?,?,?,?,?,?,?,?,?,'PENDING_APPROVAL')
                 """,scopeId,scope.originVersion(),scope.revision(),scope.fingerprint(),request.origin(),
-                request.storagePolicyId(),request.storagePolicyVersion(),request.reasonCode(),request.evidenceRef(),actor.userId());
+                request.storagePolicyId(),request.storagePolicyVersion(),request.reasonCode(),SecretInternalRecord.reference(jdbc,request.evidenceRef(),actor.userId(),"SCOPE",scopeId,scope.originVersion(),"CLASSIFICATION_PROPOSED"),actor.userId());
         repository.audit("CLASSIFICATION_PROPOSED","SCOPE",scopeId,scope.originVersion(),actor.userId());
         return classification(scope,actor,true);
     }
@@ -495,7 +496,7 @@ public class SecretStoragePolicyService {
     private ProposalState proposal(long scope,long id,boolean lock) { return repository.proposal(scope,id,lock).orElseThrow(()->new ApiException(ErrorCode.NOT_FOUND)); }
     private static boolean allowed(String value,String... values) { return value!=null && java.util.Arrays.asList(values).contains(value); }
     private static void pagination(int page,int size) { if (page<0 || page>1_000_000 || size<1 || size>100) invalid(); }
-    private static void evidence(String ref) { if (ref==null || !EVIDENCE.matcher(ref).matches()) invalid(); }
+    private static void evidence(String ref) { SecretInternalRecord.rejectReserved(ref); if (ref!=null && !EVIDENCE.matcher(ref).matches()) invalid(); }
     private static void invalid() { throw new ApiException(ErrorCode.INVALID_INPUT); }
     private static void conflict() { throw new ApiException(ErrorCode.CONFLICT); }
     private static void forbidden() { throw new ApiException(ErrorCode.FORBIDDEN); }
