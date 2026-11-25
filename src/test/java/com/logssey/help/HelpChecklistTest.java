@@ -159,4 +159,24 @@ class HelpChecklistTest {
         expected.forEach(key -> assertThat(schema).contains("\"" + key + "\""));
         assertThat(schema).contains("\"additionalProperties\":false");
     }
+
+    /** Design doc 18.8: a fallback says which format check failed; acceptance itself is unchanged. */
+    @Test
+    void fallbackNamesTheFormatCheckThatFailed() {
+        assertThat(parseWith(cards -> cards.get(0).put("screen", "RUNTIME")).reasonCode())
+                .isEqualTo("CHECKLIST_INVALID_FORMAT:SCREEN_NOT_ALLOWED");
+        assertThat(parseWith(cards -> cards.get(0).put("screen", "ADMIN_SETTINGS")).reasonCode())
+                .isEqualTo("CHECKLIST_INVALID_FORMAT:SCREEN_UNKNOWN");
+        assertThat(parseWith(cards -> cards.remove(7)).reasonCode()).isEqualTo("CHECKLIST_INVALID_FORMAT:CHECK_ORDER");
+        assertThat(parseWith(cards -> cards.set(8, card("VULN_FINDINGS", "수정 버전을 봅니다.", 9))).reasonCode())
+                .isEqualTo("CHECKLIST_INVALID_FORMAT:CHECKS_MISSING");
+        assertThat(parseWith(cards -> cards.get(0).put("focus", "https://example.invalid")).reasonCode())
+                .isEqualTo("CHECKLIST_INVALID_FORMAT:FOCUS_INVALID");
+        assertThat(parseWith(cards -> cards.get(0).put("extra", "x")).reasonCode()).isEqualTo("CHECKLIST_INVALID_FORMAT:CARD_SHAPE");
+        assertThat(parse(modelReply(Map.of("cards", validCards()))).reasonCode()).isEqualTo("CHECKLIST_INVALID_FORMAT:ROOT_SHAPE");
+        assertThat(parse(modelReply("체크리스트입니다")).reasonCode()).isEqualTo("CHECKLIST_INVALID_FORMAT:NOT_JSON");
+        assertThat(parse(HelpAnswerFilterTest.message("max_tokens", "[]")).reasonCode())
+                .isEqualTo("CHECKLIST_INVALID_RESPONSE:STOP_max_tokens");
+        assertThat(parse(modelReply(answer(validCards()))).fallback()).isFalse();
+    }
 }

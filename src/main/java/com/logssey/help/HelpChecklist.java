@@ -134,20 +134,26 @@ final class HelpChecklist {
                     || !"assistant".equals(message.path("role").asText())
                     || !"end_turn".equals(message.path("stop_reason").asText())
                     || !message.path("content").isArray()) {
-                return fallback(playbook, "CHECKLIST_INVALID_RESPONSE", usage);
+                return fallback(playbook, "CHECKLIST_INVALID_RESPONSE:STOP_" + message.path("stop_reason").asText("NONE"), usage);
             }
             var text = new StringBuilder();
             for (JsonNode block : message.path("content")) {
                 String type = block.path("type").asText();
                 if ("thinking".equals(type) || "redacted_thinking".equals(type)) continue;
                 if (!"text".equals(type) || !block.path("text").isTextual()) {
-                    return fallback(playbook, "CHECKLIST_INVALID_RESPONSE", usage);
+                    return fallback(playbook, "CHECKLIST_INVALID_RESPONSE:BLOCK_" + type, usage);
                 }
                 text.append(block.path("text").asText());
             }
-            JsonNode root = JSON.readTree(text.toString());
-            List<Card> cards = cards(root, titles(playbook));
-            if (cards == null) return fallback(playbook, "CHECKLIST_INVALID_FORMAT", usage);
+            JsonNode root;
+            try {
+                root = JSON.readTree(text.toString());
+            } catch (RuntimeException notJson) {
+                return fallback(playbook, "CHECKLIST_INVALID_FORMAT:NOT_JSON", usage);
+            }
+            Checked checked = check(root, titles(playbook));
+            if (checked.cards() == null) return fallback(playbook, "CHECKLIST_INVALID_FORMAT:" + checked.problem(), usage);
+            List<Card> cards = checked.cards();
             return new Result(cards, asText(cards, root.path("closing").asText()), sources(playbook, cards), null, usage);
         } catch (RuntimeException invalid) {
             return fallback(playbook, "CHECKLIST_INVALID_FORMAT", usage);
@@ -156,41 +162,57 @@ final class HelpChecklist {
 
     /** Validates the model JSON; returns null when anything is off. */
     static List<Card> cards(JsonNode root, Map<Integer, String> titles) {
+        return check(root, titles).cards();
+    }
+
+    /** Cards, or null with the name of the first check that failed (design doc 18.8). */
+    record Checked(List<Card> cards, String problem) {
+        static Checked failed(String problem) {
+            return new Checked(null, problem);
+        }
+    }
+
+    static Checked check(JsonNode root, Map<Integer, String> titles) {
         if (root == null || !root.isObject() || root.size() != 2
-                || !root.path("cards").isArray() || !root.path("closing").isTextual()) return null;
+                || !root.path("cards").isArray() || !root.path("closing").isTextual()) return Checked.failed("ROOT_SHAPE");
         String closing = HelpAnswerFilter.withoutMarkdownMarks(root.path("closing").asText()).strip();
-        if (closing.isEmpty() || closing.length() > MAX_CLOSING_CHARS || !HelpAnswerFilter.safe(closing)) return null;
+        if (closing.isEmpty() || closing.length() > MAX_CLOSING_CHARS || !HelpAnswerFilter.safe(closing)) {
+            return Checked.failed("CLOSING_INVALID");
+        }
 
         JsonNode items = root.path("cards");
-        if (items.isEmpty() || items.size() > CHECK_COUNT) return null;
+        if (items.isEmpty() || items.size() > CHECK_COUNT) return Checked.failed("CARD_COUNT");
         var cards = new ArrayList<Card>();
         int expected = 1;
         for (JsonNode item : items) {
-            if (!item.isObject() || item.size() != 3) return null;
+            if (!item.isObject() || item.size() != 3) return Checked.failed("CARD_SHAPE");
             JsonNode checks = item.path("checks");
             JsonNode screen = item.path("screen");
             JsonNode focusNode = item.path("focus");
-            if (!checks.isArray() || checks.isEmpty() || !screen.isTextual() || !focusNode.isTextual()) return null;
+            if (!checks.isArray() || checks.isEmpty() || !screen.isTextual() || !focusNode.isTextual()) {
+                return Checked.failed("CARD_FIELDS");
+            }
             Set<Integer> allowed = SCREENS.get(screen.asText());
-            if (allowed == null) return null;
+            if (allowed == null) return Checked.failed("SCREEN_UNKNOWN");
 
             var numbers = new ArrayList<Integer>();
             var cardTitles = new ArrayList<String>();
             for (JsonNode check : checks) {
-                if (!check.isIntegralNumber()) return null;
+                if (!check.isIntegralNumber()) return Checked.failed("CHECK_NOT_NUMBER");
                 int number = check.asInt();
                 // Checks must run 1..10 in order with none missing or repeated, and the screen must serve each one.
-                if (number != expected || !allowed.contains(number) || !titles.containsKey(number)) return null;
+                if (number != expected || !titles.containsKey(number)) return Checked.failed("CHECK_ORDER");
+                if (!allowed.contains(number)) return Checked.failed("SCREEN_NOT_ALLOWED");
                 numbers.add(number);
                 cardTitles.add(titles.get(number));
                 expected++;
             }
             String focus = HelpAnswerFilter.withoutMarkdownMarks(focusNode.asText()).strip();
             if (focus.isEmpty() || focus.length() > MAX_FOCUS_CHARS || focus.indexOf('\n') >= 0
-                    || !HelpAnswerFilter.safe(focus)) return null;
+                    || !HelpAnswerFilter.safe(focus)) return Checked.failed("FOCUS_INVALID");
             cards.add(new Card(List.copyOf(numbers), List.copyOf(cardTitles), screen.asText(), focus));
         }
-        return expected == CHECK_COUNT + 1 ? List.copyOf(cards) : null;
+        return expected == CHECK_COUNT + 1 ? new Checked(List.copyOf(cards), null) : Checked.failed("CHECKS_MISSING");
     }
 
     /** "1. 무엇이 터졌나" by check number, read from the playbook headings. */

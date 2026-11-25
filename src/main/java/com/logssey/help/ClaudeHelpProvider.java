@@ -249,12 +249,13 @@ class ClaudeHelpProvider {
                     .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
                     .build();
             HttpResponse<byte[]> response = http.send(request, HttpResponse.BodyHandlers.ofByteArray());
-            return switch (response.statusCode()) {
+            int status = response.statusCode();
+            return switch (status) {
                 case 200 -> response.body().length > MAX_RESPONSE_BYTES
-                        ? Reply.failed("PROVIDER_RESPONSE_TOO_LARGE") : new Reply(response.body(), null);
-                case 401, 403 -> Reply.failed("PROVIDER_AUTHENTICATION_FAILED");
-                case 429 -> Reply.failed("PROVIDER_RATE_LIMITED");
-                default -> Reply.failed("PROVIDER_UNAVAILABLE");
+                        ? Reply.failed("PROVIDER_RESPONSE_TOO_LARGE", status) : new Reply(response.body(), null, status);
+                case 401, 403 -> Reply.failed("PROVIDER_AUTHENTICATION_FAILED", status);
+                case 429 -> Reply.failed("PROVIDER_RATE_LIMITED", status);
+                default -> Reply.failed("PROVIDER_UNAVAILABLE", status);
             };
         } catch (HttpTimeoutException timeout) {
             return Reply.failed("PROVIDER_TIMEOUT");
@@ -266,9 +267,18 @@ class ClaudeHelpProvider {
         }
     }
 
-    record Reply(byte[] body, String reasonCode) {
+    /** {@code status} is the HTTP status of the provider reply, or 0 when there was none (timeout, connection). */
+    record Reply(byte[] body, String reasonCode, int status) {
+        Reply(byte[] body, String reasonCode) {
+            this(body, reasonCode, 0);
+        }
+
         static Reply failed(String reasonCode) {
-            return new Reply(null, reasonCode);
+            return new Reply(null, reasonCode, 0);
+        }
+
+        static Reply failed(String reasonCode, int status) {
+            return new Reply(null, reasonCode, status);
         }
     }
 
