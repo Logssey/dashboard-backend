@@ -57,6 +57,11 @@ class ClaudeHelpProvider {
             For each line give the Logssey screen to look at and what to check there, in one or two short sentences,
             and keep the "Logssey 밖" items.
             Never conclude that the user is or is not affected.
+            A "Logssey 환경 신호" block, when present, is written by the server and holds only yes/no values.
+            Use it together with the user's description to choose the "먼저 볼 것" order from the playbook's
+            situation section (for example: no healthy runtime sensor means the outside access and audit logs come
+            first; unreviewed runtime detections mean check 5 first; live keys mean check 7 early). Say that the
+            signals are yes/no only, do not invent counts, and still list all ten checks.
             Questions that need the user's data ("우리 서버 뚫렸어?", "영향 있어?"): answer in 3 to 5 sentences.
             First say that you cannot see the actual detection results or server state, then point to the screens
             to check, quoting the playbook sections on such questions and on checks 5 and 8 so they are cited.
@@ -147,6 +152,13 @@ class ClaudeHelpProvider {
 
     /** Builds the request body. Stable parts (system, documents) come first so the prompt cache can reuse them. */
     String requestBody(List<HelpDocument> documents, String page, List<HelpTurn> history, String question) {
+        return requestBody(documents, page, history, question, Map.of());
+    }
+
+    /** {@code signals} are design doc 18.3 yes/no values; the server writes their sentence (HelpSignals.text). */
+    String requestBody(List<HelpDocument> documents, String page, List<HelpTurn> history, String question,
+                       Map<String, Boolean> signals) {
+        String signalText = HelpSignals.text(signals);
         var first = new ArrayList<Map<String, Object>>();
         for (int i = 0; i < documents.size(); i++) {
             var doc = documents.get(i);
@@ -161,7 +173,7 @@ class ClaudeHelpProvider {
         String pageLine = page == null || page.isBlank() ? "" : "현재 화면: " + page + "\n\n";
         var messages = new ArrayList<Map<String, Object>>();
         if (history.isEmpty()) {
-            first.add(Map.of("type", "text", "text", pageLine + "질문: " + question));
+            first.add(Map.of("type", "text", "text", pageLine + signalText + "질문: " + question));
             messages.add(Map.of("role", "user", "content", first));
         } else {
             first.add(Map.of("type", "text", "text", pageLine + "질문: " + history.get(0).text()));
@@ -170,7 +182,7 @@ class ClaudeHelpProvider {
                 var turn = history.get(i);
                 messages.add(Map.of("role", turn.role(), "content", List.of(Map.of("type", "text", "text", turn.text()))));
             }
-            messages.add(Map.of("role", "user", "content", List.of(Map.of("type", "text", "text", "질문: " + question))));
+            messages.add(Map.of("role", "user", "content", List.of(Map.of("type", "text", "text", signalText + "질문: " + question))));
         }
         var body = new LinkedHashMap<String, Object>();
         body.put("model", MODEL);
@@ -186,14 +198,32 @@ class ClaudeHelpProvider {
      * Checklist-card request (design doc 12): only the incident playbook, no history, citations off
      * (they cannot be combined with a JSON output format) and the reply forced into HelpChecklist.schema().
      */
+    /** Report draft request (design doc 18.4): only the masked notes, no documents, history or data. */
+    String reportRequestBody(String memo) {
+        var body = new LinkedHashMap<String, Object>();
+        body.put("model", MODEL);
+        body.put("max_tokens", HelpReport.MAX_TOKENS);
+        body.put("system", List.of(Map.of("type", "text", "text", HelpReport.SYSTEM_PROMPT)));
+        body.put("thinking", Map.of("type", "between_tools"));
+        body.put("output_config", Map.of("effort", "low",
+                "format", Map.of("type", "json_schema", "schema", HelpReport.schema())));
+        body.put("messages", List.of(Map.of("role", "user",
+                "content", List.of(Map.of("type", "text", "text", "조치 메모:\n" + memo)))));
+        return json.writeValueAsString(body);
+    }
+
     String checklistRequestBody(HelpDocument playbook, String page, String question) {
+        return checklistRequestBody(playbook, page, question, Map.of());
+    }
+
+    String checklistRequestBody(HelpDocument playbook, String page, String question, Map<String, Boolean> signals) {
         var document = new LinkedHashMap<String, Object>();
         document.put("type", "document");
         document.put("source", Map.of("type", "text", "media_type", "text/plain", "data", playbook.text()));
         document.put("title", playbook.title());
         document.put("cache_control", Map.of("type", "ephemeral"));
         String pageLine = page == null || page.isBlank() ? "" : "현재 화면: " + page + "\n\n";
-        var content = List.of(document, Map.of("type", "text", "text", pageLine + "질문: " + question));
+        var content = List.of(document, Map.of("type", "text", "text", pageLine + HelpSignals.text(signals) + "질문: " + question));
 
         var body = new LinkedHashMap<String, Object>();
         body.put("model", MODEL);
