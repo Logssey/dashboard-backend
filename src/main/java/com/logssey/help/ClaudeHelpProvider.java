@@ -30,6 +30,8 @@ class ClaudeHelpProvider {
 
     static final String MODEL = "claude-sonnet-5-5";
     static final String API_VERSION = "2026-10-21";
+    /** The team's Claude key in Secrets Manager (infrastructure README). A name, not a value. */
+    static final String TEAM_KEY_SECRET_ID = "logssey/dashboard/ai/claude-api-key";
     private static final String API_PATH = "/v1/messages";
     private static final int MAX_RESPONSE_BYTES = 256 * 1024;
     /** Room for a ten-line incident checklist in Korean (HelpAnswerFilter.MAX_ANSWER_CHARS). */
@@ -95,8 +97,17 @@ class ClaudeHelpProvider {
                        @Value("${logssey.secret.aws.collection.credentials-file:}") String credentialsFile,
                        @Value("${logssey.help.claude.url:https://api.anthropic.com/v1/messages}") String url,
                        @Value("${logssey.help.claude.timeout-ms:30000}") int timeoutMillis) {
-        this(enabled, apiKey, keyFile, HelpClaudeKeyStore.secretsManager(secretId, region, credentialsMode, profile, credentialsFile),
+        this(enabled, apiKey, keyFile, HelpClaudeKeyStore.secretsManager(keySecretId(secretId), region, credentialsMode, profile, credentialsFile),
                 url, timeoutMillis, defaultClient(), false);
+    }
+
+    /**
+     * The secret name to read. A blank setting falls back to the team key name too: the shared
+     * logssey.secret.guide.claude.api-key-secret-id property exists with an empty default since the secret part was
+     * merged, and an empty value would otherwise hide the default (design doc 17.3).
+     */
+    static String keySecretId(String configured) {
+        return configured == null || configured.isBlank() ? TEAM_KEY_SECRET_ID : configured.strip();
     }
 
     /** Package-local constructor; loopback endpoints are accepted only from tests. */

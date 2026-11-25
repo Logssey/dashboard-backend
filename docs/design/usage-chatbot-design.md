@@ -794,6 +794,9 @@ Logssey 사용법 도우미에서 "대응 순서 물어보기"로 먼저 볼 것
 - 그래도 `KEY_STORE_UNAVAILABLE`이면 남은 원인은 운영 쪽이다: API 역할의 그 비밀 읽기 권한(인프라 `claude-api.tf` 적용 여부), 운영 `api.properties`의 AWS 세션 설정(`logssey.secret.aws.collection.credentials-mode=WORKLOAD`, `credentials-file=/run/aws/credentials.json`). 이건 서버 담당자가 확인한다.
 - 팀 방식과 다른 점(공유용): 이름 기본값을 코드에 둠(호스트 설정이 우선), 키가 있으면 기본으로 켜짐(#172부터), 챗봇 PR은 develop으로 바로 올림.
 
+### 17.3 키 이름이 빈 값이 된 경우 (2026-11-26)
+2026-11-26 새벽 `feat/secret`이 develop에 합쳐지면서(#188) 공용 `application.properties`에 `logssey.secret.guide.claude.api-key-secret-id=${ANTHROPIC_API_KEY_SECRET_ID:}`가 들어왔다. 이 설정이 **빈 값으로 존재**하게 되자, 17.2의 `${...:logssey/dashboard/ai/claude-api-key}` 기본값이 쓰이지 않고(Spring 기본값은 설정이 "없을 때"만 쓰임) 운영 상태가 `KEY_MISSING`이 됐다. 시크릿 팀 설정은 그대로 두고, 챗봇 코드(`ClaudeHelpProvider.keySecretId`)에서 키 이름이 비어 있으면 팀 키 이름을 쓰게 했다. 테스트: `blankKeyNameFallsBackToTheTeamKeyName`.
+
 ## 18. 멘토 2차 피드백 반영 (2026-11-25)
 
 ### 18.1 질문 속 고객 정보 가리기
