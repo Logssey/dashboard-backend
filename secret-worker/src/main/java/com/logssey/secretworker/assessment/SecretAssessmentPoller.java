@@ -5,7 +5,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 @Component
-@ConditionalOnProperty(name = "logssey.secret.executor.enabled", havingValue = "true")
+@ConditionalOnProperty(name = "logssey.secret.assessment.enabled", havingValue = "true", matchIfMissing = true)
 public class SecretAssessmentPoller {
   private final SecretAssessmentExecutor executor;
   private final com.logssey.secretworker.operations.SecretOperationsHeartbeat heartbeat;
@@ -24,7 +24,10 @@ public class SecretAssessmentPoller {
         var job = executor.claim();
         if (job.isEmpty()) break;
         heartbeat.activeJob("ASSESSMENT",job.get().jobId());
-        executor.execute(job.get());
+        if (!executor.execute(job.get())) {
+          heartbeat.failure("ASSESSMENT", "ASSESSMENT_JOB_INCOMPLETE");
+          return;
+        }
         heartbeat.clearJob("ASSESSMENT");
       }
       heartbeat.success("ASSESSMENT");

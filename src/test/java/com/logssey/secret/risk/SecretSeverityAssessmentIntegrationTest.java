@@ -15,6 +15,39 @@ class SecretSeverityAssessmentIntegrationTest extends SecretRiskEvidenceIntegrat
   SecretRiskAssessmentStore store;
   SecretRiskQueryService query;
 
+  @Test void pendingAssessmentAndCompletedInsufficientEvidenceAreDifferentStates() {
+    long job = jdbc.queryForObject("SELECT secret_queue_assessment(?)", Long.class, occurrence);
+    assertThat(part(query.risk("security", occurrence), "assessmentProcess"))
+        .containsEntry("status", "PENDING").containsEntry("workerAvailable", false);
+    evaluate();
+    jdbc.update("UPDATE secret_jobs SET status='SUCCEEDED',finished_at=clock_timestamp() WHERE job_id=?", job);
+    var result = query.risk("security", occurrence);
+    assertThat(part(result, "assessmentProcess")).containsEntry("status", "COMPLETED");
+    assertThat(part(result, "latestAutomaticAssessment")).containsEntry("ruleId", "R99");
+    assertThat(part(part(result,"riskExperience"),"summary")).containsEntry("severity", null);
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.CsvSource({
+      "BROAD,ADMIN,PROD,false,R02,CRITICAL", "BOUNDED,ADMIN,PROD,false,R03,HIGH",
+      "BOUNDED,IMPORTANT,PROD,false,R04,HIGH", "BOUNDED,LIMITED,DEV,false,R05,MEDIUM",
+      "BROAD,MINIMAL,DEV,true,R06,MEDIUM", "BOUNDED,MINIMAL,DEV,true,R07,LOW"})
+  void completeEvidenceProducesThePolicyGradeInTheApi(String range, String impact, String environment,
+      boolean testOnly, String rule, String severity) {
+    exposure("ABNORMAL",1);
+    submit("ACCESS_SCOPE", Map.of("audienceClass",range,"coverageStatus","COMPLETE",
+        "publicAccessConfirmed",range.equals("BROAD"),"boundedPrincipalCount",range.equals("BROAD")?0:2));
+    submit("ASSET_CLASSIFICATION",Map.of("environment",environment,"sensitive",false,
+        "important",environment.equals("PROD"),"testOnly",testOnly));
+    var permission = new HashMap<String,Object>(completePermission());
+    permission.put("impact",impact);
+    submit("PERMISSION_MAPPING",permission);
+    evaluate();
+    var result=query.risk("security",occurrence);
+    assertThat(part(result,"latestAutomaticAssessment")).containsEntry("ruleId",rule).containsEntry("severity",severity);
+    assertThat(part(part(result,"riskExperience"),"summary")).containsEntry("severity",severity).containsEntry("status","CURRENT");
+  }
+
   @Test void aSupersededExpiredFactDoesNotCreateAnEndlessCurrentQuestion() {
     var at = OffsetDateTime.now(ZoneOffset.UTC);
     accessObservation(false, true, at.minusHours(3), "expired-access");
