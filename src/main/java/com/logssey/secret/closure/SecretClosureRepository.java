@@ -65,6 +65,10 @@ class SecretClosureRepository {
             JOIN secret_occurrence_policy_results p ON p.occurrence_id=o.occurrence_id
             LEFT JOIN secret_case_occurrences co ON co.case_id=c.case_id AND co.occurrence_id=o.occurrence_id
             LEFT JOIN LATERAL(SELECT so.* FROM secret_scope_outcomes so WHERE so.scope_id=o.scope_id AND so.scope_revision=s.revision
+              AND NOT EXISTS(SELECT 1 FROM secret_case_revalidations other JOIN secret_jobs job USING(job_id)
+                WHERE other.run_id=so.run_id AND other.occurrence_id<>o.occurrence_id
+                  AND job.purpose='LOCATION_RECHECK' AND s.content_type='AWS_S3_OBJECT_CONTENT'
+                  AND s.approved_ref LIKE '%/s3/prefix/%')
               ORDER BY so.requested_at DESC,so.run_id DESC LIMIT 1)last_attempt ON true
             LEFT JOIN LATERAL(SELECT action_id FROM secret_action_records a WHERE a.case_id=co.case_id AND a.occurrence_id=o.occurrence_id
               AND a.action_cycle=co.action_cycle AND a.action_type IN ('ROTATED','REVOKED','REMOVED_FROM_SOURCE')

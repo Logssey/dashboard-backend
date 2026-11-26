@@ -86,22 +86,33 @@ public class CheckDriftProcessor implements IacJobProcessor {
                 params.put("attributes", drift.attributes());
                 jdbc.update("""
                         INSERT INTO iac_findings (rule_id, source, enforcement, severity, environment, resource_address,
-                                                  params, fingerprint, last_run_id, last_job_id, first_seen_at, last_seen_at)
-                        SELECT rule_id, 'DRIFT', default_enforcement, default_severity, ?, ?, ?::jsonb, ?, ?, ?, now(), now()
+                                                  params, fingerprint, last_run_id, last_job_id, checked_job_id, first_seen_at, last_seen_at)
+                        SELECT rule_id, 'DRIFT', default_enforcement, default_severity, ?, ?, ?::jsonb, ?, ?, ?, ?, now(), now()
                         FROM iac_rules WHERE rule_id = ?
                         ON CONFLICT (fingerprint) DO UPDATE
                         SET rule_id = EXCLUDED.rule_id, enforcement = EXCLUDED.enforcement, severity = EXCLUDED.severity,
-                            params = EXCLUDED.params, last_run_id = EXCLUDED.last_run_id, last_job_id = EXCLUDED.last_job_id,
+                            params = EXCLUDED.params, last_run_id = EXCLUDED.last_run_id, last_job_id = EXCLUDED.last_job_id, checked_job_id = EXCLUDED.checked_job_id,
                             last_seen_at = EXCLUDED.last_seen_at,
                             status = CASE WHEN iac_findings.status = 'ACCEPTED' THEN 'ACCEPTED' ELSE 'OPEN' END,
                             version = iac_findings.version + 1
                         """, run[2], drift.address(), mapper.writeValueAsString(params),
-                        fingerprint(drift.address(), run[1]), runId, job.jobId(), drift.ruleId());
+                        fingerprint(drift.address(), run[1]), runId, job.jobId(), job.jobId(), drift.ruleId());
             }
             stats.put("fixed", jdbc.update("""
-                    UPDATE iac_findings SET status = 'FIXED', version = version + 1
-                    WHERE source = 'DRIFT' AND status = 'OPEN' AND last_job_id IS DISTINCT FROM ?
-                    """, job.jobId()));
+                    UPDATE iac_findings f SET status = 'FIXED', version = f.version + 1, checked_job_id = ?
+                    FROM iac_runs previous, iac_runs current
+                    WHERE current.run_id = ? AND f.last_run_id = previous.run_id
+                      AND previous.repo_id = current.repo_id AND previous.pr_number IS NOT DISTINCT FROM current.pr_number
+                      AND f.source = 'DRIFT' AND f.status = 'OPEN' AND f.last_job_id IS DISTINCT FROM ?
+                    """, job.jobId(), runId, job.jobId()));
+            // Refresh absence evidence without counting an already fixed finding as newly fixed.
+            jdbc.update("""
+                    UPDATE iac_findings f SET checked_job_id = ?
+                    FROM iac_runs previous, iac_runs current
+                    WHERE current.run_id = ? AND f.last_run_id = previous.run_id
+                      AND previous.repo_id = current.repo_id AND previous.pr_number IS NOT DISTINCT FROM current.pr_number
+                      AND f.source = 'DRIFT' AND f.status = 'FIXED' AND f.last_job_id IS DISTINCT FROM ?
+                    """, job.jobId(), runId, job.jobId());
             jdbc.update("""
                     UPDATE iac_runs SET status = 'DONE', verdict = ?, highest_severity = ?, finished_at = now()
                     WHERE run_id = ? AND status = 'ANALYZING'

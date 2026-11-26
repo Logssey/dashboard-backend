@@ -83,7 +83,7 @@ public class IacRunService {
                 repository.upsertFinding(finding.rule(), "GATE", repo.environment(), finding.address(), entry.getKey(),
                         runId, now);
             }
-            repository.fixMissing(repo.repoId(), request.prNumber(), "GATE", findings.keySet());
+            repository.fixMissing(repo.repoId(), request.prNumber(), runId, "GATE", findings.keySet());
             repository.audit(actor, "RUN", runId, "RUN_REGISTERED",
                     "{\"status\":\"" + runStatus + "\",\"gateFindings\":" + findings.size() + "}");
             return new IacRunCreatedResponse(runId, runStatus);

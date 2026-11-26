@@ -79,6 +79,32 @@ public final class AwsContentCollector {
         }
     }
 
+    /** Check absence through the approved prefix listing, never infer it from a denied HEAD. */
+    public Result recheckObject(AwsContentScope prefix, String objectKey, boolean enabled,
+                                int maxBytes, ContentSink sink) {
+        var target = prefix.child(objectKey);
+        if (!enabled) return failed(GapCode.CONTENT_READ_DISABLED);
+        if (maxBytes < 1 || maxBytes > ABSOLUTE_MAX_BYTES) throw new IllegalArgumentException("Invalid AWS content byte limit");
+        String token = null;
+        var seenTokens = new java.util.HashSet<String>();
+        int entries = 0;
+        for (int page = 0; page < 100; page++) {
+            AwsContentReader.ObjectPage batch;
+            try { batch = reader.list(prefix, token); }
+            catch (AwsContentReader.ReadFailure error) { return failed(map(error.code())); }
+            catch (RuntimeException error) { return failed(GapCode.SOURCE_UNAVAILABLE); }
+            for (String key : batch.keys()) {
+                if (++entries > 10000) return failed(GapCode.OBJECT_LIMIT);
+                if (key == null || !key.startsWith(prefix.objectKey())) return failed(GapCode.INVALID_OBJECT_KEY);
+                if (key.equals(objectKey)) return collect(target, true, maxBytes, sink);
+            }
+            token = batch.nextToken();
+            if (token == null) return new Result(Status.SUCCEEDED, 0, 0, List.of());
+            if (!seenTokens.add(token)) return failed(GapCode.PAGINATION_LOOP);
+        }
+        return failed(GapCode.OBJECT_LIMIT);
+    }
+
     private Result collectPrefix(AwsContentScope prefix, int maxBytes, ContentSink sink) {
         var gaps = new java.util.LinkedHashSet<GapCode>();
         var tokens = new java.util.HashSet<String>();

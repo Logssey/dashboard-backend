@@ -29,10 +29,18 @@ public class SecretLocationReadiness {
     EXISTS(SELECT 1 FROM secret_jobs j WHERE j.connection_id=o.connection_id AND j.kind IN ('FULL_SCAN','REVALIDATE') AND j.status IN ('PENDING','LEASED')) AS busy,
     v.revalidation_id,v.run_id AS revalidation_run_id,v.status AS revalidation_status,v.action_cycle AS revalidation_cycle,
     (SELECT outcome.run_id FROM secret_scope_outcomes outcome WHERE outcome.scope_id=o.scope_id AND outcome.scope_revision=s.revision
+     AND NOT EXISTS(SELECT 1 FROM secret_case_revalidations other JOIN secret_jobs job USING(job_id)
+       WHERE other.run_id=outcome.run_id AND other.occurrence_id<>o.occurrence_id
+         AND job.purpose='LOCATION_RECHECK' AND s.content_type='AWS_S3_OBJECT_CONTENT'
+         AND s.approved_ref LIKE '%/s3/prefix/%')
      ORDER BY outcome.requested_at DESC,outcome.run_id DESC LIMIT 1) AS latest_scope_run_id,
     v.last_material_action_at AS revalidation_action_at,v.actions_completed_at AS revalidation_completed_at,v.finished_at AS revalidation_finished_at,
     vr.scope_version AS revalidation_connection_version,cn.scope_version,
     EXISTS(SELECT 1 FROM secret_scope_outcomes outcome WHERE outcome.scope_id=o.scope_id AND outcome.scope_revision=s.revision
+     AND NOT EXISTS(SELECT 1 FROM secret_case_revalidations other JOIN secret_jobs job USING(job_id)
+       WHERE other.run_id=outcome.run_id AND other.occurrence_id<>o.occurrence_id
+         AND job.purpose='LOCATION_RECHECK' AND s.content_type='AWS_S3_OBJECT_CONTENT'
+         AND s.approved_ref LIKE '%/s3/prefix/%')
      AND outcome.requested_at>v.requested_at AND outcome.scope_outcome IN ('PARTIAL','FAILED','SKIPPED','UNKNOWN')) AS later_incomplete
    FROM secret_case_occurrences co JOIN secret_response_cases c USING(case_id)
    JOIN secret_occurrences o USING(occurrence_id) JOIN secret_credential_sets k ON k.credential_set_id=c.credential_set_id
