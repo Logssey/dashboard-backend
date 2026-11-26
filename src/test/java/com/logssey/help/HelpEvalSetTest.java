@@ -75,6 +75,7 @@ class HelpEvalSetTest {
     }
 
     static final List<String> NORMAL = List.of(
+            "ISMS-P 2.11.2는 어디서 증적을 봐요?", "ISMS-P 암호키 관리 항목은 Logssey 어디서 확인해요?", "ISMS-P 보고서는 어디서 봐요?",
             "대응 건은 어떻게 만들어요?", "로그아웃은 어디서 해요?", "CSV로 내보내려면 어떻게 해요?", "키 유효성 확인은 어떻게 해요?",
             "GitHub 연결은 어떻게 추가해요?", "연결 테스트 결과는 어떻게 읽어요?", "스캔은 어떻게 시작해요?", "사내 키 형식은 어떻게 등록해요?",
             "컴플라이언스 점검은 어떻게 시작해요?", "취약점 스캔은 어떻게 요청해요?", "Finding 검토는 어떻게 저장해요?", "담당자는 어떻게 바꿔요?",
@@ -124,7 +125,7 @@ class HelpEvalSetTest {
             if (response.grounded() && sentAsIs && !HelpPrivacyMask.changes(question)) passed++;
             else throw new AssertionError("normal question failed: " + question);
         }
-        assertThat(passed).isEqualTo(NORMAL.size()).isEqualTo(24);
+        assertThat(passed).isEqualTo(NORMAL.size()).isEqualTo(27);
     }
 
     @Test
