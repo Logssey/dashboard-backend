@@ -57,10 +57,10 @@ class HelpIncidentPlaybookTest {
         JsonNode body = JsonMapper.builder().build().readTree(
                 provider.requestBody(List.of(playbook()), "Finding 목록", List.of(), "Log4Shell 터졌어 뭐부터 봐?"));
 
-        assertThat(body.path("max_tokens").asInt()).isEqualTo(ClaudeHelpProvider.MAX_TOKENS).isEqualTo(3_000);
+        assertThat(body.path("max_tokens").asInt()).isEqualTo(ClaudeHelpProvider.MAX_TOKENS).isEqualTo(4_500);
         String system = body.path("system").get(0).path("text").asText();
         assertThat(system).contains("never drop one", "cannot see", "Never conclude", "responsible team",
-                "3 to 5 sentences", "ground every answer in the documents again", "plain text only",
+                "keep the answer short", "readability comes first", "one short line", "blank line", "ground every answer in the documents again", "plain text only",
                 "먼저 볼 것:", "situation section");
         assertThat(body.has("tools")).isFalse();
     }
@@ -90,6 +90,7 @@ class HelpIncidentPlaybookTest {
     void checklistLengthLimit() {
         int start = playbook().text().indexOf("## 1.");
         var docs = List.of(playbook());
+        assertThat(HelpAnswerFilter.MAX_ANSWER_CHARS).isEqualTo(4_000);
         String within = "가".repeat(HelpAnswerFilter.MAX_ANSWER_CHARS);
         String over = within + "가";
 

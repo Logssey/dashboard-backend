@@ -17,7 +17,7 @@ import tools.jackson.databind.json.JsonMapper;
 final class HelpAnswerFilter {
 
     /** Incident checklists list ten checks, so this is larger than a plain usage answer needs. */
-    static final int MAX_ANSWER_CHARS = 2_500;
+    static final int MAX_ANSWER_CHARS = 4_000;
     private static final Pattern FORBIDDEN = Pattern.compile(
             "(?i)https?://|www\\.|<\\s*/?\\s*(script|iframe|img|a|svg)\\b|javascript:|-----BEGIN");
     private static final JsonMapper JSON = new JsonMapper();
