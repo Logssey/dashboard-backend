@@ -77,6 +77,10 @@ class ClaudeHelpProvider {
             Write plain text only: no Markdown such as **bold**, # headings, tables or code blocks.
             Numbered lines like "1. ..." are fine.
             Never state legal reporting duties or deadlines; say to confirm external reporting with the responsible team.
+            ISMS-P or certification questions: use the ISMS-P evidence document and name only the Logssey screens
+            where evidence related to the item can be seen, with the item number and name exactly as written there.
+            Never say that an item is met or that the user can pass or be certified; say that auditors decide,
+            and that documents and procedures outside Logssey are also needed.
             """;
 
     private final boolean enabled;
