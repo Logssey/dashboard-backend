@@ -52,7 +52,7 @@ public class SecretOperationsHeartbeat implements InitializingBean, DisposableBe
             ||env.getProperty("logssey.secret.notion.collection.enabled",Boolean.class,false);
         register("SCHEDULER",env.getProperty("logssey.secret.scheduler.enabled",Boolean.class,false),pollMs(env,"logssey.secret.scheduler.poll-delay"));
         register("EXECUTOR",executor&&sources,pollMs(env,"logssey.secret.executor.poll-delay"));
-        register("ASSESSMENT",executor,30_000);
+        register("ASSESSMENT",env.getProperty("logssey.secret.assessment.enabled",Boolean.class,true),30_000);
         register("PERMISSIONS",env.getProperty("logssey.secret.permissions.enabled",Boolean.class,false),pollMs(env,"logssey.secret.permissions.poll-delay"));
         register("USAGE",env.getProperty("logssey.secret.usage.cloudtrail-enabled",Boolean.class,false),pollMs(env,"logssey.secret.usage.poll-delay"));
         register("MAINTENANCE",cleanupEnabled,cleanupInterval.toMillis());

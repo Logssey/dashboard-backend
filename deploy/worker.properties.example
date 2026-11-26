@@ -7,6 +7,8 @@ logssey.secret.scheduler.enabled=false
 logssey.secret.scheduler.poll-delay=30s
 logssey.secret.scheduler.scan-interval=6h
 logssey.secret.executor.enabled=false
+# Evaluates saved evidence only; no provider requests or collection.
+logssey.secret.assessment.enabled=true
 logssey.secret.executor.poll-delay=30s
 logssey.secret.aws.collection.enabled=false
 logssey.secret.aws.collection.credentials-mode=WORKLOAD

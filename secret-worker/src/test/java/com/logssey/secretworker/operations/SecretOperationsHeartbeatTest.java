@@ -19,12 +19,18 @@ class SecretOperationsHeartbeatTest {
     @BeforeEach void clear(){jdbc.execute("TRUNCATE secret_worker_heartbeats,secret_operations_alerts CASCADE");}
     SecretOperationsHeartbeat heartbeat(MockEnvironment env){return new SecretOperationsHeartbeat(jdbc,tm,env,false,"heartbeat-fixture",Duration.ofSeconds(30),false,Duration.ofMinutes(15),Duration.ofMinutes(2),Duration.ofMinutes(2),1);}
     @Test void firstIdleDisabledTickPersistsStableProcessStartWithoutInventingPollSuccess(){
-        var heartbeat=heartbeat(new MockEnvironment());heartbeat.tick();
+        var heartbeat=heartbeat(new MockEnvironment().withProperty("logssey.secret.assessment.enabled","false"));heartbeat.tick();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_worker_heartbeats WHERE started_at IS NOT NULL AND last_poll_started_at IS NULL AND last_success_at IS NULL AND NOT enabled",Long.class)).isEqualTo(6);
         assertThat(jdbc.queryForObject("SELECT enabled FROM secret_worker_heartbeats WHERE component='USAGE'",Boolean.class)).isFalse();
         var started=jdbc.queryForObject("SELECT min(started_at) FROM secret_worker_heartbeats",OffsetDateTime.class);heartbeat.tick();
         assertThat(jdbc.queryForObject("SELECT min(started_at) FROM secret_worker_heartbeats",OffsetDateTime.class)).isEqualTo(started);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM secret_operations_alerts",Long.class)).isZero();
+    }
+    @Test void databaseAssessmentIsEnabledEvenWhenExternalExecutionIsOff(){
+        var heartbeat=heartbeat(new MockEnvironment().withProperty("logssey.secret.executor.enabled","false"));heartbeat.tick();
+        assertThat(jdbc.queryForMap("SELECT enabled,last_success_at FROM secret_worker_heartbeats WHERE component='ASSESSMENT'"))
+                .containsEntry("enabled",true).containsEntry("last_success_at",null);
+        assertThat(jdbc.queryForObject("SELECT enabled FROM secret_worker_heartbeats WHERE component='EXECUTOR'",Boolean.class)).isFalse();
     }
     @Test void configuredSlowPollingIntervalIsRecordedAndProcessHeartbeatIsIndependent(){
         var env=new MockEnvironment().withProperty("logssey.secret.scheduler.enabled","true").withProperty("logssey.secret.scheduler.poll-delay","10m");
