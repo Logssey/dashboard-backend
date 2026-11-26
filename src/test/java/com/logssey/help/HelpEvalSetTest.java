@@ -275,4 +275,33 @@ class HelpEvalSetTest {
         assertThat(response.cards()).hasSize(9);
         assertThat(response.answer()).endsWith(HelpChecklist.CLOSING);
     }
+
+    /** The live evaluation's repetition count comes from HELP_LIVE_EVAL_RUNS, bounded, default 3. */
+    @Test
+    void liveEvaluationRunCountIsBounded() {
+        assertThat(HelpLiveEvalTest.runs(null)).isEqualTo(3);
+        assertThat(HelpLiveEvalTest.runs("20")).isEqualTo(20);
+        assertThat(HelpLiveEvalTest.runs(" 10 ")).isEqualTo(10);
+        assertThat(HelpLiveEvalTest.runs("0")).isEqualTo(3);
+        assertThat(HelpLiveEvalTest.runs("51")).isEqualTo(3);
+        assertThat(HelpLiveEvalTest.runs("many")).isEqualTo(3);
+    }
+
+    /** When nothing answers, the live report shows the kind of failure (exception class name only). */
+    @Test
+    void noReplyRecordsOnlyTheFailureKind() throws Exception {
+        int closedPort;
+        try (var socket = new java.net.ServerSocket(0)) {
+            closedPort = socket.getLocalPort();
+        }
+        var http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).followRedirects(HttpClient.Redirect.NEVER).build();
+        var provider = new ClaudeHelpProvider(true, "test-" + HelpTestKeys.random("abcdef0123456789", 24), "",
+                "http://127.0.0.1:" + closedPort + "/v1/messages", 5_000, http, true);
+        var reply = provider.send("{}");
+        assertThat(reply.status()).isZero();
+        assertThat(reply.reasonCode()).isEqualTo("PROVIDER_UNAVAILABLE");
+        assertThat(reply.failure()).isNotBlank().doesNotContain(" ", "127.0.0.1");
+        var outcome = new HelpLiveEvalTest.Outcome("", "", true, reply.reasonCode(), reply.status(), reply.failure());
+        assertThat(outcome.label()).isEqualTo("NOT_TESTED(HTTP 응답 없음: " + reply.failure() + ")");
+    }
 }
