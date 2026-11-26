@@ -6,6 +6,8 @@
 # AWS side: infrastructure terraform/environments/logssey-dashboard/deploy.tf (the role only accepts develop runs of this repo).
 # Repository variables: DASHBOARD_DEPLOY_ROLE_ARN, DASHBOARD_INSTANCE_ID (terraform output deploy_role_arns.api, instance_id),
 # DASHBOARD_DEPLOY_WORKER and DASHBOARD_DEPLOY_COMPLIANCE_WORKER gate each independent worker deployment.
+# Set DASHBOARD_SKIP_TESTS=true to temporarily skip API/worker tests while keeping build and deploy enabled.
+# Remove it or set it to false to require tests again.
 # Actions are pinned to the same commit SHAs as reach-check.yml and deploy/reach/ci/reach.yml.
 name: Dashboard deploy
 
@@ -37,6 +39,7 @@ env:
 jobs:
   test:
     name: Backend tests
+    if: vars.DASHBOARD_SKIP_TESTS != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -65,7 +68,10 @@ jobs:
   deploy:
     name: Build and deploy the API and independent workers
     needs: test
-    if: github.ref == 'refs/heads/develop'
+    if: >-
+      always() && !cancelled() && github.ref == 'refs/heads/develop' &&
+      (needs.test.result == 'success' ||
+       (vars.DASHBOARD_SKIP_TESTS == 'true' && needs.test.result == 'skipped'))
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     permissions:
@@ -141,6 +147,7 @@ jobs:
   # deploy as before even if the IaC tests fail; the IaC worker deploys after them with the same commit.
   iac-worker-test:
     name: IaC worker tests
+    if: vars.DASHBOARD_SKIP_TESTS != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -166,7 +173,11 @@ jobs:
     name: Build and deploy the IaC worker
     needs: [deploy, iac-worker-test]
     # Off until the host has the iac-worker service, its DB role, and its AWS role (repository variable)
-    if: github.ref == 'refs/heads/develop' && vars.DASHBOARD_DEPLOY_IAC_WORKER == 'true'
+    if: >-
+      always() && !cancelled() && github.ref == 'refs/heads/develop' &&
+      vars.DASHBOARD_DEPLOY_IAC_WORKER == 'true' && needs.deploy.result == 'success' &&
+      (needs.iac-worker-test.result == 'success' ||
+       (vars.DASHBOARD_SKIP_TESTS == 'true' && needs.iac-worker-test.result == 'skipped'))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
