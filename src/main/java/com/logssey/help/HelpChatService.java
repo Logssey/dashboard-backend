@@ -26,7 +26,7 @@ import com.logssey.help.HelpChatDtos.StatusResponse;
 @Service
 class HelpChatService {
 
-    static final int MAX_QUESTION_CHARS = 500;
+    static final int MAX_QUESTION_CHARS = 1_000;
     static final int MAX_TURN_CHARS = 1_000;
     static final int MAX_HISTORY_MESSAGES = 6;
     static final int MAX_PAGE_CHARS = 40;
