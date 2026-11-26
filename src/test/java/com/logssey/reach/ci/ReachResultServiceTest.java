@@ -176,13 +176,21 @@ class ReachResultServiceTest {
         nullFixedVersion.put("vulnerability", map("id", "CVE-2026-1", "severity", "HIGH", "fixedVersions", Arrays.asList("1.0.1", null)));
         var blankCwe = item("a", "CVE-2026-1", "HIGH", "REACHABLE", "CALLGRAPH", null, List.of());
         blankCwe.put("vulnerability", map("id", "CVE-2026-1", "severity", "HIGH", "cwe", List.of(" ")));
+        // CVSS는 점수가 있어야 하고 0~10, 소수 한 자리까지다 (V66)
+        var cvssOutOfRange = item("a", "CVE-2026-1", "HIGH", "REACHABLE", "CALLGRAPH", null, List.of());
+        cvssOutOfRange.put("vulnerability", map("id", "CVE-2026-1", "severity", "HIGH", "cvss", map("score", 10.5, "source", "nvd")));
+        var cvssWithoutScore = item("a", "CVE-2026-1", "HIGH", "REACHABLE", "CALLGRAPH", null, List.of());
+        cvssWithoutScore.put("vulnerability", map("id", "CVE-2026-1", "severity", "HIGH", "cvss", map("source", "nvd")));
+        var cvssTwoDecimals = item("a", "CVE-2026-1", "HIGH", "REACHABLE", "CALLGRAPH", null, List.of());
+        cvssTwoDecimals.put("vulnerability", map("id", "CVE-2026-1", "severity", "HIGH", "cvss", map("score", 9.85, "source", "nvd")));
         var nullVulnFunction = item("a", "CVE-2026-1", "HIGH", "REACHABLE", "CALLGRAPH", null, List.of());
         nullVulnFunction.put("verdict", map("status", "REACHABLE", "method", "CALLGRAPH", "summary", "test",
                 "vulnFunctionIds", Arrays.asList(1, null), "engine", map("reach", "v0")));
 
         for (var items : List.of(List.of(noEvidence), List.of(notAnalyzedWithMethod), List.of(manual),
                 List.of(badSeverity), List.of(factWithoutId), List.of(nullFixedVersion), List.of(blankCwe),
-                List.of(nullVulnFunction), List.of(ok, ok))) {   // 마지막은 같은 purl × CVE 두 번
+                List.of(nullVulnFunction), List.of(cvssOutOfRange), List.of(cvssWithoutScore), List.of(cvssTwoDecimals),
+                List.of(ok, ok))) {   // 마지막은 같은 purl × CVE 두 번
             assertError(() -> service.upload("admin", check, "gzip", gzip(bundle(items))), ErrorCode.INVALID_INPUT);
         }
         var noSbom = bundle(List.of(ok));
@@ -191,6 +199,26 @@ class ReachResultServiceTest {
 
         assertThat(scanStatus(check)).isEqualTo("QUEUED");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM reach_findings", Long.class)).isZero();
+    }
+
+    @Test
+    void storesTheCvssScoreAndSourceAndReplacesThemOnTheNextScan() {
+        long check = check("a");
+        var withCvss = item("a", "CVE-2026-1", "CRITICAL", "REACHABLE", "CALLGRAPH", null, List.of());
+        withCvss.put("vulnerability", map("id", "CVE-2026-1", "severity", "CRITICAL", "cvss", map("score", 9.8, "source", "nvd")));
+        var withoutCvss = item("a", "CVE-2026-2", "HIGH", "REACHABLE", "CALLGRAPH", null, List.of());
+        service.upload("admin", check, "gzip", gzip(bundle(List.of(withCvss, withoutCvss))));
+
+        assertThat(jdbc.queryForList("SELECT vulnerability_id || ':' || COALESCE(cvss_score::text, '-') || ':' "
+                + "|| COALESCE(cvss_source, '-') FROM reach_findings ORDER BY vulnerability_id", String.class))
+                .containsExactly("CVE-2026-1:9.8:nvd", "CVE-2026-2:-:-");
+
+        // 다음 스캔의 값으로 바꾼다(스캐너 값이라 심각도처럼 덮어쓴다)
+        long next = check("a");
+        withCvss.put("vulnerability", map("id", "CVE-2026-1", "severity", "CRITICAL", "cvss", map("score", 9.1, "source", "ghsa")));
+        service.upload("admin", next, "gzip", gzip(bundle(List.of(withCvss))));
+        assertThat(jdbc.queryForObject("SELECT cvss_score::text || ':' || cvss_source FROM reach_findings "
+                + "WHERE vulnerability_id = 'CVE-2026-1'", String.class)).isEqualTo("9.1:ghsa");
     }
 
     @Test

@@ -25,20 +25,25 @@ public class AttackPathRepository {
                            String severity, long jobId) {
         jdbc.update("""
                 INSERT INTO iac_attack_paths (fingerprint, entry, target_data_asset_id, tier, severity, environment,
-                                              hops, length, status, last_job_id, first_seen_at, last_seen_at)
-                VALUES (?, 'internet', ?, ?, ?, 'PROD', ?::jsonb, ?, 'OPEN', ?, now(), now())
+                                              hops, length, status, last_job_id, checked_job_id, first_seen_at, last_seen_at)
+                VALUES (?, 'internet', ?, ?, ?, 'PROD', ?::jsonb, ?, 'OPEN', ?, ?, now(), now())
                 ON CONFLICT (fingerprint) DO UPDATE
                 SET status = 'OPEN', tier = EXCLUDED.tier, severity = EXCLUDED.severity, hops = EXCLUDED.hops,
-                    last_job_id = EXCLUDED.last_job_id, last_seen_at = EXCLUDED.last_seen_at
-                """, fingerprint, dataAssetId, tier, severity, hopsJson, length, jobId);
+                    last_job_id = EXCLUDED.last_job_id, checked_job_id = EXCLUDED.checked_job_id, last_seen_at = EXCLUDED.last_seen_at
+                """, fingerprint, dataAssetId, tier, severity, hopsJson, length, jobId, jobId);
     }
 
     /** 이번 작업에서 다시 찾지 못한 열린 경로는 닫는다. */
     public int closeNotSeenBy(long jobId) {
-        return jdbc.update("""
-                UPDATE iac_attack_paths SET status = 'CLOSED'
+        int closed = jdbc.update("""
+                UPDATE iac_attack_paths SET status = 'CLOSED', checked_job_id = ?
                 WHERE status = 'OPEN' AND last_job_id IS DISTINCT FROM ?
-                """, jobId);
+                """, jobId, jobId);
+        jdbc.update("""
+                UPDATE iac_attack_paths SET checked_job_id = ?
+                WHERE status = 'CLOSED' AND last_job_id IS DISTINCT FROM ?
+                """, jobId, jobId);
+        return closed;
     }
 
     public void audit(long jobId, String afterSafeJson) {

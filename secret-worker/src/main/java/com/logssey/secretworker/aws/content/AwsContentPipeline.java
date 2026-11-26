@@ -197,12 +197,7 @@ public final class AwsContentPipeline {
         withLease(job, execution, () -> toolRunId.set(findings.beginGitleaksRun(runScopeId,
                 detector.engineVersion(), detector.configHash(), Instant.now())));
         AtomicReference<String> consumerGap = new AtomicReference<>();
-        AwsContentCollector.Result result =
-                collector.observed(execution.observer(job, runScopeId)).collect(
-                        readScope,
-                        true,
-                        AwsContentCollector.DEFAULT_MAX_BYTES,
-                        (source, bytes) -> {
+        AwsContentCollector.ContentSink sink = (source, bytes) -> {
                             String sourceRef = exactRecheckRef != null ? exactRecheckRef
                                     : approved.kind() == AwsContentScope.Kind.S3_PREFIX
                                       ? approved.childSourceRef(scopeId, source.objectKey()) : approved.sourceRef(scopeId);
@@ -306,7 +301,12 @@ public final class AwsContentPipeline {
                                 consumerGap.compareAndSet(null, "RESULT_PERSISTENCE_FAILED");
                                 throw error;
                             }
-                        });
+                        };
+        var observedCollector = collector.observed(execution.observer(job, runScopeId));
+        AwsContentCollector.Result result = exactRecheckRef == null
+                ? observedCollector.collect(readScope, true, AwsContentCollector.DEFAULT_MAX_BYTES, sink)
+                : observedCollector.recheckObject(approved, readScope.objectKey(), true,
+                        AwsContentCollector.DEFAULT_MAX_BYTES, sink);
         String gap = consumerGap.get() != null ? consumerGap.get()
                 : result.gaps().isEmpty() ? null : "AWS_CONTENT_" + result.gaps().getFirst().name();
         withLease(job, execution, () -> findings.finishToolRun(toolRunId.get(),

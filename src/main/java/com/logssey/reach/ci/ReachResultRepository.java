@@ -250,13 +250,14 @@ public class ReachResultRepository {
     record FindingInput(long targetId, long scanId, String purl, String name, String version, String ecosystem, String path,
                         String vulnerabilityId, String severity, String severityNote, String title, String description,
                         String affectedFeature, String fixedVersions, String cweIds, String referenceUrls,
-                        String sources, String deployment, String upgrade) {
+                        String sources, String deployment, String upgrade, java.math.BigDecimal cvssScore,
+                        String cvssSource) {
 
         /** 검사할 때는 대상·스캔을 모르고 0으로 두었다가 적재할 때 채운다 */
         FindingInput withIds(long targetId, long scanId) {
             return new FindingInput(targetId, scanId, purl, name, version, ecosystem, path, vulnerabilityId, severity,
                     severityNote, title, description, affectedFeature, fixedVersions, cweIds, referenceUrls, sources,
-                    deployment, upgrade);
+                    deployment, upgrade, cvssScore, cvssSource);
         }
     }
 
@@ -293,15 +294,15 @@ public class ReachResultRepository {
                         INSERT INTO reach_findings (target_id, purl, component_name, component_version, ecosystem,
                                                     component_path, vulnerability_id, severity, severity_note, vuln_title,
                                                     vuln_description, affected_feature, fixed_versions, cwe_ids,
-                                                    reference_urls, sources, deployment, upgrade, last_scan_id,
-                                                    first_seen_at, last_seen_at)
+                                                    reference_urls, sources, deployment, upgrade, cvss_score,
+                                                    cvss_source, last_scan_id, first_seen_at, last_seen_at)
                         VALUES (:targetId, :purl, :name, :version, :ecosystem, :path, :vulnerabilityId, :severity,
                                 :severityNote, :title, :description, :affectedFeature,
                                 ARRAY(SELECT jsonb_array_elements_text(CAST(:fixedVersions AS jsonb))),
                                 ARRAY(SELECT jsonb_array_elements_text(CAST(:cweIds AS jsonb))),
                                 ARRAY(SELECT jsonb_array_elements_text(CAST(:referenceUrls AS jsonb))),
                                 ARRAY(SELECT jsonb_array_elements_text(CAST(:sources AS jsonb))),
-                                :deployment, CAST(:upgrade AS jsonb), :scanId, now(), now())
+                                :deployment, CAST(:upgrade AS jsonb), :cvssScore, :cvssSource, :scanId, now(), now())
                         ON CONFLICT (target_id, purl, vulnerability_id) DO UPDATE
                         SET component_name = EXCLUDED.component_name, component_version = EXCLUDED.component_version,
                             ecosystem = EXCLUDED.ecosystem, component_path = EXCLUDED.component_path,
@@ -310,6 +311,7 @@ public class ReachResultRepository {
                             affected_feature = EXCLUDED.affected_feature, fixed_versions = EXCLUDED.fixed_versions,
                             cwe_ids = EXCLUDED.cwe_ids, reference_urls = EXCLUDED.reference_urls,
                             sources = EXCLUDED.sources, upgrade = EXCLUDED.upgrade,
+                            cvss_score = EXCLUDED.cvss_score, cvss_source = EXCLUDED.cvss_source,
                             last_scan_id = EXCLUDED.last_scan_id,
                             last_seen_at = GREATEST(reach_findings.last_seen_at, EXCLUDED.last_seen_at)
                         RETURNING finding_id, xmax = 0 AS inserted

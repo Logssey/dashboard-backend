@@ -120,6 +120,9 @@ class EnrichGraphProcessorTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM iac_attack_paths WHERE status = 'CLOSED'", Long.class))
                 .isEqualTo(2L);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM iac_attack_paths WHERE status = 'OPEN'", Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM iac_attack_paths WHERE checked_job_id=(SELECT max(job_id) FROM iac_jobs)", Long.class)).isEqualTo(2L);
+        run(processor);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM iac_attack_paths WHERE checked_job_id=(SELECT max(job_id) FROM iac_jobs)", Long.class)).isEqualTo(2L);
     }
 
     @Test

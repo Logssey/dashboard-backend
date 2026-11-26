@@ -1,5 +1,6 @@
 package com.logssey.reach.ci;
 
+import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.List;
 
@@ -36,9 +37,13 @@ public record ReachResultBundle(
     /** ecosystem이 없으면 purl 타입(pkg:maven/… → maven)으로 채운다 */
     public record Component(String purl, String name, String version, String ecosystem, String path) {}
 
+    /** cvss는 없을 수 있다(이 칸이 생기기 전의 분석기, CVSS가 없는 취약점) */
     public record Vulnerability(String id, String severity, String severityNote, String title, String description,
                                 String affectedFeature, List<String> fixedVersions, List<String> cwe,
-                                List<String> references) {}
+                                List<String> references, Cvss cvss) {}
+
+    /** CVSS v3 기본 점수(0~10)와 출처(nvd, ghsa 등). 스캐너 심각도를 정한 출처의 값이다 */
+    public record Cvss(BigDecimal score, String source) {}
 
     /** 도구 판정. MANUAL은 사람 판정이라 받지 않는다. evidence 항목은 3-5 모양 그대로(order는 배열 순서로 매긴다) */
     public record Verdict(String status, String method, String summary, String notAnalyzedReason, String ruleId,

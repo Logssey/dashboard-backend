@@ -100,6 +100,69 @@ def severity_of(value):
     return upper if upper in SEVERITIES else "UNKNOWN"
 
 
+def cvss_score(value):
+    """CVSS v3 base score as one decimal, or None when it is missing or out of 0..10"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 10:
+        return None
+    return round(float(value), 1)
+
+
+UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def cvss_source(value, fallback=None):
+    """Trivy uses nvd, ghsa, redhat …; Grype an e-mail-like id (nvd@nist.gov, security-advisories@github.com),
+    a CNA UUID, or nothing (GHSA records). Nothing falls back to the record the score came from"""
+    value = (value or "").strip().lower()
+    if not value:
+        return fallback
+    if "nvd" in value:
+        return "nvd"
+    if "github" in value or value == "ghsa":
+        return "ghsa"
+    if UUID.match(value):
+        return "cna"
+    return value[:40]
+
+
+def grype_record_source(record):
+    """Which database a Grype vulnerability record comes from, by its id and namespace (nvd:cpe, github:language:java)"""
+    vid = (record.get("id") or "").upper()
+    namespace = (record.get("namespace") or "").lower()
+    if vid.startswith("GHSA-") or namespace.startswith("github"):
+        return "ghsa"
+    if namespace.startswith("nvd"):
+        return "nvd"
+    return namespace.split(":")[0][:40] or None
+
+
+def trivy_cvss(v):
+    """The CVSS v3 of the source Trivy took the severity from (SeveritySource), else NVD, else GHSA, else any"""
+    cvss = v.get("CVSS") or {}
+    order = [(v.get("SeveritySource") or "").lower(), "nvd", "ghsa", *sorted(cvss)]
+    for src in order:
+        score = cvss_score((cvss.get(src) or {}).get("V3Score"))
+        if score is not None:
+            return {"score": score, "source": cvss_source(src)}
+    return None
+
+
+def grype_cvss(m):
+    """The CVSS v3 of the matched record first (the one the severity came from), then of the related records
+    (NVD before others). Inside one record the Primary score comes before Secondary (CNA) ones"""
+    vuln = m.get("vulnerability") or {}
+    related = sorted(m.get("relatedVulnerabilities") or [], key=lambda r: grype_record_source(r) != "nvd")
+    for record in [vuln, *related]:
+        entries = sorted(record.get("cvss") or [], key=lambda c: (c.get("type") or "").lower() != "primary")
+        for c in entries:
+            if not str(c.get("version") or "").startswith("3"):
+                continue
+            score = cvss_score((c.get("metrics") or {}).get("baseScore"))
+            if score is not None:
+                return {"score": score, "source": cvss_source(c.get("source"), grype_record_source(record))}
+    return None
+
+
 # ---------------------------------------------------------------- scanner matches
 
 def trivy_matches(data):
@@ -114,7 +177,7 @@ def trivy_matches(data):
                 "source": "TRIVY", "purl": purl, "cve": v["VulnerabilityID"], "version": v.get("InstalledVersion"),
                 "path": v.get("PkgPath"), "severity": severity_of(v.get("Severity")), "title": v.get("Title"),
                 "description": v.get("Description"), "fixed": split_versions(v.get("FixedVersion")),
-                "cwe": v.get("CweIDs") or [], "references": v.get("References") or [],
+                "cwe": v.get("CweIDs") or [], "references": v.get("References") or [], "cvss": trivy_cvss(v),
             })
     return out
 
@@ -138,6 +201,7 @@ def grype_matches(data):
             "title": None, "description": vuln.get("description"),
             "fixed": (vuln.get("fix") or {}).get("versions") or [],
             "cwe": unique(c.get("cwe") for c in vuln.get("cwes") or []), "references": vuln.get("urls") or [],
+            "cvss": grype_cvss(m),
         })
     return out
 
@@ -149,11 +213,14 @@ def merge_matches(matches):
         key = (m["purl"], m["cve"])
         cur = merged.get(key)
         if cur is None:
-            merged[key] = dict(m, sources=[m["source"]], severities={m["source"]: m["severity"]})
+            merged[key] = dict(m, sources=[m["source"]], severities={m["source"]: m["severity"]},
+                               cvss_by={m["source"]: m["cvss"]})
             continue
         if m["source"] not in cur["sources"]:
             cur["sources"].append(m["source"])
         cur["severities"].setdefault(m["source"], m["severity"])
+        if cur["cvss_by"].get(m["source"]) is None:
+            cur["cvss_by"][m["source"]] = m["cvss"]
         for field in ("version", "path", "title", "description"):
             cur[field] = cur[field] or m[field]
         for field in ("fixed", "cwe", "references"):
@@ -431,11 +498,13 @@ def build_items(matches, ctx, analysed_at):
         note = None
         if len(set(sev.values())) > 1:
             note = ", ".join(f"{src.capitalize()} {value}" for src, value in sev.items())
+        # CVSS goes with the severity: Trivy's when Trivy found the match, Grype's only when Trivy has none
+        cvss = m["cvss_by"].get("TRIVY") or m["cvss_by"].get("GRYPE")
         verdict = verdict_for(m, ctx, analysed_at)
         spec = ctx.spec_by_cve.get(m["cve"])
         vulnerability = {"id": m["cve"], "severity": severity, "severityNote": note, "title": cut(m["title"], 500),
                          "description": m["description"], "fixedVersions": m["fixed"], "cwe": m["cwe"],
-                         "references": m["references"]}
+                         "references": m["references"], "cvss": cvss}
         if verdict["status"] != "NOT_ANALYZED" and spec and spec.get("summary_ko"):
             vulnerability["affectedFeature"] = cut(spec["summary_ko"], 500)
         items.append({

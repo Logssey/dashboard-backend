@@ -256,4 +256,106 @@ class HelpChatServiceTest {
                 .satisfies(e -> assertThat(code(e)).isEqualTo("NOT_CONFIGURED"));
         assertThat(REQUESTS).isEmpty();
     }
+
+    /** Item 5 (design doc 18.7): a provider failure in checklist mode still returns the playbook's ten checks. */
+    @Test
+    void checklistProviderFailureFallsBackToThePlaybookWithoutAi() {
+        var service = service();
+        for (int status : new int[] {429, 500, 503}) {
+            REQUESTS.clear();
+            NEXT_STATUS.set(status);
+            NEXT_RESPONSE.set("{\"type\":\"error\"}");
+            var response = service.chat("admin-" + status, new ChatRequest("CVE-2021-44228 터졌어 뭐부터 봐?", "요약", List.of(), "checklist"));
+            assertThat(response.withoutAi()).as(String.valueOf(status)).isTrue();
+            assertThat(response.cards()).isNull();
+            assertThat(response.answer()).startsWith(HelpChecklist.FALLBACK_INTRO).endsWith(HelpChecklist.CLOSING);
+            for (int i = 1; i <= 10; i++) assertThat(response.answer()).contains("\n" + i + ". ");
+            assertThat(REQUESTS).hasSize(1);
+        }
+        // Not cached: the next ask tries the model again.
+        NEXT_STATUS.set(200);
+        NEXT_RESPONSE.set(HelpChecklistTest.modelReply(HelpChecklistTest.answer(HelpChecklistTest.validCards())));
+        REQUESTS.clear();
+        var retried = service.chat("admin-retry", new ChatRequest("CVE-2021-44228 터졌어 뭐부터 봐?", "요약", List.of(), "checklist"));
+        assertThat(REQUESTS).hasSize(1);
+        assertThat(retried.withoutAi()).isFalse();
+        assertThat(retried.cards()).isNotEmpty();
+    }
+
+    /** Item 6: an answer served from the cache shows the asking user's own remaining count. */
+    @Test
+    void cachedAnswerShowsTheCurrentUsersRemainingCount() {
+        var service = service();
+        NEXT_RESPONSE.set(grounded("상단 오른쪽 로그아웃 버튼을 누르세요."));
+        var first = service.chat("alice", new ChatRequest("로그아웃 버튼은 어디 있어요?", "통합 현황", List.of()));
+        assertThat(first.remainingToday()).isEqualTo(39);
+        var second = service.chat("alice", new ChatRequest("이 화면 이름은?", "통합 현황", List.of()));
+        assertThat(second.remainingToday()).isEqualTo(38);
+
+        var cachedForBob = service.chat("bob", new ChatRequest("로그아웃 버튼은 어디 있어요?", "통합 현황", List.of()));
+        assertThat(cachedForBob.cached()).isTrue();
+        assertThat(cachedForBob.remainingToday()).as("bob has not used any call").isEqualTo(40);
+        var cachedForAlice = service.chat("alice", new ChatRequest("로그아웃 버튼은 어디 있어요?", "통합 현황", List.of()));
+        assertThat(cachedForAlice.remainingToday()).isEqualTo(38);
+    }
+
+    /** Item 3: the key check also runs on the original text, before masking could split a key. */
+    @Test
+    void keyCheckRunsOnTheOriginalTextBeforeMasking() {
+        String left = "Qx7" + HelpTestKeys.random("ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789", 12);
+        String right = HelpTestKeys.random("ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789", 12) + "z9K";
+        String key = left + "-4539-1488-0343-6467-" + right;
+        assertThat(HelpQuestionGuard.containsSecretLikeValue(key)).isTrue();
+        assertThat(HelpQuestionGuard.containsSecretLikeValue(HelpPrivacyMask.mask(key)))
+                .as("after masking the pieces are too short, which is why the original is checked").isFalse();
+
+        var service = service();
+        REQUESTS.clear();
+        for (var request : List.of(
+                new ChatRequest("이 값 뭐예요? " + key, "요약", List.of()),
+                new ChatRequest("다음 질문", "요약", List.of(new HelpTurn("user", "값 " + key), new HelpTurn("assistant", "답"))))) {
+            assertThatThrownBy(() -> service.chat("admin", request))
+                    .isInstanceOf(HelpChatException.class).extracting(HelpChatServiceTest::code).isEqualTo("QUESTION_REJECTED");
+        }
+        assertThatThrownBy(() -> service.report("admin", new HelpChatDtos.ReportRequest("교체한 키 " + key)))
+                .isInstanceOf(HelpChatException.class).extracting(HelpChatServiceTest::code).isEqualTo("QUESTION_REJECTED");
+        assertThat(REQUESTS).isEmpty();
+    }
+
+    /** Design doc 18.13: questions may be up to 1,000 characters; the key check and masking still cover all of it. */
+    @Test
+    void questionsUpToAThousandCharactersAreAcceptedAndStillChecked() {
+        assertThat(HelpChatService.MAX_QUESTION_CHARS).isEqualTo(1_000);
+        var service = service();
+        String situation = "어젯밤 결제 서버에서 처음 보는 접속이 있었고 키 두 개가 바뀌었어요. ";
+        String filler = situation.repeat(1_000 / situation.length() + 1);
+
+        // Exactly 1,000 characters is answered.
+        NEXT_RESPONSE.set(grounded("런타임 보안 화면부터 보세요."));
+        String full = filler.substring(0, 999) + "?";
+        assertThat(full).hasSize(1_000);
+        assertThat(service.chat("admin", new ChatRequest(full, "요약", List.of())).grounded()).isTrue();
+        assertThat(REQUESTS).hasSize(1);
+
+        // 1,001 characters is refused before any call.
+        REQUESTS.clear();
+        assertThatThrownBy(() -> service.chat("admin", new ChatRequest(full + "?", "요약", List.of())))
+                .isInstanceOf(HelpChatException.class).extracting(HelpChatServiceTest::code).isEqualTo("INVALID_INPUT");
+
+        // A key hidden at the very end of a long question is still refused before any call.
+        String key = HelpTestKeys.anthropicLike();
+        String withKey = filler.substring(0, 1_000 - key.length() - 1) + " " + key;
+        assertThat(withKey).hasSize(1_000);
+        assertThatThrownBy(() -> service.chat("admin", new ChatRequest(withKey, "요약", List.of())))
+                .isInstanceOf(HelpChatException.class).extracting(HelpChatServiceTest::code).isEqualTo("QUESTION_REJECTED");
+        assertThat(REQUESTS).isEmpty();
+
+        // Customer details at the end of a long question are masked before sending.
+        String email = "kim.dev+ops@example.co.kr";
+        String withEmail = filler.substring(0, 1_000 - email.length() - 1) + " " + email;
+        NEXT_RESPONSE.set(grounded("담당 부서와 확인하세요."));
+        service.chat("admin", new ChatRequest(withEmail, "요약", List.of()));
+        assertThat(REQUESTS).hasSize(1);
+        assertThat(REQUESTS.get(0).body()).doesNotContain(email).contains("[이메일]");
+    }
 }

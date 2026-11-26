@@ -125,6 +125,61 @@ class AwsContentCollectorTest {
                         + "/s3/object/fixture-bucket/" + "x".repeat(480), "CURRENT_VALUE_ONLY"));
     }
 
+    @Test void deletedObjectRequiresCompleteApprovedPrefixListing() {
+        var pages = new AtomicInteger();
+        var reader = new AwsContentReader() {
+            public byte[] read(AwsContentScope scope, int max) { fail("Deleted objects must not be read"); return null; }
+            public ObjectPage list(AwsContentScope prefix, String token) {
+                pages.incrementAndGet();
+                return token == null ? new ObjectPage(java.util.List.of("configs/other.env"), "next")
+                        : new ObjectPage(java.util.List.of(), null);
+            }
+        };
+        var result = new AwsContentCollector(reader).recheckObject(prefixScope(), "configs/removed.env", true, 64, (s,b)->fail());
+        assertEquals(AwsContentCollector.Status.SUCCEEDED, result.status());
+        assertEquals(0, result.objectCount());
+        assertEquals(2, pages.get());
+    }
+
+    @Test void deniedOrIncompleteListingNeverProvesAbsence() {
+        for (var code : AwsContentReader.FailureCode.values()) {
+            var reader = new AwsContentReader() {
+                public byte[] read(AwsContentScope scope, int max) { fail(); return null; }
+                public ObjectPage list(AwsContentScope prefix, String token) { throw new ReadFailure(code); }
+            };
+            assertEquals(AwsContentCollector.Status.FAILED,
+                    new AwsContentCollector(reader).recheckObject(prefixScope(), "configs/removed.env", true, 64, (s,b)->fail()).status());
+        }
+        var looping = new AwsContentReader() {
+            public byte[] read(AwsContentScope scope, int max) { fail(); return null; }
+            public ObjectPage list(AwsContentScope prefix, String token) { return new ObjectPage(java.util.List.of(), "same"); }
+        };
+        assertEquals(java.util.List.of(AwsContentCollector.GapCode.PAGINATION_LOOP),
+                new AwsContentCollector(looping).recheckObject(prefixScope(), "configs/removed.env", true, 64, (s,b)->fail()).gaps());
+    }
+
+    @Test void prefixRecheckReadsOnlySelectedObjectAndNeverTreatsReadFailureAsAbsence() {
+        var reader = new AwsContentReader() {
+            public byte[] read(AwsContentScope scope, int max) {
+                assertEquals("configs/selected.env", scope.objectKey());
+                throw new ReadFailure(FailureCode.ACCESS_DENIED);
+            }
+            public ObjectPage list(AwsContentScope prefix, String token) {
+                return new ObjectPage(java.util.List.of("configs/other.env", "configs/selected.env"), null);
+            }
+        };
+        var result = new AwsContentCollector(reader).recheckObject(prefixScope(), "configs/selected.env", true, 64, (s,b)->fail());
+        assertEquals(AwsContentCollector.Status.FAILED, result.status());
+        assertEquals(java.util.List.of(AwsContentCollector.GapCode.ACCESS_DENIED), result.gaps());
+        assertThrows(IllegalArgumentException.class, () -> new AwsContentCollector(reader)
+                .recheckObject(prefixScope(), "outside.env", true, 64, (s,b)->fail()));
+    }
+
+    private static AwsContentScope prefixScope() {
+        return AwsContentScope.fromApprovedRef("AWS_S3_OBJECT_CONTENT", "aws://" + ACCOUNT + "/" + REGION
+                + "/s3/prefix/fixture-bucket/" + encoded("configs/"), "CURRENT_VALUE_ONLY");
+    }
+
     private static AwsContentScope secretScope() {
         return AwsContentScope.fromApprovedRef("AWS_SECRETS_MANAGER_VALUE", SECRET_REF,
                 "CURRENT_VALUE_ONLY");

@@ -1,9 +1,10 @@
 package com.logssey.overview;
 
-import java.time.Instant;
-import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 import com.logssey.overview.dto.response.PriorityFindingListResponse.AssetRef;
 import com.logssey.overview.dto.response.PriorityFindingListResponse.PriorityFinding;
@@ -11,16 +12,15 @@ import com.logssey.overview.dto.response.PriorityFindingListResponse.PriorityFin
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
-/** 통합 현황 집계용 조회. 숫자 세기가 대부분이라 SQL로 직접 조회한다 */
+/**
+ * 통합 현황의 연결 자산 수. 각 보안 기능이 실제로 본 자산을 센다 (샘플 assets 표는 쓰지 않는다).
+ * - AWS: 컴플라이언스 최신 점검이 본 클라우드 자원
+ * - Kubernetes: 실행 중인 워크로드 (취약점 관리 L1 수집 + 런타임 센서). 운영 클러스터라 PROD
+ * - GitHub: 검사한 레포 (코드 취약점·IaC·취약점 관리 레포 스캔). IaC 레포는 등록 환경, 나머지는 PROD
+ * 처음 만든 공통 탐지 이벤트(detection_events)도 행이 있으면 함께 센다 (운영에는 행이 없다).
+ */
 @Repository
 public class OverviewQueryRepository {
-
-    /**
-     * 숫자에 포함할 탐지 이벤트 조건 (보안 점수, 전체 탐지 수, 위험 추이).
-     * 결정: 조치 완료·위험 수용 건도 전부 포함한다.
-     * 나중에 기준이 바뀌면 이 한 줄만 고친다. 예: "action_status NOT IN ('RESOLVED', 'RISK_ACCEPTED')"
-     */
-    static final String COUNTED_EVENTS = "domain IS DISTINCT FROM 'SECRETS'";
 
     private final JdbcClient jdbcClient;
 
@@ -28,135 +28,75 @@ public class OverviewQueryRepository {
         this.jdbcClient = jdbcClient;
     }
 
-    public record EventCounts(long unreviewedCritical, long total, long unreviewed, long critical, long high) {
-    }
+    /**
+     * 숫자에 포함할 탐지 이벤트 조건. 결정: 조치 완료·위험 수용 건도 전부 포함한다.
+     * 시크릿은 대응 건(SecretOverviewProjection)으로 세므로 SECRETS 도메인 이벤트는 뺀다
+     */
+    static final String COUNTED_EVENTS = "e.domain IS DISTINCT FROM 'SECRETS'";
 
-    public EventCounts countEvents(EnvironmentFilter environment) {
-        String sql = """
-                SELECT
-                    count(*) FILTER (WHERE review_status = 'UNREVIEWED' AND severity = 'CRITICAL') AS unreviewed_critical,
-                    count(*)                                                                   AS total,
-                    count(*) FILTER (WHERE review_status = 'UNREVIEWED')                       AS unreviewed,
-                    count(*) FILTER (WHERE severity = 'CRITICAL')                              AS critical,
-                    count(*) FILTER (WHERE severity = 'HIGH')                                  AS high
-                FROM detection_events
-                WHERE %s
-                """.formatted(COUNTED_EVENTS) + environmentCondition(environment, "environment");
-        return withEnvironment(jdbcClient.sql(sql), environment)
-                .query((rs, rowNum) -> new EventCounts(
-                        rs.getLong("unreviewed_critical"),
-                        rs.getLong("total"),
-                        rs.getLong("unreviewed"),
-                        rs.getLong("critical"),
-                        rs.getLong("high")))
-                .single();
-    }
-
-    public long countAssets(EnvironmentFilter environment) {
-        String sql = "SELECT count(*) FROM assets WHERE TRUE" + environmentCondition(environment, "environment");
-        return withEnvironment(jdbcClient.sql(sql), environment).query(Long.class).single();
-    }
-
-    public Instant latestDetection(EnvironmentFilter environment) {
-        String sql = "SELECT max(detected_at) FROM detection_events WHERE " + COUNTED_EVENTS
-                + environmentCondition(environment, "environment");
-        return withEnvironment(jdbcClient.sql(sql),environment)
-                .query((rs,n) -> {
-                    OffsetDateTime value=rs.getObject(1,OffsetDateTime.class);
-                    return value==null?null:value.toInstant();
-                }).list().getFirst();
-    }
-
-    public record ProviderAssetCount(String provider, long count) {
-    }
-
-    public List<ProviderAssetCount> countAssetsByProvider(EnvironmentFilter environment) {
-        String sql = "SELECT provider, count(*) AS cnt FROM assets WHERE TRUE"
-                + environmentCondition(environment, "environment")
-                + " GROUP BY provider";
-        return withEnvironment(jdbcClient.sql(sql), environment)
-                .query((rs, rowNum) -> new ProviderAssetCount(rs.getString("provider"), rs.getLong("cnt")))
-                .list();
-    }
-
-    public record DailySeverityCount(LocalDate date, String severity, long count) {
-    }
-
-    /** [from, to) 구간의 탐지를 한국 날짜·심각도별로 센다 */
-    public List<DailySeverityCount> countDailyBySeverity(Instant from, Instant to, EnvironmentFilter environment) {
-        String sql = """
-                SELECT (detected_at AT TIME ZONE 'Asia/Seoul')::date AS day, severity, count(*) AS cnt
-                FROM detection_events
-                WHERE detected_at >= :from AND detected_at < :to AND %s
-                """.formatted(COUNTED_EVENTS)
-                + environmentCondition(environment, "environment")
-                + " GROUP BY day, severity";
-        return withEnvironment(jdbcClient.sql(sql), environment)
-                .param("from", OffsetDateTime.ofInstant(from, java.time.ZoneOffset.UTC))
-                .param("to", OffsetDateTime.ofInstant(to, java.time.ZoneOffset.UTC))
-                .query((rs, rowNum) -> new DailySeverityCount(
-                        rs.getObject("day", LocalDate.class),
-                        rs.getString("severity"),
-                        rs.getLong("cnt")))
-                .list();
-    }
-
-    public long countUnreviewed(EnvironmentFilter environment) {
-        String sql = "SELECT count(*) FROM detection_events WHERE review_status = 'UNREVIEWED' AND " + COUNTED_EVENTS
-                + environmentCondition(environment, "environment");
-        return withEnvironment(jdbcClient.sql(sql), environment).query(Long.class).single();
-    }
-
-    /** 미검토만, 심각도 높은 순 → 같으면 최신순 */
-    public List<PriorityFinding> findPriorityFindings(EnvironmentFilter environment, int limit) {
-        String sql = """
+    /** 기존 탐지 이벤트 전체 (심각도 높은 순 → 최신순) */
+    public List<PriorityFinding> legacyEvents(EnvironmentFilter environment) {
+        return jdbcClient.sql("""
                 SELECT e.event_id, e.display_id, e.severity, e.title, e.environment, e.owner_team,
                        e.review_status, e.action_status, e.detected_at, e.domain, e.evidence, e.recommendation,
                        a.asset_id, a.name AS asset_name, a.provider, a.asset_type
                 FROM detection_events e
                 LEFT JOIN assets a ON a.asset_id = e.asset_id
-                WHERE e.review_status = 'UNREVIEWED' AND e.domain IS DISTINCT FROM 'SECRETS'
-                """
-                + environmentCondition(environment, "e.environment")
-                + """
-                 ORDER BY CASE e.severity
-                              WHEN 'CRITICAL' THEN 1
-                              WHEN 'HIGH' THEN 2
-                              WHEN 'MEDIUM' THEN 3
-                              ELSE 4
-                          END,
-                          e.detected_at DESC
-                 LIMIT :limit
-                """;
-        return withEnvironment(jdbcClient.sql(sql), environment)
-                .param("limit", limit)
+                WHERE %s AND (:environment = 'ALL' OR e.environment = :environment)
+                ORDER BY CASE e.severity WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2 WHEN 'MEDIUM' THEN 3 ELSE 4 END,
+                         e.detected_at DESC
+                """.formatted(COUNTED_EVENTS))
+                .param("environment", environment.name())
                 .query((rs, rowNum) -> {
                     long assetId = rs.getLong("asset_id");
                     AssetRef asset = rs.wasNull() ? null : new AssetRef(
                             assetId, rs.getString("asset_name"), rs.getString("provider"), rs.getString("asset_type"));
-                    return new PriorityFinding(
-                            rs.getLong("event_id"),
-                            rs.getString("display_id"),
-                            rs.getString("severity"),
-                            rs.getString("title"),
-                            asset,
-                            rs.getString("environment"),
-                            rs.getString("owner_team"),
-                            rs.getString("review_status"),
-                            rs.getString("action_status"),
+                    return new PriorityFinding(rs.getLong("event_id"), rs.getString("display_id"), rs.getString("severity"),
+                            rs.getString("title"), asset, rs.getString("environment"), rs.getString("owner_team"),
+                            rs.getString("review_status"), rs.getString("action_status"),
                             OverviewService.formatInstant(rs.getObject("detected_at", OffsetDateTime.class).toInstant()),
-                            rs.getString("domain"),
-                            rs.getString("evidence"),
-                            rs.getString("recommendation"));
+                            rs.getString("domain"), rs.getString("evidence"), rs.getString("recommendation"));
                 })
                 .list();
     }
 
-    private static String environmentCondition(EnvironmentFilter environment, String column) {
-        return environment.isAll() ? "" : " AND " + column + " = :environment";
+    public long countAwsAssets(EnvironmentFilter environment) {
+        return jdbcClient.sql("""
+                WITH latest AS (
+                    SELECT DISTINCT ON (target_key, environment) run_id, environment
+                    FROM compliance_runs ORDER BY target_key, environment, created_at DESC, run_id DESC)
+                SELECT count(DISTINCT coalesce(r.asset_uid, r.asset))
+                FROM compliance_results r JOIN latest l ON l.run_id = r.run_id
+                WHERE (:environment = 'ALL' OR upper(l.environment) = :environment)
+                """).param("environment", environment.name()).query(Long.class).single();
     }
 
-    private static JdbcClient.StatementSpec withEnvironment(JdbcClient.StatementSpec spec, EnvironmentFilter environment) {
-        return environment.isAll() ? spec : spec.param("environment", environment.name());
+    public long countKubernetesWorkloads(EnvironmentFilter environment) {
+        if (environment == EnvironmentFilter.DEV) return 0;
+        return jdbcClient.sql("""
+                SELECT count(*) FROM (
+                    SELECT namespace, name FROM reach_workloads
+                    UNION
+                    SELECT namespace, workload_name FROM runtime_assets WHERE valid_to IS NULL AND workload_name IS NOT NULL
+                ) w
+                """).query(Long.class).single();
+    }
+
+    public long countRepositories(EnvironmentFilter environment) {
+        record Repo(String name, String environment) {
+        }
+        List<Repo> repos = jdbcClient.sql("""
+                SELECT repository AS name, 'PROD' AS environment FROM code_scans
+                UNION ALL SELECT full_name, environment FROM iac_repos
+                UNION ALL SELECT repo_name, 'PROD' FROM reach_targets WHERE target_type = 'REPO' AND repo_name IS NOT NULL
+                """).query((rs, n) -> new Repo(rs.getString("name"), rs.getString("environment"))).list();
+        Set<String> names = new HashSet<>();
+        for (Repo repo : repos) {
+            if (environment.isAll() || environment.name().equals(repo.environment())) {
+                // 레포는 소유자를 붙이기도(Logssey/service-backend) 안 붙이기도 해서 이름만 비교한다
+                names.add(repo.name().substring(repo.name().indexOf('/') + 1).toLowerCase(Locale.ROOT));
+            }
+        }
+        return names.size();
     }
 }

@@ -374,6 +374,46 @@ class SecretRevalidationServiceIntegrationTest {
                 .isEqualTo("UNKNOWN");
     }
 
+    @Test void siblingS3ObjectRecheckDoesNotInvalidateAnotherObjectsAbsence() {
+        jdbc.update("UPDATE secret_connections SET provider='AWS',auth_ref='aws-profile:test'");
+        jdbc.update("UPDATE secret_connection_scopes SET content_type='AWS_S3_OBJECT_CONTENT',history_limit='CURRENT_VALUE_ONLY',approved_ref='aws://123456789012/ap-northeast-2/s3/prefix/example-bucket/configs%2F'");
+        jdbc.update("UPDATE secret_occurrences SET source_object_ref='aws-content-scope:' || scope_id::text || ':configs%2Ffirst.env'");
+        long second=jdbc.queryForObject("""
+            INSERT INTO secret_occurrences(credential_set_id,connection_id,scope_id,source_object_ref,location_key,
+              environment,exposure_status,exposure_range,presence_status,first_seen_at,last_seen_at,last_seen_run_id)
+            SELECT credential_set_id,connection_id,scope_id,'aws-content-scope:' || scope_id::text || ':configs%2Fsecond.env','L9',environment,exposure_status,
+              exposure_range,presence_status,first_seen_at,last_seen_at,last_seen_run_id FROM secret_occurrences
+            WHERE occurrence_id=? RETURNING occurrence_id
+            """,Long.class,occurrenceId);
+        jdbc.update("""
+            INSERT INTO secret_case_occurrences(case_id,occurrence_id,credential_set_id,response_status,assigned_user_id,last_material_action_at,actions_completed_at)
+            SELECT case_id,?,credential_set_id,response_status,assigned_user_id,last_material_action_at,actions_completed_at
+            FROM secret_case_occurrences WHERE case_id=? AND occurrence_id=?
+            """,second,caseId,occurrenceId);
+        jdbc.update("""
+            INSERT INTO secret_action_records(case_id,occurrence_id,action_type,performed_at,recorded_by_user_id,evidence_ref,case_version)
+            SELECT case_id,?,action_type,performed_at,recorded_by_user_id,evidence_ref,case_version+1 FROM secret_action_records
+            WHERE case_id=? AND occurrence_id=?
+            """,second,caseId,occurrenceId);
+        batches.request(caseId,new SecretRevalidationBatchService.Request(0L,"s3-siblings",java.util.List.of(
+            new SecretRevalidationBatchService.Item(occurrenceId,0L),new SecretRevalidationBatchService.Item(second,0L))),"revalidation-admin");
+        for (var result : revalidationRepository.list(caseId)) {
+            jdbc.update("UPDATE secret_jobs SET status='SUCCEEDED',finished_at=clock_timestamp() WHERE job_id=(SELECT job_id FROM secret_scan_runs WHERE run_id=?)",result.runId());
+            jdbc.update("UPDATE secret_scan_runs SET collection_status='SUCCEEDED',detection_status='SUCCEEDED',validation_status='SKIPPED',result_status='SUCCEEDED',finished_at=clock_timestamp() WHERE run_id=?",result.runId());
+            jdbc.update("UPDATE secret_run_scopes SET collection_status='SUCCEEDED',object_count=0,started_at=clock_timestamp(),finished_at=clock_timestamp(),detection_stage_status='SUCCEEDED',validation_stage_status='SKIPPED',validation_required=false WHERE run_id=?",result.runId());
+            jdbc.update("UPDATE secret_case_revalidations SET status='MISSING',finished_at=clock_timestamp() WHERE run_id=?",result.runId());
+        }
+        jdbc.update("UPDATE secret_occurrences SET presence_status='MISSING'");
+        var principal=new com.logssey.secret.access.SecretPrincipal(actor());
+        for(long id:new long[]{occurrenceId,second})
+            assertThat(((java.util.Map<?,?>)readiness.capabilities(principal,caseId,id).get("locationAbsenceCheck")).get("status")).isEqualTo("PASSED");
+        // Even a failed check of the sibling is not an observation of the first object.
+        var sibling=revalidationRepository.list(caseId).stream().filter(v->v.occurrenceId()==second).findFirst().orElseThrow();
+        jdbc.update("UPDATE secret_jobs SET status='FAILED' WHERE job_id=(SELECT job_id FROM secret_scan_runs WHERE run_id=?)",sibling.runId());
+        jdbc.update("UPDATE secret_run_scopes SET collection_status='FAILED' WHERE run_id=?",sibling.runId());
+        assertThat(((java.util.Map<?,?>)readiness.capabilities(principal,caseId,occurrenceId).get("locationAbsenceCheck")).get("status")).isEqualTo("PASSED");
+    }
+
     @Test
     void requestIsSingleScopeAndIdempotentButUnfinishedRunCannotResolve() {
         var request = new SecretRevalidationRequest(occurrenceId, 0L, 0L, "test-recheck-1");

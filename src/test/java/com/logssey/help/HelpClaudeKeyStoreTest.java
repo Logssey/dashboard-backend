@@ -99,4 +99,16 @@ class HelpClaudeKeyStoreTest {
                 + "${logssey.secret.guide.claude.api-key-secret-id:logssey/dashboard/ai/claude-api-key}}");
         assertThat(properties).doesNotContainPattern("(?i)sk-ant-");
     }
+
+    /** Design doc 17.3: an empty configured name (property present but blank) still uses the team key name. */
+    @Test
+    void blankKeyNameFallsBackToTheTeamKeyName() {
+        assertThat(ClaudeHelpProvider.keySecretId(null)).isEqualTo(ClaudeHelpProvider.TEAM_KEY_SECRET_ID);
+        assertThat(ClaudeHelpProvider.keySecretId("")).isEqualTo("logssey/dashboard/ai/claude-api-key");
+        assertThat(ClaudeHelpProvider.keySecretId("   ")).isEqualTo(ClaudeHelpProvider.TEAM_KEY_SECRET_ID);
+        assertThat(ClaudeHelpProvider.keySecretId(" other/secret ")).isEqualTo("other/secret");
+        // The shared property can now resolve to an empty string, which is exactly the case above.
+        assertThat(HelpClaudeKeyStore.secretsManager(ClaudeHelpProvider.keySecretId(""), "ap-northeast-1", "WORKLOAD", "", ""))
+                .isNotNull();
+    }
 }
