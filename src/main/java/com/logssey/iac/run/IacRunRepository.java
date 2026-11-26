@@ -74,28 +74,29 @@ public class IacRunRepository {
                        long runId, OffsetDateTime now) {
         jdbc.update("""
                 INSERT INTO iac_findings (rule_id, source, enforcement, severity, environment, resource_address,
-                                          fingerprint, last_run_id, first_seen_at, last_seen_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                          fingerprint, last_run_id, checked_run_id, first_seen_at, last_seen_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (fingerprint) DO UPDATE
-                SET last_run_id = EXCLUDED.last_run_id, last_seen_at = EXCLUDED.last_seen_at, status = 'OPEN',
+                SET last_run_id = EXCLUDED.last_run_id, checked_run_id = EXCLUDED.checked_run_id, last_seen_at = EXCLUDED.last_seen_at, status = 'OPEN',
                     version = iac_findings.version + 1
                 """, rule.ruleId(), source, rule.enforcement(), rule.severity(), environment, address, fingerprint,
-                runId, now, now);
+                runId, runId, now, now);
     }
 
     /** 이 PR(또는 main 점검)의 이전 run 에서 열렸던 같은 출처의 발견 건 중 이번에 안 나온 것은 고쳐진 것으로 본다. */
-    int fixMissing(long repoId, Integer prNumber, String source, Collection<String> seenFingerprints) {
+    int fixMissing(long repoId, Integer prNumber, long runId, String source, Collection<String> seenFingerprints) {
         String notSeen = seenFingerprints.isEmpty() ? "" : " AND f.fingerprint NOT IN (" + placeholders(seenFingerprints) + ")";
-        Object[] args = new Object[3 + seenFingerprints.size()];
-        args[0] = source;
-        args[1] = repoId;
-        args[2] = prNumber;
-        int i = 3;
+        Object[] args = new Object[4 + seenFingerprints.size()];
+        args[0] = runId;
+        args[1] = source;
+        args[2] = repoId;
+        args[3] = prNumber;
+        int i = 4;
         for (String fingerprint : seenFingerprints) args[i++] = fingerprint;
         return jdbc.update("""
-                UPDATE iac_findings f SET status = 'FIXED', version = f.version + 1
+                UPDATE iac_findings f SET status = 'FIXED', version = f.version + 1, checked_run_id = ?
                 FROM iac_runs r
-                WHERE f.last_run_id = r.run_id AND f.status = 'OPEN' AND f.source = ?
+                WHERE f.last_run_id = r.run_id AND f.status <> 'ACCEPTED' AND f.source = ?
                   AND r.repo_id = ? AND r.pr_number IS NOT DISTINCT FROM ?
                 """ + notSeen, args);
     }

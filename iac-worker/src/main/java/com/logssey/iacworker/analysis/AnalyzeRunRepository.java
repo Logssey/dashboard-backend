@@ -63,12 +63,12 @@ public class AnalyzeRunRepository {
         var target = change.hops().getLast();
         jdbc.update("""
                 INSERT INTO iac_findings (rule_id, source, enforcement, severity, environment, resource_address, params,
-                                          fingerprint, last_run_id, first_seen_at, last_seen_at)
+                                          fingerprint, last_run_id, checked_run_id, first_seen_at, last_seen_at)
                 SELECT ?, 'PATH', ?, ?, p.environment, ?, jsonb_build_object('tier', ?::int, 'pathFingerprint', ?::text),
-                       ?, r.run_id, now(), now()
+                       ?, r.run_id, r.run_id, now(), now()
                 FROM iac_runs r JOIN iac_repos p ON p.repo_id = r.repo_id WHERE r.run_id = ?
                 ON CONFLICT (fingerprint) DO UPDATE
-                SET enforcement = EXCLUDED.enforcement, severity = EXCLUDED.severity, last_run_id = EXCLUDED.last_run_id,
+                SET enforcement = EXCLUDED.enforcement, severity = EXCLUDED.severity, last_run_id = EXCLUDED.last_run_id, checked_run_id = EXCLUDED.checked_run_id,
                     last_seen_at = EXCLUDED.last_seen_at,
                     status = CASE WHEN iac_findings.status = 'ACCEPTED' THEN 'ACCEPTED' ELSE 'OPEN' END,
                     version = iac_findings.version + 1
@@ -88,11 +88,11 @@ public class AnalyzeRunRepository {
                 """, String.class, finding.ruleId(), finding.cause().address(), runId);
         jdbc.update("""
                 INSERT INTO iac_findings (rule_id, source, enforcement, severity, environment, resource_address, params,
-                                          fingerprint, last_run_id, first_seen_at, last_seen_at)
-                SELECT ?, 'PATH', ?, ?, p.environment, ?, jsonb_build_object('action', ?::text), ?, r.run_id, now(), now()
+                                          fingerprint, last_run_id, checked_run_id, first_seen_at, last_seen_at)
+                SELECT ?, 'PATH', ?, ?, p.environment, ?, jsonb_build_object('action', ?::text), ?, r.run_id, r.run_id, now(), now()
                 FROM iac_runs r JOIN iac_repos p ON p.repo_id = r.repo_id WHERE r.run_id = ?
                 ON CONFLICT (fingerprint) DO UPDATE
-                SET enforcement = EXCLUDED.enforcement, severity = EXCLUDED.severity, last_run_id = EXCLUDED.last_run_id,
+                SET enforcement = EXCLUDED.enforcement, severity = EXCLUDED.severity, last_run_id = EXCLUDED.last_run_id, checked_run_id = EXCLUDED.checked_run_id,
                     last_seen_at = EXCLUDED.last_seen_at,
                     status = CASE WHEN iac_findings.status = 'ACCEPTED' THEN 'ACCEPTED' ELSE 'OPEN' END,
                     version = iac_findings.version + 1
@@ -104,9 +104,9 @@ public class AnalyzeRunRepository {
     /** 같은 PR 의 이전 분석에서 열렸던 경로 발견 건 중 이번에 안 나온 것은 고쳐진 것으로 본다. */
     void fixMissingPathFindings(long runId, List<String> seen) {
         jdbc.update("""
-                UPDATE iac_findings f SET status = 'FIXED', version = f.version + 1
+                UPDATE iac_findings f SET status = 'FIXED', version = f.version + 1, checked_run_id = cur.run_id
                 FROM iac_runs prev, iac_runs cur
-                WHERE cur.run_id = ? AND f.source = 'PATH' AND f.status = 'OPEN' AND f.last_run_id = prev.run_id
+                WHERE cur.run_id = ? AND f.source = 'PATH' AND f.status <> 'ACCEPTED' AND f.last_run_id = prev.run_id
                   AND prev.repo_id = cur.repo_id AND prev.pr_number = cur.pr_number AND prev.run_id <> cur.run_id
                   AND NOT (f.fingerprint = ANY (?))
                 """, ps -> {

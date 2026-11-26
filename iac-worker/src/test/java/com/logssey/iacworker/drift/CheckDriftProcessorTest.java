@@ -73,8 +73,21 @@ class CheckDriftProcessorTest {
         check("drift-dns.json.gz");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM iac_findings", Long.class)).as("같은 드리프트는 한 건").isEqualTo(1L);
 
-        check("nochange.json.gz");
+        long fixedRun=check("nochange.json.gz");
         assertThat(jdbc.queryForObject("SELECT status FROM iac_findings", String.class)).isEqualTo("FIXED");
+        assertThat(jdbc.queryForObject("SELECT j.run_id FROM iac_findings f JOIN iac_jobs j ON j.job_id=f.checked_job_id",Long.class)).isEqualTo(fixedRun);
+        long again=check("nochange.json.gz");
+        assertThat(jdbc.queryForObject("SELECT j.run_id FROM iac_findings f JOIN iac_jobs j ON j.job_id=f.checked_job_id",Long.class)).isEqualTo(again);
+        assertThat(jdbc.queryForObject("SELECT stats->>'fixed' FROM iac_jobs WHERE run_id=?",String.class,again)).isEqualTo("0");
+    }
+
+    @Test
+    void anotherRepositoryCannotCloseThisRepositorysDrift() {
+        check("drift-dns.json.gz");
+        jdbc.update("INSERT INTO iac_repos(full_name,default_branch,environment) VALUES('demo/other','main','DEV')");
+        jdbc.update("UPDATE iac_runs SET repo_id=2");
+        check("nochange.json.gz");
+        assertThat(jdbc.queryForObject("SELECT status FROM iac_findings",String.class)).isEqualTo("OPEN");
     }
 
     private long check(String plan) {
