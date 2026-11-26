@@ -236,8 +236,38 @@ FROM secret_risk_evidence e WHERE e.occurrence_id=? AND e.record_kind='ASSERTION
     result.put("analysisContext", analysisContext);
     var authentication = metadata ? Map.<String, Object>of()
         : validation.read(n(o, "credential_set_id"), occurrence, login);
+    result.put("assessmentProcess", assessmentProcess(o, metadata));
     result.put("riskExperience", new SecretRiskExperience(jdbc, store).read(actor, o, result, analysisContext, authentication, readAt));
     result.put("readAt", readAt);
+    return result;
+  }
+
+  private Map<String, Object> assessmentProcess(Map<String, Object> occurrence, boolean metadata) {
+    if (metadata) return Map.of("status", "NOT_APPLICABLE", "workerAvailable", false);
+    var jobs = jdbc.queryForList("""
+SELECT job_id,status,created_at,finished_at,last_error_code FROM secret_jobs
+WHERE kind='ASSESS' AND target_occurrence_id=? AND expected_evidence_revision=?
+ AND (expected_context->>'policyId')::bigint=(SELECT policy_id FROM secret_severity_policies WHERE state='ACTIVE')
+ORDER BY job_id DESC LIMIT 1
+""", n(occurrence,"occurrence_id"), n(occurrence,"risk_evidence_revision"));
+    boolean worker = Boolean.TRUE.equals(jdbc.queryForObject("""
+SELECT EXISTS(SELECT 1 FROM secret_worker_heartbeats WHERE component='ASSESSMENT' AND enabled
+ AND last_heartbeat_at>clock_timestamp()-interval '2 minutes' AND state<>'FAILED')
+""", Boolean.class));
+    var result = new LinkedHashMap<String,Object>();
+    result.put("workerAvailable", worker);
+    if (jobs.isEmpty()) { result.put("status", "NOT_REQUESTED"); return result; }
+    var job = jobs.getFirst();
+    result.put("status", switch ((String)job.get("status")) {
+      case "PENDING" -> "PENDING";
+      case "LEASED" -> "RUNNING";
+      case "SUCCEEDED" -> "COMPLETED";
+      case "FAILED" -> "FAILED";
+      default -> "CANCELLED";
+    });
+    result.put("jobId", job.get("job_id"));
+    result.put("requestedAt", SecretRiskAssessmentStore.time(job.get("created_at")));
+    result.put("finishedAt", SecretRiskAssessmentStore.time(job.get("finished_at")));
     return result;
   }
 
