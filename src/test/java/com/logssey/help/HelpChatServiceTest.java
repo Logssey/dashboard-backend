@@ -321,4 +321,41 @@ class HelpChatServiceTest {
                 .isInstanceOf(HelpChatException.class).extracting(HelpChatServiceTest::code).isEqualTo("QUESTION_REJECTED");
         assertThat(REQUESTS).isEmpty();
     }
+
+    /** Design doc 18.13: questions may be up to 1,000 characters; the key check and masking still cover all of it. */
+    @Test
+    void questionsUpToAThousandCharactersAreAcceptedAndStillChecked() {
+        assertThat(HelpChatService.MAX_QUESTION_CHARS).isEqualTo(1_000);
+        var service = service();
+        String situation = "어젯밤 결제 서버에서 처음 보는 접속이 있었고 키 두 개가 바뀌었어요. ";
+        String filler = situation.repeat(1_000 / situation.length() + 1);
+
+        // Exactly 1,000 characters is answered.
+        NEXT_RESPONSE.set(grounded("런타임 보안 화면부터 보세요."));
+        String full = filler.substring(0, 999) + "?";
+        assertThat(full).hasSize(1_000);
+        assertThat(service.chat("admin", new ChatRequest(full, "요약", List.of())).grounded()).isTrue();
+        assertThat(REQUESTS).hasSize(1);
+
+        // 1,001 characters is refused before any call.
+        REQUESTS.clear();
+        assertThatThrownBy(() -> service.chat("admin", new ChatRequest(full + "?", "요약", List.of())))
+                .isInstanceOf(HelpChatException.class).extracting(HelpChatServiceTest::code).isEqualTo("INVALID_INPUT");
+
+        // A key hidden at the very end of a long question is still refused before any call.
+        String key = HelpTestKeys.anthropicLike();
+        String withKey = filler.substring(0, 1_000 - key.length() - 1) + " " + key;
+        assertThat(withKey).hasSize(1_000);
+        assertThatThrownBy(() -> service.chat("admin", new ChatRequest(withKey, "요약", List.of())))
+                .isInstanceOf(HelpChatException.class).extracting(HelpChatServiceTest::code).isEqualTo("QUESTION_REJECTED");
+        assertThat(REQUESTS).isEmpty();
+
+        // Customer details at the end of a long question are masked before sending.
+        String email = "kim.dev+ops@example.co.kr";
+        String withEmail = filler.substring(0, 1_000 - email.length() - 1) + " " + email;
+        NEXT_RESPONSE.set(grounded("담당 부서와 확인하세요."));
+        service.chat("admin", new ChatRequest(withEmail, "요약", List.of()));
+        assertThat(REQUESTS).hasSize(1);
+        assertThat(REQUESTS.get(0).body()).doesNotContain(email).contains("[이메일]");
+    }
 }

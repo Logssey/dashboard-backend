@@ -63,7 +63,7 @@ class HelpChatController {
 
     static String message(HelpChatException e) {
         return switch (e.code()) {
-            case "INVALID_INPUT" -> "질문은 1~500자로 입력해 주세요.";
+            case "INVALID_INPUT" -> "질문은 1~1000자로 입력해 주세요.";
             case "MEMO_INVALID" -> "조치 메모는 1~1500자로 입력해 주세요.";
             case "REPORT_BLOCKED" -> "초안을 만들지 못했어요. 메모를 조금 고쳐 다시 시도해 주세요.";
             case "QUESTION_REJECTED" -> "키나 토큰처럼 보이는 값이 있어 보내지 않았어요. 값을 지우고 다시 물어봐 주세요.";
