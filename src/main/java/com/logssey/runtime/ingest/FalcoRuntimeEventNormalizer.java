@@ -31,7 +31,13 @@ public class FalcoRuntimeEventNormalizer {
     private static final Set<String> DOWNLOADERS = Set.of("curl", "wget", "aria2c");
     private static final List<String> SENSITIVE_PATH_PREFIXES = List.of(
             "/etc/", "/bin/", "/sbin/", "/usr/bin/", "/usr/sbin/", "/lib/", "/lib64/", "/usr/lib/");
-    private static final String SERVICE_ACCOUNT_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/";
+    private static final String SERVICE_ACCOUNT_TOKEN_PATH =
+            "/var/run/secrets/kubernetes.io/serviceaccount/token";
+    private static final String REACH_COLLECTOR_IMAGE =
+            "794386801311.dkr.ecr.ap-northeast-1.amazonaws.com/logssey/reach-l1-collector";
+    private static final String REACH_CURL_PREFIX = "curl -sS --connect-timeout 10 --max-time 60";
+    private static final Set<String> DANGEROUS_CAPABILITIES = Set.of(
+            "CAP_SYS_ADMIN", "CAP_SYS_PTRACE", "CAP_SYS_MODULE", "CAP_SYS_RAWIO", "CAP_DAC_OVERRIDE");
     private static final List<String> TEMP_EXECUTION_PREFIXES = List.of("/tmp/", "/var/tmp/", "/dev/shm/");
     private static final Set<String> IDENTITY_FILES = Set.of(
             "/etc/passwd", "/etc/shadow", "/etc/group", "/etc/gshadow", "/etc/sudoers");
@@ -65,11 +71,12 @@ public class FalcoRuntimeEventNormalizer {
         String parentExecutable = text(fields, "proc.pexepath", "proc.pname");
         String parentName = baseName(parentExecutable);
         String targetPath = text(fields, "fd.name", "fs.path.name", "evt.arg.path", "evt.arg.filename", "fd.directory");
-        if (!valid(definition.validationProfile(), processName, executable, parentName, containerId, targetPath)) {
+        String namespace = text(fields, "k8s.ns.name", "k8s.namespace.name");
+        if (!valid(definition.validationProfile(), fields, namespace, processName,
+                executable, parentName, containerId, targetPath)) {
             return RuntimeNormalizationResult.ignored(RULE_VALIDATION_FAILED);
         }
 
-        String namespace = text(fields, "k8s.ns.name", "k8s.namespace.name");
         String podName = text(fields, "k8s.pod.name");
         String sourceEventId = text(event, "uuid", "event_id", "id");
         if (sourceEventId == null) {
@@ -131,30 +138,103 @@ public class FalcoRuntimeEventNormalizer {
                 List.copyOf(missing)));
     }
 
-    private static boolean valid(RuntimeRuleDefinition.ValidationProfile profile, String processName,
-                                 String executable, String parentName, String containerId, String targetPath) {
+    private static boolean valid(RuntimeRuleDefinition.ValidationProfile profile, JsonNode fields,
+                                 String namespace, String processName, String executable,
+                                 String parentName, String containerId, String targetPath) {
         if (containerId == null || "host".equals(containerId)) {
             return false;
         }
         return switch (profile) {
-            case CONTAINER_SHELL -> SHELLS.contains(processName) && !SERVICE_PROCESSES.contains(parentName);
+            case CONTAINER_SHELL -> SHELLS.contains(processName) && nonZero(text(fields, "proc.tty"));
             case SERVICE_PROCESS_SHELL -> SHELLS.contains(processName) && SERVICE_PROCESSES.contains(parentName);
             case PACKAGE_MANAGER_EXECUTION -> PACKAGE_MANAGERS.contains(processName);
-            case SERVICE_ACCOUNT_TOKEN_ACCESS -> targetPath != null
-                    && targetPath.startsWith(SERVICE_ACCOUNT_TOKEN_PATH);
+            case SERVICE_ACCOUNT_TOKEN_ACCESS -> "reused".equals(namespace)
+                    && SERVICE_ACCOUNT_TOKEN_PATH.equals(targetPath);
             case SENSITIVE_PATH_WRITE -> targetPath != null
-                    && SENSITIVE_PATH_PREFIXES.stream().anyMatch(targetPath::startsWith);
-            case PROCESS_MEMORY_ACCESS, GENERIC_CONTAINER_PROCESS, PRIVILEGE_CHANGE -> executable != null;
+                    && SENSITIVE_PATH_PREFIXES.stream().anyMatch(targetPath::startsWith)
+                    && !knownPrometheusConfigReload(namespace, executable, targetPath);
+            case PROCESS_MEMORY_ACCESS, GENERIC_CONTAINER_PROCESS -> executable != null;
             case GENERIC_CONTAINER_FILE -> targetPath != null;
             case TEMP_EXECUTION -> executable != null
                     && TEMP_EXECUTION_PREFIXES.stream().anyMatch(executable::startsWith);
-            case DOWNLOADER_EXECUTION -> DOWNLOADERS.contains(processName);
+            case DOWNLOADER_EXECUTION -> DOWNLOADERS.contains(processName)
+                    && !knownReachCollectorDownload(fields, namespace, executable, parentName);
             case IDENTITY_FILE_CHANGE -> IDENTITY_FILES.contains(targetPath);
             case PERSISTENCE_FILE_CHANGE -> targetPath != null
                     && PERSISTENCE_PATH_PREFIXES.stream().anyMatch(targetPath::startsWith);
             case SSH_AUTHORIZED_KEYS_CHANGE -> targetPath != null && targetPath.endsWith("/authorized_keys");
+            case PRIVILEGE_CHANGE -> dangerousPrivilegeChange(fields, processName, executable);
             case NETWORK_EVENT, CONTAINER_LIFECYCLE_EVENT -> false;
         };
+    }
+
+    private static boolean knownPrometheusConfigReload(String namespace, String executable, String targetPath) {
+        return "monitoring".equals(namespace)
+                && "/bin/prometheus-config-reloader".equals(executable)
+                && ("/etc/prometheus/config_out/prometheus.env.yaml.tmp".equals(targetPath)
+                || "/etc/alertmanager/config_out/alertmanager.env.yaml.tmp".equals(targetPath));
+    }
+
+    private static boolean knownReachCollectorDownload(JsonNode fields, String namespace,
+                                                       String executable, String parentName) {
+        String repository = text(fields, "container.image.repository");
+        String containerName = text(fields, "container.name", "k8s.pod.container.name");
+        String commandLine = text(fields, "proc.cmdline", "proc.args");
+        return "reach".equals(namespace)
+                && "collector".equals(containerName)
+                && REACH_COLLECTOR_IMAGE.equals(repository)
+                && "/usr/bin/curl".equals(executable)
+                && "busybox".equals(parentName)
+                && commandLine != null
+                && commandLine.startsWith(REACH_CURL_PREFIX);
+    }
+
+    private static boolean dangerousPrivilegeChange(JsonNode fields, String processName, String executable) {
+        if (processName == null || executable == null
+                || processName.startsWith("runc:") || executable.endsWith("/runc")) {
+            return false;
+        }
+        String result = text(fields, "evt.res");
+        if (!("0".equals(result) || "SUCCESS".equalsIgnoreCase(result))) {
+            return false;
+        }
+        String eventType = text(fields, "evt.type");
+        if (eventType == null) {
+            return false;
+        }
+        return switch (eventType) {
+            case "setuid" -> zero(fields, "evt.arg.uid");
+            case "setgid" -> zero(fields, "evt.arg.gid");
+            case "setresuid" -> zero(fields, "evt.arg.ruid", "evt.arg.euid", "evt.arg.suid");
+            case "setresgid" -> zero(fields, "evt.arg.rgid", "evt.arg.egid", "evt.arg.sgid");
+            case "capset" -> containsDangerousCapability(text(fields, "thread.cap_effective"));
+            default -> false;
+        };
+    }
+
+    private static boolean zero(JsonNode fields, String... names) {
+        for (String name : names) {
+            if ("0".equals(text(fields, name))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean containsDangerousCapability(String capabilities) {
+        return capabilities != null
+                && DANGEROUS_CAPABILITIES.stream().anyMatch(capabilities::contains);
+    }
+
+    private static boolean nonZero(String value) {
+        if (value == null) {
+            return false;
+        }
+        try {
+            return Long.parseLong(value) != 0;
+        } catch (NumberFormatException ignored) {
+            return false;
+        }
     }
 
     private static String targetName(RuntimeRuleDefinition definition, JsonNode fields,

@@ -62,7 +62,7 @@ public class RuntimeIngestRepository {
 
     public ExistingOutcome findOutcome(long rawEventId) {
         return jdbcClient.sql("""
-                        SELECT r.processing_status, e.runtime_event_id, fe.finding_id
+                        SELECT r.raw_event_id, r.processing_status, e.runtime_event_id, fe.finding_id
                         FROM runtime_raw_events r
                         LEFT JOIN runtime_events e ON e.raw_event_id = r.raw_event_id
                         LEFT JOIN runtime_finding_events fe ON fe.runtime_event_id = e.runtime_event_id
@@ -70,10 +70,31 @@ public class RuntimeIngestRepository {
                         """)
                 .param("rawEventId", rawEventId)
                 .query((rs, rowNum) -> new ExistingOutcome(
+                        rs.getLong("raw_event_id"),
                         rs.getString("processing_status"),
                         nullableLong(rs, "runtime_event_id"),
                         nullableLong(rs, "finding_id")))
                 .single();
+    }
+
+    public Optional<ExistingOutcome> findOutcome(String clusterId, String idempotencyKey) {
+        return jdbcClient.sql("""
+                        SELECT r.raw_event_id, r.processing_status, e.runtime_event_id, fe.finding_id
+                        FROM runtime_raw_events r
+                        LEFT JOIN runtime_events e ON e.raw_event_id = r.raw_event_id
+                        LEFT JOIN runtime_finding_events fe ON fe.runtime_event_id = e.runtime_event_id
+                        WHERE r.cluster_id = :clusterId
+                          AND r.sensor_type = 'FALCO'
+                          AND r.idempotency_key = :idempotencyKey
+                        """)
+                .param("clusterId", clusterId)
+                .param("idempotencyKey", idempotencyKey)
+                .query((rs, rowNum) -> new ExistingOutcome(
+                        rs.getLong("raw_event_id"),
+                        rs.getString("processing_status"),
+                        nullableLong(rs, "runtime_event_id"),
+                        nullableLong(rs, "finding_id")))
+                .optional();
     }
 
     public long ensureCommonWorkloadAsset(String workloadName) {
@@ -368,6 +389,7 @@ public class RuntimeIngestRepository {
     public record RawEventInsert(long rawEventId, boolean duplicate) {
     }
 
-    public record ExistingOutcome(String processingStatus, Long runtimeEventId, Long findingId) {
+    public record ExistingOutcome(long rawEventId, String processingStatus,
+                                  Long runtimeEventId, Long findingId) {
     }
 }

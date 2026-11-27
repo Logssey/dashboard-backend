@@ -1,9 +1,9 @@
 schemaVersion: runtime-rule-pack/v1
-packVersion: 1.0.0
+packVersion: 1.1.0
 rules:
   - key: RUN-001
-    title: 컨테이너 셸 실행
-    version: 1.0.0
+    title: 대화형 컨테이너 셸 실행
+    version: 1.1.0
     mode: DETECT
     maturity: STABLE
     eventType: PROCESS_EXEC
@@ -15,7 +15,7 @@ rules:
     noiseBudgetPerMinute: 60
     owner: Runtime Security
     sourceRules:
-      FALCO: [Logssey RUN-001 Container Shell, Terminal shell in container]
+      FALCO: [Logssey RUN-001 Container Shell]
 
   - key: RUN-002
     title: 서비스 프로세스의 셸 실행
@@ -35,7 +35,7 @@ rules:
 
   - key: RUN-003
     title: ServiceAccount 토큰 접근
-    version: 1.0.0
+    version: 1.1.0
     mode: DETECT
     maturity: STABLE
     eventType: FILE_ACCESS
@@ -98,7 +98,7 @@ rules:
 
   - key: RUN-007
     title: 컨테이너 중요 경로 변경
-    version: 1.0.0
+    version: 1.1.0
     mode: DETECT
     maturity: STABLE
     eventType: FILE_WRITE
@@ -253,7 +253,7 @@ rules:
 
   - key: RUN-017
     title: 다운로드 도구 실행
-    version: 0.5.0
+    version: 0.6.0
     mode: OBSERVE
     maturity: INCUBATING
     eventType: PROCESS_EXEC
@@ -262,7 +262,7 @@ rules:
     validationProfile: DOWNLOADER_EXECUTION
     sensors: [FALCO]
     mitre: [T1105]
-    noiseBudgetPerMinute: 100
+    noiseBudgetPerMinute: 20
     owner: Runtime Security
     sourceRules:
       FALCO: [Logssey RUN-017 Downloader Execution]
@@ -364,8 +364,8 @@ rules:
       FALCO: [Clear Log Activities]
 
   - key: RUN-024
-    title: setuid·Capability 변경
-    version: 0.5.0
+    title: root UID·GID 또는 위험 Capability 획득
+    version: 0.6.0
     mode: OBSERVE
     maturity: INCUBATING
     eventType: PROCESS_PRIVILEGE
@@ -374,7 +374,7 @@ rules:
     validationProfile: PRIVILEGE_CHANGE
     sensors: [FALCO]
     mitre: [T1548.001]
-    noiseBudgetPerMinute: 30
+    noiseBudgetPerMinute: 10
     owner: Runtime Security
     sourceRules:
       FALCO: [Logssey RUN-024 Privilege Change]

@@ -100,14 +100,26 @@ public class RuntimeOperationsRepository {
 
     public OperationalCounts countsSince(Instant since) {
         return jdbcClient.sql("""
-                        SELECT count(*) AS received,
-                               count(*) FILTER (WHERE processing_status = 'GROUPED') AS grouped,
-                               count(*) FILTER (WHERE processing_status = 'SUPPRESSED') AS suppressed,
-                               count(*) FILTER (WHERE processing_status = 'RATE_LIMITED') AS rate_limited,
-                               count(*) FILTER (WHERE processing_status = 'IGNORED') AS ignored,
-                               count(*) FILTER (WHERE processing_status = 'FAILED') AS failed
-                        FROM runtime_raw_events
-                        WHERE received_at >= :since
+                        WITH raw AS (
+                            SELECT count(*) AS stored,
+                                   count(*) FILTER (WHERE processing_status = 'GROUPED') AS grouped,
+                                   count(*) FILTER (WHERE processing_status = 'SUPPRESSED') AS suppressed,
+                                   count(*) FILTER (WHERE processing_status = 'IGNORED') AS ignored,
+                                   count(*) FILTER (WHERE processing_status = 'FAILED') AS failed
+                            FROM runtime_raw_events
+                            WHERE received_at >= :since
+                        ), limited AS (
+                            SELECT COALESCE(sum(rate_limited_count), 0) AS rate_limited
+                            FROM runtime_ingest_rate_windows
+                            WHERE updated_at >= :since
+                        )
+                        SELECT raw.stored + limited.rate_limited AS received,
+                               raw.grouped,
+                               raw.suppressed,
+                               limited.rate_limited,
+                               raw.ignored,
+                               raw.failed
+                        FROM raw CROSS JOIN limited
                         """)
                 .param("since", utc(since))
                 .query((rs, rowNum) -> new OperationalCounts(
