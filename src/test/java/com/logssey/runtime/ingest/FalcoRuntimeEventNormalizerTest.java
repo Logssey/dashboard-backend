@@ -31,6 +31,7 @@ class FalcoRuntimeEventNormalizerTest {
                     "proc.pid": 121,
                     "proc.ppid": 87,
                     "proc.pexepath": "/usr/bin/containerd-shim-runc-v2",
+                    "proc.tty": "34816",
                     "user.uid": "1000",
                     "container.id": "7fd32a",
                     "container.image.repository": "example/reused-api",
@@ -66,6 +67,20 @@ class FalcoRuntimeEventNormalizerTest {
         assertThat(result.eventType()).isEqualTo("FILE_ACCESS");
         assertThat(result.target()).isEqualTo(new NormalizedRuntimeEvent.TargetSnapshot(
                 "FILE", "/var/run/secrets/kubernetes.io/serviceaccount/token", "OPEN"));
+    }
+
+    @Test
+    void rejectsServiceAccountCaAndOutOfScopeNamespace() throws Exception {
+        RuntimeNormalizationResult caFile = normalize(fileEvent(
+                "Logssey RUN-003 ServiceAccount Token Access",
+                "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"));
+        RuntimeNormalizationResult otherNamespace = normalize(fileEvent(
+                "Logssey RUN-003 ServiceAccount Token Access",
+                "/var/run/secrets/kubernetes.io/serviceaccount/token").replace(
+                "\"k8s.ns.name\": \"reused\"", "\"k8s.ns.name\": \"monitoring\""));
+
+        assertThat(caFile.ignoredReason()).isEqualTo(FalcoRuntimeEventNormalizer.RULE_VALIDATION_FAILED);
+        assertThat(otherNamespace.ignoredReason()).isEqualTo(FalcoRuntimeEventNormalizer.RULE_VALIDATION_FAILED);
     }
 
     @Test
@@ -151,6 +166,52 @@ class FalcoRuntimeEventNormalizerTest {
         assertThat(result.ruleKey()).isEqualTo("RUN-015");
         assertThat(result.ruleMode()).isEqualTo(RuntimeRuleDefinition.Mode.OBSERVE);
         assertThat(result.noiseBudgetPerMinute()).isEqualTo(100);
+    }
+
+    @Test
+    void excludesKnownReachCollectorButKeepsOtherDownloaderExecution() throws Exception {
+        String collector = """
+                {
+                  "rule": "Logssey RUN-017 Downloader Execution",
+                  "output_fields": {
+                    "proc.name": "curl",
+                    "proc.exepath": "/usr/bin/curl",
+                    "proc.pexepath": "/bin/busybox",
+                    "proc.cmdline": "curl -sS --connect-timeout 10 --max-time 60 --fail-with-body -X PUT",
+                    "container.id": "container-1",
+                    "container.name": "collector",
+                    "container.image.repository": "794386801311.dkr.ecr.ap-northeast-1.amazonaws.com/logssey/reach-l1-collector",
+                    "k8s.ns.name": "reach",
+                    "k8s.pod.name": "reach-l1-demo-collector-abcde",
+                    "evt.hostname": "worker-a"
+                  }
+                }
+                """;
+        RuntimeNormalizationResult knownCollector = normalize(collector);
+        NormalizedRuntimeEvent suspicious = normalized(collector
+                .replace("\"k8s.ns.name\": \"reach\"", "\"k8s.ns.name\": \"reused\"")
+                .replace("reach-l1-demo-collector-abcde", "reused-api-abcde"));
+
+        assertThat(knownCollector.ignoredReason())
+                .isEqualTo(FalcoRuntimeEventNormalizer.RULE_VALIDATION_FAILED);
+        assertThat(suspicious.ruleKey()).isEqualTo("RUN-017");
+    }
+
+    @Test
+    void acceptsOnlyDangerousPrivilegeChangesAndRejectsRuncSetup() throws Exception {
+        RuntimeNormalizationResult runc = normalize(privilegeEvent(
+                "setuid", "runc:[2:INIT]", "/usr/local/bin/runc", "evt.arg.uid", "0", null));
+        RuntimeNormalizationResult dropToUser = normalize(privilegeEvent(
+                "setuid", "app", "/app/app", "evt.arg.uid", "1000", null));
+        NormalizedRuntimeEvent becomeRoot = normalized(privilegeEvent(
+                "setuid", "app", "/app/app", "evt.arg.uid", "0", null));
+        NormalizedRuntimeEvent dangerousCapability = normalized(privilegeEvent(
+                "capset", "app", "/app/app", null, null, "CAP_CHOWN,CAP_SYS_ADMIN"));
+
+        assertThat(runc.ignoredReason()).isEqualTo(FalcoRuntimeEventNormalizer.RULE_VALIDATION_FAILED);
+        assertThat(dropToUser.ignoredReason()).isEqualTo(FalcoRuntimeEventNormalizer.RULE_VALIDATION_FAILED);
+        assertThat(becomeRoot.ruleKey()).isEqualTo("RUN-024");
+        assertThat(dangerousCapability.ruleKey()).isEqualTo("RUN-024");
     }
 
     @Test
@@ -240,5 +301,28 @@ class FalcoRuntimeEventNormalizerTest {
                   }
                 }
                 """.formatted(rule, path);
+    }
+
+    private static String privilegeEvent(String eventType, String processName, String executable,
+                                         String argumentName, String argumentValue, String capabilities) {
+        String argument = argumentName == null ? "" : "\"%s\": \"%s\",".formatted(argumentName, argumentValue);
+        String capability = capabilities == null ? "" :
+                "\"thread.cap_effective\": \"%s\",".formatted(capabilities);
+        return """
+                {
+                  "rule": "Logssey RUN-024 Privilege Change",
+                  "output_fields": {
+                    "evt.type": "%s",
+                    "evt.res": "0",
+                    %s
+                    %s
+                    "proc.name": "%s",
+                    "proc.exepath": "%s",
+                    "container.id": "container-1",
+                    "k8s.ns.name": "reused",
+                    "k8s.pod.name": "reused-api-7d9df64b9f-k2j9p"
+                  }
+                }
+                """.formatted(eventType, argument, capability, processName, executable);
     }
 }

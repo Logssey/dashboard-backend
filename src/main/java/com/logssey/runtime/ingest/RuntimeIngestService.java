@@ -69,75 +69,106 @@ public class RuntimeIngestService {
         String sourceEventId = sourceEventId(masked.payload(), payload);
         String idempotencyKey = normalizeIdempotencyKey(requestedIdempotencyKey, sourceEventId, payload);
 
-        RawEventInsert raw = repository.insertRawEvent(
-                envelope.clusterId(), envelope.sensorId(), sourceEventId, idempotencyKey,
-                envelope.schemaVersion(), payload, RuntimeHashing.sha256(payload),
-                json(masked.maskedFields()), receivedAt, receivedAt.plus(rawPayloadRetention));
-        if (raw.duplicate()) {
-            ExistingOutcome existing = repository.findOutcome(raw.rawEventId());
-            return response(raw.rawEventId(), existing.runtimeEventId(), existing.findingId(), true,
+        ExistingOutcome existing = repository.findOutcome(envelope.clusterId(), idempotencyKey).orElse(null);
+        if (existing != null) {
+            return response(existing.rawEventId(), existing.runtimeEventId(), existing.findingId(), true,
                     existing.processingStatus(), receivedAt);
         }
 
+        RuntimeNormalizationResult normalization;
         try {
-            return transactionTemplate.execute(status -> process(envelope, masked, raw.rawEventId(), receivedAt));
+            normalization = normalizer.normalize(envelope.clusterId(), masked.payload(), receivedAt);
+        } catch (RuntimeException e) {
+            RawEventInsert raw = insertRawEvent(envelope, sourceEventId, idempotencyKey,
+                    payload, masked, envelope.sensorId(), receivedAt);
+            if (!raw.duplicate()) {
+                repository.updateRawStatus(raw.rawEventId(), "FAILED", "RUNTIME_NORMALIZATION_FAILED");
+            }
+            throw e;
+        }
+
+        if (normalization.normalizedEvent().isEmpty()) {
+            RawEventInsert raw = insertRawEvent(envelope, sourceEventId, idempotencyKey,
+                    payload, masked, envelope.sensorId(), receivedAt);
+            if (raw.duplicate()) {
+                ExistingOutcome duplicate = repository.findOutcome(raw.rawEventId());
+                return response(duplicate.rawEventId(), duplicate.runtimeEventId(), duplicate.findingId(), true,
+                        duplicate.processingStatus(), receivedAt);
+            }
+            repository.updateRawStatus(raw.rawEventId(), "IGNORED", normalization.ignoredReason());
+            return response(raw.rawEventId(), null, null, false, "IGNORED", receivedAt);
+        }
+
+        NormalizedRuntimeEvent event = normalization.normalizedEvent().orElseThrow();
+        Long sensorId = envelope.sensorId();
+        if (sensorId == null && event.asset().nodeName() != null) {
+            sensorId = repository.upsertFalcoSensorFromEvent(
+                    envelope.clusterId(), event.asset().nodeName(), event.occurredAt());
+        }
+        int effectiveRateLimit = Math.min(maxEventsPerRuleNodeMinute, event.noiseBudgetPerMinute());
+        boolean acquired = Boolean.TRUE.equals(transactionTemplate.execute(
+                status -> repository.acquireRateLimitSlot(event, receivedAt, effectiveRateLimit)));
+        if (!acquired) {
+            repository.touchSensor(sensorId, event.occurredAt());
+            return response(null, null, null, false, "RATE_LIMITED", receivedAt);
+        }
+
+        RawEventInsert raw = insertRawEvent(envelope, sourceEventId, idempotencyKey,
+                payload, masked, sensorId, receivedAt);
+        if (raw.duplicate()) {
+            ExistingOutcome duplicate = repository.findOutcome(raw.rawEventId());
+            return response(duplicate.rawEventId(), duplicate.runtimeEventId(), duplicate.findingId(), true,
+                    duplicate.processingStatus(), receivedAt);
+        }
+        Long resolvedSensorId = sensorId;
+        try {
+            return transactionTemplate.execute(status -> process(event, raw.rawEventId(), resolvedSensorId, receivedAt));
         } catch (RuntimeException e) {
             repository.updateRawStatus(raw.rawEventId(), "FAILED", "RUNTIME_NORMALIZATION_FAILED");
             throw e;
         }
     }
 
-    private RuntimeIngestResponse process(FalcoEventEnvelope envelope, MaskedPayload masked,
-                                          long rawEventId, Instant receivedAt) {
-            RuntimeNormalizationResult normalization = normalizer.normalize(
-                    envelope.clusterId(), masked.payload(), receivedAt);
-            if (normalization.normalizedEvent().isEmpty()) {
-                repository.updateRawStatus(rawEventId, "IGNORED", normalization.ignoredReason());
-                return response(rawEventId, null, null, false, "IGNORED", receivedAt);
+    private RuntimeIngestResponse process(NormalizedRuntimeEvent event, long rawEventId,
+                                          Long sensorId, Instant receivedAt) {
+        Long commonAssetId = null;
+        Long runtimeAssetId = null;
+        if (event.asset().resolvable()) {
+            if (event.asset().workloadName() != null) {
+                commonAssetId = repository.ensureCommonWorkloadAsset(event.asset().workloadName());
             }
+            runtimeAssetId = repository.upsertRuntimeAsset(commonAssetId, event.asset(), event.occurredAt());
+        }
 
-            NormalizedRuntimeEvent event = normalization.normalizedEvent().orElseThrow();
-            Long sensorId = envelope.sensorId();
-            if (sensorId == null && event.asset().nodeName() != null) {
-                sensorId = repository.upsertFalcoSensorFromEvent(
-                        envelope.clusterId(), event.asset().nodeName(), event.occurredAt());
-                repository.attachSensor(rawEventId, sensorId);
-            }
-            int effectiveRateLimit = Math.min(maxEventsPerRuleNodeMinute, event.noiseBudgetPerMinute());
-            if (!repository.acquireRateLimitSlot(event, receivedAt, effectiveRateLimit)) {
-                repository.updateRawStatus(rawEventId, "RATE_LIMITED", null);
-                repository.touchSensor(sensorId, event.occurredAt());
-                return response(rawEventId, null, null, false, "RATE_LIMITED", receivedAt);
-            }
-            Long commonAssetId = null;
-            Long runtimeAssetId = null;
-            if (event.asset().resolvable()) {
-                if (event.asset().workloadName() != null) {
-                    commonAssetId = repository.ensureCommonWorkloadAsset(event.asset().workloadName());
-                }
-                runtimeAssetId = repository.upsertRuntimeAsset(commonAssetId, event.asset(), event.occurredAt());
-            }
-
-            Long suppressionId = repository.findMatchingSuppression(event).orElse(null);
-            long runtimeEventId = repository.insertRuntimeEvent(
-                    rawEventId, runtimeAssetId, suppressionId, event,
-                    json(event.process().arguments()), json(event.missingFields()), receivedAt);
-            if (suppressionId != null) {
-                repository.updateRawStatus(rawEventId, "SUPPRESSED", null);
-                repository.touchSensor(sensorId, event.occurredAt());
-                return response(rawEventId, runtimeEventId, null, false, "SUPPRESSED", receivedAt);
-            }
-            if (event.ruleMode() == RuntimeRuleDefinition.Mode.OBSERVE) {
-                repository.updateRawStatus(rawEventId, "OBSERVED", null);
-                repository.touchSensor(sensorId, event.occurredAt());
-                return response(rawEventId, runtimeEventId, null, false, "OBSERVED", receivedAt);
-            }
-            String fingerprint = fingerprint(event);
-            long findingId = repository.upsertFinding(fingerprint, runtimeAssetId, commonAssetId, event);
-            repository.linkFindingEvent(findingId, runtimeEventId);
-            repository.updateRawStatus(rawEventId, "GROUPED", null);
+        Long suppressionId = repository.findMatchingSuppression(event).orElse(null);
+        long runtimeEventId = repository.insertRuntimeEvent(
+                rawEventId, runtimeAssetId, suppressionId, event,
+                json(event.process().arguments()), json(event.missingFields()), receivedAt);
+        if (suppressionId != null) {
+            repository.updateRawStatus(rawEventId, "SUPPRESSED", null);
             repository.touchSensor(sensorId, event.occurredAt());
-            return response(rawEventId, runtimeEventId, findingId, false, "GROUPED", receivedAt);
+            return response(rawEventId, runtimeEventId, null, false, "SUPPRESSED", receivedAt);
+        }
+        if (event.ruleMode() == RuntimeRuleDefinition.Mode.OBSERVE) {
+            repository.updateRawStatus(rawEventId, "OBSERVED", null);
+            repository.touchSensor(sensorId, event.occurredAt());
+            return response(rawEventId, runtimeEventId, null, false, "OBSERVED", receivedAt);
+        }
+        String fingerprint = fingerprint(event);
+        long findingId = repository.upsertFinding(fingerprint, runtimeAssetId, commonAssetId, event);
+        repository.linkFindingEvent(findingId, runtimeEventId);
+        repository.updateRawStatus(rawEventId, "GROUPED", null);
+        repository.touchSensor(sensorId, event.occurredAt());
+        return response(rawEventId, runtimeEventId, findingId, false, "GROUPED", receivedAt);
+    }
+
+    private RawEventInsert insertRawEvent(FalcoEventEnvelope envelope, String sourceEventId,
+                                          String idempotencyKey, String payload, MaskedPayload masked,
+                                          Long sensorId, Instant receivedAt) {
+        return repository.insertRawEvent(
+                envelope.clusterId(), sensorId, sourceEventId, idempotencyKey,
+                envelope.schemaVersion(), payload, RuntimeHashing.sha256(payload),
+                json(masked.maskedFields()), receivedAt, receivedAt.plus(rawPayloadRetention));
     }
 
     private String sourceEventId(JsonNode payload, String serialized) {
@@ -179,7 +210,7 @@ public class RuntimeIngestService {
         return Objects.toString(value, "");
     }
 
-    private RuntimeIngestResponse response(long rawEventId, Long runtimeEventId, Long findingId,
+    private RuntimeIngestResponse response(Long rawEventId, Long runtimeEventId, Long findingId,
                                            boolean duplicate, String status, Instant receivedAt) {
         return new RuntimeIngestResponse(rawEventId, runtimeEventId, findingId, true, duplicate,
                 status, receivedAt.toString());

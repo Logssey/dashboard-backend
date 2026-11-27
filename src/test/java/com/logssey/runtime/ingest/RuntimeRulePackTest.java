@@ -12,7 +12,7 @@ class RuntimeRulePackTest {
 
     @Test
     void loadsVersionedRulePackWithUniqueLifecycleGroups() {
-        assertThat(rulePack.packVersion()).isEqualTo("1.0.0");
+        assertThat(rulePack.packVersion()).isEqualTo("1.1.0");
         assertThat(rulePack.rules()).hasSize(24);
         assertThat(rulePack.rules()).extracting(RuntimeRuleDefinition::ruleKey).doesNotHaveDuplicates();
         assertThat(rulePack.rules()).filteredOn(rule -> rule.mode() == RuntimeRuleDefinition.Mode.DETECT)
@@ -27,6 +27,8 @@ class RuntimeRulePackTest {
     @Test
     void resolvesOfficialAndCustomFalcoAliases() {
         assertThat(rulePack.find("FALCO", "Terminal shell in container"))
+                .isEmpty();
+        assertThat(rulePack.find("FALCO", "Logssey RUN-001 Container Shell"))
                 .get().extracting(RuntimeRuleDefinition::ruleKey).isEqualTo("RUN-001");
         assertThat(rulePack.find("FALCO", "Netcat Remote Code Execution in Container"))
                 .get().extracting(RuntimeRuleDefinition::ruleKey).isEqualTo("RUN-016");

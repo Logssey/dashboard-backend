@@ -1,7 +1,7 @@
 package com.logssey.runtime.ingest.dto;
 
 public record RuntimeIngestResponse(
-        long rawEventId,
+        Long rawEventId,
         Long runtimeEventId,
         Long findingId,
         boolean accepted,
